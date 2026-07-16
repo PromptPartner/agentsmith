@@ -13,7 +13,7 @@ you; the **by-profile** sets are opt-in.
 |---|---|---|
 | `claude-plugins-official` | `anthropics/claude-plugins-official` | superpowers, code-review, LSPs, frontend-design, … (built-in) |
 | `thedotmack` | `thedotmack/claude-mem` | claude-mem (persistent memory) |
-| `openai-codex` | `openai/codex-plugin-cc` | codex (second-AI adversarial review gate) |
+| `openai-codex` | `openai/codex-plugin-cc` | codex (second-AI adversarial review + test gate) |
 
 Add a marketplace manually with: `/plugin marketplace add <owner>/<repo>` (in Claude Code), or
 let `setup.sh` do it.
@@ -25,7 +25,7 @@ let `setup.sh` do it.
 | **superpowers** | The workflow backbone: brainstorming, writing/executing plans, systematic-debugging, TDD, requesting/receiving code review, parallel-agent dispatch, verification-before-completion, git worktrees. Maps directly onto the core operating model. |
 | **claude-mem** | Persistent cross-session memory + `make-plan`/`do`/`learn-codebase`/`mem-search`. This is the "Memory" leg of the harness — it's how a fresh session isn't a blank slate, and where the System-Evolution feedback record can live. |
 | **code-review** | On-demand diff review at adjustable effort. The everyday evaluation gate. |
-| **codex** | A *second, independent* model reviewing your work adversarially — the strongest cheap "eval" you can add before shipping anything risky. Optional (needs the Codex CLI), but recommended. |
+| **codex** | A *second, independent* model that reviews **and independently tests** your work adversarially — it reads the diff for a second opinion, and can write/run its own tests or reproduce the bug (a checker that *measures* beats one that only reads). The strongest cheap "eval" you can add before shipping anything risky. Optional (needs the Codex CLI), but recommended. |
 
 ## Built-in skills worth knowing (no install needed)
 

@@ -62,6 +62,9 @@ This is also what makes the **plan-in-one-tool, build-in-another** pattern work 
 Claude, execute in Codex — since both are reading the same rules. The model-and-tool-per-phase
 technique is in [`05-operating-modes.md`](05-operating-modes.md); verification stays constant
 across whichever tool ran the step ([`03-verify-means-evidence.md`](03-verify-means-evidence.md)).
+The seam also runs the other way, for verification: point the *second* tool at the first's diff as an
+independent reviewer **and tester** — e.g. build in Claude, then have Codex write/run its own tests or
+reproduce the bug (the optional `codex` gate; see [`config/plugins.md`](../config/plugins.md)).
 
 ## Per-project vs global install
 

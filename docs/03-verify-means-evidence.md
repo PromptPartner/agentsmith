@@ -33,7 +33,10 @@ claim is a PR author's word.
 the bedrock. But most real work has a part no assertion can reach: is the *approach* right, is
 the tone right for this audience, is the analysis answering the actual question? That part needs
 **evaluation** — a rubric, a second independent reviewer (human or an adversarial AI pass told to
-find reasons to reject), a real run observed end-to-end.
+find reasons to reject), a real run observed end-to-end. The strongest version of that second pass is
+a second *tester*, not a second *reader*: an independent agent (e.g. the optional Codex CLI gate)
+pointed at your diff to write and run its own tests or reproduce the bug — it *measures* something the
+author can't fake, instead of re-reading the author's reasoning.
 
 A document can pass every spellcheck and be wrong for its reader. A trading strategy can pass its
 backtest *because* the backtest is the overfit artifact. Tests catch broken; evals catch

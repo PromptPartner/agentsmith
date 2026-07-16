@@ -81,7 +81,9 @@ Map to the loop — pull these in, don't reinvent them:
   for browser/UI click-through; the `verify`/`run` skills to drive the real app.
 - **Before merge:** the `code-review` skill, `superpowers:requesting-code-review`
   /`receiving-code-review`, and the **codex two-AI adversarial gate** for a second
-  independent pass on risky diffs.
+  independent pass on risky diffs — use it not just as a second *reader* but as a second
+  *tester*: point Codex at the diff to independently write/run tests or reproduce the bug.
+  A checker that *measures* beats one that only reads ([`03-verify-means-evidence.md`](../docs/03-verify-means-evidence.md)).
 - **Isolation:** `superpowers:using-git-worktrees` for parallel/long-running work.
 - **Memory:** claude-mem `mem-search` ("did we solve this before?") and
   `learn-codebase` when entering unfamiliar code.
@@ -91,7 +93,7 @@ not by default.
 
 **If installed, use them; if not, the rule still stands.** No `test-driven-development` skill? Write
 the failing test first anyway (R2). No `using-git-worktrees`? Still isolate risky/parallel work on a
-branch. No `code-review`/codex gate? Do the second-pass read yourself before merge.
+branch. No `code-review`/codex gate? Do the second-pass read — and an independent test run — yourself before merge.
 
 ### Addendum to the STOP table
 
