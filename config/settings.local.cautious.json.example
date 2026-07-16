@@ -1,0 +1,22 @@
+{
+  "_comment": "CAUTIOUS preset (recommended while you're getting comfortable — the wizard's default). Per-project, machine-local settings. Copy to .claude/settings.local.json in your project (git-ignored). 'defaultMode: acceptEdits' auto-applies FILE EDITS but still PROMPTS before shell commands and network calls — so you see a confirmation exactly when something could touch your system or the internet, not on every step. Once you trust the setup on a machine you fully own, switch to the TRUSTED preset (settings.local.trusted.json.example: defaultMode 'bypassPermissions') to run without prompts. For the strictest posture, set defaultMode to 'default' (prompt for everything). See README → 'Permissions & dangerous mode'.",
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Bash(git:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(grep:*)",
+      "Bash(rg:*)",
+      "Bash(find:*)",
+      "Bash(wc:*)",
+      "Bash(mkdir:*)",
+      "Bash(cp:*)",
+      "Bash(jq:*)"
+    ],
+    "_deny_examples": [
+      "Bash(rm -rf:*)",
+      "Bash(git push --force:*)"
+    ]
+  }
+}

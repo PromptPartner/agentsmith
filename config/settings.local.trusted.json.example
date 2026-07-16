@@ -1,0 +1,35 @@
+{
+  "_comment": "TRUSTED preset. Per-project, machine-local settings. Copy to .claude/settings.local.json in your project (git-ignored). 'defaultMode: bypassPermissions' below skips permission prompts for most tool calls (the rm -rf / and rm -rf ~ circuit-breakers still prompt). This is fine on a machine you fully own / org-internal use, and matches Agentsmith's original box. NOT appropriate for a shared, client, or production machine — use the CAUTIOUS preset (settings.local.cautious.json.example: defaultMode 'acceptEdits') there, or set defaultMode to 'default' to prompt for everything. See README → 'Permissions & dangerous mode'.",
+  "permissions": {
+    "defaultMode": "bypassPermissions",
+    "allow": [
+      "Bash(git:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(grep:*)",
+      "Bash(rg:*)",
+      "Bash(find:*)",
+      "Bash(wc:*)",
+      "Bash(mkdir:*)",
+      "Bash(cp:*)",
+      "Bash(mv:*)",
+      "Bash(npm:*)",
+      "Bash(npx:*)",
+      "Bash(node:*)",
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(pip:*)",
+      "Bash(make:*)",
+      "Bash(jq:*)",
+      "Bash(curl:*)",
+      "Bash(gh:*)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)"
+    ],
+    "_deny_examples": [
+      "Bash(rm -rf:*)",
+      "Bash(git push --force:*)"
+    ]
+  }
+}

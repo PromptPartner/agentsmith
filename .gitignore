@@ -1,0 +1,19 @@
+# generated/assembled artifacts (the template ships sources, not outputs)
+*.zip
+.harness/handoffs/
+# self-update remote (a user's private repo URL — keep it out of the tracked tree)
+.harness/remote
+# per-machine agent permissions, written by the tool as you work. The tracked
+# presets are config/settings.local.*.json.example — this is somebody's local copy.
+.claude/settings.local.json
+
+# This project's OWN working records — kept local, never published. They are about whoever runs
+# this harness (names, decisions, costs, session history), and this repo ships to other people.
+# They are NOT deleted: they live on disk and are research that must not be thrown away (R9).
+# scripts/leak-gate.sh enforces the other half — no operator's name in anything tracked.
+#
+# NOTE: what USERS get is unaffected. setup.sh scaffolds a .planning/ and a docs/feedback/ in
+# THEIR project (from templates/ and docs/feedback/README.md, both still tracked) — these two
+# lines only stop this repo from publishing its own.
+.planning/
+docs/feedback/[0-9]*.md
