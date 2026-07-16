@@ -1,0 +1,18 @@
+# Scripts here run on Linux and macOS, where a CR is not whitespace: it becomes
+# part of the shebang (`env: 'bash\r': No such file or directory`) and of every
+# value the script reads. Git Bash on Windows tolerates CRLF, so a CRLF commit
+# looks fine to the contributor who makes it and breaks for everyone else.
+#
+# Without this file, LF in the repo depends on each contributor having
+# core.autocrlf=true. One clone with autocrlf=false and a CRLF-writing editor is
+# enough to commit a CRLF blob. These rules normalize on the way in regardless
+# of local config, so that cannot happen.
+#
+# .ps1 is included because setup.ps1 carries a `#!/usr/bin/env pwsh` shebang and
+# is meant to be executable on Linux/macOS too; PowerShell reads LF on Windows.
+*.sh  text eol=lf
+*.ps1 text eol=lf
+
+# leak-gate.allow is read as anchored grep patterns; a stray CR corrupts the regex ($\r never
+# matches) and would SILENTLY break the README operator-credit exception. Force LF like above.
+.harness/leak-gate.allow text eol=lf

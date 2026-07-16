@@ -1,0 +1,55 @@
+# .harness/verify.conf — phases for scripts/verify.sh
+# One phase per line:  Label :: shell command
+# Lines run in order; the first failure stops the run. Keep each phase fast and
+# deterministic. Delete the sections you don't need and uncomment what you do.
+# This is your project's definition of "shippable" — make it real, not aspirational.
+
+# ── software-dev (swap commands for your stack) ───────────────────────────────
+# build   :: npm run build            # or: go build ./...   | cargo build   | make
+# types   :: npx tsc --noEmit         # or: mypy .            | (skip if untyped)
+# lint    :: npm run lint             # or: golangci-lint run | ruff check .
+# test    :: npm test                 # or: go test ./...     | pytest -q
+
+# ── document-creation / docs site ─────────────────────────────────────────────
+# spell   :: npx cspell "**/*.md"
+# links   :: npx linkinator ./build --silent   # check rendered links resolve
+# build   :: <your static-site build command>  # then eyeball the rendered output
+
+# ── data-crunching ────────────────────────────────────────────────────────────
+# schema  :: python scripts/validate_schema.py
+# counts  :: python scripts/reconcile_row_counts.py   # inputs == outputs + explained drops
+# run     :: python pipeline.py --dry-run
+
+# ── devops-setup ──────────────────────────────────────────────────────────────
+# shellcheck :: shellcheck scripts/*.sh
+# syntax     :: bash -n scripts/*.sh
+# smoke      :: scripts/smoke.sh        # service comes up healthy + reachable
+
+# ── marketing-outreach ────────────────────────────────────────────────────────
+# spell   :: npx cspell "drafts/**/*.md"
+# links   :: npx linkinator drafts --silent
+# (final send is gated by HUMAN APPROVAL — never automate the send itself)
+
+# ── deep-research ─────────────────────────────────────────────────────────────
+# links     :: npx linkinator docs/research --silent   # cited URLs still resolve
+# citations :: scripts/check-citations.sh              # every claim traces to a source
+
+# ── creative-design ───────────────────────────────────────────────────────────
+# links   :: npx linkinator ./out --silent     # asset links resolve
+# render  :: <export/build that proves the asset renders>   # then eyeball the output
+
+# ── general-admin ─────────────────────────────────────────────────────────────
+# dryrun  :: <run with --dry-run / --check before the real run>
+# backup  :: <prove a backup/rollback point exists before any destructive op>
+
+# ── autonomous-loops ──────────────────────────────────────────────────────────
+# dryrun :: <your loop cmd> --dry-run        # one full cycle, report-only, no writes
+# state  :: scripts/loop-state-check.sh      # state read + pruned every run, no ghost items
+# budget :: scripts/loop-budget-check.sh     # daily cap + degrade rule + kill switch present
+
+# Tip: setup.sh now drops a verify.conf pre-filled with YOUR profile's section.
+# This .example file is the full menu across all profiles, kept as a reference.
+
+# A minimal universal default (always-true placeholder so verify.sh runs green
+# until you fill in real phases — REPLACE this):
+sanity :: echo "verify.sh wired up — replace this phase with real checks for your project"

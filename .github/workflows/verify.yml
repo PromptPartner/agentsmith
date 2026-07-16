@@ -1,0 +1,127 @@
+# Agentsmith CI — run the harness's own gate on every push and PR.
+#
+# WHY THIS EXISTS
+# This repo ships rules that tell other people's agents "verify before you call it done" (R5) and
+# "a harness edit isn't done until a check fails if the mistake recurs" (core/60). Until now the
+# only thing enforcing that on THIS repo was a human remembering to run scripts/verify.sh. A
+# discipline harness whose own discipline is manual is not credible to hand to anyone — and the
+# roadmap says it outright: land CI before the repo flips public.
+#
+# DESIGN: CI runs scripts/verify.sh — it does NOT re-list the checks.
+# .harness/verify.conf is the single definition of "shippable". If CI duplicated that list, the two
+# would drift and "green in CI" would stop meaning "green on your laptop". Add a phase to
+# verify.conf and it runs here automatically, with no YAML change.
+name: verify
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A new push supersedes the old run on the same ref — don't burn minutes verifying stale commits.
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: verify (linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      # shellcheck goes beyond `bash -n` (which only parses): it catches unquoted expansions and
+      # the `set -e` precedence traps this repo has actually been bitten by. Advisory for now —
+      # informational until the existing tree is clean, then flip to blocking. Saying that here
+      # rather than silently `|| true`-ing it, so the gap is visible instead of pretend-green.
+      - name: shellcheck (advisory)
+        continue-on-error: true
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck --severity=warning setup.sh scripts/*.sh hooks/*.sh hooks/git/*.sh
+
+      # The real gate. Same entry point the agent and the human use locally.
+      # Deliberately not named after its phases: the point of calling verify.sh instead of
+      # re-listing checks here is that CI cannot drift from local. A phase list in the step
+      # name would drift on the next phase added to .harness/verify.conf.
+      - name: verify.sh (every phase in .harness/verify.conf)
+        run: bash scripts/verify.sh
+
+      # Assembly is verified above, but only for the flag path. The wizard is the DEFAULT path
+      # (bare ./setup.sh) and the first thing a new user hits, so it gets its own check.
+      # Two distinct failures, both real:
+      #   - it HANGS with no tty (rc 124) → any piped/CI/non-interactive run blocks forever;
+      #   - it starts but prints nothing recognisable → the default path is broken.
+      # The exit code is captured rather than `|| true`-ed, because `|| true` would swallow the
+      # hang and leave only the output check — which passes fine if it hangs *after* the banner.
+      - name: wizard starts and exits without a tty
+        run: |
+          set +e
+          timeout 30 bash setup.sh --wizard </dev/null >/tmp/wiz.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -eq 124 ]; then
+            echo "::error::wizard hung with no tty — a piped or CI run would block forever"
+            tail -20 /tmp/wiz.log; exit 1
+          fi
+          if ! grep -qi 'agentsmith' /tmp/wiz.log; then
+            echo "::error::wizard printed no recognisable banner — the default path (bare ./setup.sh) may be broken"
+            cat /tmp/wiz.log; exit 1
+          fi
+          echo "wizard rendered its banner and exited (rc=$rc) with no tty"
+
+  windows:
+    # setup.ps1 is a hand-maintained port of setup.sh, so it can drift silently — and Windows users
+    # would be the only ones to find out. This job is the only thing that makes the "same flags,
+    # same behaviour" claim in INSTALL.md checkable rather than aspirational.
+    name: verify (windows / setup.ps1)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: setup.ps1 parses
+        shell: pwsh
+        run: |
+          $errs = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            "$PWD/setup.ps1", [ref]$null, [ref]$errs)
+          if ($errs) {
+            $errs | Select-Object -First 10 | ForEach-Object {
+              Write-Host "::error file=setup.ps1,line=$($_.Extent.StartLineNumber)::$($_.Message)"
+            }
+            exit 1
+          }
+          Write-Host "setup.ps1 parses clean"
+
+      - name: setup.ps1 assembles every profile clean
+        shell: pwsh
+        run: |
+          $failed = 0
+          # NEVER --global here: under --global, --assemble-only does not stop the write and
+          # --target is ignored, so it would clobber the runner's ~/.claude (docs/feedback/0003).
+          foreach ($p in Get-ChildItem profiles/*.md) {
+            $name = $p.BaseName
+            $out  = Join-Path $env:RUNNER_TEMP "asm-$name"
+            New-Item -ItemType Directory $out -Force | Out-Null
+            & ./setup.ps1 --profile $name --assemble-only --target $out `
+                          --operator-name "Test" --tracker "Linear" *>$null
+            $f = Join-Path $out "CLAUDE.md"
+            if (-not (Test-Path $f)) {
+              Write-Host "::error::$name - setup.ps1 produced no CLAUDE.md"; $failed++; continue
+            }
+            $c = Get-Content $f -Raw
+            $leaks = [regex]::Matches($c, '\{\{[A-Z_]+\}\}') | ForEach-Object { $_.Value } | Sort-Object -Unique
+            if ($leaks) {
+              Write-Host "::error::$name - unrendered placeholder(s): $($leaks -join ', ')"; $failed++
+            } else {
+              Write-Host "$name - assembles clean"
+            }
+          }
+          if ($failed) { exit 1 }

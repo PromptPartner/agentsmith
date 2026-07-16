@@ -1,0 +1,27 @@
+{
+  "_comment": "MCP servers extend the agent with extra tools (browsers, diagramming, SaaS APIs). These are DYNAMIC context — add only the ones a project actually needs (R10: keep the surface small). Copy the relevant block into your project's .mcp.json (project scope) or ~/.claude/settings.json under mcpServers (global). Pick by profile — see config/plugins.md. None of these are required to run the harness.",
+  "mcpServers": {
+    "playwright": {
+      "_use": "Browser automation — drive a real browser to verify UI changes (software-dev, document render-checks).",
+      "command": "npx",
+      "args": ["@playwright/mcp", "--headless"]
+    },
+    "excalidraw": {
+      "_use": "Clean diagrams (creative-design). Pairs with the excalidraw-diagram skill.",
+      "command": "npx",
+      "args": ["-y", "mcp-excalidraw-server"],
+      "env": { "EXPRESS_SERVER_URL": "http://localhost:3000" }
+    },
+    "context7": {
+      "_use": "Fetch current library/framework/API docs on demand (all profiles). Often available as a hosted MCP — prefer that if your client already has it.",
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp"]
+    }
+  },
+  "_other_useful_servers_by_profile": {
+    "marketing-outreach": "Your email/ESP/CRM MCP (e.g. Kit.com, HubSpot) for list/segment/broadcast ops.",
+    "general-admin": "Email/calendar + a file-storage MCP (e.g. Dropbox, Google Drive) for inbox/file ops.",
+    "creative-design": "An image/video generation MCP for visual assets.",
+    "devops-setup": "Error-monitoring (e.g. Sentry) MCP/CLI, cloud-provider MCPs for your stack."
+  }
+}

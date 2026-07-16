@@ -1,0 +1,11 @@
+# leak-gate allow-list — one extended-regex per line; a finding matching any line is dropped.
+# Mechanism: see scripts/leak-gate.sh ("Tune with an optional .harness/leak-gate.allow file").
+# WARNING: every line here must be NON-BLANK. A blank line is an empty regex that matches EVERY
+#   finding and would silently disable the whole gate. Comment lines (#...) match no finding.
+# Intentional operator credit: the maintainer chose to be named in the README author section
+#   (and nowhere else). Every other tracked file is still scanned normally.
+# The regex below uses a character class (L[u]kas) exactly like the gate's own TERMS list, so
+#   this file never trips the identity check on itself. It is anchored to README.md, so a name
+#   in any other tracked file still fails the gate. Proven by scripts/test-leak-gate.sh
+#   ("README operator-credit exception" block).
+^README\.md:[0-9]+:(L[u]kas|H[e]rtig)$
