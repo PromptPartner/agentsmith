@@ -31,6 +31,11 @@ For the reasoning behind any of it, the cross-links point back to the doc that e
   deterministic guards behind the rules ([`14-safety-model.md`](14-safety-model.md) covers the posture).
 - **Profile-aware `verify.conf` presets** — setup drops a starter `.harness/verify.conf` matched to
   the chosen profile(s) (dev → build/test; docs → spell/links; data → row-count reconcile).
+- **CI workflow (shipped example)** — [`.github/workflows/verify.yml`](../.github/workflows/verify.yml)
+  runs the same `scripts/verify.sh` on every push/PR (plus a Windows `setup.ps1` job), so "green on my
+  laptop" and "green in CI" can't drift. Setup does **not** install it into your project — copy it as a
+  starting point. The **CI section below** covers why it's worth it, hosted-vs-self-hosted runners, and
+  what *not* to run it on.
 - **MCP picker** — `setup.sh --with-mcp <name[,name]>` writes the right block from
   `config/mcp.example.json` into the project's `.mcp.json`.
 - **Org-policy variant** — `sudo setup.sh --org-policy` installs a managed `CLAUDE.md` at the OS
@@ -43,3 +48,63 @@ For the reasoning behind any of it, the cross-links point back to the doc that e
 in [`examples/`](../examples/README.md) (each a filled `CLAUDE.md` + real `verify.conf` for one
 profile), and **`--self-update`**, which pulls a newer harness and re-assembles your managed
 `CLAUDE.md` blocks in one step (README → "Keeping the harness current").
+
+## Continuous integration — why, where, and what *not* to run it on
+
+**Why bother.** R5 is *verify before you call it done*; CI is what stops that from depending on a
+human remembering. Every push re-runs the whole gate on a clean machine, so a check that only passed
+because of something uncommitted on your laptop gets caught. A discipline harness whose own discipline
+is manual isn't credible — and the same holds for your project.
+
+**Point CI at `verify.sh`, not a re-listed set of checks.** `.harness/verify.conf` is the single
+definition of "shippable"; if the workflow duplicated that list, the two would drift and "green in CI"
+would stop meaning "green locally." Add a phase to `verify.conf` and it runs everywhere with no YAML
+edit. The shipped [`verify.yml`](../.github/workflows/verify.yml) is a copy-ready example of exactly
+that.
+
+**Hosted GitHub Actions vs a self-hosted runner** — choose by what the job actually needs:
+
+| Hosted **GitHub Actions** when… | **Self-hosted runner** when… |
+|---|---|
+| Public repo (Actions minutes are free) or ordinary private use | Long/frequent builds would blow the minutes budget |
+| A clean Linux / Windows / macOS box is all you need | You need a GPU, a big warm cache, or a pinned OS/toolchain |
+| No private-network access required | The job must reach an internal registry, VPN, or licensed tool |
+| You want zero runner maintenance | You'll own patching, isolation, and security of that box |
+
+**Default to hosted** — free for public repos, no box to patch. Reach for self-hosted only when a row
+on the right actually forces it; a self-hosted runner is real attack surface, especially if it ever
+runs untrusted PRs.
+
+**Don't run the heavy gate on docs that can't break the build — but *always* secret-scan.**
+Spec / plan / handoff docs don't compile or test, so running build/test/lint on a plan-only change
+just burns minutes and paints meaningless red X's. Path-filter the heavy gate to code; run a fast
+**secret-scan on *everything*** — a key can leak into a Markdown plan as easily as into code, so that
+one check never gets a path exception. Two small workflows do it cleanly:
+
+```yaml
+# .github/workflows/verify.yml — heavy gate, skipped on docs/plan-only changes
+on:
+  pull_request:
+    paths-ignore: ['**/*.md', 'specs/**', 'plans/**', '.planning/**', 'docs/**']
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/verify.sh
+```
+```yaml
+# .github/workflows/secret-scan.yml — always runs, no path filter, ever
+on: [push, pull_request]
+jobs:
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/secret-scan.sh
+```
+
+One gotcha: if `verify` is a **required** status check, a `paths-ignore` skip leaves the PR waiting on
+a check that never reports — either don't mark it required, or add a tiny always-passing job for the
+docs-only path. (In this repo the planning docs are gitignored so they never reach CI at all; in *your*
+project specs and plans are usually tracked, which is exactly where this bites — found in real use.)
