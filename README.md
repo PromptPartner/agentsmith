@@ -302,6 +302,4 @@ If this saves you setup time, a star helps others find it.
 
 [![GitHub stars](https://img.shields.io/github/stars/PromptPartner/agentsmith?style=social)](https://github.com/PromptPartner/agentsmith/stargazers)
 
-[![Star History Chart](https://api.star-history.com/svg?repos=PromptPartner/agentsmith&type=Date)](https://star-history.com/#PromptPartner/agentsmith&Date)
-
-*(The chart fills in once the repo picks up its first few stars.)*
+📈 [See the star-history chart »](https://star-history.com/#PromptPartner/agentsmith&Date) — fills in as the first stars come in.
