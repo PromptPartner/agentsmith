@@ -300,6 +300,8 @@ recommendations. [Book 30 minutes](https://cal.com/promptpartner/30min), or star
 
 If this saves you setup time, a star helps others find it.
 
+[![GitHub stars](https://img.shields.io/github/stars/PromptPartner/agentsmith?style=social)](https://github.com/PromptPartner/agentsmith/stargazers)
+
 [![Star History Chart](https://api.star-history.com/svg?repos=PromptPartner/agentsmith&type=Date)](https://star-history.com/#PromptPartner/agentsmith&Date)
 
-*(The chart renders once the repository is public.)*
+*(The chart fills in once the repo picks up its first few stars.)*
