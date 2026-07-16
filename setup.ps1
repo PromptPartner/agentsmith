@@ -144,6 +144,9 @@ function Detect-Profile ([string]$dir) {  # best-guess profile name from the fil
   if ((Test-Has $dir @('Dockerfile','docker-compose.y*ml','*.tf','ansible.cfg','Vagrantfile')) -or (Test-Path (Join-Path $dir 'ansible') -PathType Container) -or (Test-Path (Join-Path $dir 'terraform') -PathType Container) -or (Test-Path (Join-Path $dir 'k8s') -PathType Container)) { return 'devops-setup' }
   if ((Test-Has $dir @('*.ipynb','*.csv','*.parquet')) -or (Test-Path (Join-Path $dir 'notebooks') -PathType Container)) { return 'data-crunching' }
   if ((Test-Has $dir @('mkdocs.yml','docusaurus.config.*','_config.yml','*.tex')) -or ((Test-Path (Join-Path $dir 'docs') -PathType Container) -and (Test-Has (Join-Path $dir 'docs') @('*.md')))) { return 'document-creation' }
+  # Weak signal, checked LAST: loose source files with no manifest still make this a code project.
+  # Deliberately below data/doc so a manifest-less notebook or docs tree still wins over a stray script.
+  if (Test-Has $dir @('*.py','*.js','*.mjs','*.ts','*.tsx','*.jsx','*.go','*.rs','*.rb','*.java','*.kt','*.php','*.c','*.cc','*.cpp','*.cs','*.swift','*.scala')) { return 'software-dev' }
   return 'general-admin'
 }
 function Uninstall-From ([string]$path) {  # back up, strip the managed block; delete file if nothing else remains
