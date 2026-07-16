@@ -1139,7 +1139,25 @@ Resolve-OperatorIdentity (Join-Path $o.Target 'CLAUDE.md')
 Assemble-To (Join-Path $o.Target 'CLAUDE.md') $includeCore
 if ($o.AlsoAgents -and (-not $o.DryRun)) { Assemble-To (Join-Path $o.Target 'AGENTS.md') $includeCore }
 if ($o.AlsoGemini -and (-not $o.DryRun)) { Assemble-To (Join-Path $o.Target 'GEMINI.md') $includeCore }
-if ($o.DryRun) { exit 0 }
+if ($o.DryRun) {
+  Write-Host ''
+  Say "DRY RUN — nothing was written. A real run would ALSO scaffold into $($o.Target):"
+  Write-Host '    + scripts/        verify.sh, handoff.sh, new-research.sh, new-feedback.sh, secret-scan.sh, install-git-hooks.sh, lint-leanness.sh'
+  Write-Host '    + hooks/git/      managed git hooks (secret-scan, protect-main, conventional-commits)'
+  Write-Host '    + .harness/       verify.conf (+ .example), templates/, handoffs/'
+  Write-Host '    + .planning/      progress-log.md'
+  if ($o.AssembleOnly) { Write-Host '    + .claude/        settings.local.json.example' }
+  else { Write-Host '    + .claude/        settings.local.json.example, skills/ pack (/handoff, /verify, /harness-help + 3 more)' }
+  Write-Host '    + docs/           feedback/README.md, research/ (+ _archive dirs)'
+  Write-Host '    + FIRST-STEPS.md'
+  if ($o.AlsoAgents) { Write-Host '    + AGENTS.md       (--also-agents-md)' }
+  if ($o.AlsoGemini) { Write-Host '    + GEMINI.md       (--also-gemini-md)' }
+  if ($o.WithMcp) { Write-Host "    + .mcp.json       (--with-mcp: $($o.WithMcp))" }
+  if ($o.WithHooks) { Write-Host '    ~ git hooks installed via scripts/install-git-hooks.sh (--with-hooks)' }
+  Write-Host ''
+  Say 'Re-run without --dry-run to write these.'
+  exit 0
+}
 
 Say "Scaffolding project structure in $($o.Target)"
 foreach ($d in @('docs/research/_archive','docs/feedback/_archive','.planning','.harness/handoffs','scripts','.claude','hooks/git','.harness/templates')) {

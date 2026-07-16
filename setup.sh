@@ -1184,7 +1184,28 @@ resolve_operator_identity "$TARGET/CLAUDE.md"
 assemble_to "$TARGET/CLAUDE.md" "$INCLUDE_CORE"
 $ALSO_AGENTS_MD && ! $DRY_RUN && assemble_to "$TARGET/AGENTS.md" "$INCLUDE_CORE"
 $ALSO_GEMINI_MD && ! $DRY_RUN && assemble_to "$TARGET/GEMINI.md" "$INCLUDE_CORE"
-$DRY_RUN && exit 0
+if $DRY_RUN; then
+  echo
+  say "DRY RUN — nothing was written. A real run would ALSO scaffold into $TARGET:"
+  echo "    + scripts/        verify.sh, handoff.sh, new-research.sh, new-feedback.sh, secret-scan.sh, install-git-hooks.sh, lint-leanness.sh"
+  echo "    + hooks/git/      managed git hooks (secret-scan, protect-main, conventional-commits)"
+  echo "    + .harness/       verify.conf (+ .example), templates/, handoffs/"
+  echo "    + .planning/      progress-log.md"
+  if $ASSEMBLE_ONLY; then
+    echo "    + .claude/        settings.local.json.example"
+  else
+    echo "    + .claude/        settings.local.json.example, skills/ pack (/handoff, /verify, /harness-help + 3 more)"
+  fi
+  echo "    + docs/           feedback/README.md, research/ (+ _archive dirs)"
+  echo "    + FIRST-STEPS.md"
+  if $ALSO_AGENTS_MD; then echo "    + AGENTS.md       (--also-agents-md)"; fi
+  if $ALSO_GEMINI_MD; then echo "    + GEMINI.md       (--also-gemini-md)"; fi
+  if [ -n "$WITH_MCP" ]; then echo "    + .mcp.json       (--with-mcp: $WITH_MCP)"; fi
+  if $WITH_HOOKS; then echo "    ~ git hooks installed via scripts/install-git-hooks.sh (--with-hooks)"; fi
+  echo
+  say "Re-run without --dry-run to write these."
+  exit 0
+fi
 
 say "Scaffolding project structure in $TARGET"
 mkdir -p "$TARGET/docs/research/_archive" "$TARGET/docs/feedback/_archive" "$TARGET/.planning" "$TARGET/.harness/handoffs" "$TARGET/scripts" "$TARGET/.claude"
