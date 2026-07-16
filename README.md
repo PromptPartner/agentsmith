@@ -1,4 +1,4 @@
-# Agentsmith — the universal agent harness
+# AgentSmith — the universal agent harness
 
 Vibe coding gets you a working demo. **AI-assisted engineering** is what keeps it standing once
 customers arrive, the product changes, or another engineer has to touch it. Agentsmith is that
