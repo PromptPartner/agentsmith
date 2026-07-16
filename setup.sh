@@ -152,6 +152,9 @@ detect_profile() {  # <dir> -> best-guess profile name from the files present (f
   { _has "$d" Dockerfile 'docker-compose.y*ml' '*.tf' ansible.cfg Vagrantfile || [ -d "$d/ansible" ] || [ -d "$d/terraform" ] || [ -d "$d/k8s" ]; } && { echo devops-setup; return; }
   { _has "$d" '*.ipynb' '*.csv' '*.parquet' || [ -d "$d/notebooks" ]; } && { echo data-crunching; return; }
   { _has "$d" mkdocs.yml 'docusaurus.config.*' _config.yml '*.tex' || { [ -d "$d/docs" ] && _has "$d/docs" '*.md'; }; } && { echo document-creation; return; }
+  # Weak signal, checked LAST: loose source files with no manifest still make this a code project.
+  # Deliberately below data/doc so a manifest-less notebook or docs tree still wins over a stray script.
+  _has "$d" '*.py' '*.js' '*.mjs' '*.ts' '*.tsx' '*.jsx' '*.go' '*.rs' '*.rb' '*.java' '*.kt' '*.php' '*.c' '*.cc' '*.cpp' '*.cs' '*.swift' '*.scala' && { echo software-dev; return; }
   echo general-admin
 }
 uninstall_from() {  # <file> -> back it up, strip the managed block; delete the file if nothing else remains
