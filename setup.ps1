@@ -430,14 +430,16 @@ function Build-VerifyConf ([string]$dest) {
   $lines += "# .harness/verify.conf — generated for profile(s): $($o.Profiles)"
   $lines += '# One phase per line:  Label :: shell command. Runs in order; first failure stops the run.'
   $lines += '# This is YOUR definition of "shippable". Uncomment + edit the phases that fit this project,'
-  $lines += '# then DELETE the sanity line below once at least one real phase is active.'
+  $lines += '# then DELETE the placeholder line below once at least one real phase is active.'
   $lines += ''
   foreach ($p in $ProfileArr) {
     $preset = Join-Path $HarnessDir "config/verify-presets/$p.conf"
     if (Test-Path $preset) { $lines += (Get-Content $preset); $lines += '' }
   }
-  $lines += '# Universal placeholder so verify.sh runs green until you wire real phases — REPLACE THIS:'
-  $lines += "sanity :: echo `"verify.sh wired for: $($o.Profiles) — replace this phase with real checks`""
+  $lines += '# Placeholder that FAILS ON PURPOSE, so verify.sh stays RED until you wire real phases.'
+  $lines += '# A green verify that checks nothing is worse than none — it lies. Make the presets above'
+  $lines += '# real (uncomment + edit), then DELETE this line:'
+  $lines += "unwired :: echo `"verify.conf ($($o.Profiles)) has only this placeholder — wire real build/test/lint phases in .harness/verify.conf, then delete this line`" >&2; exit 1"
   Set-Content -Path $dest -Value ($lines -join "`n") -Encoding utf8
 }
 

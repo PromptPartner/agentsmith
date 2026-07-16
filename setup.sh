@@ -796,15 +796,17 @@ build_verify_conf() {  # <dest> — generate .harness/verify.conf from the chose
     echo "# .harness/verify.conf — generated for profile(s): $PROFILES"
     echo "# One phase per line:  Label :: shell command. Runs in order; first failure stops the run."
     echo "# This is YOUR definition of \"shippable\". Uncomment + edit the phases that fit this project,"
-    echo "# then DELETE the sanity line below once at least one real phase is active."
+    echo "# then DELETE the placeholder line below once at least one real phase is active."
     echo
     local p preset
     for p in "${PROFILE_ARR[@]}"; do
       preset="$HARNESS_DIR/config/verify-presets/$p.conf"
       [ -f "$preset" ] && { cat "$preset"; echo; }
     done
-    echo "# Universal placeholder so verify.sh runs green until you wire real phases — REPLACE THIS:"
-    echo "sanity :: echo \"verify.sh wired for: $PROFILES — replace this phase with real checks\""
+    echo "# Placeholder that FAILS ON PURPOSE, so verify.sh stays RED until you wire real phases."
+    echo "# A green verify that checks nothing is worse than none — it lies. Make the presets above"
+    echo "# real (uncomment + edit), then DELETE this line:"
+    echo "unwired :: echo \"verify.conf ($PROFILES) has only this placeholder — wire real build/test/lint phases in .harness/verify.conf, then delete this line\" >&2; exit 1"
   } > "$dest"
 }
 
