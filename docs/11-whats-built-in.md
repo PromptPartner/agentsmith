@@ -38,6 +38,10 @@ For the reasoning behind any of it, the cross-links point back to the doc that e
   what *not* to run it on.
 - **MCP picker** — `setup.sh --with-mcp <name[,name]>` writes the right block from
   `config/mcp.example.json` into the project's `.mcp.json`.
+- **rtk output compressor** — `setup.sh`/`setup.ps1 --with-rtk` (default-ON for `software-dev` /
+  `devops-setup`; `--no-rtk` to skip) installs [`rtk`](https://github.com/rtk-ai/rtk) and runs its
+  own `rtk init -g` to wire a PreToolUse hook that compresses noisy CLI output 60–90% before it
+  reaches context. A binary + hook, not a plugin — see [`../config/plugins.md`](../config/plugins.md).
 - **Org-policy variant** — `sudo setup.sh --org-policy` installs a managed `CLAUDE.md` at the OS
   policy path (applies to all users on a shared box) + a stricter, no-bypass settings profile.
 - **Cowork / claude.ai export** — `setup.sh --export-instructions` emits a single paste-ready

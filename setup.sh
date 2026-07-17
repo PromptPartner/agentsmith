@@ -37,6 +37,7 @@
 #    ./setup.sh --assemble-only ...     # skip the config/plugins install; still writes CLAUDE.md
 #                                       #   (under --global that IS ~/.claude/CLAUDE.md — see above)
 #    ./setup.sh --with-plugins dev-workflow,stack-lsp ...   # opt-in plugin packs (latest)
+#    ./setup.sh --with-rtk | --no-rtk   # rtk CLI-output compressor (default: ON for software-dev/devops-setup)
 #    ./setup.sh --with-mcp playwright,context7 ...   # add named MCP server(s) to project .mcp.json
 #    ./setup.sh --with-skills ...       # install the bundled skill pack (handoff, verify,
 #                                       #   harness-doctor, new-research, new-feedback, harness-help);
@@ -100,6 +101,7 @@ SKILLS_DEST=""            # empty → install_skills defaults to global ~/.claud
 WITH_HOOKS=false
 WITH_HANDOFF_HOOKS=false
 WITH_PLUGINS=""
+WITH_RTK="auto"           # auto = install rtk for code profiles (software-dev/devops-setup); --with-rtk forces on, --no-rtk off
 WITH_MCP=""
 DO_UPDATE_PLUGINS=false
 DO_DOCTOR=false
@@ -546,6 +548,8 @@ while [ $# -gt 0 ]; do
     --global) GLOBAL=true;;
     --profile-only) PROFILE_ONLY=true;;
     --with-plugins) shift; WITH_PLUGINS="${1:-}";;
+    --with-rtk) WITH_RTK=true;;
+    --no-rtk) WITH_RTK=false;;
     --with-mcp) shift; WITH_MCP="${1:-}";;
     --with-skills) WITH_SKILLS=true;;
     --with-hooks) WITH_HOOKS=true;;
@@ -782,6 +786,8 @@ install_global_config() {
     install_marketplace Piebald-AI/claude-code-lsps
     for spec in go-dev@gopher-ai tailwind@gopher-ai gopls@claude-code-lsps typescript-lsp@claude-plugins-official gopls-lsp@claude-plugins-official; do install_plugin "$spec"; done ;;
   esac
+  # rtk — token-compressing CLI proxy (github.com/rtk-ai/rtk). Default-ON for code profiles; --no-rtk opts out.
+  rtk_wanted && install_rtk
   $WITH_SKILLS && install_skills "$SKILLS_DEST"
   $WITH_HANDOFF_HOOKS && install_handoff_hooks
   return 0   # never let a false trailing `&&` (both hooks/skills off) abort the caller under set -e
@@ -798,6 +804,35 @@ install_skills() {  # [dest] — default global ~/.claude/skills; project mode p
     cp -r "$d" "$dest/$name"; ok "skill $name"; n=$((n+1))
   done
   ok "skills installed: $n (into $dest/)"
+}
+
+rtk_wanted() {  # install rtk? explicit flag wins; else auto = only for code profiles (software-dev/devops-setup)
+  case "$WITH_RTK" in true) return 0;; false) return 1;; esac
+  local p
+  for p in "${PROFILE_ARR[@]:-}"; do
+    case "$p" in software-dev|devops-setup) return 0;; esac
+  done
+  return 1
+}
+
+install_rtk() {  # install the rtk binary (per-OS), then let rtk wire its own Claude Code hook
+  if command -v rtk >/dev/null 2>&1; then
+    ok "rtk already installed ($(rtk --version 2>/dev/null || echo present))"
+  else
+    say "Installing rtk — token-compressing CLI proxy (github.com/rtk-ai/rtk)"
+    if command -v brew >/dev/null 2>&1; then
+      brew install rtk >/dev/null 2>&1 || { warn "rtk: 'brew install rtk' failed — install by hand: https://github.com/rtk-ai/rtk#installation"; return 0; }
+    else
+      curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/master/install.sh | sh >/dev/null 2>&1 \
+        || { warn "rtk: installer failed — install by hand: https://github.com/rtk-ai/rtk#installation"; return 0; }
+    fi
+  fi
+  command -v rtk >/dev/null 2>&1 || { warn "rtk installed but not on PATH — add \$HOME/.local/bin to PATH, then run: rtk init -g --auto-patch"; return 0; }
+  command -v rg  >/dev/null 2>&1 || warn "rtk: ripgrep (rg) not on PATH — some filters need it (install ripgrep via brew/apt/winget)"
+  # rtk writes its own PreToolUse hook + RTK.md + settings.json entry + @RTK.md import — idempotent, no prompt
+  if rtk init -g --auto-patch >/dev/null 2>&1; then ok "rtk wired into Claude Code (hook + RTK.md) — restart Claude Code to load it"
+  else warn "rtk: 'rtk init -g --auto-patch' failed — run it by hand to wire the hook"; fi
+  return 0
 }
 
 build_verify_conf() {  # <dest> — generate .harness/verify.conf from the chosen profile preset(s)
@@ -1138,6 +1173,7 @@ if $DO_UNINSTALL; then
     say "Uninstall — removing the Agentsmith core from $CC_DIR/CLAUDE.md"
     uninstall_from "$CC_DIR/CLAUDE.md"
     warn "Global config (settings.json, plugins) left in place — remove those by hand if you want them gone."
+    command -v rtk >/dev/null 2>&1 && say "rtk hook left in place. Remove it with:  rtk init -g --uninstall   (then remove the binary via brew/cargo/rm)."
   else
     [ -n "$TARGET" ] || TARGET="$(pwd)"
     [ -d "$TARGET" ] || die "Target dir does not exist: $TARGET"
