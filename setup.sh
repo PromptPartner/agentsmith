@@ -155,6 +155,16 @@ detect_profile() {  # <dir> -> best-guess profile name from the files present (f
   # Weak signal, checked LAST: loose source files with no manifest still make this a code project.
   # Deliberately below data/doc so a manifest-less notebook or docs tree still wins over a stray script.
   _has "$d" '*.py' '*.js' '*.mjs' '*.ts' '*.tsx' '*.jsx' '*.go' '*.rs' '*.rb' '*.java' '*.kt' '*.php' '*.c' '*.cc' '*.cpp' '*.cs' '*.swift' '*.scala' && { echo software-dev; return; }
+  # One level deep: a monorepo often keeps its manifest in a subdir (e.g. backend/requirements.txt).
+  # Lowest priority — only rescues what would otherwise be general-admin; never overrides a root
+  # data/doc/devops signal. Immediate subdirs only (bounded); the glob skips dotdirs like .git/.venv.
+  local _sub
+  for _sub in "$d"/*/; do
+    [ -d "$_sub" ] || continue
+    if _has "$_sub" go.mod package.json tsconfig.json Cargo.toml pyproject.toml requirements.txt pom.xml 'build.gradle*' '*.csproj' Gemfile composer.json; then
+      echo software-dev; return
+    fi
+  done
   echo general-admin
 }
 uninstall_from() {  # <file> -> back it up, strip the managed block; delete the file if nothing else remains
