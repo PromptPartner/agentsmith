@@ -271,8 +271,10 @@ machine. More in [`docs/16-influences.md`](docs/16-influences.md#complementary-w
 
 ## License / provenance
 
-Yours to reuse and adapt. Contains no credentials, hostnames, or project-specific data (verified
-at build). The conceptual framing stands on prior public work, credited in full in
+**[MIT](LICENSE)** — yours to reuse, adapt, and ship, commercially or otherwise; just keep the
+copyright notice. Nothing here is vendored third-party code, so there are no upstream obligations
+attached. Contains no credentials, hostnames, or project-specific data (verified at build). The
+conceptual framing stands on prior public work, credited in full in
 [`docs/16-influences.md`](docs/16-influences.md); the rules are earned from real incidents on a
 production project.
 
