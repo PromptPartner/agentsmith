@@ -39,6 +39,9 @@ Project mode installs these into `<project>/.claude/skills/`; `--global` install
 - **ui-ux-pro-max** — third-party (MIT). Only if the work has a front end; skip it for backend,
   CLI, or library work. Needs **Python 3**, which nothing else here does. See `creative-design`
   below for the install commands.
+- **rtk** — token-compressing CLI proxy (Apache-2.0), **auto-installed for this profile** (pass
+  `--no-rtk` to skip). Cuts `git`/test/build output 60–90% before it hits the context window. It's
+  a binary + hook, not a plugin — details in `../config/plugins.md`.
 
 ## deep-research
 <!-- MAP deep-research | packs: - | skills: deep-research -->
@@ -66,6 +69,9 @@ Project mode installs these into `<project>/.claude/skills/`; `--global` install
 <!-- MAP devops-setup | packs: - | skills: - -->
 - Leans on **MCP servers** (cloud/CI/registry) and the **sentry-cli** skill for post-deploy
   monitoring more than on bundled skills. Add a skill when you find yourself repeating a runbook.
+- **rtk** — token-compressing CLI proxy (Apache-2.0), **auto-installed for this profile** (pass
+  `--no-rtk` to skip): compresses noisy `kubectl`/`terraform`/`docker`/test output before the agent
+  reads it. Binary + hook, not a plugin — see `../config/plugins.md`.
 
 ## autonomous-loops
 <!-- MAP autonomous-loops | packs: - | skills: using-git-worktrees,verify -->

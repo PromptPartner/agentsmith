@@ -38,6 +38,7 @@
 #    ./setup.ps1 --assemble-only ...    # skip the config/plugins install; still writes CLAUDE.md
 #                                       #   (under --global that IS ~/.claude/CLAUDE.md — see above)
 #    ./setup.ps1 --with-plugins dev-workflow,stack-lsp ...   # opt-in plugin packs (latest)
+#    ./setup.ps1 --with-rtk | --no-rtk   # rtk CLI-output compressor (default: ON for software-dev/devops-setup)
 #    ./setup.ps1 --with-mcp playwright,context7 ...   # add named MCP server(s) to project .mcp.json
 #    ./setup.ps1 --with-skills ...      # install the bundled skill pack (handoff, verify, harness-doctor,
 #                                       #   new-research, new-feedback, harness-help); project mode →
@@ -110,7 +111,7 @@ $o = @{
   TrackerPolicyAllowed = "**writes are authorized** (the operator opted in at setup) — file it directly, and make agent work visible there (a note when work starts and when it lands)."
   Global = $false; ProfileOnly = $false; AssembleOnly = $false; Force = $false; DryRun = $false
   AlsoAgents = $false; AlsoGemini = $false; WithSkills = $false; WithHooks = $false; WithHandoffHooks = $false
-  WithPlugins = ''; WithMcp = ''
+  WithPlugins = ''; WithMcp = ''; WithRtk = 'auto'   # auto = install rtk for code profiles; --with-rtk forces on, --no-rtk off
   UpdatePlugins = $false; Doctor = $false; Export = $false; OrgPolicy = $false; Wizard = $false
   SelfUpdate = $false; SelfUpdateRemote = ''; NoReassemble = $false; Uninstall = $false
   Safety = 'trusted'   # trusted = bypassPermissions (flag-path default); cautious = acceptEdits (wizard default)
@@ -188,6 +189,8 @@ for ($i = 0; $i -lt $args.Count; $i++) {
     '--global'            { $o.Global = $true }
     '--profile-only'      { $o.ProfileOnly = $true }
     '--with-plugins'      { $o.WithPlugins = $args[++$i] }
+    '--with-rtk'          { $o.WithRtk = 'true' }
+    '--no-rtk'            { $o.WithRtk = 'false' }
     '--with-mcp'          { $o.WithMcp = $args[++$i] }
     '--with-skills'       { $o.WithSkills = $true }
     '--with-hooks'        { $o.WithHooks = $true }
@@ -379,6 +382,52 @@ function Get-Recommendation ([string]$Profile) {
   return $r
 }
 
+function Rtk-Wanted {  # install rtk? explicit flag wins; else auto = only for code profiles (software-dev/devops-setup)
+  if ($o.WithRtk -eq 'true')  { return $true }
+  if ($o.WithRtk -eq 'false') { return $false }
+  foreach ($p in $ProfileArr) { if ($p -in @('software-dev','devops-setup')) { return $true } }
+  return $false
+}
+
+function Install-Rtk {  # install the rtk binary (per-OS), then let rtk wire its own Claude Code hook
+  if (Have-Cmd rtk) {
+    Ok "rtk already installed ($(try { rtk --version } catch { 'present' }))"
+  } else {
+    Say 'Installing rtk — token-compressing CLI proxy (github.com/rtk-ai/rtk)'
+    if ($IsWindows) {
+      try {
+        $bin = Join-Path $HOME '.local\bin'; New-Item -ItemType Directory -Force -Path $bin | Out-Null
+        $tmp = Join-Path ([System.IO.Path]::GetTempPath()) "rtk-$PID"; New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+        if (Have-Cmd gh) {
+          gh release download --repo rtk-ai/rtk --pattern 'rtk-x86_64-pc-windows-msvc.zip' --dir $tmp --clobber 2>$null
+          $zip = Join-Path $tmp 'rtk-x86_64-pc-windows-msvc.zip'
+        } else {
+          $rel = Invoke-RestMethod 'https://api.github.com/repos/rtk-ai/rtk/releases/latest' -Headers @{ 'User-Agent' = 'agentsmith-setup' }
+          $url = ($rel.assets | Where-Object { $_.name -match 'windows-msvc.*\.zip$' } | Select-Object -First 1).browser_download_url
+          $zip = Join-Path $tmp 'rtk.zip'; Invoke-WebRequest $url -OutFile $zip
+        }
+        Expand-Archive -Path $zip -DestinationPath (Join-Path $tmp 'x') -Force
+        $exe = Get-ChildItem (Join-Path $tmp 'x') -Recurse -Filter 'rtk.exe' | Select-Object -First 1
+        Copy-Item $exe.FullName (Join-Path $bin 'rtk.exe') -Force
+        $userPath = [Environment]::GetEnvironmentVariable('Path','User')
+        if ($userPath -notmatch [regex]::Escape('\.local\bin')) {
+          [Environment]::SetEnvironmentVariable('Path', "$userPath;$bin", 'User'); Ok "added $bin to your user PATH (new shells)"
+        }
+        if ($env:Path -notmatch [regex]::Escape($bin)) { $env:Path = "$env:Path;$bin" }
+      } catch { Warn 'rtk: Windows install failed — grab rtk.exe from https://github.com/rtk-ai/rtk/releases and add it to PATH'; return }
+    } elseif (Have-Cmd brew) {
+      try { brew install rtk *> $null } catch { Warn 'rtk: brew install failed — see https://github.com/rtk-ai/rtk#installation'; return }
+    } else {
+      Warn 'rtk: no supported installer found — install by hand: https://github.com/rtk-ai/rtk#installation'; return
+    }
+  }
+  if (-not (Have-Cmd rtk)) { Warn 'rtk not on PATH after install — open a new shell, then run: rtk init -g --auto-patch'; return }
+  if (-not (Have-Cmd rg))  { Warn 'rtk: ripgrep (rg) not on PATH — some filters need it (winget install BurntSushi.ripgrep.MSVC)' }
+  rtk init -g --auto-patch *> $null
+  if ($LASTEXITCODE -eq 0) { Ok 'rtk wired into Claude Code (hook + RTK.md) — restart Claude Code to load it' }
+  else { Warn "rtk: 'rtk init -g --auto-patch' failed — run it by hand to wire the hook" }
+}
+
 function Install-GlobalConfig {
   Say "Installing global config into $CcDir"
   New-Item -ItemType Directory -Force -Path $CcDir | Out-Null
@@ -427,6 +476,8 @@ function Install-GlobalConfig {
     Install-Marketplace 'Piebald-AI/claude-code-lsps'
     foreach ($spec in @('go-dev@gopher-ai','tailwind@gopher-ai','gopls@claude-code-lsps','typescript-lsp@claude-plugins-official','gopls-lsp@claude-plugins-official')) { Install-Plugin $spec }
   }
+  # rtk — token-compressing CLI proxy (github.com/rtk-ai/rtk). Default-ON for code profiles; --no-rtk opts out.
+  if (Rtk-Wanted) { Install-Rtk }
   if ($o.WithSkills) { Install-Skills $SkillsDest }
   if ($o.WithHandoffHooks) { Install-HandoffHooks }
 }
@@ -1089,6 +1140,7 @@ if ($o.Uninstall) {
     Say "Uninstall — removing the Agentsmith core from $(Join-Path $CcDir 'CLAUDE.md')"
     Uninstall-From (Join-Path $CcDir 'CLAUDE.md')
     Warn 'Global config (settings.json, plugins) left in place — remove those by hand if you want them gone.'
+    if (Have-Cmd rtk) { Say 'rtk hook left in place. Remove it with:  rtk init -g --uninstall   (then remove the binary via brew/scoop/del).' }
   } else {
     if (-not $o.Target) { $o.Target = (Get-Location).Path }
     if (-not (Test-Path $o.Target -PathType Container)) { Die "Target dir does not exist: $($o.Target)" }

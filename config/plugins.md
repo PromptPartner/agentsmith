@@ -67,6 +67,27 @@ interactive prompt:
 own languages** (a Python LSP, a Rust plugin, etc.). Marketplaces are registered only when you
 actually select the pack, so unused ones never touch your config.
 
+## Command-output compression (rtk) — a binary, not a plugin
+
+[`rtk`](https://github.com/rtk-ai/rtk) (Rust Token Killer, Apache-2.0) is a CLI proxy that
+compresses noisy command output — `git`, tests, package managers, `kubectl`/`terraform` — by
+60–90% *before* it reaches the context window. It's the token-economics rule (keep context lean,
+fight context rot) applied to **tool output** instead of the rules file.
+
+Unlike everything else here it's **not a Claude Code plugin** — it's a small native binary plus a
+`PreToolUse` hook that transparently rewrites Bash commands (`git status` → `rtk git status`). So
+`setup.sh`/`setup.ps1` install it on its own track:
+
+- **Default-ON for the code profiles** (`software-dev`, `devops-setup`); off everywhere else.
+  Force it with `--with-rtk`, skip it with `--no-rtk`.
+- Install is per-OS (Homebrew / the official installer / a native Windows binary), then rtk's own
+  `rtk init -g --auto-patch` wires the hook, an `RTK.md`, and the `settings.json` entry — the
+  harness doesn't hand-maintain any of that. **Restart Claude Code** after install to load the hook.
+- Windows needs **ripgrep** (`rg`) on PATH for some filters (`winget install BurntSushi.ripgrep.MSVC`).
+- **Nothing is silently hidden:** the hook only touches Bash calls (Read/Grep/Glob bypass it), full
+  output is teed to a log on failure, and `rtk proxy <cmd>` runs any command raw. Remove it all with
+  `rtk init -g --uninstall`.
+
 ## A note on restraint (R10)
 
 Every plugin is surface area to maintain and another thing that can drift. Install the universal
