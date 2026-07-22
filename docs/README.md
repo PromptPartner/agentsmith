@@ -21,20 +21,21 @@ is a harness" to "make it your team's own," with the glossary as the appendix:
 | [`08-how-to-add-a-profile.md`](08-how-to-add-a-profile.md) | Extending the harness to work it doesn't cover yet. |
 | [`09-adapting-it-to-your-team.md`](09-adapting-it-to-your-team.md) | Earning your own rules, and retrofitting onto an existing project. |
 | [`10-best-practices.md`](10-best-practices.md) | Dos & don'ts, each traceable to a real incident. |
-| [`11-whats-built-in.md`](11-whats-built-in.md) | The catalog of conveniences setup can install — the machinery. |
-| [`12-platforms-and-tools.md`](12-platforms-and-tools.md) | What runs where, and how to run it in Codex / Gemini / claude.ai. |
-| [`13-project-tracker-guide.md`](13-project-tracker-guide.md) | Tool-agnostic tracker conventions (and the write-consent rule). |
-| [`14-safety-model.md`](14-safety-model.md) | What the harness can do to your machine, and how to bound it. |
-| [`15-troubleshooting.md`](15-troubleshooting.md) | Symptom → cause → fix, for when it's behaving oddly at runtime. |
-| [`16-influences.md`](16-influences.md) | Full credits — who said each idea first, plus complementary work. |
-| [`17-glossary.md`](17-glossary.md) | Every harness term, one line each, with pointers. The appendix. |
+| [`11-designing-uis.md`](11-designing-uis.md) | Product UI is `software-dev`: the `DESIGN.md` design-system workflow and how the harness holds UI to it. |
+| [`12-whats-built-in.md`](12-whats-built-in.md) | The catalog of conveniences setup can install — the machinery. |
+| [`13-platforms-and-tools.md`](13-platforms-and-tools.md) | What runs where, and how to run it in Codex / Gemini / claude.ai. |
+| [`14-project-tracker-guide.md`](14-project-tracker-guide.md) | Tool-agnostic tracker conventions (and the write-consent rule). |
+| [`15-safety-model.md`](15-safety-model.md) | What the harness can do to your machine, and how to bound it. |
+| [`16-troubleshooting.md`](16-troubleshooting.md) | Symptom → cause → fix, for when it's behaving oddly at runtime. |
+| [`17-influences.md`](17-influences.md) | Full credits — who said each idea first, plus complementary work. |
+| [`18-glossary.md`](18-glossary.md) | Every harness term, one line each, with pointers. The appendix. |
 | [`feedback/README.md`](feedback/README.md) | The post-incident log: how lessons become system changes. |
 | [`research/`](research/) | Source research the docs above were distilled from. |
 
 ## In a hurry? Four shortcuts
 
 **"I've never used an agent harness."** You ship software for a living; the AI-agent part is the
-new bit. Read [`01`](01-harness-philosophy.md), skim [the glossary](17-glossary.md) once, then
+new bit. Read [`01`](01-harness-philosophy.md), skim [the glossary](18-glossary.md) once, then
 [`04`](04-why-your-agent-ignored-the-rule.md) — the doc to read *before* a rule fails on you.
 
 **"I just installed it."** Setup left a `FIRST-STEPS.md` card in your project — that's your first
@@ -42,9 +43,9 @@ new bit. Read [`01`](01-harness-philosophy.md), skim [the glossary](17-glossary.
 [`05`](05-operating-modes.md) — and [`06`](06-your-first-loop.md) when you want to run something
 unattended.
 
-**"Should I trust this on my machine?"** [`14-safety-model.md`](14-safety-model.md) is the whole
+**"Should I trust this on my machine?"** [`15-safety-model.md`](15-safety-model.md) is the whole
 posture in one place — what it can do, what's opt-in, and how to lock it down. If something's
-already behaving oddly, [`15-troubleshooting.md`](15-troubleshooting.md).
+already behaving oddly, [`16-troubleshooting.md`](16-troubleshooting.md).
 
 **"I want to make it mine."** [`09`](09-adapting-it-to-your-team.md), then
 [`10`](10-best-practices.md), then [`08`](08-how-to-add-a-profile.md) — and

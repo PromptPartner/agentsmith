@@ -11,7 +11,7 @@ outreach, document creation, data crunching, research, design, and general admin
 > the rules, tools, memory, guardrails, and feedback loops around it — is the other ~90%, and
 > it's the part you control. This repo is that 90%, generalized and reusable. (The reasoning is in
 > [`docs/01-harness-philosophy.md`](docs/01-harness-philosophy.md); the public work these ideas
-> build on is credited in full under [principles & influences](docs/16-influences.md).)
+> build on is credited in full under [principles & influences](docs/17-influences.md).)
 
 It didn't come from a whiteboard. It grew over ~6 months of real, autonomous work — data
 crunching, marketing outreach, dozens of smaller projects, and one software product still in
@@ -51,10 +51,10 @@ to this — and [`docs/README.md`](docs/README.md) is the map with a reading ord
 [verify means evidence](docs/03-verify-means-evidence.md) (the load-bearing concept) ·
 [operating modes](docs/05-operating-modes.md) (sessions vs loops; which model for which phase) ·
 [why your agent ignored the rule](docs/04-why-your-agent-ignored-the-rule.md) (before it happens) ·
-[the safety model](docs/14-safety-model.md) (what it can do to your machine, and how to bound it) ·
+[the safety model](docs/15-safety-model.md) (what it can do to your machine, and how to bound it) ·
 [adapting it to your team](docs/09-adapting-it-to-your-team.md) · a
-[glossary](docs/17-glossary.md) · incident-earned [dos & don'ts](docs/10-best-practices.md) · and a
-[troubleshooting](docs/15-troubleshooting.md) guide for when it's behaving oddly.
+[glossary](docs/18-glossary.md) · incident-earned [dos & don'ts](docs/10-best-practices.md) · and a
+[troubleshooting](docs/16-troubleshooting.md) guide for when it's behaving oddly.
 
 ---
 
@@ -139,7 +139,7 @@ prompts — see [Permissions](#permissions--dangerous-mode-)); add `--safety cau
 ```
 
 Claude Code concatenates the global core with each project's file automatically. See
-[`docs/12-platforms-and-tools.md`](docs/12-platforms-and-tools.md) for per-project vs global.
+[`docs/13-platforms-and-tools.md`](docs/13-platforms-and-tools.md) for per-project vs global.
 
 That writes a lean `CLAUDE.md` into your project, scaffolds the supporting structure, and (unless
 `--assemble-only`) installs the global config + the four universal plugins. Re-run any time —
@@ -262,12 +262,12 @@ cautious (the default) until you trust the setup.
 
 The harness doesn't invent its ideas — it earns them from real incidents on a production project,
 and it stands on a body of public work. Every principle is mapped to who said it first, with
-quotes and source links, in [`docs/16-influences.md`](docs/16-influences.md).
+quotes and source links, in [`docs/17-influences.md`](docs/17-influences.md).
 
 **Pairs well with [`pm-skills`](https://github.com/phuryn/pm-skills).** That toolkit is the
 "decide *what* to build and why" half — product discovery, strategy, launch; Agentsmith is the
 "build it so it keeps existing" half. Different layer, same goal — and they compose on the same
-machine. More in [`docs/16-influences.md`](docs/16-influences.md#complementary-work-not-influences).
+machine. More in [`docs/17-influences.md`](docs/17-influences.md#complementary-work-not-influences).
 
 ## License / provenance
 
@@ -275,7 +275,7 @@ machine. More in [`docs/16-influences.md`](docs/16-influences.md#complementary-w
 copyright notice. Nothing here is vendored third-party code, so there are no upstream obligations
 attached. Contains no credentials, hostnames, or project-specific data (verified at build). The
 conceptual framing stands on prior public work, credited in full in
-[`docs/16-influences.md`](docs/16-influences.md); the rules are earned from real incidents on a
+[`docs/17-influences.md`](docs/17-influences.md); the rules are earned from real incidents on a
 production project.
 
 ---

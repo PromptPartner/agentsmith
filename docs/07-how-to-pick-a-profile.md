@@ -58,7 +58,7 @@ project carry only its **profile**:
 
 Claude Code loads the global `~/.claude/CLAUDE.md` *and* the project `./CLAUDE.md` together, so
 the rules apply everywhere and each repo stays thin. Without `--global`, a per-project run writes
-a **self-contained** core+profile file (good for one-offs). See `docs/12-platforms-and-tools.md`.
+a **self-contained** core+profile file (good for one-offs). See `docs/13-platforms-and-tools.md`.
 
 ## Order matters slightly
 

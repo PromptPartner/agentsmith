@@ -1368,7 +1368,7 @@ Write-Host "  Safety:     $($o.Safety)   ($safetyNote)"
 Write-Host '  Next:  1) edit .harness/verify.conf with real checks'
 Write-Host '         2) skim CLAUDE.md (resolve any [TODO: …] placeholders)'
 Write-Host "         3) copy .claude/settings.local.json.example to settings.local.json (safety: $($o.Safety) — read the permissions note)"
-Write-Host '         4) docs/01-harness-philosophy.md · docs/07-how-to-pick-a-profile.md · docs/12-platforms-and-tools.md'
+Write-Host '         4) docs/01-harness-philosophy.md · docs/07-how-to-pick-a-profile.md · docs/13-platforms-and-tools.md'
 Write-Host ''
 Report-Todos (Join-Path $o.Target 'CLAUDE.md')
 Report-Todos (Join-Path $o.Target 'DESIGN.md')   # names DESIGN_SYSTEM when a design system was scaffolded but not filled

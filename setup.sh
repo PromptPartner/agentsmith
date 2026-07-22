@@ -1414,7 +1414,7 @@ echo "  Safety:     $SAFETY   ($([ "$SAFETY" = cautious ] && echo 'auto-applies 
 echo "  Next:  1) edit .harness/verify.conf with real checks"
 echo "         2) skim CLAUDE.md (resolve any [TODO: …] placeholders — named below if there are any)"
 echo "         3) cp .claude/settings.local.json.example .claude/settings.local.json (safety: $SAFETY — read the permissions note)"
-echo "         4) docs/01-harness-philosophy.md · docs/07-how-to-pick-a-profile.md · docs/12-platforms-and-tools.md"
+echo "         4) docs/01-harness-philosophy.md · docs/07-how-to-pick-a-profile.md · docs/13-platforms-and-tools.md"
 echo
 report_todos "$TARGET/CLAUDE.md"
 report_todos "$TARGET/DESIGN.md"   # names DESIGN_SYSTEM when a design system was scaffolded but not filled
