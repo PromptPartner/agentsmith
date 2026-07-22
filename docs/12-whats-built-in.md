@@ -34,7 +34,7 @@ For the reasoning behind any of it, the cross-links point back to the doc that e
   [`07-how-to-pick-a-profile.md`](07-how-to-pick-a-profile.md) (product UI is `software-dev`).
 - **Guardrail hooks** — `scripts/install-git-hooks.sh` / `setup.sh --with-hooks`: secret-scan +
   protect-main + conventional-commit (default), branch-naming + tests-green (opt-in). These are the
-  deterministic guards behind the rules ([`14-safety-model.md`](14-safety-model.md) covers the posture).
+  deterministic guards behind the rules ([`15-safety-model.md`](15-safety-model.md) covers the posture).
 - **Profile-aware `verify.conf` presets** — setup drops a starter `.harness/verify.conf` matched to
   the chosen profile(s) (dev → build/test; docs → spell/links; data → row-count reconcile).
 - **CI workflow (shipped example)** — [`.github/workflows/verify.yml`](../.github/workflows/verify.yml)
@@ -52,7 +52,7 @@ For the reasoning behind any of it, the cross-links point back to the doc that e
   policy path (applies to all users on a shared box) + a stricter, no-bypass settings profile.
 - **Cowork / claude.ai export** — `setup.sh --export-instructions` emits a single paste-ready
   instructions blob for surfaces without on-disk config (web Projects, Cowork). See
-  [`12-platforms-and-tools.md`](12-platforms-and-tools.md) for which surfaces need it.
+  [`13-platforms-and-tools.md`](13-platforms-and-tools.md) for which surfaces need it.
 
 **Two more worth knowing about**, not flags but shipped assets: five **worked example projects**
 in [`examples/`](../examples/README.md) (each a filled `CLAUDE.md` + real `verify.conf` for one

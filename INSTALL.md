@@ -45,7 +45,7 @@ your chosen `profiles/<name>.md` into `<project>/CLAUDE.md`, then replace the pl
 | `{{OPERATOR_ROLE}}` | their role |
 | `{{OPERATOR_BIO}}` | one or two sentences on background + how you should work with them |
 | `{{TRACKER}}` | `Linear` / `GitHub Issues` / `Jira` / `a KNOWN-ISSUES.md` — **where** work is tracked |
-| `{{TRACKER_POLICY}}` | **whether the agent may write there.** Set by `--tracker-writes ask\|allowed`, *not* by `{{TRACKER}}` — naming a tracker is a pointer, not permission. Default `ask` = the agent drafts the item and you post it. See [the tracker guide](docs/13-project-tracker-guide.md#grant-or-withhold-write-access). |
+| `{{TRACKER_POLICY}}` | **whether the agent may write there.** Set by `--tracker-writes ask\|allowed`, *not* by `{{TRACKER}}` — naming a tracker is a pointer, not permission. Default `ask` = the agent drafts the item and you post it. See [the tracker guide](docs/14-project-tracker-guide.md#grant-or-withhold-write-access). |
 | `{{BRAND_PALETTE}}`, `{{BRAND_FONT}}` | only in `creative-design` — your brand colors/typeface |
 
 **Global vs per-project:** for the layered model, install the core once globally

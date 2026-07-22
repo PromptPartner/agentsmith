@@ -8,12 +8,12 @@ working. Find the symptom, understand the cause, apply the fix.
 **"It asks permission for every shell command."** Working as intended — you're in **cautious**
 safety mode (the wizard default): edits auto-apply, but shell and network prompt. If that's more
 friction than you want *on a machine you own*, switch to trusted; if it's a shared or client box,
-keep it. How to change it: README → "Permissions & dangerous mode", or [`14-safety-model.md`](14-safety-model.md).
+keep it. How to change it: README → "Permissions & dangerous mode", or [`15-safety-model.md`](15-safety-model.md).
 
 **"It ran a command I didn't want it to."** The inverse — you're in **trusted**
 (`bypassPermissions`), which runs most tool calls without asking. Dial back to cautious the same
 way. If this happened on a shared/prod machine, that's the signal to lock it from above with
-`--org-policy` ([`14-safety-model.md`](14-safety-model.md)).
+`--org-policy` ([`15-safety-model.md`](15-safety-model.md)).
 
 **"It keeps trying the same fix and won't stop."** The stop-rule in `core/40` says two identical
 failures means re-diagnose, not retry — but a loop or a long run can slip it. The cause is usually
@@ -45,7 +45,7 @@ the window too long — hand off at ~25–30% used; quality *and* cost degrade a
 tracker writes default to *ask*, and `core/10` makes the first write to any outside system a
 stop-and-ask. If you're seeing this, check that setup was run recently enough to have the consent
 default, and that a profile isn't carrying an old always-write instruction. The principle and the
-fix are in [`14-safety-model.md`](14-safety-model.md) and [`13-project-tracker-guide.md`](13-project-tracker-guide.md).
+fix are in [`15-safety-model.md`](15-safety-model.md) and [`14-project-tracker-guide.md`](14-project-tracker-guide.md).
 
 **"Re-running setup changed my operator name / role."** Current setup *recovers* your identity from
 the existing managed block before re-rendering, so a re-run preserves it. If you're on an older
@@ -62,7 +62,7 @@ claim *after* the last destructive step, not after the one that preserved it) is
 **"The rules don't seem to apply in my tool."** Check the surface. Web (claude.ai/code) and iOS get
 the *rules* but no local hooks, skills, or scripts; only local Claude Code gets the full harness.
 Other agents (Codex, Gemini CLI) need their own rule file emitted — see
-[`12-platforms-and-tools.md`](12-platforms-and-tools.md).
+[`13-platforms-and-tools.md`](13-platforms-and-tools.md).
 
 **Still stuck?** If a genuinely new failure mode turns up — something none of the above covers —
 that's not just a nuisance to work around, it's the raw material for a system fix. Run
