@@ -35,6 +35,12 @@ state — a filled `CLAUDE.md` project-specifics layer and a real `.harness/veri
   supervised, not what the work is. A loop that fixes code wants `software-dev,autonomous-loops`;
   one that sweeps a server wants `devops-setup,autonomous-loops`. Add it the moment the output
   stops passing under a human's eyes, and drop it when you go back to watching each step.
+- **Product UI is `software-dev`.** A web/app frontend lives under `software-dev` — not
+  `creative-design`, which is diagrams, decks, and brand artifacts. UI projects expect a root
+  `DESIGN.md`: the design system the agent reads before building any screen. Establish it at install
+  (`./setup.sh --design-system stub|catalog:<brand>|generate`) or drop one in from the
+  [awesome-design-md](https://github.com/VoltAgent/awesome-design-md) catalog, so the UI isn't built
+  ad-hoc and off-brand.
 - **When in doubt**, `general-admin` is the safe catch-all — it assumes outward-facing/irreversible
   actions need confirmation and that summaries must be faithful.
 - You can **re-assemble any time** as a project's focus shifts: re-run `setup.sh --assemble-only`

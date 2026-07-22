@@ -26,6 +26,12 @@ For the reasoning behind any of it, the cross-links point back to the doc that e
   in [`04-why-your-agent-ignored-the-rule.md`](04-why-your-agent-ignored-the-rule.md).
 - **Handoff hooks** — `setup.sh --with-handoff-hooks` installs a reliable "handoff"-keyword prompt
   hook plus a best-effort context-% nudge (the % part is fragile by design — see `hooks/README.md`).
+- **Design-system scaffold** — `setup.sh --design-system stub|catalog:<brand>|generate` (software-dev
+  UI projects) drops a root `DESIGN.md` the agent reads before building UI: an empty template to fill,
+  a ready-made one from the [awesome-design-md](https://github.com/VoltAgent/awesome-design-md) catalog,
+  or the ui-ux-pro-max generate steps. Pair it with `--with-ui-design-hook` — a once-per-session
+  PreToolUse nudge to consult `DESIGN.md` on UI edits. Why it exists:
+  [`07-how-to-pick-a-profile.md`](07-how-to-pick-a-profile.md) (product UI is `software-dev`).
 - **Guardrail hooks** — `scripts/install-git-hooks.sh` / `setup.sh --with-hooks`: secret-scan +
   protect-main + conventional-commit (default), branch-naming + tests-green (opt-in). These are the
   deterministic guards behind the rules ([`14-safety-model.md`](14-safety-model.md) covers the posture).

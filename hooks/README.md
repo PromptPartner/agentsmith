@@ -66,6 +66,42 @@ never a blocked prompt).
 
 ---
 
+## UI design-system nudge (`ui-design-reminder.sh`) — PreToolUse — opt-in
+
+A third session hook, for the `software-dev` profile's design-system discipline. On an `Edit`/
+`Write`/`MultiEdit` to a **UI file** (`*.tsx *.jsx *.vue *.svelte *.css *.scss *.less *.astro`, or a
+path under `components/`/`ui/`) it injects a **once-per-session**, **non-blocking** reminder to
+consult `DESIGN.md` and match the declared design system. It **self-gates on a `DESIGN.md` at the
+project root**, so backend/CLI/library projects never see it, and it uses PreToolUse
+`additionalContext` only — it never blocks the edit and never auto-approves it (normal permission
+flow still applies). Every surprise (no `jq`, non-UI path, no `DESIGN.md`, already nudged) is a
+silent no-op.
+
+Install it at setup, when you tell the wizard the project has a UI:
+
+```bash
+./setup.sh --profile software-dev --design-system stub      # scaffolds DESIGN.md, then offers the hook
+```
+
+Or wire it by hand (global `~/.claude/settings.json`):
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Edit|Write|MultiEdit",
+        "hooks": [ { "type": "command", "command": "bash ~/.claude/hooks/ui-design-reminder.sh" } ] }
+    ]
+  }
+}
+```
+
+Non-regression test: `bash scripts/test-ui-design-reminder.sh` (wired as the `ui-design-hook` phase
+in this repo's `.harness/verify.conf`) — it fails if the nudge regresses to silent, fires on backend
+files, or fires more than once per session.
+
+---
+
 ## Git guardrails (`hooks/git/`)
 
 Per-repo git hooks that enforce the harness's git discipline. Install with:
