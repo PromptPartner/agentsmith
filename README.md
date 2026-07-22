@@ -1,5 +1,9 @@
 # AgentSmith — the universal agent harness
 
+<p align="center">
+  <img src="docs/assets/agentsmith-explainer.png" alt="AgentSmith explained: you give a plain-English task, Claude Code wrapped in AgentSmith's house rules turns it into work you can trust. Inside the rules — it fits your work (profiles + safety), works carefully (understand, plan, do, verify, hand off), and stays on track (proof not vibes, auto-handoff at ~30% context, on-brand UIs). Autonomy is earned in stages, never just switched on." width="820">
+</p>
+
 Vibe coding gets you a working demo. **AI-assisted engineering** is what keeps it standing once
 customers arrive, the product changes, or another engineer has to touch it. Agentsmith is that
 second layer — a portable, battle-tested operating system for Claude Code (and any agent that
