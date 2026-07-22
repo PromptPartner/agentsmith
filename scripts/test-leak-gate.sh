@@ -34,9 +34,36 @@ bad() { printf '  \033[31m✗\033[0m %s\n' "$1"; fail=$((fail+1)); }
 # and no re-init per case.
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+# mktemp hands back an msys path (/tmp/tmp.XXX) under git-bash, and this suite drives the scratch
+# repo with native git-for-Windows (git -C "$TMP" ...). Native git can only reach that path if msys
+# converts it first; when it doesn't — path-conversion disabled, or a cold /tmp mount right after a
+# reboot — every `git -C "$TMP" ...` dies with "cannot change to '/tmp/...'". The setup calls below
+# suppress stderr, so the scratch repo would then end up EMPTY, the gate would find nothing, and
+# every "expect-flagged" case would silently pass the gate — surfacing as fake leak-gate logic
+# failures (the infamous 18 passed / 16 failed) that say nothing about the guardrail. Normalise to a
+# path native git resolves on any platform: cygpath on git-bash, a no-op fallback on Linux/macOS.
+TMP="$(cygpath -m "$TMP" 2>/dev/null || printf '%s' "$TMP")"
 git -C "$TMP" init -q
 mkdir -p "$TMP/scripts"
 cp "$GATE" "$TMP/scripts/leak-gate.sh"
+
+# SANITY — the belt to that suspenders. Prove git can actually track AND grep a file in the scratch
+# repo before running a single case, using the same `git -C "$TMP"` the cases rely on. If it can't
+# (residual path issue, no git on PATH, read-only TEMP), the whole suite is meaningless: fail LOUD
+# with the real diagnosis instead of 16 fake logic failures a reader would chase into leak-gate.sh.
+# R2/core-60: a guard that reports an environment fault as a logic fault is not a guard.
+printf 'PROBE_51_75_20_9\n' > "$TMP/.sanity-probe"
+git -C "$TMP" add -A >/dev/null 2>&1
+if ! git -C "$TMP" grep -q PROBE_51_75_20_9 -- .sanity-probe 2>/dev/null; then
+  echo "FATAL: git cannot track/grep a file in the scratch repo at:" >&2
+  echo "         $TMP" >&2
+  echo "  This is an ENVIRONMENT problem (msys path conversion, git on PATH, or TEMP perms)," >&2
+  echo "  NOT a leak-gate failure. On git-bash it is usually mktemp handing native git an msys" >&2
+  echo "  /tmp path it cannot resolve. Fix the environment, then re-run — leave leak-gate.sh alone." >&2
+  exit 2
+fi
+rm -f "$TMP/.sanity-probe"
+git -C "$TMP" add -A >/dev/null 2>&1
 
 # Run the gate over a scratch repo whose only content is $1. Echoes output; returns gate exit.
 gate_on() {
