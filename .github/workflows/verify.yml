@@ -13,11 +13,39 @@
 # verify.conf and it runs here automatically, with no YAML change.
 name: verify
 
+# ── RULE: this gate is for executable surface, NOT human-reviewed prose. ─────────────────────
+# What CI proves here is machine-checkable breakage: shell that won't parse, a profile that won't
+# assemble into a followable CLAUDE.md, an installer that hangs, the R8 guardrail regressing.
+# Documentation and specs (docs/**, the top-level READMEs, LICENSE) are authored and REVIEWED BY A
+# HUMAN — there is nothing here for CI to prove about a prose edit. Running the full Linux+Windows
+# gate on a doc-only push is wasted minutes AND a misleading signal (a red X that means nothing
+# about the change). So doc-only pushes/PRs skip the gate via paths-ignore.
+#   • Removes NO secret coverage: real secret scanning is the pre-commit hook (scripts/secret-scan.sh),
+#     which runs on every commit whatever it touches. The CI secret-scan/leak-gate phases are
+#     fixture unit tests of that guardrail, not a scan of the tree — nothing is lost by skipping them.
+#   • A push that touches a doc AND any gated file still runs: paths-ignore only skips when EVERY
+#     changed path matches. workflow_dispatch always runs, so a gate can be forced by hand.
+#   • Adding a new pure-docs path? Add it to BOTH paths-ignore lists below — push and pull_request
+#     must stay in sync. Do NOT add core/ or profiles/ here: those assemble into CLAUDE.md and are
+#     covered by the `assemble` phase.
+# Why this rule exists (incident + reasoning): docs/feedback/0005-ci-gate-on-human-reviewed-docs.md
 on:
   push:
     branches: ['**']
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+      - 'INSTALL.md'
+      - 'AGENT-INSTALL.md'
+      - 'LICENSE'
   pull_request:
     branches: [master]
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+      - 'INSTALL.md'
+      - 'AGENT-INSTALL.md'
+      - 'LICENSE'
   workflow_dispatch:
 
 permissions:
