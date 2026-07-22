@@ -49,6 +49,11 @@
 #    ./setup.ps1 --profile X --export-instructions > inst.md   # paste-ready blob for web/Cowork
 #    sudo ./setup.ps1 --org-policy      # machine-wide managed CLAUDE.md + hardened (no-bypass) settings
 #    ./setup.ps1 --with-handoff-hooks   # install reliable 'handoff' keyword hook (+ best-effort ctx-% nudge)
+#    ./setup.ps1 --design-system skip|stub|catalog:<slug>|generate   # software-dev UI projects: establish a
+#                                       #   design system. stub = scaffold DESIGN.md to fill in; catalog:stripe =
+#                                       #   pull a ready-made one from the awesome-design-md catalog; generate =
+#                                       #   print the ui-ux-pro-max steps. default = skip (no DESIGN.md).
+#    ./setup.ps1 --with-ui-design-hook  # global PreToolUse nudge: consult DESIGN.md when editing UI files
 #    ./setup.ps1 --self-update          # pull the latest harness into this checkout + re-assemble managed CLAUDE.md
 #                                       #   remote: --from <url> | $env:HARNESS_REMOTE | .harness/remote | the checkout's origin
 #                                       #   auth:   git@/ssh:// -> SSH key; https:// -> $env:HARNESS_GH_TOKEN (never stored)
@@ -111,6 +116,7 @@ $o = @{
   TrackerPolicyAllowed = "**writes are authorized** (the operator opted in at setup) — file it directly, and make agent work visible there (a note when work starts and when it lands)."
   Global = $false; ProfileOnly = $false; AssembleOnly = $false; Force = $false; DryRun = $false
   AlsoAgents = $false; AlsoGemini = $false; WithSkills = $false; WithHooks = $false; WithHandoffHooks = $false
+  WithUiDesignHook = $false; DesignSystem = ''   # '' / skip = no DESIGN.md; stub | catalog:<slug> | generate for a UI project
   WithPlugins = ''; WithMcp = ''; WithRtk = 'auto'   # auto = install rtk for code profiles; --with-rtk forces on, --no-rtk off
   UpdatePlugins = $false; Doctor = $false; Export = $false; OrgPolicy = $false; Wizard = $false
   SelfUpdate = $false; SelfUpdateRemote = ''; NoReassemble = $false; Uninstall = $false
@@ -195,6 +201,11 @@ for ($i = 0; $i -lt $args.Count; $i++) {
     '--with-skills'       { $o.WithSkills = $true }
     '--with-hooks'        { $o.WithHooks = $true }
     '--with-handoff-hooks'{ $o.WithHandoffHooks = $true }
+    '--with-ui-design-hook'{ $o.WithUiDesignHook = $true }
+    '--design-system'     { $o.DesignSystem = $args[++$i]
+                            if ($o.DesignSystem -notmatch '^(skip|stub|generate|catalog:.+)$') {
+                              Die "--design-system must be skip | stub | catalog:<slug> | generate (got '$($o.DesignSystem)')"
+                            } }
     '--update-plugins'    { $o.UpdatePlugins = $true }
     '--doctor'            { $o.Doctor = $true }
     '--export-instructions'{ $o.Export = $true }
@@ -480,6 +491,7 @@ function Install-GlobalConfig {
   if (Rtk-Wanted) { Install-Rtk }
   if ($o.WithSkills) { Install-Skills $SkillsDest }
   if ($o.WithHandoffHooks) { Install-HandoffHooks }
+  if ($o.WithUiDesignHook) { Install-UiDesignHook }
 }
 
 function Build-VerifyConf ([string]$dest) {
@@ -611,6 +623,70 @@ function Install-HandoffHooks {
   Write-Host ''; Say "Handoff hooks installed."
   Write-Host "  • 'handoff' / 'wrap up' in a prompt → injects the safe-state + recall-prompt protocol (reliable)"
   Write-Host "  • context ≥ threshold used → one best-effort nudge (fragile — see hooks/README.md)"
+}
+
+# ---- design system (software-dev UI projects) ------------------------------
+# Establish a design system so UI isn't built ad-hoc and off-brand. The durable artifact is a
+# project-root DESIGN.md the agent reads before every UI change; the software-dev profile points at
+# it every turn, and (optionally) the ui-design-reminder hook nudges on UI edits.
+function Print-DesignSources {
+  Write-Host "      Fill DESIGN.md three ways (also in its header):"
+  Write-Host "        • bring your brand — transcribe your brand guide + assets into it"
+  Write-Host "        • pick a ready-made one — https://github.com/VoltAgent/awesome-design-md (design-md/<brand>/DESIGN.md)"
+  Write-Host "        • generate one — /plugin marketplace add nextlevelbuilder/ui-ux-pro-max-skill"
+  Write-Host "                         /plugin install ui-ux-pro-max@ui-ux-pro-max-skill   (needs Python 3)"
+}
+function Scaffold-DesignSystem {  # honor --design-system for a UI project. Idempotent: never overwrites a DESIGN.md.
+  if ($o.DesignSystem -in @('', 'skip')) { return }
+  $dest = Join-Path $o.Target 'DESIGN.md'
+  $tpl  = Join-Path $HarnessDir 'templates/design-system.md'
+  if (Test-Path $dest) { Ok 'DESIGN.md already present — left as-is'; return }
+  if ($o.DesignSystem -eq 'stub') {
+    Copy-Item $tpl $dest -Force; Ok 'added DESIGN.md (design-system template — fill in the [TODO]s)'
+    Print-DesignSources
+  } elseif ($o.DesignSystem -like 'catalog:*') {
+    $slug = $o.DesignSystem.Substring('catalog:'.Length)
+    $url = "https://raw.githubusercontent.com/VoltAgent/awesome-design-md/main/design-md/$slug/DESIGN.md"
+    Say "Fetching a starter DESIGN.md for '$slug' from the awesome-design-md catalog…"
+    # Degrade gracefully (infra idempotency): offline or an unknown slug falls back to the template.
+    $fetched = $false
+    try { Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing -ErrorAction Stop; if ((Test-Path $dest) -and (Get-Item $dest).Length -gt 0) { $fetched = $true } } catch { $fetched = $false }
+    if ($fetched) { Ok "added DESIGN.md from catalog:$slug (review + adapt it to your brand)" }
+    else {
+      if (Test-Path $dest) { Remove-Item $dest -Force }
+      Warn "could not fetch catalog:$slug (offline, or no such brand) — using the template instead."
+      Write-Host "      Browse brands: https://github.com/VoltAgent/awesome-design-md/tree/main/design-md"
+      Copy-Item $tpl $dest -Force; Ok 'added DESIGN.md (template fallback)'
+    }
+  } elseif ($o.DesignSystem -eq 'generate') {
+    # setup.ps1 CANNOT run Claude Code /plugin commands — never a silent half-install; scaffold the
+    # template so there's always a DESIGN.md, and print the exact generate steps to run yourself.
+    Copy-Item $tpl $dest -Force; Ok 'added DESIGN.md (template — ui-ux-pro-max will fill it)'
+    Say 'Generate the design system with ui-ux-pro-max, then it lands in DESIGN.md:'
+    Write-Host '        /plugin marketplace add nextlevelbuilder/ui-ux-pro-max-skill'
+    Write-Host '        /plugin install ui-ux-pro-max@ui-ux-pro-max-skill'
+    Write-Host '        …then ask the assistant to generate a design system into DESIGN.md.'
+    Write-Host '      Or via its npm CLI (needs Node + Python 3):  npm i -g ui-ux-pro-max-cli && uipro'
+  }
+}
+function Install-UiDesignHook {  # global PreToolUse nudge; PowerShell parses settings.json natively (no jq needed)
+  $hooksDir = Join-Path $CcDir 'hooks'
+  New-Item -ItemType Directory -Force -Path $hooksDir | Out-Null
+  Copy-Item (Join-Path $HarnessDir 'hooks/ui-design-reminder.sh') (Join-Path $hooksDir 'ui-design-reminder.sh') -Force
+  Ok "UI design-system hook script → $hooksDir"
+  $settings = Join-Path $CcDir 'settings.json'
+  if (-not (Test-Path $settings)) { '{}' | Set-Content $settings -Encoding utf8 }
+  $cmd = 'bash ~/.claude/hooks/ui-design-reminder.sh'
+  if (Select-String -Path $settings -SimpleMatch $cmd -Quiet) { Ok 'UI design-system hook already wired in settings.json'; return }
+  Copy-Item $settings "$settings.bak.$PID" -Force
+  try {
+    $s = Get-Content $settings -Raw | ConvertFrom-Json -AsHashtable
+    if (-not $s.ContainsKey('hooks')) { $s['hooks'] = @{} }
+    if (-not $s['hooks'].ContainsKey('PreToolUse')) { $s['hooks']['PreToolUse'] = @() }
+    $s['hooks']['PreToolUse'] = @($s['hooks']['PreToolUse']) + @(@{ matcher = 'Edit|Write|MultiEdit'; hooks = @(@{ type = 'command'; command = $cmd }) })
+    $s | ConvertTo-Json -Depth 100 | Set-Content $settings -Encoding utf8
+    Ok "wired UI design-system hook into settings.json (backup .bak.$PID)"
+  } catch { Warn 'merge failed — add the PreToolUse snippet from hooks/README.md by hand' }
 }
 
 # ============================================================================
@@ -804,6 +880,27 @@ function Run-Wizard {
       Wiz-Note 'Git guardrails are automatic safety checks in this project: block committing a'
       Wiz-Note 'password, block committing straight to your main branch, keep commit messages tidy.'
       if (Wiz-Yn 'Install git guardrail hooks (recommended)?' 'y') { $A += '--with-hooks' }
+      # Design system: only meaningful for software-dev projects with a UI.
+      if ($picks -contains 'software-dev') {
+        Write-Host ''
+        Wiz-Note 'If this project has a UI, its design system lives in DESIGN.md — the assistant reads it'
+        Wiz-Note "before building any screen and matches it, so the UI isn't built ad-hoc and off-brand."
+        if (Wiz-Yn 'Does this project have a UI (web/app frontend)?' 'n') {
+          Write-Host '      Establish the design system:'
+          Write-Host '        1) Scaffold a DESIGN.md template to fill in yourself (bring your brand)   [default]'
+          Write-Host '        2) Start from a ready-made one in the awesome-design-md catalog'
+          Write-Host '        3) Generate one with the ui-ux-pro-max skill'
+          $dsc = ''
+          while ($true) { $dsc = Read-Host '      Choose [1-3, default 1]'; if (-not $dsc) { $dsc = '1' }; if ($dsc -match '^[1-3]$') { break }; Write-Host '      ! enter 1-3' }
+          switch ($dsc) {
+            '1' { $A += '--design-system'; $A += 'stub' }
+            '2' { $dslug = Wiz-Ask 'Brand slug (e.g. stripe, linear, vercel, notion)' 'stripe'; $A += '--design-system'; $A += "catalog:$dslug" }
+            '3' { $A += '--design-system'; $A += 'generate' }
+          }
+          Wiz-Note 'The nudge hook reminds the assistant to consult DESIGN.md whenever it edits a UI file.'
+          if (Wiz-Yn 'Install the UI-edit nudge hook globally?' 'y') { $A += '--with-ui-design-hook' }
+        }
+      }
       Wiz-Note 'Handoff hooks help the assistant save its place before it runs low on working memory.'
       if (Wiz-Yn "Install handoff hooks globally ('handoff' keyword + best-effort context nudge)?" 'n') { $A += '--with-handoff-hooks' }
       if (Wiz-Yn 'Also write AGENTS.md (for Codex & other assistants)?' 'n') { $A += '--also-agents-md' }
@@ -1134,6 +1231,7 @@ if ($o.SelfUpdate) { Self-Update; exit 0 }
 if ($o.Export)    { Export-Instructions; exit 0 }
 if ($o.OrgPolicy) { OrgPolicy-Install; exit 0 }
 if ($o.WithHandoffHooks -and (-not $o.Global) -and (-not $o.Profiles)) { Install-HandoffHooks; exit 0 }
+if ($o.WithUiDesignHook -and (-not $o.Global) -and (-not $o.Profiles)) { Install-UiDesignHook; exit 0 }
 
 if ($o.Uninstall) {
   if ($o.Global) {
@@ -1208,6 +1306,7 @@ if ($o.DryRun) {
   else { Write-Host '    + .claude/        settings.local.json.example, skills/ pack (/handoff, /verify, /harness-help + 3 more)' }
   Write-Host '    + docs/           feedback/README.md, research/ (+ _archive dirs)'
   Write-Host '    + FIRST-STEPS.md'
+  if ($o.DesignSystem -and $o.DesignSystem -ne 'skip') { Write-Host "    + DESIGN.md       (--design-system $($o.DesignSystem))" }
   if ($o.AlsoAgents) { Write-Host '    + AGENTS.md       (--also-agents-md)' }
   if ($o.AlsoGemini) { Write-Host '    + GEMINI.md       (--also-gemini-md)' }
   if ($o.WithMcp) { Write-Host "    + .mcp.json       (--with-mcp: $($o.WithMcp))" }
@@ -1246,6 +1345,7 @@ else {
     Set-Content $firstSteps -Encoding utf8
   Ok 'added FIRST-STEPS.md (your getting-started card)'
 }
+Scaffold-DesignSystem   # honors --design-system for a UI project (no-op on the default/backend path)
 
 if ($o.WithMcp) { Say "Adding MCP server(s) to .mcp.json: $($o.WithMcp)"; Add-McpServers $o.WithMcp }
 
@@ -1271,6 +1371,7 @@ Write-Host "         3) copy .claude/settings.local.json.example to settings.loc
 Write-Host '         4) docs/01-harness-philosophy.md · docs/07-how-to-pick-a-profile.md · docs/12-platforms-and-tools.md'
 Write-Host ''
 Report-Todos (Join-Path $o.Target 'CLAUDE.md')
+Report-Todos (Join-Path $o.Target 'DESIGN.md')   # names DESIGN_SYSTEM when a design system was scaffolded but not filled
 Write-Host ''
 Write-Host '  ▶ First 30 minutes' -ForegroundColor Cyan -NoNewline; Write-Host '  (also saved to FIRST-STEPS.md)'
 Write-Host '     1) start:  claude          — run it inside this folder'

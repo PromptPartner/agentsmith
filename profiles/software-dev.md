@@ -29,6 +29,29 @@ The sequence for every code change (sharpens R2/R5):
 "It compiles and the unit test passes" is within-a-layer evidence only. If a
 human could click a button and see it break, you haven't verified it.
 
+### Design system (UI work)
+
+**If this project has a UI, its design system is the spec for how that UI looks — and it lives in
+`DESIGN.md` at the project root.** This is the product-UI analogue of the brand block in the
+creative-design profile: establish the look once, write it down, and hold every screen to it.
+
+- **Read `DESIGN.md` before you write or change any UI, and match it** — colors, type, spacing,
+  components, layout, states. A screen that ignores it is off-brand the moment it ships, and that
+  only shows up after the fact.
+- **If `DESIGN.md` is missing or still reads `[TODO]`, STOP and establish one first.** Three ways,
+  pick per project: *bring the brand* (brand guide + existing assets → write them in), *pick a
+  ready-made one* (a `DESIGN.md` from the awesome-design-md catalog), or *generate one* (the
+  ui-ux-pro-max skill produces and persists a design system). Then write the choice into `DESIGN.md`
+  so the next session doesn't re-ask — exactly how the brand block persists a palette.
+- **When you add, rename, or restyle a component, update `DESIGN.md` in the same unit of work (R6).**
+  The design system and the code drift apart the instant one changes without the other.
+- **No UI? This section is inert.** Backend, CLI, library, and data work have no design system to
+  honor — skip it.
+
+Adherence is a judgment rule, not something a script can grep for. It's held by the quality-gate
+checkbox below, the STOP-table row, and the UI-edit nudge hook — deliberately **not** by
+`verify.sh` (design correctness isn't automatable, so the verify preset stays out of it).
+
 ### Quality gates
 Before calling code done, tick each — "deferred: reason" is allowed, silence is not:
 
@@ -39,6 +62,8 @@ Before calling code done, tick each — "deferred: reason" is allowed, silence i
 - [ ] the **full** test suite passes, not just the new test (R5)
 - [ ] the changed path was **run for real** once (CLI invocation / live request /
       browser click-through), including every fan-out consumer (R3)
+- [ ] UI changes match the design system declared in `DESIGN.md` (or `DESIGN.md` updated to
+      match) — inert if this project has no UI
 - [ ] docs, changelog, help text, and inline comments that the change made wrong
       are fixed in this same unit (R6)
 - [ ] a defect ticket exists for anything found-but-not-fixed (R7)
@@ -66,6 +91,9 @@ sessions.
 - **Stale-workspace noise.** Compiler/LSP errors pointing at a sibling worktree or
   a path your branch doesn't use are stale. Trust the build/typecheck command's
   output, not editor popups.
+- **UI built ad-hoc, ignoring the project's design system.** Components drift, every
+  screen reinvents spacing/color/controls, and the product looks assembled by five
+  different people. Read `DESIGN.md` first; if none exists, establish one before building UI.
 
 ### Recommended skills & tools
 Map to the loop — pull these in, don't reinvent them:
@@ -104,3 +132,4 @@ branch. No `code-review`/codex gate? Do the second-pass read — and an independ
 | "I'll fix all these in one commit." | One bad change hides in N and breaks bisect. Atomic only (R4). |
 | "That type/lint error is in another workspace — ignore it." | Confirm with the build/typecheck command. If it's truly a sibling worktree, it's noise; if it's yours, it's a blocker — don't guess. |
 | "The docs aren't really part of this change." | If the change made a doc/help/comment wrong, fixing it IS the change (R6). |
+| "I'll match the design system later." | Later is the off-brand screen that ships. Read DESIGN.md first; if none exists, establish it before building UI. |

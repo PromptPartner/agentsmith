@@ -13,6 +13,12 @@ That opens Claude Code with these rules loaded. Type in plain English — no spe
 
 ## Three things to try first
 
+> **Step 0 — building a UI?** Establish your design system *before* the first screen. If setup
+> scaffolded a `DESIGN.md` in this folder, fill it in (bring your brand, pick one from the
+> awesome-design-md catalog, or generate one with ui-ux-pro-max); if not, re-run
+> `./setup.sh --profile software-dev --design-system stub --target .` to get the template. The
+> assistant reads `DESIGN.md` before writing any UI and holds every screen to it. **No UI? Skip this.**
+
 1. **Get your bearings.** Ask:
    *"what does my harness do, and what are my rules?"*
    The assistant reads `CLAUDE.md` and explains the setup in plain language.

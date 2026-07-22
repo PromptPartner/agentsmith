@@ -36,9 +36,14 @@ Project mode installs these into `<project>/.claude/skills/`; `--global` install
 - **test-driven-development**, **using-git-worktrees** — `superpowers`.
 - the `code-review` skill + the **codex** two-AI gate (plugins) for review.
 - language LSP / dev plugins (stack-lsp pack) for navigation + fixes.
-- **ui-ux-pro-max** — third-party (MIT). Only if the work has a front end; skip it for backend,
-  CLI, or library work. Needs **Python 3**, which nothing else here does. See `creative-design`
-  below for the install commands.
+- **Design system (any front end):** a UI project's look is defined in a root `DESIGN.md` the agent
+  reads before every UI change — set it up with `./setup.sh --design-system stub|catalog:<brand>|generate`
+  (and `--with-ui-design-hook` for a nudge on UI edits). Two ways to fill it:
+  - **awesome-design-md** — a catalog of 50+ ready-made `DESIGN.md` files
+    ([VoltAgent/awesome-design-md](https://github.com/VoltAgent/awesome-design-md)); drop one in and adapt it.
+  - **ui-ux-pro-max** — third-party (MIT); generates AND persists a full design system (palette, type,
+    layout, components) into `DESIGN.md`. Only if the work has a front end; skip it for backend, CLI, or
+    library work. Needs **Python 3**, which nothing else here does. Install commands under `creative-design` below.
 - **rtk** — token-compressing CLI proxy (Apache-2.0), **auto-installed for this profile** (pass
   `--no-rtk` to skip). Cuts `git`/test/build output 60–90% before it hits the context window. It's
   a binary + hook, not a plugin — details in `../config/plugins.md`.

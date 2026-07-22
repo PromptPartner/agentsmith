@@ -48,6 +48,11 @@
 #    ./setup.sh --profile X --export-instructions > inst.md   # paste-ready blob for web/Cowork
 #    sudo ./setup.sh --org-policy       # machine-wide managed CLAUDE.md + hardened (no-bypass) settings
 #    ./setup.sh --with-handoff-hooks    # install reliable 'handoff' keyword hook (+ best-effort ctx-% nudge)
+#    ./setup.sh --design-system skip|stub|catalog:<slug>|generate   # software-dev UI projects: establish a
+#                                       #   design system. stub = scaffold DESIGN.md to fill in; catalog:stripe =
+#                                       #   pull a ready-made one from the awesome-design-md catalog; generate =
+#                                       #   print the ui-ux-pro-max steps. default = skip (no DESIGN.md).
+#    ./setup.sh --with-ui-design-hook   # global PreToolUse nudge: consult DESIGN.md when editing UI files
 #    ./setup.sh --self-update           # pull the latest harness into this checkout + re-assemble managed CLAUDE.md
 #                                       #   remote: --from <url> | $HARNESS_REMOTE | .harness/remote | the checkout's origin
 #                                       #   auth:   git@/ssh:// → SSH key; https:// → $HARNESS_GH_TOKEN (never stored)
@@ -100,6 +105,8 @@ WITH_SKILLS=false
 SKILLS_DEST=""            # empty → install_skills defaults to global ~/.claude/skills; project mode sets $TARGET/.claude/skills
 WITH_HOOKS=false
 WITH_HANDOFF_HOOKS=false
+WITH_UI_DESIGN_HOOK=false
+DESIGN_SYSTEM=""          # "" / skip = no DESIGN.md; stub | catalog:<slug> | generate for a UI project
 WITH_PLUGINS=""
 WITH_RTK="auto"           # auto = install rtk for code profiles (software-dev/devops-setup); --with-rtk forces on, --no-rtk off
 WITH_MCP=""
@@ -444,6 +451,27 @@ run_wizard() {
       wiz_note "Git guardrails are automatic safety checks in this project: block committing a"
       wiz_note "password, block committing straight to your main branch, keep commit messages tidy."
       wiz_yn "Install git guardrail hooks (recommended)?" y && A+=(--with-hooks)
+      # Design system: only meaningful for software-dev projects with a UI.
+      case ",$WIZ_PROFILES," in *,software-dev,*)
+        echo
+        wiz_note "If this project has a UI, its design system lives in DESIGN.md — the assistant reads it"
+        wiz_note "before building any screen and matches it, so the UI isn't built ad-hoc and off-brand."
+        if wiz_yn "Does this project have a UI (web/app frontend)?" n; then
+          echo "      Establish the design system:"
+          echo "        1) Scaffold a DESIGN.md template to fill in yourself (bring your brand)   [default]"
+          echo "        2) Start from a ready-made one in the awesome-design-md catalog"
+          echo "        3) Generate one with the ui-ux-pro-max skill"
+          local dsc; while :; do printf '      Choose [1-3, default 1]: '; read -r dsc || dsc=1; [ -z "$dsc" ] && dsc=1; [[ "$dsc" =~ ^[1-3]$ ]] && break; echo "      ! enter 1-3"; done
+          case "$dsc" in
+            1) A+=(--design-system stub);;
+            2) local dslug; wiz_ask dslug "Brand slug (e.g. stripe, linear, vercel, notion)" "stripe"; A+=(--design-system "catalog:$dslug");;
+            3) A+=(--design-system generate);;
+          esac
+          wiz_note "The nudge hook reminds the assistant to consult DESIGN.md whenever it edits a UI file."
+          wiz_yn "Install the UI-edit nudge hook globally?" y && A+=(--with-ui-design-hook)
+        fi
+        ;;
+      esac
       wiz_note "Handoff hooks help the assistant save its place before it runs low on working memory."
       wiz_yn "Install handoff hooks globally ('handoff' keyword + best-effort context nudge)?" n && A+=(--with-handoff-hooks)
       wiz_yn "Also write AGENTS.md (for Codex & other assistants)?" n && A+=(--also-agents-md)
@@ -554,6 +582,12 @@ while [ $# -gt 0 ]; do
     --with-skills) WITH_SKILLS=true;;
     --with-hooks) WITH_HOOKS=true;;
     --with-handoff-hooks) WITH_HANDOFF_HOOKS=true;;
+    --with-ui-design-hook) WITH_UI_DESIGN_HOOK=true;;
+    --design-system) shift; DESIGN_SYSTEM="${1:-}"
+      case "$DESIGN_SYSTEM" in
+        skip|stub|generate|catalog:?*) ;;
+        *) die "--design-system must be skip | stub | catalog:<slug> | generate (got '$DESIGN_SYSTEM')";;
+      esac;;
     --update-plugins) DO_UPDATE_PLUGINS=true;;
     --doctor) DO_DOCTOR=true;;
     --export-instructions) DO_EXPORT=true;;
@@ -790,6 +824,7 @@ install_global_config() {
   rtk_wanted && install_rtk
   $WITH_SKILLS && install_skills "$SKILLS_DEST"
   $WITH_HANDOFF_HOOKS && install_handoff_hooks
+  $WITH_UI_DESIGN_HOOK && install_ui_design_hook
   return 0   # never let a false trailing `&&` (both hooks/skills off) abort the caller under set -e
 }
 
@@ -972,6 +1007,71 @@ install_handoff_hooks() {  # global: 'handoff' keyword hook (reliable) + best-ef
   echo; say "$(c '1;32' 'Handoff hooks installed.')"
   echo "  • 'handoff' / 'wrap up' in a prompt → injects the safe-state + recall-prompt protocol (reliable)"
   echo "  • context ≥ ${HANDOFF_PCT_THRESHOLD:-30}% used → one best-effort nudge to hand off early (fragile — see hooks/README.md)"
+}
+
+# ---- design system (software-dev UI projects) ------------------------------
+# Establish a design system so UI isn't built ad-hoc and off-brand. The durable artifact is a
+# project-root DESIGN.md the agent reads before every UI change; the software-dev profile points at
+# it every turn, and (optionally) the ui-design-reminder hook nudges on UI edits.
+print_design_sources() {
+  echo "      Fill DESIGN.md three ways (also in its header):"
+  echo "        • bring your brand — transcribe your brand guide + assets into it"
+  echo "        • pick a ready-made one — https://github.com/VoltAgent/awesome-design-md (design-md/<brand>/DESIGN.md)"
+  echo "        • generate one — /plugin marketplace add nextlevelbuilder/ui-ux-pro-max-skill"
+  echo "                         /plugin install ui-ux-pro-max@ui-ux-pro-max-skill   (needs Python 3)"
+}
+scaffold_design_system() {  # honor --design-system for a UI project. Idempotent: never overwrites a DESIGN.md.
+  case "$DESIGN_SYSTEM" in ""|skip) return 0 ;; esac
+  local dest="$TARGET/DESIGN.md"
+  if [ -e "$dest" ]; then ok "DESIGN.md already present — left as-is"; return 0; fi
+  case "$DESIGN_SYSTEM" in
+    stub)
+      cp "$HARNESS_DIR/templates/design-system.md" "$dest"; ok "added DESIGN.md (design-system template — fill in the [TODO]s)"
+      print_design_sources ;;
+    catalog:*)
+      local slug="${DESIGN_SYSTEM#catalog:}"
+      local url="https://raw.githubusercontent.com/VoltAgent/awesome-design-md/main/design-md/${slug}/DESIGN.md"
+      say "Fetching a starter DESIGN.md for '$slug' from the awesome-design-md catalog…"
+      # Degrade gracefully (infra idempotency): offline or an unknown slug falls back to the template.
+      if command -v curl >/dev/null 2>&1 && curl -fsSL "$url" -o "$dest" 2>/dev/null && [ -s "$dest" ]; then
+        ok "added DESIGN.md from catalog:$slug (review + adapt it to your brand)"
+      else
+        rm -f "$dest"
+        warn "could not fetch catalog:$slug (offline, or no such brand) — using the template instead."
+        echo "      Browse brands: https://github.com/VoltAgent/awesome-design-md/tree/main/design-md"
+        cp "$HARNESS_DIR/templates/design-system.md" "$dest"; ok "added DESIGN.md (template fallback)"
+      fi ;;
+    generate)
+      # setup.sh (bash) CANNOT run Claude Code /plugin commands — never a silent half-install; scaffold
+      # the template so there's always a DESIGN.md, and print the exact generate steps to run yourself.
+      cp "$HARNESS_DIR/templates/design-system.md" "$dest"; ok "added DESIGN.md (template — ui-ux-pro-max will fill it)"
+      say "Generate the design system with ui-ux-pro-max, then it lands in DESIGN.md:"
+      echo "        /plugin marketplace add nextlevelbuilder/ui-ux-pro-max-skill"
+      echo "        /plugin install ui-ux-pro-max@ui-ux-pro-max-skill"
+      echo "        …then ask the assistant to generate a design system into DESIGN.md."
+      echo "      Or via its npm CLI (needs Node + Python 3):  npm i -g ui-ux-pro-max-cli && uipro" ;;
+  esac
+}
+install_ui_design_hook() {  # global PreToolUse nudge; warn-and-skip (don't abort setup) if jq is missing
+  if ! command -v jq >/dev/null 2>&1; then
+    warn "UI design-system hook needs jq to edit settings.json — skipped (install jq, then --with-ui-design-hook)."
+    return 0
+  fi
+  mkdir -p "$CC_DIR/hooks"
+  cp "$HARNESS_DIR/hooks/ui-design-reminder.sh" "$CC_DIR/hooks/ui-design-reminder.sh"
+  chmod +x "$CC_DIR/hooks/ui-design-reminder.sh" 2>/dev/null || true
+  [ -f "$CC_DIR/settings.json" ] || echo '{}' > "$CC_DIR/settings.json"
+  local cmd="bash ~/.claude/hooks/ui-design-reminder.sh"
+  if grep -qF "$cmd" "$CC_DIR/settings.json" 2>/dev/null; then
+    ok "UI design-system hook already wired in settings.json"; return 0
+  fi
+  cp "$CC_DIR/settings.json" "$CC_DIR/settings.json.bak.$$"
+  if jq --arg c "$cmd" '.hooks.PreToolUse = ((.hooks.PreToolUse // []) + [{matcher:"Edit|Write|MultiEdit", hooks:[{type:"command", command:$c}]}])' \
+       "$CC_DIR/settings.json" > "$CC_DIR/settings.json.new"; then
+    mv "$CC_DIR/settings.json.new" "$CC_DIR/settings.json"; ok "wired UI design-system hook into settings.json (backup .bak.$$)"
+  else
+    rm -f "$CC_DIR/settings.json.new"; warn "jq merge failed — add the PreToolUse snippet from hooks/README.md by hand"
+  fi
 }
 
 # ---- self-update -----------------------------------------------------------
@@ -1167,6 +1267,7 @@ if $DO_SELF_UPDATE; then self_update; exit 0; fi
 if $DO_EXPORT; then export_instructions; exit 0; fi
 if $DO_ORG_POLICY; then org_policy_install; exit 0; fi
 if $WITH_HANDOFF_HOOKS && ! $GLOBAL && [ -z "$PROFILES" ]; then install_handoff_hooks; exit 0; fi
+if $WITH_UI_DESIGN_HOOK && ! $GLOBAL && [ -z "$PROFILES" ]; then install_ui_design_hook; exit 0; fi
 
 if $DO_UNINSTALL; then
   if $GLOBAL; then
@@ -1244,6 +1345,7 @@ if $DRY_RUN; then
   fi
   echo "    + docs/           feedback/README.md, research/ (+ _archive dirs)"
   echo "    + FIRST-STEPS.md"
+  if [ -n "$DESIGN_SYSTEM" ] && [ "$DESIGN_SYSTEM" != skip ]; then echo "    + DESIGN.md       (--design-system $DESIGN_SYSTEM)"; fi
   if $ALSO_AGENTS_MD; then echo "    + AGENTS.md       (--also-agents-md)"; fi
   if $ALSO_GEMINI_MD; then echo "    + GEMINI.md       (--also-gemini-md)"; fi
   if [ -n "$WITH_MCP" ]; then echo "    + .mcp.json       (--with-mcp: $WITH_MCP)"; fi
@@ -1279,6 +1381,7 @@ cpa "$HARNESS_DIR/templates/progress-log.md"    "$TARGET/.planning/progress-log.
 cpa "$HARNESS_DIR/config/settings.local.$SAFETY.json.example" "$TARGET/.claude/settings.local.json.example"
 mkdir -p "$TARGET/.harness/templates"; cp "$HARNESS_DIR"/templates/*.md "$TARGET/.harness/templates/" 2>/dev/null || true; ok "templates in .harness/templates/"
 write_first_steps "$TARGET/FIRST-STEPS.md"
+scaffold_design_system   # honors --design-system for a UI project (no-op on the default/backend path)
 
 if [ -n "$WITH_MCP" ]; then
   say "Adding MCP server(s) to .mcp.json: $WITH_MCP"
@@ -1314,6 +1417,7 @@ echo "         3) cp .claude/settings.local.json.example .claude/settings.local.
 echo "         4) docs/01-harness-philosophy.md · docs/07-how-to-pick-a-profile.md · docs/12-platforms-and-tools.md"
 echo
 report_todos "$TARGET/CLAUDE.md"
+report_todos "$TARGET/DESIGN.md"   # names DESIGN_SYSTEM when a design system was scaffolded but not filled
 echo
 echo "  $(c '1;36' '▶ First 30 minutes')  (also saved to FIRST-STEPS.md)"
 echo "     1) start:  claude          — run it inside this folder"
