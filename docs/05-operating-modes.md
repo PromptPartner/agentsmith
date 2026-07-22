@@ -116,7 +116,7 @@ seam — `/model` switches it).
 but treat the names as this month's instance of a durable principle, not the principle itself.
 Model lineups turn over fast; what lasts is *match the model's strength to the phase's cost of
 being wrong*. The same seam also crosses tools — some teams plan in Claude and execute in Codex
-([`12-platforms-and-tools.md`](12-platforms-and-tools.md) covers running the harness across
+([`13-platforms-and-tools.md`](13-platforms-and-tools.md) covers running the harness across
 agents). Whatever the split, verification doesn't move: the checker runs the real check
 regardless of which model or tool produced the work ([`03-verify-means-evidence.md`](03-verify-means-evidence.md)).
 

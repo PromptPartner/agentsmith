@@ -49,7 +49,7 @@ fix immediately; "I'll remember it" is how things get lost. The team's record is
 and it is the single source of truth. Posting there is a write to someone's live system, so it
 follows the consent rule (core/10), not your discretion — {{TRACKER_POLICY}} Either way the defect
 is captured before you move on: consent governs *where* it lands, never *whether* it's recorded.
-See `docs/13-project-tracker-guide.md` for the tool-agnostic conventions.
+See `docs/14-project-tracker-guide.md` for the tool-agnostic conventions.
 
 **8. No live secrets in any tracked file. Ever.** No passwords, API keys, tokens, connection
 strings, install fingerprints, or any other live credential in any file that is committed,

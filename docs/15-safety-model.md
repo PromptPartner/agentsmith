@@ -39,7 +39,7 @@ opt-in, and asked once at setup, never inferred from the first. The pause-list i
 the **first write to any system outside the repo** a stop-and-ask, so this holds for every
 connected MCP server, not just the one the harness happens to know about. Reading is always free;
 writing is always asked. (The tracker case, and why the default is *propose, don't post*, is in
-[`13-project-tracker-guide.md`](13-project-tracker-guide.md).)
+[`14-project-tracker-guide.md`](14-project-tracker-guide.md).)
 
 ## Unattended work has a hard denylist
 

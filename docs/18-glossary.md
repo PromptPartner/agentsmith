@@ -51,7 +51,7 @@ an expert developer, most of the friction here is words — clear that, and the 
   wired in. A *connected* tool is not a *writable* tool — see availability vs authorization.
 - **Tracker** — wherever your team records work (GitHub issues, Linear, a markdown file). The
   harness treats naming it and being allowed to write to it as two different consents.
-  → [`13-project-tracker-guide.md`](13-project-tracker-guide.md)
+  → [`14-project-tracker-guide.md`](14-project-tracker-guide.md)
 
 ## Verification
 
