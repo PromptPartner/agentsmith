@@ -54,9 +54,9 @@ For the reasoning behind any of it, the cross-links point back to the doc that e
   instructions blob for surfaces without on-disk config (web Projects, Cowork). See
   [`13-platforms-and-tools.md`](13-platforms-and-tools.md) for which surfaces need it.
 
-**Two more worth knowing about**, not flags but shipped assets: five **worked example projects**
-in [`examples/`](../examples/README.md) (each a filled `CLAUDE.md` + real `verify.conf` for one
-profile), and **`--self-update`**, which pulls a newer harness and re-assembles your managed
+**Two more worth knowing about**, not flags but shipped assets: six **worked example projects**
+in [`examples/`](../examples/README.md) (each a filled `CLAUDE.md` + real `verify.conf`; two also
+bundle a skill), and **`--self-update`**, which pulls a newer harness and re-assembles your managed
 `CLAUDE.md` blocks in one step (README → "Keeping the harness current").
 
 ## Continuous integration — why, where, and what *not* to run it on

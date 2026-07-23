@@ -181,7 +181,7 @@ Prefer to do it by hand? See [`INSTALL.md`](INSTALL.md).
 ```
 core/         The universal rules — loaded every session. Lean by design (static context).
 profiles/     9 work-type modules — one (or more) gets assembled into CLAUDE.md.
-examples/     5 worked end-to-end projects (filled CLAUDE.md + verify.conf, one bundles a skill).
+examples/     6 worked end-to-end projects (filled CLAUDE.md + verify.conf, two bundle a skill).
 config/       Global settings.json, statusline, MCP examples, the plugin matrix.
 skills/       Skill bundle: how-to, RECOMMENDED map, the 6-skill harness pack + example (--with-skills).
 scripts/      verify.sh (gate), new-research.sh, new-feedback.sh, handoff.sh, secret-scan.sh + leak-gate.sh (+their tests), install-git-hooks.sh.

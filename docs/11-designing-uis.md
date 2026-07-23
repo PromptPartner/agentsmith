@@ -100,3 +100,8 @@ Four layers, each matched to what it can actually enforce:
 That's the whole loop. It rides the same rails as the rest of the harness — sticky content in
 `CLAUDE.md`, a `[TODO]` surfaced at setup, a durable per-project artifact, and a deterministic guard
 for the mechanical part — so there's nothing new to learn beyond "product UI expects a `DESIGN.md`."
+
+**See it worked out.** [`examples/ui-component-library/`](../examples/ui-component-library/README.md)
+is this whole loop as a finished project — *Facet UI*, a React component library that adopts the
+Linear system from the catalog (`--design-system catalog:linear.app`) and holds every component to
+it, with a bundled `design-review` skill for the judgment pass `verify.sh` can't do.
