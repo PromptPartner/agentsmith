@@ -26,16 +26,17 @@ is a harness" to "make it your team's own," with the glossary as the appendix:
 | [`13-platforms-and-tools.md`](13-platforms-and-tools.md) | What runs where, and how to run it in Codex / Gemini / claude.ai. |
 | [`14-project-tracker-guide.md`](14-project-tracker-guide.md) | Tool-agnostic tracker conventions (and the write-consent rule). |
 | [`15-safety-model.md`](15-safety-model.md) | What the harness can do to your machine, and how to bound it. |
-| [`16-troubleshooting.md`](16-troubleshooting.md) | Symptom → cause → fix, for when it's behaving oddly at runtime. |
-| [`17-influences.md`](17-influences.md) | Full credits — who said each idea first, plus complementary work. |
-| [`18-glossary.md`](18-glossary.md) | Every harness term, one line each, with pointers. The appendix. |
+| [`16-securing-what-you-build.md`](16-securing-what-you-build.md) | The *other* security question: making the code the agent writes safe — gates, the `security-audit` profile, the skills pack. |
+| [`17-troubleshooting.md`](17-troubleshooting.md) | Symptom → cause → fix, for when it's behaving oddly at runtime. |
+| [`18-influences.md`](18-influences.md) | Full credits — who said each idea first, plus complementary work. |
+| [`19-glossary.md`](19-glossary.md) | Every harness term, one line each, with pointers. The appendix. |
 | [`feedback/README.md`](feedback/README.md) | The post-incident log: how lessons become system changes. |
 | [`research/`](research/) | Source research the docs above were distilled from. |
 
 ## In a hurry? Four shortcuts
 
 **"I've never used an agent harness."** You ship software for a living; the AI-agent part is the
-new bit. Read [`01`](01-harness-philosophy.md), skim [the glossary](18-glossary.md) once, then
+new bit. Read [`01`](01-harness-philosophy.md), skim [the glossary](19-glossary.md) once, then
 [`04`](04-why-your-agent-ignored-the-rule.md) — the doc to read *before* a rule fails on you.
 
 **"I just installed it."** Setup left a `FIRST-STEPS.md` card in your project — that's your first
@@ -44,8 +45,10 @@ new bit. Read [`01`](01-harness-philosophy.md), skim [the glossary](18-glossary.
 unattended.
 
 **"Should I trust this on my machine?"** [`15-safety-model.md`](15-safety-model.md) is the whole
-posture in one place — what it can do, what's opt-in, and how to lock it down. If something's
-already behaving oddly, [`16-troubleshooting.md`](16-troubleshooting.md).
+posture in one place — what it can do, what's opt-in, and how to lock it down. That's blast radius;
+for the *other* security question — is the code it writes safe? — see
+[`16-securing-what-you-build.md`](16-securing-what-you-build.md). If something's already behaving
+oddly, [`17-troubleshooting.md`](17-troubleshooting.md).
 
 **"I want to make it mine."** [`09`](09-adapting-it-to-your-team.md), then
 [`10`](10-best-practices.md), then [`08`](08-how-to-add-a-profile.md) — and

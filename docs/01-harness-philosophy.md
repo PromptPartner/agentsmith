@@ -97,4 +97,4 @@ customer, a change, or a second engineer arrives, and then comes due all at once
 *Source for the framing in this doc: Google, "The New SDLC With Vibe Coding" (Osmani, Saboo &
 Kartakis, May 2026); the field's converging best practices. The mental models are theirs; the rules
 in `core/` are earned from real incidents. Full credits and the principle-by-principle source map:
-[`17-influences.md`](17-influences.md).*
+[`18-influences.md`](18-influences.md).*

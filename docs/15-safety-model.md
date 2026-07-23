@@ -20,11 +20,10 @@ does nothing for the other:
    least-privilege infra. **Nothing on this page touches that.** A perfectly sandboxed agent will
    happily write an IDOR.
 
-The second question is the profiles' job, not this page's: the `software-dev` and `devops-setup`
-quality gates carry a security pass and a CVE check, the code verify presets offer mechanical
-`deps`/`secrets` phases, and [`security-audit`](07-how-to-pick-a-profile.md) is the profile for when
-security *is* the work. Depth comes from opt-in specialist skills (`./setup.sh --with-plugins
-security`), deliberately kept out of the always-loaded rules — see [`../config/plugins.md`](../config/plugins.md).
+The second question has its own page: **[`16-securing-what-you-build.md`](16-securing-what-you-build.md)**
+— the profile quality gates, the mechanical `deps`/`secrets` verify phases, the `security-audit`
+profile for when security *is* the work, and the opt-in specialist skills pack. Read it alongside
+this one; neither substitutes for the other.
 
 ## The biggest lever: safety mode
 
