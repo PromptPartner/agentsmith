@@ -37,7 +37,7 @@
 #                                       #   default; the wizard defaults to cautious)
 #    ./setup.ps1 --assemble-only ...    # skip the config/plugins install; still writes CLAUDE.md
 #                                       #   (under --global that IS ~/.claude/CLAUDE.md — see above)
-#    ./setup.ps1 --with-plugins dev-workflow,stack-lsp ...   # opt-in plugin packs (latest)
+#    ./setup.ps1 --with-plugins dev-workflow,stack-lsp,security ...  # opt-in plugin packs (latest)
 #    ./setup.ps1 --with-rtk | --no-rtk   # rtk CLI-output compressor (default: ON for software-dev/devops-setup)
 #    ./setup.ps1 --with-mcp playwright,context7 ...   # add named MCP server(s) to project .mcp.json
 #    ./setup.ps1 --with-skills ...      # install the bundled skill pack (handoff, verify, harness-doctor,
@@ -474,7 +474,7 @@ function Install-GlobalConfig {
   Install-Marketplace 'openai/codex-plugin-cc'
   foreach ($spec in @('superpowers@claude-plugins-official','code-review@claude-plugins-official','claude-mem@thedotmack','codex@openai-codex')) { Install-Plugin $spec }
   if ((-not $o.WithPlugins) -and (-not [Console]::IsInputRedirected) -and ($env:WIZARD_RUN -ne '1')) {
-    $o.WithPlugins = Read-Host '  Optional plugin packs? Enter any of: dev-workflow stack-lsp (space-separated, blank=none)'
+    $o.WithPlugins = Read-Host '  Optional plugin packs? Enter any of: dev-workflow stack-lsp security (space-separated, blank=none)'
   }
   if ($o.WithPlugins -match 'dev-workflow') {
     Say "Plugin pack: dev-workflow (latest from source)"
@@ -486,6 +486,21 @@ function Install-GlobalConfig {
     Install-Marketplace 'gopherguides/gopher-ai'
     Install-Marketplace 'Piebald-AI/claude-code-lsps'
     foreach ($spec in @('go-dev@gopher-ai','tailwind@gopher-ai','gopls@claude-code-lsps','typescript-lsp@claude-plugins-official','gopls-lsp@claude-plugins-official')) { Install-Plugin $spec }
+  }
+  if ($o.WithPlugins -match 'security') {
+    # claude-security is first-party (already-registered official marketplace): it scans, then
+    # INDEPENDENTLY VERIFIES every finding before reporting — the harness's own "a checker the
+    # maker can't fool" principle.
+    # cybersecurity-skills (MIT, briiirussell) is REGISTERED AND INSTALLED, not vendored: upstream
+    # keeps maintaining it and we own none of it. Note it ships as ONE plugin carrying all 29
+    # skills — there is no per-skill install. That's fine for R10: skills are dynamic context,
+    # loaded on demand by description, so an unused skill file costs nothing per turn.
+    Say "Plugin pack: security (claude-security + the cybersecurity-skills catalog)"
+    Install-Plugin 'claude-security@claude-plugins-official'
+    Install-Marketplace 'briiirussell/cybersecurity-skills'
+    Install-Plugin 'cybersecurity-skills@cybersecurity-skills'
+    Say "  29 security skills available on demand — owasp-audit, threat-modeling, api-audit,"
+    Say "  dependency-audit, prompt-injection, container-audit, cloud-audit, iam-audit, and more."
   }
   # rtk — token-compressing CLI proxy (github.com/rtk-ai/rtk). Default-ON for code profiles; --no-rtk opts out.
   if (Rtk-Wanted) { Install-Rtk }
@@ -866,11 +881,14 @@ function Run-Wizard {
       Wiz-Note 'Bundles of extra commands/skills. Skip if unsure.'
       Write-Host '    • dev-workflow — feature-dev, frontend-design, workflow plugins'
       Write-Host '    • stack-lsp    — language servers (example pack: Go + TypeScript)'
-      $dwDef = if ($rec.Packs -match 'dev-workflow') { 'y' } else { 'n' }
-      $slDef = if ($rec.Packs -match 'stack-lsp')    { 'y' } else { 'n' }
+      Write-Host '    • security     — claude-security (scan + independent verify) + the cybersecurity-skills catalog'
+      $dwDef  = if ($rec.Packs -match 'dev-workflow') { 'y' } else { 'n' }
+      $slDef  = if ($rec.Packs -match 'stack-lsp')    { 'y' } else { 'n' }
+      $secDef = if ($rec.Packs -match 'security')     { 'y' } else { 'n' }
       $packs = @()
-      if (Wiz-Yn 'Add the dev-workflow pack?' $dwDef) { $packs += 'dev-workflow' }
-      if (Wiz-Yn 'Add the stack-lsp pack?' $slDef)    { $packs += 'stack-lsp' }
+      if (Wiz-Yn 'Add the dev-workflow pack?' $dwDef)  { $packs += 'dev-workflow' }
+      if (Wiz-Yn 'Add the stack-lsp pack?' $slDef)     { $packs += 'stack-lsp' }
+      if (Wiz-Yn 'Add the security pack?' $secDef)     { $packs += 'security' }
       if ($packs.Count) { $A += '--with-plugins'; $A += ($packs -join ',') }
       Write-Host ''
       Wiz-Note 'The bundled harness skill pack (/handoff, /verify, /harness-doctor, /harness-help,'
@@ -923,6 +941,7 @@ function Run-Wizard {
       $packs = @()
       if (Wiz-Yn 'Add the dev-workflow pack?' 'n') { $packs += 'dev-workflow' }
       if (Wiz-Yn 'Add the stack-lsp pack?' 'n')    { $packs += 'stack-lsp' }
+      if (Wiz-Yn 'Add the security pack?' 'n')     { $packs += 'security' }
       if ($packs.Count) { $A += '--with-plugins'; $A += ($packs -join ',') }
       Write-Host ''
       if (Wiz-Yn 'Copy the bundled skills into ~/.claude/skills?' 'n') { $A += '--with-skills' }

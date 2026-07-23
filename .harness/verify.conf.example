@@ -10,6 +10,14 @@
 # lint    :: npm run lint             # or: golangci-lint run | ruff check .
 # test    :: npm test                 # or: go test ./...     | pytest -q
 
+# ── security (stack-agnostic; pairs with the code profiles' security gates) ───
+# The profile's security checkbox is a judgment call; these two are not. A known-CVE
+# dependency and a committed credential are both mechanically detectable — so detect
+# them, rather than trusting anyone to remember. Add to whichever profile applies.
+# deps    :: npm audit --audit-level=high  # or: pip-audit | govulncheck ./... | cargo audit
+# secrets :: ./scripts/secret-scan.sh --all           # R8, whole tracked tree
+# image   :: trivy image --severity HIGH,CRITICAL --exit-code 1 <your-image>   # containers
+
 # ── document-creation / docs site ─────────────────────────────────────────────
 # spell   :: npx cspell "**/*.md"
 # links   :: npx linkinator ./build --silent   # check rendered links resolve

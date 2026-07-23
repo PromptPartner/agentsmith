@@ -36,7 +36,7 @@
 #                                       #   on the flag path; the wizard defaults to cautious)
 #    ./setup.sh --assemble-only ...     # skip the config/plugins install; still writes CLAUDE.md
 #                                       #   (under --global that IS ~/.claude/CLAUDE.md — see above)
-#    ./setup.sh --with-plugins dev-workflow,stack-lsp ...   # opt-in plugin packs (latest)
+#    ./setup.sh --with-plugins dev-workflow,stack-lsp,security ...  # opt-in plugin packs (latest)
 #    ./setup.sh --with-rtk | --no-rtk   # rtk CLI-output compressor (default: ON for software-dev/devops-setup)
 #    ./setup.sh --with-mcp playwright,context7 ...   # add named MCP server(s) to project .mcp.json
 #    ./setup.sh --with-skills ...       # install the bundled skill pack (handoff, verify,
@@ -258,15 +258,20 @@ wiz_pick_mcp() {  # sets WIZ_MCP (comma-joined or empty)
 
 wiz_pick_plugins() {  # sets WIZ_PLUGINS (comma-joined or empty); pre-checks defaults from REC_PACKS
   WIZ_PLUGINS=""
-  local dw=n sl=n
+  local dw=n sl=n sec=n
   case ",${REC_PACKS:-}," in *,dev-workflow,*) dw=y;; esac
   case ",${REC_PACKS:-}," in *,stack-lsp,*)    sl=y;; esac
+  case ",${REC_PACKS:-}," in *,security,*)     sec=y;; esac
   echo "  Optional plugin packs (installed via the 'claude' CLI — needs network):"
   echo "    • dev-workflow — feature-dev, frontend-design, workflow plugins"
   echo "    • stack-lsp    — language servers (example pack: Go + TypeScript)"
+  echo "    • security     — claude-security (scan + independent verify) + the cybersecurity-skills catalog"
   wiz_yn "Add the dev-workflow pack?" "$dw" && WIZ_PLUGINS="dev-workflow"
   if wiz_yn "Add the stack-lsp pack?" "$sl"; then
     [ -n "$WIZ_PLUGINS" ] && WIZ_PLUGINS="$WIZ_PLUGINS,stack-lsp" || WIZ_PLUGINS="stack-lsp"
+  fi
+  if wiz_yn "Add the security pack?" "$sec"; then
+    [ -n "$WIZ_PLUGINS" ] && WIZ_PLUGINS="$WIZ_PLUGINS,security" || WIZ_PLUGINS="security"
   fi
   return 0
 }
@@ -806,7 +811,7 @@ install_global_config() {
   for spec in superpowers@claude-plugins-official code-review@claude-plugins-official claude-mem@thedotmack codex@openai-codex; do install_plugin "$spec"; done
   # opt-in packs
   if [ -z "$WITH_PLUGINS" ] && [ -t 0 ] && [ "${WIZARD_RUN:-}" != 1 ]; then
-    printf '  Optional plugin packs? Enter any of: dev-workflow stack-lsp (space-separated, blank=none): '
+    printf '  Optional plugin packs? Enter any of: dev-workflow stack-lsp security (space-separated, blank=none): '
     read -r WITH_PLUGINS || true
   fi
   case ",$WITH_PLUGINS," in *dev-workflow*)
@@ -819,6 +824,21 @@ install_global_config() {
     install_marketplace gopherguides/gopher-ai
     install_marketplace Piebald-AI/claude-code-lsps
     for spec in go-dev@gopher-ai tailwind@gopher-ai gopls@claude-code-lsps typescript-lsp@claude-plugins-official gopls-lsp@claude-plugins-official; do install_plugin "$spec"; done ;;
+  esac
+  case ",$WITH_PLUGINS," in *security*)
+    # claude-security is first-party (already-registered official marketplace): it scans, then
+    # INDEPENDENTLY VERIFIES every finding before reporting — the harness's own "a checker the
+    # maker can't fool" principle.
+    # cybersecurity-skills (MIT, briiirussell) is REGISTERED AND INSTALLED, not vendored: upstream
+    # keeps maintaining it and we own none of it. Note it ships as ONE plugin carrying all 29
+    # skills — there is no per-skill install. That's fine for R10: skills are dynamic context,
+    # loaded on demand by description, so an unused skill file costs nothing per turn.
+    say "Plugin pack: security (claude-security + the cybersecurity-skills catalog)"
+    install_plugin claude-security@claude-plugins-official
+    install_marketplace briiirussell/cybersecurity-skills
+    install_plugin cybersecurity-skills@cybersecurity-skills
+    say "  29 security skills available on demand — owasp-audit, threat-modeling, api-audit,"
+    say "  dependency-audit, prompt-injection, container-audit, cloud-audit, iam-audit, and more." ;;
   esac
   # rtk — token-compressing CLI proxy (github.com/rtk-ai/rtk). Default-ON for code profiles; --no-rtk opts out.
   rtk_wanted && install_rtk
