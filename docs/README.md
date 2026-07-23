@@ -17,7 +17,7 @@ is a harness" to "make it your team's own," with the glossary as the appendix:
 | [`04-why-your-agent-ignored-the-rule.md`](04-why-your-agent-ignored-the-rule.md) | The economics of rules, the four ways they fail, and the guard for each. |
 | [`05-operating-modes.md`](05-operating-modes.md) | Attended sessions vs autonomous loops, and which model for which phase. |
 | [`06-your-first-loop.md`](06-your-first-loop.md) | The concrete recipe for standing up an unattended loop — safely, in order. |
-| [`07-how-to-pick-a-profile.md`](07-how-to-pick-a-profile.md) | The nine profiles and how to choose (or stack) them. |
+| [`07-how-to-pick-a-profile.md`](07-how-to-pick-a-profile.md) | The ten profiles and how to choose (or stack) them. |
 | [`08-how-to-add-a-profile.md`](08-how-to-add-a-profile.md) | Extending the harness to work it doesn't cover yet. |
 | [`09-adapting-it-to-your-team.md`](09-adapting-it-to-your-team.md) | Earning your own rules, and retrofitting onto an existing project. |
 | [`10-best-practices.md`](10-best-practices.md) | Dos & don'ts, each traceable to a real incident. |
