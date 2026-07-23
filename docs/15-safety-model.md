@@ -9,6 +9,22 @@ The one-line version: **the harness defaults to the cautious end, makes the dang
 opt-in and reversible, and enforces the non-negotiable parts with deterministic guards rather than
 prose the model might skip.**
 
+## Two different questions — this page answers one
+
+"Security" in an agent context means two things that need separating, because a control for one
+does nothing for the other:
+
+1. **Agent safety — can the agent hurt *me*?** Blast radius: what it can delete, exfiltrate, push,
+   or post. **That's this page**, and it's the one the harness enforces itself.
+2. **Product security — is the thing it *builds* safe?** Authorization, injection, dependency CVEs,
+   least-privilege infra. **Nothing on this page touches that.** A perfectly sandboxed agent will
+   happily write an IDOR.
+
+The second question has its own page: **[`16-securing-what-you-build.md`](16-securing-what-you-build.md)**
+— the profile quality gates, the mechanical `deps`/`secrets` verify phases, the `security-audit`
+profile for when security *is* the work, and the opt-in specialist skills pack. Read it alongside
+this one; neither substitutes for the other.
+
 ## The biggest lever: safety mode
 
 How much the agent does without asking is a single setting, and it's the control you'll actually

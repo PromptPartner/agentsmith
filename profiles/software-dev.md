@@ -64,6 +64,12 @@ Before calling code done, tick each — "deferred: reason" is allowed, silence i
       browser click-through), including every fan-out consumer (R3)
 - [ ] UI changes match the design system declared in `DESIGN.md` (or `DESIGN.md` updated to
       match) — inert if this project has no UI
+- [ ] code touching auth, user input, or secrets got a **named** security pass —
+      authorization enforced server-side at the handler (not the caller), input
+      parameterized/escaped at the sink, no credential in the diff. Name what you
+      checked; "looks fine" is not a pass
+- [ ] new/changed dependencies carry no known high/critical CVE (`npm audit` /
+      `pip-audit` / `govulncheck` / `cargo audit` — whichever your stack has)
 - [ ] docs, changelog, help text, and inline comments that the change made wrong
       are fixed in this same unit (R6)
 - [ ] a defect ticket exists for anything found-but-not-fixed (R7)
@@ -133,3 +139,5 @@ branch. No `code-review`/codex gate? Do the second-pass read — and an independ
 | "That type/lint error is in another workspace — ignore it." | Confirm with the build/typecheck command. If it's truly a sibling worktree, it's noise; if it's yours, it's a blocker — don't guess. |
 | "The docs aren't really part of this change." | If the change made a doc/help/comment wrong, fixing it IS the change (R6). |
 | "I'll match the design system later." | Later is the off-brand screen that ships. Read DESIGN.md first; if none exists, establish it before building UI. |
+| "It's internal-only, nobody can reach it." | Internal today, exposed after the next routing change. Enforce authz at the handler, not at the caller. |
+| "The scanner was clean, so it's secure." | Clean means no *known pattern* matched. Auth and ownership bugs are logic, not patterns — trace one request from an unauthorized caller. |
