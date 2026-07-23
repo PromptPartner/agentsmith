@@ -204,10 +204,10 @@ setup.ps1     Native-Windows PowerShell port of setup.sh — same flags, same be
 | `50-git-and-handoff` | Branch/commit rules + the memory-first handoff protocol |
 | `60-evolving-the-harness` | **The System-Evolution Mindset** — fix the system, not just the symptom |
 
-### The 9 profiles
+### The 10 profiles
 
 `software-dev` · `devops-setup` · `marketing-outreach` · `document-creation` · `data-crunching`
-· `general-admin` · `deep-research` · `creative-design` · `autonomous-loops`
+· `general-admin` · `deep-research` · `creative-design` · `security-audit` · `autonomous-loops`
 
 Each defines what *done* and *verified* mean for that work, its quality gates, its failure
 modes, the skills/tools that help, and a STOP-table addendum. See

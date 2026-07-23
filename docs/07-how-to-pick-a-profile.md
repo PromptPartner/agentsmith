@@ -4,7 +4,7 @@ A profile tailors the universal core to a kind of work — it defines what "done
 mean, the quality gates, and the failure modes to guard against. You assemble `CLAUDE.md` from
 the core plus one (or a few) profiles.
 
-## The nine profiles
+## The ten profiles
 
 | Profile | Use it when the work is… |
 |---|---|
@@ -16,6 +16,7 @@ the core plus one (or a few) profiles.
 | `general-admin` | inbox/triage, scheduling, file org, summarizing, light coordination, routine ops |
 | `deep-research` | multi-source investigations, competitive/market analysis, due diligence, cited reports |
 | `creative-design` | diagrams, slide decks, brand/visual artifacts, generated images/video |
+| `security-audit` | security *is* the deliverable — code audits, pentests, threat models, cloud/IAM reviews, incident investigations, compliance assessments |
 | `autonomous-loops` | work that lands with no human checking it first — scheduled/cron agents, `/loop` runs, long unattended orchestrations |
 
 **See one filled in.** [`../examples/`](../examples/README.md) has six complete worked projects
@@ -43,6 +44,16 @@ your work to see the end state — a filled `CLAUDE.md` project-specifics layer 
   [awesome-design-md](https://github.com/VoltAgent/awesome-design-md) catalog, so the UI isn't built
   ad-hoc and off-brand. See it worked out end to end in
   [`../examples/ui-component-library/`](../examples/ui-component-library/README.md).
+- **Security as a *gate* is not `security-audit`.** A feature that touches auth, handles user
+  input, or adds a dependency is still `software-dev` — its quality gates already carry a security
+  pass and a CVE check. Reach for `security-audit` only when the deliverable is a *finding* rather
+  than a ship: an audit, a pentest, a threat model, an incident write-up.
+- **Auditing a codebase you also build? Re-assemble, don't stack.** These two are the largest
+  profiles, and `software-dev,security-audit` lands ~635 lines — over the leanness budget, which is
+  the signal that you're asking the agent to hold two full rule sets it won't use at once. Switch
+  for the audit (`--profile security-audit --assemble-only`) and switch back after. It's one command,
+  and it matches the mode you're actually in: you are finding, not shipping. (`devops-setup,security-audit`
+  stacks fine at 554 if you're hardening infra you also run.)
 - **When in doubt**, `general-admin` is the safe catch-all — it assumes outward-facing/irreversible
   actions need confirmation and that summaries must be faithful.
 - You can **re-assemble any time** as a project's focus shifts: re-run `setup.sh --assemble-only`

@@ -9,6 +9,23 @@ The one-line version: **the harness defaults to the cautious end, makes the dang
 opt-in and reversible, and enforces the non-negotiable parts with deterministic guards rather than
 prose the model might skip.**
 
+## Two different questions — this page answers one
+
+"Security" in an agent context means two things that need separating, because a control for one
+does nothing for the other:
+
+1. **Agent safety — can the agent hurt *me*?** Blast radius: what it can delete, exfiltrate, push,
+   or post. **That's this page**, and it's the one the harness enforces itself.
+2. **Product security — is the thing it *builds* safe?** Authorization, injection, dependency CVEs,
+   least-privilege infra. **Nothing on this page touches that.** A perfectly sandboxed agent will
+   happily write an IDOR.
+
+The second question is the profiles' job, not this page's: the `software-dev` and `devops-setup`
+quality gates carry a security pass and a CVE check, the code verify presets offer mechanical
+`deps`/`secrets` phases, and [`security-audit`](07-how-to-pick-a-profile.md) is the profile for when
+security *is* the work. Depth comes from opt-in specialist skills (`./setup.sh --with-plugins
+security`), deliberately kept out of the always-loaded rules — see [`../config/plugins.md`](../config/plugins.md).
+
 ## The biggest lever: safety mode
 
 How much the agent does without asking is a single setting, and it's the control you'll actually

@@ -40,7 +40,8 @@ Install only on projects that need them — `/plugin install <name>@<marketplace
 | Profile | Useful add-ons |
 |---|---|
 | **software-dev** | Language LSP plugins (e.g. a TypeScript/Go/Python LSP), language dev plugins (e.g. `go-dev`), a CSS/UI plugin (e.g. `tailwind`) — match your stack only. |
-| **devops-setup** | An error-monitoring skill/CLI (e.g. `sentry-cli`); cloud-provider MCPs for your hosting. |
+| **devops-setup** | An error-monitoring skill/CLI (e.g. `sentry-cli`); cloud-provider MCPs for your hosting. The `security` pack for `container-audit`/`cloud-audit`/`iam-audit`. |
+| **security-audit** | The `security` pack — it *is* this profile's toolset. |
 | **marketing-outreach** | Your ESP/CRM MCP (e.g. Kit.com). |
 | **general-admin** | Email/calendar + file-storage MCPs (e.g. Dropbox). |
 | **creative-design** | excalidraw MCP (for the diagram skill); an image/video-generation MCP; a slide skill. |
@@ -62,6 +63,28 @@ interactive prompt:
 |---|---|---|
 | `dev-workflow` | `shinpr/claude-code-workflows` + official | dev-workflows, dev-workflows-frontend, feature-dev, frontend-design, qodo-skills |
 | `stack-lsp` *(example: Go + web)* | `gopherguides/gopher-ai`, `Piebald-AI/claude-code-lsps` + official | go-dev, tailwind, gopls, typescript-lsp, gopls-lsp |
+| `security` | `briiirussell/cybersecurity-skills` + official | claude-security, cybersecurity-skills |
+
+**The `security` pack**, in one line each:
+
+- **`claude-security`** (Anthropic, first-party) — a panel of agents maps the architecture, threat-
+  models it, hunts, and then *independently verifies every finding before it reaches the report*,
+  with the verification tally computed in code rather than asserted. That last part is why it's here
+  and not just "a scanner": it's the harness's own **checker-the-maker-can't-fool** principle
+  ([`../docs/03-verify-means-evidence.md`](../docs/03-verify-means-evidence.md)) shipped by the vendor.
+  Optionally turns confirmed findings into patch files you review and apply.
+- **`cybersecurity-skills`** (briiirussell, MIT) — 29 specialist workflows: `owasp-audit`,
+  `threat-modeling`, `api-audit`, `dependency-audit`, `prompt-injection`, `container-audit`,
+  `cloud-audit`, `iam-audit`, `incident-triage`, `finding-triage`, `security-comms`, plus
+  compliance (HIPAA/PCI/GDPR) and blue-team (SIEM, threat-hunting, forensics) sets. **Registered
+  and installed, never vendored** — upstream maintains it, we own none of it, and updates arrive
+  for free. Note it ships as **one plugin carrying all 29 skills**; there's no per-skill install.
+  That's fine here: skills are dynamic context, loaded on demand by `description`, so the ones you
+  never trigger cost nothing per turn.
+
+Offensive skills in that set enforce authorization checks and refuse destructive techniques — which
+lines up with the `security-audit` profile's rule that scanning an unauthorized host is itself the
+sensitive act, not a preliminary to one.
 
 `stack-lsp` is an **example** mirroring the original box — **swap the LSP/stack plugins for your
 own languages** (a Python LSP, a Rust plugin, etc.). Marketplaces are registered only when you

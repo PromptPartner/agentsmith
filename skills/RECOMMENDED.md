@@ -31,8 +31,16 @@ Project mode installs these into `<project>/.claude/skills/`; `--global` install
 - **mem-search**, **make-plan**, **learn-codebase** — from `claude-mem`. Memory + planning.
 - **deep-research** — built in. The engine for the deep-research profile.
 
+## Security skills — where they come from
+Every security skill named below ships in the opt-in **`security` pack**
+(`./setup.sh --with-plugins security`), which installs two things: Anthropic's first-party
+**`claude-security`** and **`cybersecurity-skills`** ([briiirussell](https://github.com/briiirussell/cybersecurity-skills),
+MIT — 29 specialist workflows). The catalog is **registered, not vendored**: upstream maintains it,
+updates arrive free, and the harness owns none of it (R10). It installs as one plugin carrying all
+29 skills — no per-skill install, which costs nothing since skills load on demand by description.
+
 ## software-dev
-<!-- MAP software-dev | packs: dev-workflow,stack-lsp | skills: test-driven-development,using-git-worktrees,code-review,ui-ux-pro-max -->
+<!-- MAP software-dev | packs: dev-workflow,stack-lsp,security | skills: test-driven-development,using-git-worktrees,code-review,ui-ux-pro-max,owasp-audit,dependency-audit -->
 - **test-driven-development**, **using-git-worktrees** — `superpowers`.
 - the `code-review` skill + the **codex** two-AI gate (plugins) for review.
 - language LSP / dev plugins (stack-lsp pack) for navigation + fixes.
@@ -47,6 +55,17 @@ Project mode installs these into `<project>/.claude/skills/`; `--global` install
 - **rtk** — token-compressing CLI proxy (Apache-2.0), **auto-installed for this profile** (pass
   `--no-rtk` to skip). Cuts `git`/test/build output 60–90% before it hits the context window. It's
   a binary + hook, not a plugin — details in `../config/plugins.md`.
+- **Security (the `security` pack — `./setup.sh --with-plugins security`):** the profile's quality
+  gates now ask for a security pass and a CVE check on every change. These are what you reach for
+  when the answer isn't obvious:
+  - **`threat-modeling`** — *before* you build anything auth-, money-, or PII-adjacent. The
+    cheapest security work there is, because it's the only kind that happens pre-code.
+  - **`owasp-audit`** — the workhorse source review (access control, injection, crypto, SSRF).
+  - **`api-audit`** for REST/GraphQL/RPC surfaces; **`dependency-audit`** when the mechanical
+    `deps` verify phase flags something and you need to judge real exploitability.
+  - **`prompt-injection`** — only if the product has LLM features, and then not optional.
+  - **`claude-security`** for a full pass on a risky diff: it verifies each finding independently
+    before reporting, which is the difference between a review and a list of guesses.
 
 ## deep-research
 <!-- MAP deep-research | packs: - | skills: deep-research -->
@@ -71,12 +90,37 @@ Project mode installs these into `<project>/.claude/skills/`; `--global` install
 - a docs-fetch tool (Context7) for grounding — see `../config/mcp.example.json`.
 
 ## devops-setup
-<!-- MAP devops-setup | packs: - | skills: - -->
+<!-- MAP devops-setup | packs: security | skills: container-audit,cloud-audit,iam-audit -->
 - Leans on **MCP servers** (cloud/CI/registry) and the **sentry-cli** skill for post-deploy
   monitoring more than on bundled skills. Add a skill when you find yourself repeating a runbook.
 - **rtk** — token-compressing CLI proxy (Apache-2.0), **auto-installed for this profile** (pass
   `--no-rtk` to skip): compresses noisy `kubectl`/`terraform`/`docker`/test output before the agent
   reads it. Binary + hook, not a plugin — see `../config/plugins.md`.
+- **Security (the `security` pack):** **`container-audit`** (Docker/K8s), **`cloud-audit`**
+  (AWS/GCP/Azure misconfiguration), **`iam-audit`** (least-privilege roles). These cover the two
+  quality gates this profile added — exposed surface and workload identity — where the answer needs
+  more than a checklist. The permissive default is the usual finding, not a bug in your code.
+
+## security-audit
+<!-- MAP security-audit | packs: security | skills: owasp-audit,threat-modeling,finding-triage,security-comms -->
+The `security` pack **is** this profile's toolset — install it (`--with-plugins security`) rather
+than working from memory. Match the skill to the engagement:
+- **Design/pre-code:** `threat-modeling` (STRIDE, abuse cases).
+- **Source & API:** `owasp-audit`, `api-audit`, `crypto-audit`, `secrets-audit`,
+  `prompt-injection` (LLM features), `mobile-audit`.
+- **Infra & identity:** `cloud-audit`, `container-audit`, `iam-audit`.
+- **Supply chain:** `dependency-audit`, `vuln-research`.
+- **Live testing** (only inside written scope — see the profile's authorization rule): `recon`,
+  `osint-recon`, `web-pentest`, `red-team-engagement`.
+- **Blue team / IR:** `incident-triage`, `threat-hunting`, `siem-detection`, `disk-forensics`,
+  `soc-operations`, `breach-patterns`.
+- **Compliance:** `hipaa-audit`, `pci-audit`, `privacy-engineering`, `csf-mapping`,
+  `ai-risk-management`.
+- **Delivery — don't skip these:** `finding-triage` (disposition per finding) and `security-comms`
+  (the same finding framed for an engineer vs. an exec). They're what turn a findings list into
+  something that gets acted on.
+- **`claude-security`** as the independent verification pass over your own findings — have it try
+  to *refute* each one. Same job the `codex` two-AI gate does for a diff.
 
 ## autonomous-loops
 <!-- MAP autonomous-loops | packs: - | skills: using-git-worktrees,verify -->
