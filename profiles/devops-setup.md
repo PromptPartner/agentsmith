@@ -32,6 +32,8 @@ Before claiming an infra change done:
 - [ ] **Backup/rollback path documented** and tested (you know the exact restore command).
 - [ ] **Docs/install steps updated** to match actual behavior — supported distros, env vars, ports, commands — R6. No drift between the runbook and reality.
 - [ ] Dry-run output reviewed for anything that mutates prod state.
+- [ ] **The exposed surface is only what you intended** — ports, routes, and buckets enumerated and checked from off the host; no secret in any committed config.
+- [ ] **Workload identity is least-privilege** — non-root container, scoped role/service account, no wildcard IAM. Admin-by-default is a finding, not a default.
 
 ### Failure modes to guard against
 - **"Container running but in a restart loop / 404 / no TLS cert."** The classic a visual glance misses: it's "up" but crash-looping, the reverse proxy 404s the route, or the cert never issued. Always curl the real URL.
@@ -57,3 +59,4 @@ Before claiming an infra change done:
 | "I'll make it idempotent later." | Later is the failed second run at 2am. Re-run safety is part of writing the script, not a follow-up. |
 | "I'll test on prod, it's faster." | Faster until it isn't. Dry-run, then a staging/throwaway box, then prod with a rollback in hand. |
 | "It's running, so it's fine." | "Running" hides crash-loops and 404s. Up >60s, healthy route, valid cert — or it's not fine. |
+| "The default config is fine for now." | Defaults are permissive by design — open ports, root user, wildcard IAM. "For now" is what ships. |
