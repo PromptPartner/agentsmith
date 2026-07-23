@@ -1,6 +1,6 @@
 # Worked examples — what a real project looks like
 
-The `profiles/` are the templates; these are five **filled-in projects** built on top of them, so
+The `profiles/` are the templates; these are six **filled-in projects** built on top of them, so
 you can see the end state instead of guessing what to write. Each one is a fictional-but-realistic
 project that uses the layered setup (universal **core** installed once globally, the **profile**
 assembled per project, then a hand-authored **project-specifics** layer on top).
@@ -12,6 +12,7 @@ assembled per project, then a hand-authored **project-specifics** layer on top).
 | [`data-analysis/`](data-analysis/) | `data-crunching` | **Tideline** — a monthly customer-churn analysis (pandas/DuckDB → report). |
 | [`devops-server/`](devops-server/) | `devops-setup` | **Harbor** — a self-hosted app server on a VPS (Docker Compose + Caddy). |
 | [`marketing-newsletter/`](marketing-newsletter/) | `marketing-outreach` | **Dispatch** — a weekly product newsletter & light outreach. |
+| [`ui-component-library/`](ui-component-library/) | `software-dev` | **Facet UI** — a React component library that adopts a catalog design system. Shows the **design-system feature** (`DESIGN.md`) + a **bundled skill**. |
 
 ## What's in each folder
 
@@ -21,8 +22,8 @@ assembled per project, then a hand-authored **project-specifics** layer on top).
   `setup.sh`; this is the part that's unique to the project. Fully filled, no `{{placeholders}}`.
 - **`.harness/verify.conf`** — the project's real definition of "shippable": concrete verify phases
   (the profile's preset, filled with actual commands). One phase per line, first failure stops.
-- **`.claude/skills/…`** (python-service only) — a project-bundled skill, showing that an example
-  can carry its own skills (or plugins) — not just rules.
+- **`.claude/skills/…`** (python-service and ui-component-library) — a project-bundled skill,
+  showing that an example can carry its own skills (or plugins) — not just rules.
 
 ## How to read them
 

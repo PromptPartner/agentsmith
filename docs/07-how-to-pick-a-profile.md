@@ -18,11 +18,12 @@ the core plus one (or a few) profiles.
 | `creative-design` | diagrams, slide decks, brand/visual artifacts, generated images/video |
 | `autonomous-loops` | work that lands with no human checking it first — scheduled/cron agents, `/loop` runs, long unattended orchestrations |
 
-**See one filled in.** Five of these profiles have a complete worked project under
-[`../examples/`](../examples/README.md) — `software-dev` (a FastAPI service, with a bundled skill),
-`document-creation` (a docs site), `data-crunching` (a churn analysis), `devops-setup` (a VPS app
-server), and `marketing-outreach` (a newsletter). Read the one nearest your work to see the end
-state — a filled `CLAUDE.md` project-specifics layer and a real `.harness/verify.conf`.
+**See one filled in.** [`../examples/`](../examples/README.md) has six complete worked projects
+across five profiles — `software-dev` (two: a FastAPI service *and* a React component library, each
+bundling a skill), `document-creation` (a docs site), `data-crunching` (a churn analysis),
+`devops-setup` (a VPS app server), and `marketing-outreach` (a newsletter). Read the one nearest
+your work to see the end state — a filled `CLAUDE.md` project-specifics layer and a real
+`.harness/verify.conf`.
 
 ## Choosing
 
@@ -40,7 +41,8 @@ state — a filled `CLAUDE.md` project-specifics layer and a real `.harness/veri
   `DESIGN.md`: the design system the agent reads before building any screen. Establish it at install
   (`./setup.sh --design-system stub|catalog:<brand>|generate`) or drop one in from the
   [awesome-design-md](https://github.com/VoltAgent/awesome-design-md) catalog, so the UI isn't built
-  ad-hoc and off-brand.
+  ad-hoc and off-brand. See it worked out end to end in
+  [`../examples/ui-component-library/`](../examples/ui-component-library/README.md).
 - **When in doubt**, `general-admin` is the safe catch-all — it assumes outward-facing/irreversible
   actions need confirmation and that summaries must be faithful.
 - You can **re-assemble any time** as a project's focus shifts: re-run `setup.sh --assemble-only`
