@@ -693,14 +693,21 @@ fill_placeholders() {  # in-place on a file
     allowed) tracker_policy="$TRACKER_POLICY_ALLOWED";;
     *)       tracker_policy="$TRACKER_POLICY_ASK";;
   esac
-  sed -i \
+  # Portable in-place edit. `sed -i` is not portable: GNU sed takes no argument,
+  # BSD sed (macOS) *requires* one, so -i and -i '' each break on the other platform.
+  # On macOS the GNU spelling fails with "sed: -e: No such file or directory" and the
+  # file is left with raw {{PLACEHOLDER}} tokens. Writing through a temp file needs no
+  # platform branch at all.
+  local tmp; tmp="$(mktemp)"
+  sed \
     -e "s|{{OPERATOR_NAME}}|$OPERATOR_NAME|g" \
     -e "s|{{OPERATOR_ROLE}}|$OPERATOR_ROLE|g" \
     -e "s|{{OPERATOR_BIO}}|$OPERATOR_BIO|g" \
     -e "s|{{TRACKER}}|$TRACKER|g" \
     -e "s|{{TRACKER_POLICY}}|$tracker_policy|g" \
-    "$1"
-  sed -i -E 's/\{\{([A-Z_]+)\}\}/[TODO: set \1]/g' "$1"
+    "$1" > "$tmp"
+  sed -E 's/\{\{([A-Z_]+)\}\}/[TODO: set \1]/g' "$tmp" > "$1"
+  rm -f "$tmp"
 }
 
 # Name the placeholders the human still has to fill, instead of hoping they skim for them.
