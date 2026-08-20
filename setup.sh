@@ -693,14 +693,20 @@ fill_placeholders() {  # in-place on a file
     allowed) tracker_policy="$TRACKER_POLICY_ALLOWED";;
     *)       tracker_policy="$TRACKER_POLICY_ASK";;
   esac
-  sed -i \
+  # NOT `sed -i`. GNU sed takes an OPTIONAL suffix after -i; BSD/macOS sed REQUIRES one, so there
+  # is no spelling of in-place sed that works on both. On BSD, `sed -i -e ...` reads "-e" as the
+  # backup suffix and then tries to open the remaining -e flags as input files, failing with
+  # "sed: -e: No such file or directory" — which made every profile fail to assemble on macOS.
+  # Writing to a temp and moving has one spelling on both platforms.
+  local tmp="$1.tmp.$$"
+  sed \
     -e "s|{{OPERATOR_NAME}}|$OPERATOR_NAME|g" \
     -e "s|{{OPERATOR_ROLE}}|$OPERATOR_ROLE|g" \
     -e "s|{{OPERATOR_BIO}}|$OPERATOR_BIO|g" \
     -e "s|{{TRACKER}}|$TRACKER|g" \
     -e "s|{{TRACKER_POLICY}}|$tracker_policy|g" \
-    "$1"
-  sed -i -E 's/\{\{([A-Z_]+)\}\}/[TODO: set \1]/g' "$1"
+    "$1" > "$tmp" && mv "$tmp" "$1"
+  sed -E 's/\{\{([A-Z_]+)\}\}/[TODO: set \1]/g' "$1" > "$tmp" && mv "$tmp" "$1"
 }
 
 # Name the placeholders the human still has to fill, instead of hoping they skim for them.

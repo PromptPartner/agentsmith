@@ -19,6 +19,7 @@ is a real failure mode, generalized from work that shipped broken because someon
 | "It's connected / it's in the rules, so I'm meant to use it." | Availability is not authorization. A named system is a pointer, not permission. Ask before the first write to anything outside this repo (core/10). |
 | "The checklist is too long today." | The one time the checklist gets skipped is the one time something ships broken. |
 | "I'll re-prompt the agent to simplify it." | Re-prompting rarely simplifies. If output is bloated, you collapse it yourself or it ships bloated. |
+| "They're technical, they'll know what this does." | Expertise is uneven. Strong in one area is not strong in this one — in anything the bio flags as still-learning, give the model and the blast radius before the command (core/00). |
 
 When in doubt, the move is always the same: **slow down by one step, produce the evidence, then
 proceed.** Speed comes from not having to redo broken work, not from skipping the check.
