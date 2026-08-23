@@ -33,6 +33,32 @@ some condition fires? Only the first answer earns `core/`.
 
 Adding to `core/` usually means **finding a line to remove**, not finding room.
 
+## The dual audience — why "explanation is waste" bends here
+
+`SKILL.md` says you are writing for a reader who has already read everything, so explanation is
+waste. For a pure agent-facing document that holds. `core/` files have a second reader: the human
+deciding whether to trust the rule — and `core/00` requires the opposite of them, *explain the WHY
+before the HOW*, because "we do X because last time Y broke" travels where "best practice says X"
+does not.
+
+Both hold, and the resolution isn't a compromise: **the WHY is the rule's completion criterion, not
+decoration.** A rule naming the failure it came from is more tightly bounded than one naming a
+value, so it earns its load on behaviour. What doesn't earn it is the *retelling* — the incident
+belongs in a clause, not a paragraph.
+
+So in a `core/` review, a war story is a no-op only when the rule stays just as sharp without it.
+Test it the usual way: delete it and ask whether the rule's bound got vaguer. If it did, the story
+was doing work.
+
+## Why there are no numbers in this skill
+
+`SKILL.md` gives no line count for sprawl and no break-even for disclosure, deliberately. A written
+threshold is a **cache** of a lookup, and this repo has already been misled by one: `docs/04` quoted
+a budget figure that drifted out of date and was believed (`docs/feedback/0007`). One number is
+worth keeping, and it lives where a command can compute it — `scripts/lint-leanness.sh`. Everywhere
+else the test is a question, not a figure: does every branch need this, and does deleting it change
+behaviour?
+
 ## Diagnosing a rule that didn't fire
 
 `docs/04-why-your-agent-ignored-the-rule.md` names four failure modes. Each maps to a lever here —
