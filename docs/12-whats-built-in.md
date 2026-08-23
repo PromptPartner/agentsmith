@@ -12,10 +12,11 @@ For the reasoning behind any of it, the cross-links point back to the doc that e
   and builds + runs the right command, printing it first so you learn the flags.
 - **Native Windows setup** — `setup.ps1` is a PowerShell port of `setup.sh` with the same flags
   and behaviour (including `--wizard`), so Windows users don't need Git Bash just to set up.
-- **Bundled skill pack** — `setup.sh --with-skills` installs six self-contained, script-aware,
-  invoke-by-name skills: `/handoff`, `/verify`, `/harness-doctor`, `/harness-help`, `/new-research`,
-  `/new-feedback`. They prefer a project-local `scripts/<x>.sh` when present, else run inline, so
-  they work globally, in a harness project, or in a bare repo. Project mode installs them into
+- **Bundled skill pack** — `setup.sh --with-skills` installs seven invoke-by-name skills:
+  `/handoff`, `/verify`, `/harness-doctor`, `/harness-help`, `/new-research`, `/writing-rules`,
+  `/new-feedback`. The six procedural ones prefer a project-local `scripts/<x>.sh` when present,
+  else run inline, so they work globally, in a harness project, or in a bare repo; `/writing-rules`
+  is pure reference. Project mode installs them into
   `<project>/.claude/skills/`; `--global` into `~/.claude/skills/`. See [`skills/README.md`](../skills/README.md)
   and [`skills/RECOMMENDED.md`](../skills/RECOMMENDED.md).
 - **Feedback / self-improvement loop** — a `docs/feedback/` convention + `scripts/new-feedback.sh`
