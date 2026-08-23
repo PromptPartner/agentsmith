@@ -141,26 +141,32 @@ you cannot phrase positively — and even then, pair it with the positive target
 
 ## The review pass
 
-Most of the value lands here, not on a blank file. Given a draft:
+Most of the value lands here, not on a blank file. **Name the failure mode before you fix it** —
+sprawl, sediment, duplication, negation, premature completion, no-op — because the vocabulary is
+the repair kit. Then, given a draft:
 
-1. **No-op sweep, sentence by sentence.** Delete, don't trim. Beware "streamline" — an agent told
-   to shorten optimises for length, because length is what it can see.
+1. **No-op sweep, sentence by sentence.** Grade each line by behaviour, not by length: an agent
+   told to shorten optimises for length, because length is what it can see.
 2. **Find the duplication.** Nothing stated twice, in any form. It's the most reliable sign a
    document was never tested.
 3. **Check the ladder.** Anything only some branches reach goes behind a pointer.
-4. **Re-read the pointers** — one trigger per branch, leading word first.
-5. **Turn every prohibition positive** unless it's a hard guardrail.
-6. **Name the failure mode before fixing it.** Sprawl, sediment, duplication, negation, premature
-   completion, no-op — the vocabulary is the repair kit.
+4. **Re-read the pointers** — one trigger per branch, leading word first. A branch that needs
+   material and has no pointer to it is the same finding in reverse.
+5. **State every prohibition as its positive target**, unless it's a hard guardrail.
 
-It's working if the document got **shorter** as it got better and you're surprised how little is
-left; if a leading word is visibly doing work in more than one place; and if nothing is stated
-twice.
+**Evidence when you cannot run it.** The no-op test is behavioural, so a review with no run behind
+it yields *candidates*, not verdicts (R2). The reachable offline bar: quote the line, name the
+failure mode, and say which surviving line already carries the meaning. A deletion you can point at
+a single source of truth for is evidence; one justified by "reads redundant" is a guess. Mark the
+guesses, and settle them by running the document.
+
+It's working if the document got **shorter** as it got better; if a leading word is visibly doing
+work in more than one place; and if nothing is stated twice.
 
 ## Report
 
 Say what you deleted and why, in failure-mode terms — not just what you added. If the document grew,
-justify the growth against the two loads. Verifying it means **running** it (R2), not re-reading it.
+justify the growth against the two loads.
 
 ---
 *Adapted from [`writing-for-agents`](https://github.com/mattpocock/skills/blob/5b15a47f2d7150f545fbcacbfe381787fc0230dc/skills/productivity/writing-for-agents/SKILL.md)
