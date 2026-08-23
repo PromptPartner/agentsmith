@@ -156,10 +156,11 @@ source) · `--with-skills` (install the bundled 6-skill harness pack — see bel
 `--update-plugins` · `--self-update` (pull a newer harness + re-assemble — see below) · `--doctor`
 (check install health) · `--dry-run`.
 
-**The bundled skill pack (`--with-skills`).** Six self-contained, work-type-neutral skills you can
-invoke by name: **`/handoff`** (wrap up cleanly), **`/verify`** (is this shippable?),
+**The bundled skill pack (`--with-skills`).** Seven self-contained, work-type-neutral skills you
+can invoke by name: **`/handoff`** (wrap up cleanly), **`/verify`** (is this shippable?),
 **`/harness-help`** (non-coder? start here — it explains your profile, rules, and what to type
-next), **`/harness-doctor`** (is my harness healthy?), **`/new-research`**, **`/new-feedback`**.
+next), **`/harness-doctor`** (is my harness healthy?), **`/new-research`**, **`/new-feedback`**,
+**`/writing-rules`** (writing or reviewing anything an agent reads — a rule, a gate, a prompt).
 In project mode they install into `<project>/.claude/skills/`; with `--global`, into
 `~/.claude/skills/`. New to this? Just run `claude` in your project and type `/harness-help`.
 

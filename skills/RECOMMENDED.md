@@ -10,15 +10,20 @@ recommend packs and skills for the profile you pick. Edit the prose and the MAP 
 they're the single source of truth.
 
 ## Bundled with the harness (install with `--with-skills`)
-Six small, self-contained, work-type-neutral skills — they prefer a project-local `scripts/<x>.sh`
-when present, else run an inline procedure, so they work globally, in a harness project, or in a
-bare repo:
+Seven small, work-type-neutral skills. Six prefer a project-local `scripts/<x>.sh` when present,
+else run an inline procedure, so they work globally, in a harness project, or in a bare repo; the
+seventh is pure reference:
 - **handoff** — wrap up a session: durable note + paste-ready kickoff block (`/handoff`).
 - **verify** — "is this shippable?" with evidence, never a bare "should pass" (`/verify`).
 - **harness-doctor** — is this project's harness installed correctly and lean? (`/harness-doctor`).
 - **harness-help** — orient a non-coder: your profile, rules, safety mode, what to type next.
 - **new-research** — scaffold a durable `docs/research/` source note (R9).
 - **new-feedback** — scaffold a numbered `docs/feedback/` post-incident (the System-Evolution loop).
+- **writing-rules** — the reference for anything an agent reads: a `core/` rule, a profile gate, a
+  skill description, a subagent prompt (`/writing-rules`). Its default move is deletion, so it earns
+  most on a draft you already have. Adapted from Matt Pocock's
+  [`writing-for-agents`](https://github.com/mattpocock/skills) (MIT) — install his upstream pack for
+  the original plus its skill-frontmatter companion.
 
 Project mode installs these into `<project>/.claude/skills/`; `--global` installs them into
 `~/.claude/skills/`.

@@ -39,10 +39,11 @@ only when the skill needs them.
 
 ## The bundled skill pack
 
-Six small, **self-contained + script-aware** skills ship in this repo. Each one prefers a
+Seven small skills ship in this repo. Six are **self-contained + script-aware**: each prefers a
 project-local `scripts/<x>.sh` when present (the fast path a harness-installed project already has),
 and otherwise runs a complete inline procedure — so they work installed globally, inside a harness
-project, or in a bare repo, with no dependency on a harness checkout:
+project, or in a bare repo, with no dependency on a harness checkout. The seventh,
+**writing-rules**, is pure reference: no script, nothing to run, consulted while you write.
 
 | Skill | Fires on | What it does |
 |---|---|---|
@@ -52,6 +53,7 @@ project, or in a bare repo, with no dependency on a harness checkout:
 | **harness-help** | "what is this / what do I type next?" | Non-coder orientation: profile, rules, safety mode, next step. |
 | **new-research** | "start a research note" | Scaffolds a durable `docs/research/` source note (R9). |
 | **new-feedback** | "log a harness lesson" | Scaffolds a numbered `docs/feedback/` post-incident (System-Evolution loop). |
+| **writing-rules** | writing/reviewing a rule, gate, skill description, or agent prompt | The levers that decide whether a line changes behaviour or only costs tokens. |
 
 They're work-type-neutral and follow `core/` rules (verify before done, no secrets). See
 `RECOMMENDED.md` for the per-profile map.

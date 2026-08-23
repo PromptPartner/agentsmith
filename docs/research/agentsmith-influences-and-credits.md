@@ -70,6 +70,58 @@ Direct quotes/figures from the PDF:
 
 ---
 
+## 7. Matt Pocock — *writing-for-agents* (the reference for agent-facing prose)
+
+**Who:** Matt Pocock — TypeScript educator (Total TypeScript, AI Hero); publishes an MIT-licensed
+skills repo at <https://github.com/mattpocock/skills>. Fetched at pinned commit `5b15a47f2d71`, 2026-08-23.
+Renamed from `writing-great-skills` in v1.1 — the upstream name is not stable, which is one reason
+the harness vendors an adaptation rather than pointing at a moving target.
+
+- **The two loads.** *"**Context load** is the cost of always-loaded material on the agent's window:
+  an `AGENTS.md` line, a skill description, anything sitting in context every turn, spending tokens
+  and attention whether or not it fires. **Cognitive load** is the cost on the human: which documents
+  exist and when to reach for each. The human is the index. Not a cost to minimise: it is the price
+  of human agency."* <https://github.com/mattpocock/skills/blob/5b15a47f2d7150f545fbcacbfe381787fc0230dc/skills/productivity/writing-for-agents/SKILL.md>
+  → maps to: `core/60`'s context-economics rule, which had only the machine half. The human half was
+  missing entirely. *Confidence: high* (direct, verbatim; the merged `core/60` bullet is ours).
+- **The no-op test.** *"Hunt **no-ops** sentence by sentence: an instruction the model already obeys
+  by default pays load to say nothing. The test (does it change behaviour versus the default?) is
+  model-relative, not reader-relative… When a sentence fails, delete the whole sentence rather than
+  trim words from it."* And on why agents get trimming wrong: *"Agents told to 'streamline' optimise
+  for length, because length is the thing they can see."* <https://github.com/mattpocock/skills/blob/5b15a47f2d7150f545fbcacbfe381787fc0230dc/skills/productivity/writing-for-agents/SKILL.md> ·
+  <https://github.com/mattpocock/skills/blob/5b15a47f2d7150f545fbcacbfe381787fc0230dc/docs/productivity/writing-for-agents.md>
+  → maps to: R10 (keep the surface small) and `scripts/lint-leanness.sh`, which measures length and
+  therefore cannot see this. *Confidence: high.* Applying it to `core/60` found two adjacent bullets
+  stating one meaning — a duplication the length gauge had scored as fine.
+- **Context pointers.** *"A skill's description is one; a line in `AGENTS.md` naming a doc is the
+  same object. The pointer's *wording*, not its target, decides when the agent reaches the material,
+  and how reliably."* <https://github.com/mattpocock/skills/blob/5b15a47f2d7150f545fbcacbfe381787fc0230dc/skills/productivity/writing-for-agents/SKILL.md>
+  → maps to: skill `description` discipline (`skills/README.md`) and every `docs/` cross-reference in
+  `core/`. *Confidence: high.*
+- **Leading words, and negation as its failure mode.** *"A **leading word** is a compact concept
+  already living in the model's pretraining that the agent thinks with while running the document…
+  Repeated as a token, never as a sentence."* Negation: *"steering by prohibition drags the forbidden
+  behaviour into context and makes it *more* available, not less… Prompt the **positive**."*
+  <https://github.com/mattpocock/skills/blob/5b15a47f2d7150f545fbcacbfe381787fc0230dc/skills/productivity/writing-for-agents/SKILL.md>
+  → maps to: the harness's existing leading words (*atomic*, *evidence*, *Chesterton's Fence*), and a
+  standing critique of the STOP table, which is prohibition-shaped by construction. *Confidence:
+  high* on the lever; *med* on the STOP-table implication — the table pairs each thought with the
+  positive reality, which is the mitigation Matt himself prescribes.
+- **Progressive disclosure / the information hierarchy.** In-file step → in-file reference →
+  disclosed reference behind a pointer; *"inline what every branch needs, and push behind a pointer
+  what only some branches reach."* <https://github.com/mattpocock/skills/blob/5b15a47f2d7150f545fbcacbfe381787fc0230dc/skills/productivity/writing-for-agents/SKILL.md>
+  → maps to: the static/dynamic split the harness already runs on, given an authoring procedure.
+  *Confidence: high.* The skill's own `SKILL.md` / `HARNESS-SURFACES.md` split follows it, mirroring
+  Matt's `SKILL.md` / `SKILL-MECHANICS.md` (<https://github.com/mattpocock/skills/blob/5b15a47f2d7150f545fbcacbfe381787fc0230dc/skills/productivity/writing-for-agents/SKILL-MECHANICS.md>, not vendored — it is
+  skill-frontmatter mechanics already covered by `skills/README.md`).
+
+**Licence:** MIT © 2026 Matt Pocock (<https://github.com/mattpocock/skills/blob/5b15a47f2d7150f545fbcacbfe381787fc0230dc/LICENSE>),
+compatible with this repo's MIT. The adaptation keeps his concepts and leading words verbatim —
+renaming a leading word forfeits the pretrained priors that make it work — and rewrites the
+surrounding prose in the harness voice with R-number cross-references.
+
+---
+
 ## Mapping at a glance (harness principle → primary source)
 | Harness principle | Strongest source |
 |---|---|
@@ -80,6 +132,8 @@ Direct quotes/figures from the PDF:
 | Understand before you change | Chesterton's Fence, 1929 (#6) |
 | System-Evolution loop; regression-gate rule changes | Self-Harness arXiv (#4); Google whitepaper "quality flywheel"/"factory model" (#3) |
 | No-secrets discipline (enforced by hooks) | Google whitepaper p.30 hook example (#3); Willison prompt-injection (#6) |
+| Writing rules: no-op test, single source of truth, leading words | Matt Pocock, *writing-for-agents* (#7) |
+| Context pointers: a skill description == a CLAUDE.md line naming a doc | Matt Pocock (#7) |
 
 ## All source URLs (flat list)
 - https://x.com/karpathy/status/1937902205765607626
@@ -102,3 +156,8 @@ Direct quotes/figures from the PDF:
 - https://www.martinfowler.com/bliki/TestDrivenDevelopment.html
 - https://newsletter.kentbeck.com/p/canon-tdd
 - https://www.chesterton.org/taking-a-fence-down/
+- https://github.com/mattpocock/skills
+- https://github.com/mattpocock/skills/blob/5b15a47f2d7150f545fbcacbfe381787fc0230dc/skills/productivity/writing-for-agents/SKILL.md
+- https://github.com/mattpocock/skills/blob/5b15a47f2d7150f545fbcacbfe381787fc0230dc/skills/productivity/writing-for-agents/SKILL-MECHANICS.md
+- https://github.com/mattpocock/skills/blob/5b15a47f2d7150f545fbcacbfe381787fc0230dc/docs/productivity/writing-for-agents.md
+- https://github.com/mattpocock/skills/blob/5b15a47f2d7150f545fbcacbfe381787fc0230dc/LICENSE
