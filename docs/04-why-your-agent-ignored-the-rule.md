@@ -22,9 +22,12 @@ This one fact predicts every failure mode below.
 Rules live in **static context** — loaded and paid for on *every single turn*. Dynamic context
 (skills, docs, memory) loads only when a task needs it and is free until then. That asymmetry has
 a hard number in this harness: the assembled `CLAUDE.md` is budgeted at **600 lines / ~10,000
-tokens** (`scripts/lint-leanness.sh` warns past it). The core plus two profiles measures at 551
-lines and ~9,860 tokens — **98% spent**. This is by design, not accident: the budget is full
-because every line earned its place, and the discipline is what keeps it working.
+tokens**. For where you actually stand, run the measurement rather than trusting a figure written
+down here — `scripts/lint-leanness.sh <file>` or `setup.sh --doctor`; `scripts/test-assemble.sh`
+gates it per profile on every CI run. (This paragraph used to quote a spend figure. It drifted, and
+a stale number is worse than none — a doc that caches a cheap lookup rots. See `docs/feedback/0007`.)
+The budget runs close to full by design: every line earned its place, and stacking two large
+profiles will exceed it. The discipline is what keeps it working.
 
 The cost of exceeding it isn't an error message. It's dilution: every line you add slightly
 weakens the agent's attention to every line already there. Ten sharp rules outperform forty
@@ -91,6 +94,9 @@ the exact surface it lands on → a check that fails if it regresses. Which caus
 tells you the fix: drowned → subtract; vague → sharpen; contradicted → reconcile; unguarded →
 hook. The full discipline lives in `core/60-evolving-the-harness.md` and
 [`feedback/README.md`](feedback/README.md) — this doc ends where they begin.
+
+This page is about *why* a rule fails. For how to write the replacement — the levers that decide
+whether a line changes behaviour or merely costs tokens — type `/writing-rules`.
 
 Most agent failures are configuration failures. That's not a consolation — it's the good news.
 Configuration is the part you can fix.

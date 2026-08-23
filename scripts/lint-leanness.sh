@@ -9,9 +9,9 @@
 #   ./scripts/lint-leanness.sh --strict [f]  # exit 1 if over budget (wire as a verify phase)
 #   ./scripts/lint-leanness.sh --help
 # Budgets (override via env):  LEANNESS_MAX_LINES (default 600)  LEANNESS_MAX_TOKENS (default 10000)
-# Calibration: core alone ~350 lines; core + one profile ~450; core + two ~535. The budget sits
-# above a normal two-profile assembly so it flags genuine bloat (3+ profiles, or lots of custom
-# rules), not a supported config. Token count is an estimate (chars/4) — a gauge, not a tokenizer.
+# Calibration: no expected sizes are written here — they drift and stale numbers mislead (0007).
+# scripts/test-assemble.sh measures each core+profile assembly per run and is the source of truth;
+# a core+TWO-profile assembly can exceed this budget. Token count is an estimate (chars/4).
 set -euo pipefail
 
 MAX_LINES="${LEANNESS_MAX_LINES:-600}"
@@ -20,7 +20,7 @@ STRICT=false; FILE=""
 for a in "$@"; do
   case "$a" in
     --strict) STRICT=true ;;
-    --help|-h) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --help|-h) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) echo "unknown option: $a" >&2; exit 2 ;;
     *) FILE="$a" ;;
   esac
