@@ -38,7 +38,7 @@ assert "both rule copies are byte-identical" cmp -s "$c/project/CLAUDE.md" "$c/p
 c="$(new_case codex-to-both)"
 run "$c" --platform codex --profile general-admin --assemble-only --operator-name "Test Operator" --target "$c/project"
 run "$c" --platform both --profile general-admin --assemble-only --target "$c/project"
-assert "adding Claude preserves Codex operator identity" rg -q '^\*\*Test Operator\*\* is the lead' "$c/project/CLAUDE.md"
+assert "adding Claude preserves Codex operator identity" grep -Eq '^\*\*Test Operator\*\* is the lead' "$c/project/CLAUDE.md"
 assert "transition to both keeps rule copies equivalent" cmp -s "$c/project/CLAUDE.md" "$c/project/AGENTS.md"
 
 for p in claude codex both; do
@@ -70,10 +70,10 @@ assert "Codex handoff hook installed" test -x "$c/Orca Account/codex home/hooks/
 assert "Codex UI hook installed" test -x "$c/Orca Account/codex home/hooks/ui-design-reminder.sh"
 assert "Codex does not install Claude context nudge" test ! -e "$c/Orca Account/codex home/hooks/context-budget-nudge.sh"
 assert "Codex does not install Claude statusline" test ! -e "$c/Orca Account/codex home/statusline-command.sh"
-assert "foreign TOML comments survive" rg -q 'keep-user-comment' "$c/Orca Account/codex home/config.toml"
-assert "foreign TOML tables survive" rg -q '^\[foreign\]' "$c/Orca Account/codex home/config.toml"
-assert "manual MCP name wins" rg -q 'command = "manual"' "$c/project/.codex/config.toml"
-assert "selected non-conflicting MCP is installed" rg -q '^\[mcp_servers\.context7\]' "$c/project/.codex/config.toml"
+assert "foreign TOML comments survive" grep -Eq 'keep-user-comment' "$c/Orca Account/codex home/config.toml"
+assert "foreign TOML tables survive" grep -Eq '^\[foreign\]' "$c/Orca Account/codex home/config.toml"
+assert "manual MCP name wins" grep -Eq 'command = "manual"' "$c/project/.codex/config.toml"
+assert "selected non-conflicting MCP is installed" grep -Eq '^\[mcp_servers\.context7\]' "$c/project/.codex/config.toml"
 python3 - "$c/Orca Account/codex home/config.toml" "$c/project/.codex/config.toml" <<'PY'
 import sys, tomllib
 user = tomllib.load(open(sys.argv[1], 'rb'))
@@ -88,9 +88,9 @@ assert "cautious mapping and TOML parse exactly" test $? -eq 0
 
 # Re-run adds a new managed server, retains the prior selection, and does not duplicate hooks/tables.
 run "$c" --platform codex --profile general-admin --target "$c/project" --with-mcp excalidraw --with-handoff-hooks --with-ui-design-hook --safety cautious
-assert "re-run unions prior MCP selections" rg -q '^\[mcp_servers\.context7\]' "$c/project/.codex/config.toml"
-assert "re-run adds new MCP selection" rg -q '^\[mcp_servers\.excalidraw\]' "$c/project/.codex/config.toml"
-assert "managed MCP table is duplicate-free" test "$(rg -c '^\[mcp_servers\.context7\]$' "$c/project/.codex/config.toml")" -eq 1
+assert "re-run unions prior MCP selections" grep -Eq '^\[mcp_servers\.context7\]' "$c/project/.codex/config.toml"
+assert "re-run adds new MCP selection" grep -Eq '^\[mcp_servers\.excalidraw\]' "$c/project/.codex/config.toml"
+assert "managed MCP table is duplicate-free" test "$(grep -Ec '^\[mcp_servers\.context7\]$' "$c/project/.codex/config.toml")" -eq 1
 assert "handoff hook definition is duplicate-free" test "$(jq '[.hooks.UserPromptSubmit[].hooks[] | select(.command | contains("handoff-on-keyword.sh"))] | length' "$c/Orca Account/codex home/hooks.json")" -eq 1
 assert "UI hook definition is duplicate-free" test "$(jq '[.hooks.PreToolUse[].hooks[] | select(.command | contains("ui-design-reminder.sh"))] | length' "$c/Orca Account/codex home/hooks.json")" -eq 1
 assert "Codex UI hook matches apply_patch only" test "$(jq -r '.hooks.PreToolUse[] | select(any(.hooks[]; .command | contains("ui-design-reminder.sh"))) | .matcher' "$c/Orca Account/codex home/hooks.json")" = '^apply_patch$'
@@ -126,8 +126,8 @@ run "$c" --platform codex --global --safety trusted --with-skills
 assert "Codex global rules use CODEX_HOME" test -f "$c/Orca Account/codex home/AGENTS.md"
 assert "Codex global install creates no Claude home" test ! -e "$c/home/.claude"
 assert "Codex global skills use ~/.agents/skills" test -f "$c/home/.agents/skills/handoff/SKILL.md"
-assert "trusted approval mapping" rg -q '^approval_policy = "never"$' "$c/Orca Account/codex home/config.toml"
-assert "trusted sandbox mapping" rg -q '^sandbox_mode = "danger-full-access"$' "$c/Orca Account/codex home/config.toml"
+assert "trusted approval mapping" grep -Eq '^approval_policy = "never"$' "$c/Orca Account/codex home/config.toml"
+assert "trusted sandbox mapping" grep -Eq '^sandbox_mode = "danger-full-access"$' "$c/Orca Account/codex home/config.toml"
 
 c="$(new_case both-global)"
 run "$c" --platform both --global --assemble-only
@@ -142,14 +142,14 @@ c="$(new_case legacy)"
 run "$c" --platform claude --profile general-admin --assemble-only --also-agents-md --target "$c/project"
 assert "legacy flag still writes AGENTS.md" test -f "$c/project/AGENTS.md"
 assert "legacy instruction copy equals CLAUDE.md" cmp -s "$c/project/CLAUDE.md" "$c/project/AGENTS.md"
-assert "legacy flag prints deprecation guidance" rg -q 'deprecated.*--platform both' "$c/out"
+assert "legacy flag prints deprecation guidance" grep -Eq 'deprecated.*--platform both' "$c/out"
 run "$c" --platform codex --profile general-admin --assemble-only --uninstall --target "$c/project"
 assert "Codex project uninstall removes AGENTS managed file" test ! -e "$c/project/AGENTS.md"
 assert "Codex project uninstall leaves Claude rule" test -f "$c/project/CLAUDE.md"
 
 c="$(new_case org-policy)"
 if run "$c" --platform codex --org-policy; then bad "Codex org policy is rejected"; else ok "Codex org policy is rejected"; fi
-assert "org-policy rejection explains scope" rg -q 'Codex organization-policy.*not supported' "$c/out"
+assert "org-policy rejection explains scope" grep -Eq 'Codex organization-policy.*not supported' "$c/out"
 
 echo
 printf 'platform-install: %d passed, %d failed\n' "$pass" "$fail"
