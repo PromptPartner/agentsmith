@@ -116,8 +116,10 @@ check "email address" \
       "a real address — use user@example.com"
 
 # 4. Absolute home directories. These pin a path to one machine and one username.
+# A username must not begin with a dot. Without that constraint, a variable-relative test path
+# such as "$case/home/.claude" is misread as the absolute home directory "/home/.claude".
 check "absolute home path" \
-      '([A-Za-z]:\\Users\\[A-Za-z0-9._-]+|/home/[A-Za-z0-9._-]+|/Users/[A-Za-z0-9._-]+)' \
+      '([A-Za-z]:\\Users\\[A-Za-z0-9_-][A-Za-z0-9._-]*|/(home|Users)/[A-Za-z0-9_-][A-Za-z0-9._-]*)' \
       ':([A-Za-z]:\\Users\\(you|your-name|username|user|name)|/(home|Users)/(you|your-name|username|user|me|name))$' \
       "a machine-specific path — use \$HOME or ~/"
 
