@@ -2,26 +2,31 @@
 # ============================================================================
 #  Agentsmith — the universal agent harness — setup (PowerShell port of setup.sh)
 #  Same flags, same behaviour, for native Windows without Git Bash. Also runs on
-#  PowerShell 7+ anywhere (Linux/macOS). Assembles a lean CLAUDE.md from core/ +
-#  chosen profiles, and (optionally) installs global config, plugins, and skills.
+#  PowerShell 7+ anywhere (Linux/macOS). Assembles lean native Claude/Codex rules
+#  from core/ + chosen profiles and installs the selected runtime integrations.
 #
 #  DEFAULT — just run it. With no options, the interactive wizard walks you through
 #  everything (and prints the exact command it runs, so you learn the flags):
 #    ./setup.ps1                        # ← the wizard (same as --wizard)
 #
 #  Everything below is the non-interactive path — pass options to skip the wizard.
+#  Platform selection (default: Claude for backward compatibility):
+#    ./setup.ps1 --platform claude|codex|both ...
+#      Claude rules/config/skills: ~/.claude/CLAUDE.md, settings.json, ~/.claude/skills
+#      Codex rules/config/skills:  $env:CODEX_HOME/AGENTS.md, config.toml, ~/.agents/skills
+#      Project rules/config/skills: CLAUDE.md + .mcp.json, or AGENTS.md + .codex/config.toml + .agents/skills
 #
-#  Per-project (self-contained CLAUDE.md = core + profile):
-#    ./setup.ps1 --profile software-dev --target C:\path\to\project
+#  Per-project (self-contained native rules = core + profile):
+#    ./setup.ps1 --platform codex --profile software-dev --target C:\path\to\project
 #    ./setup.ps1 --profile devops-setup,software-dev --operator-name "Your Name" `
 #                --operator-role "sysadmin / GTM" --tracker linear --target .
 #
 #  Layered (recommended): install the core ONCE globally, thin profile per project:
-#    ./setup.ps1 --global --operator-name "Your Name"     # core -> ~/.claude/CLAUDE.md + config
-#    ./setup.ps1 --profile software-dev --profile-only --target C:\path\to\project
+#    ./setup.ps1 --platform both --global --operator-name "Your Name"
+#    ./setup.ps1 --platform both --profile software-dev --profile-only --target C:\path\to\project
 #
-#  About --global: it writes ~/.claude/CLAUDE.md and nothing else can redirect it — --target is
-#  refused, and --assemble-only only skips config/plugins, it does NOT make the run local. A
+#  About --global: it writes the selected native global rule file(s); --target cannot redirect
+#  them, and --assemble-only only skips config/plugins, it does NOT make the run local. A
 #  re-run keeps the operator name/role/tracker already in the file unless you pass new ones, so
 #  `--global` on its own is safe to repeat. Use --dry-run to write nothing at all.
 #
@@ -35,26 +40,26 @@
 #    ./setup.ps1 --safety cautious|trusted  # cautious = auto-apply edits, ask before shell/network;
 #                                       #   trusted = run almost everything without asking (flag-path
 #                                       #   default; the wizard defaults to cautious)
-#    ./setup.ps1 --assemble-only ...    # skip the config/plugins install; still writes CLAUDE.md
-#                                       #   (under --global that IS ~/.claude/CLAUDE.md — see above)
+#    ./setup.ps1 --assemble-only ...    # skip config/plugins; still writes selected rule file(s)
+#                                       #   (under --global those are native global destinations)
 #    ./setup.ps1 --with-plugins dev-workflow,stack-lsp,security ...  # opt-in plugin packs (latest)
 #    ./setup.ps1 --with-rtk | --no-rtk   # rtk CLI-output compressor (default: ON for software-dev/devops-setup)
-#    ./setup.ps1 --with-mcp playwright,context7 ...   # add named MCP server(s) to project .mcp.json
+#    ./setup.ps1 --with-mcp playwright,context7 ...   # add named MCP server(s) to native project config
 #    ./setup.ps1 --with-skills ...      # install the bundled skill pack (handoff, verify, harness-doctor,
 #                                       #   new-research, new-feedback, harness-help); project mode →
-#                                       #   <project>/.claude/skills, --global → ~/.claude/skills
+#                                       #   native .claude/skills and/or .agents/skills destinations
 #    ./setup.ps1 --with-hooks ...       # install git guardrails (secret-scan+protect-main+conventional)
 #    ./setup.ps1 --update-plugins       # update installed plugins to latest, then exit
-#    ./setup.ps1 --doctor               # print install health, then exit
+#    ./setup.ps1 --platform both --doctor # print selected runtime health, then exit
 #    ./setup.ps1 --profile X --export-instructions > inst.md   # paste-ready blob for web/Cowork
 #    sudo ./setup.ps1 --org-policy      # machine-wide managed CLAUDE.md + hardened (no-bypass) settings
-#    ./setup.ps1 --with-handoff-hooks   # install reliable 'handoff' keyword hook (+ best-effort ctx-% nudge)
+#    ./setup.ps1 --with-handoff-hooks   # native keyword hook; Claude also gets its ctx-% nudge
 #    ./setup.ps1 --design-system skip|stub|catalog:<slug>|generate   # software-dev UI projects: establish a
 #                                       #   design system. stub = scaffold DESIGN.md to fill in; catalog:stripe =
 #                                       #   pull a ready-made one from the awesome-design-md catalog; generate =
 #                                       #   print the ui-ux-pro-max steps. default = skip (no DESIGN.md).
 #    ./setup.ps1 --with-ui-design-hook  # global PreToolUse nudge: consult DESIGN.md when editing UI files
-#    ./setup.ps1 --self-update          # pull the latest harness into this checkout + re-assemble managed CLAUDE.md
+#    ./setup.ps1 --self-update          # pull latest + re-assemble managed native rule files
 #                                       #   remote: --from <url> | $env:HARNESS_REMOTE | .harness/remote | the checkout's origin
 #                                       #   auth:   git@/ssh:// -> SSH key; https:// -> $env:HARNESS_GH_TOKEN (never stored)
 #                                       #   add --no-reassemble to fetch only; --dry-run to preview without pulling
@@ -70,7 +75,9 @@ $ErrorActionPreference = 'Stop'
 
 $HarnessDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $CcDir = Join-Path $HOME '.claude'
-$SkillsDest = Join-Path $CcDir 'skills'   # global by default; project mode repoints to <project>/.claude/skills
+$CodexDir = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME '.codex' }
+$CodexBeginMark = '# BEGIN AGENTSMITH MANAGED — edit via setup.sh'
+$CodexEndMark   = '# END AGENTSMITH MANAGED'
 
 $BeginMark = '<!-- BEGIN AGENTSMITH — universal agent harness (managed by setup.sh — edit core/profiles, not here) -->'
 $EndMark   = '<!-- END AGENTSMITH -->'
@@ -89,9 +96,15 @@ function Find-ManagedMarks ([string]$path) {  # -> @{Begin=..;End=..} of the mar
   }
   return $null
 }
+function Identity-Source ([string]$preferred, [string]$fallback = '') {
+  if (Find-ManagedMarks $preferred) { return $preferred }
+  if ($fallback -and (Find-ManagedMarks $fallback)) { return $fallback }
+  return $preferred
+}
 
 # ---- options ---------------------------------------------------------------
 $o = @{
+  Platform     = 'claude'
   Profiles     = ''
   Target       = ''
   # Operator identity starts EMPTY on purpose — empty means "the flag was not passed", which is the
@@ -138,6 +151,13 @@ function Usage {
 }
 
 function Have-Cmd ($name) { [bool](Get-Command $name -ErrorAction SilentlyContinue) }
+function Has-Claude { $o.Platform -in @('claude','both') }
+function Has-Codex  { $o.Platform -in @('codex','both') }
+function Platform-RulesLabel {
+  if ($o.Platform -eq 'claude') { return 'CLAUDE.md' }
+  if ($o.Platform -eq 'codex') { return 'AGENTS.md' }
+  return 'CLAUDE.md + AGENTS.md'
+}
 
 # ---- profile auto-detect + uninstall (used by --profile auto, the wizard, --uninstall) -----
 function Test-Has ([string]$dir, [string[]]$globs) {  # $true if any glob matches an entry in $dir
@@ -182,6 +202,7 @@ function Uninstall-From ([string]$path) {  # back up, strip the managed block; d
 # ---- arg parse (mirrors setup.sh's --flag UX exactly) ----------------------
 for ($i = 0; $i -lt $args.Count; $i++) {
   switch ($args[$i]) {
+    '--platform'          { $o.Platform = $args[++$i] }
     '--profile'           { $o.Profiles = $args[++$i] }
     '--target'            { $o.Target = $args[++$i] }
     '--operator-name'     { $o.OperatorName = $args[++$i] }
@@ -228,6 +249,17 @@ for ($i = 0; $i -lt $args.Count; $i++) {
 }
 
 if ($o.Safety -notin @('cautious','trusted')) { Die "--safety must be 'cautious' or 'trusted' (got: '$($o.Safety)')" }
+if ($o.Platform -notin @('claude','codex','both')) { Die "--platform must be 'claude', 'codex', or 'both' (got: '$($o.Platform)')" }
+if ($o.AlsoAgents) {
+  Warn '--also-agents-md is deprecated and copies instructions only. Use --platform both for native Codex config, skills, MCP, and hooks.'
+}
+if ($o.OrgPolicy -and (Has-Codex)) {
+  Die 'Codex organization-policy installation is not supported in this release. Use --platform claude --org-policy; Codex organization policy must be managed separately.'
+}
+if (-not (Has-Claude)) {
+  if ($o.WithPlugins) { Warn '--with-plugins is Claude-only and was ignored for --platform codex.' }
+  if ($o.WithRtk -eq 'true') { Warn '--with-rtk is Claude-specific wiring and was ignored for --platform codex.' }
+}
 
 # Resolve --profile auto by inspecting the target project (before validation).
 if ($o.Profiles -eq 'auto') {
@@ -298,7 +330,9 @@ function Report-Todos ([string]$file) {
 
 function Backup-File ([string]$path) {  # if it exists, save a timestamped copy beside it; return the backup path
   if (-not (Test-Path $path)) { return $null }
-  $bak = "$path.bak.$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+  $base = "$path.bak.$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+  $bak = $base; $suffix = 1
+  while (Test-Path $bak) { $bak = "$base.$suffix"; $suffix++ }
   Copy-Item $path $bak -Force
   return $bak
 }
@@ -365,7 +399,7 @@ function Merge-Json ([hashtable]$base, [hashtable]$over) {
   return $base
 }
 
-function Install-Skills ([string]$Dest = $SkillsDest) {  # default global; project mode passes <project>/.claude/skills
+function Install-Skills ([string]$Dest) {
   New-Item -ItemType Directory -Force -Path $Dest | Out-Null
   $n = 0
   foreach ($sk in (Get-ChildItem (Join-Path $HarnessDir 'skills') -Directory)) {
@@ -375,6 +409,121 @@ function Install-Skills ([string]$Dest = $SkillsDest) {  # default global; proje
     Copy-Item $sk.FullName $d -Recurse -Force; Ok "skill $($sk.Name)"; $n++
   }
   Ok "skills installed: $n (into $Dest)"
+}
+
+function Install-NativeSkills {
+  if (-not $o.WithSkills) { return }
+  if (Has-Claude) {
+    $dest = if ($o.Global) { Join-Path $CcDir 'skills' } else { Join-Path $o.Target '.claude/skills' }
+    Install-Skills $dest
+  }
+  if (Has-Codex) {
+    $dest = if ($o.Global) { Join-Path $HOME '.agents/skills' } else { Join-Path $o.Target '.agents/skills' }
+    Install-Skills $dest
+  }
+}
+
+function ConvertTo-TomlLiteral ($value) {
+  if ($null -eq $value) { Die 'Cannot write a null MCP value to TOML.' }
+  if ($value -is [bool]) { return $value.ToString().ToLowerInvariant() }
+  if (($value -is [byte]) -or ($value -is [int16]) -or ($value -is [int32]) -or ($value -is [int64]) -or
+      ($value -is [single]) -or ($value -is [double]) -or ($value -is [decimal])) {
+    return [Convert]::ToString($value, [Globalization.CultureInfo]::InvariantCulture)
+  }
+  if (($value -is [Collections.IEnumerable]) -and (-not ($value -is [string])) -and (-not ($value -is [Collections.IDictionary]))) {
+    return '[' + ((@($value) | ForEach-Object { ConvertTo-TomlLiteral $_ }) -join ', ') + ']'
+  }
+  return ($value.ToString() | ConvertTo-Json -Compress)
+}
+
+function Test-TomlFile ([string]$path) {
+  $python = $null
+  foreach ($name in @('python3','python')) {
+    $cmd = Get-Command $name -ErrorAction SilentlyContinue
+    if (-not $cmd) { continue }
+    & $cmd.Source -c 'import tomllib' 2>$null
+    if ($LASTEXITCODE -eq 0) { $python = $cmd.Source; break }
+  }
+  if (-not $python) { Die 'Codex configuration needs Python 3.11+ for TOML validation (python3 or python with tomllib).' }
+  & $python -c 'import sys,tomllib; tomllib.load(open(sys.argv[1], "rb"))' $path 2>$null
+  return ($LASTEXITCODE -eq 0)
+}
+
+function Update-CodexToml ([string]$dest, [bool]$IncludeSafety, [string]$McpNames = '') {
+  $original = if (Test-Path $dest) { Get-Content $dest -Raw } else { '' }
+  $newline = if ($original.Contains("`r`n")) { "`r`n" } else { "`n" }
+  $managedPattern = '(?ms)^' + [regex]::Escape($CodexBeginMark) + '\r?\n.*?^' + [regex]::Escape($CodexEndMark) + '[ \t]*\r?\n?'
+  $old = [regex]::Match($original, $managedPattern)
+  $prior = @()
+  if ($old.Success) {
+    $prior = @([regex]::Matches($old.Value, '(?m)^\[mcp_servers\.([A-Za-z0-9_-]+)\][ \t]*\r?$') | ForEach-Object { $_.Groups[1].Value })
+  }
+  $foreign = [regex]::Replace($original, $managedPattern, '').TrimStart("`r","`n")
+  $manual = @([regex]::Matches($foreign, '(?m)^\[mcp_servers\.([A-Za-z0-9_-]+)(?:\.[^\]]+)?\][ \t]*\r?$') |
+              ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+  $selected = @(($prior + @($McpNames.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })) | Sort-Object -Unique)
+  $source = (Get-Content (Join-Path $HarnessDir 'config/mcp.example.json') -Raw | ConvertFrom-Json -AsHashtable)['mcpServers']
+  $lines = @($CodexBeginMark)
+  if ($IncludeSafety) {
+    if ($o.Safety -eq 'cautious') {
+      $lines += 'approval_policy = "on-request"'
+      $lines += 'sandbox_mode = "workspace-write"'
+    } else {
+      $lines += 'approval_policy = "never"'
+      $lines += 'sandbox_mode = "danger-full-access"'
+    }
+  }
+  foreach ($name in $selected) {
+    if ($manual -contains $name) {
+      Warn "Codex MCP server '$name' is defined outside the Agentsmith block — leaving the manual definition untouched. Rename/remove it before asking Agentsmith to manage that name."
+      continue
+    }
+    if (-not $source.ContainsKey($name)) {
+      Warn "Codex MCP server '$name' is no longer present in config/mcp.example.json — skipped."
+      continue
+    }
+    $block = $source[$name]
+    $lines += ''
+    $lines += "[mcp_servers.$name]"
+    foreach ($key in $block.Keys) {
+      if ($key -in @('_use','env')) { continue }
+      $lines += "$key = $(ConvertTo-TomlLiteral $block[$key])"
+    }
+    if ($block.ContainsKey('env') -and ($block['env'] -is [Collections.IDictionary]) -and $block['env'].Count -gt 0) {
+      $lines += ''
+      $lines += "[mcp_servers.$name.env]"
+      foreach ($key in $block['env'].Keys) { $lines += "$key = $(ConvertTo-TomlLiteral $block['env'][$key])" }
+    }
+  }
+  $lines += $CodexEndMark
+  $managed = $lines -join $newline
+  $firstTable = [regex]::Match($foreign, '(?m)^\s*\[')
+  if ($firstTable.Success) {
+    $preamble = $foreign.Substring(0, $firstTable.Index).TrimEnd("`r","`n")
+    $tables = $foreign.Substring($firstTable.Index).TrimStart("`r","`n")
+    $rendered = @($preamble, $managed, $tables) | Where-Object { $_ -ne '' } | Join-String -Separator ($newline + $newline)
+  } else {
+    $rendered = @($foreign.TrimEnd("`r","`n"), $managed) | Where-Object { $_ -ne '' } | Join-String -Separator ($newline + $newline)
+  }
+  $rendered += $newline
+  New-Item -ItemType Directory -Force -Path (Split-Path $dest -Parent) | Out-Null
+  $tmp = "$dest.agentsmith-new"
+  Set-Content -Path $tmp -Value $rendered -Encoding utf8 -NoNewline
+  if (-not (Test-TomlFile $tmp)) { Remove-Item $tmp -Force; Die "Generated Codex TOML did not validate; original left unchanged: $dest" }
+  $bak = Backup-File $dest
+  Move-Item $tmp $dest -Force
+  if ($bak) { Ok "updated Codex config (backup: $(Split-Path $bak -Leaf))" } else { Ok "wrote Codex config: $dest" }
+}
+
+function Remove-CodexTomlBlock ([string]$path) {
+  if (-not (Test-Path $path)) { return }
+  $content = Get-Content $path -Raw
+  if (-not $content.Contains($CodexBeginMark)) { return }
+  $bak = Backup-File $path
+  $pat = '(?ms)^' + [regex]::Escape($CodexBeginMark) + '\r?\n.*?^' + [regex]::Escape($CodexEndMark) + '[ \t]*\r?\n?'
+  $new = [regex]::Replace($content, $pat, '').TrimStart("`r","`n")
+  if ($new -match '\S') { Set-Content $path -Value $new -Encoding utf8 -NoNewline; Ok "removed Agentsmith's Codex config block (backup: $(Split-Path $bak -Leaf))" }
+  else { Remove-Item $path -Force; Ok "removed $path — it only held Agentsmith's block (backup: $(Split-Path $bak -Leaf))" }
 }
 
 # Get-Recommendation <profile> — parse the "<!-- MAP <profile> | packs: ... | skills: ... -->" line
@@ -439,7 +588,7 @@ function Install-Rtk {  # install the rtk binary (per-OS), then let rtk wire its
   else { Warn "rtk: 'rtk init -g --auto-patch' failed — run it by hand to wire the hook" }
 }
 
-function Install-GlobalConfig {
+function Install-ClaudeConfig {
   Say "Installing global config into $CcDir"
   New-Item -ItemType Directory -Force -Path $CcDir | Out-Null
   $statusDest = Join-Path $CcDir 'statusline-command.sh'
@@ -504,9 +653,25 @@ function Install-GlobalConfig {
   }
   # rtk — token-compressing CLI proxy (github.com/rtk-ai/rtk). Default-ON for code profiles; --no-rtk opts out.
   if (Rtk-Wanted) { Install-Rtk }
-  if ($o.WithSkills) { Install-Skills $SkillsDest }
-  if ($o.WithHandoffHooks) { Install-HandoffHooks }
-  if ($o.WithUiDesignHook) { Install-UiDesignHook }
+}
+
+function Install-CodexConfig {
+  Say "Installing native Codex config into $CodexDir"
+  Update-CodexToml (Join-Path $CodexDir 'config.toml') $true ''
+}
+
+function Install-PlatformConfig {
+  if (Has-Claude) { Install-ClaudeConfig }
+  if (Has-Codex) { Install-CodexConfig }
+  Install-NativeSkills
+  if ($o.WithHandoffHooks) {
+    if (Has-Claude) { Install-ClaudeHandoffHooks }
+    if (Has-Codex) { Install-CodexHandoffHooks }
+  }
+  if ($o.WithUiDesignHook) {
+    if (Has-Claude) { Install-ClaudeUiDesignHook }
+    if (Has-Codex) { Install-CodexUiDesignHook }
+  }
 }
 
 function Build-VerifyConf ([string]$dest) {
@@ -527,7 +692,7 @@ function Build-VerifyConf ([string]$dest) {
   Set-Content -Path $dest -Value ($lines -join "`n") -Encoding utf8
 }
 
-function Add-McpServers ([string]$names) {
+function Add-ClaudeMcpServers ([string]$names) {
   $src = Join-Path $HarnessDir 'config/mcp.example.json'
   $dest = Join-Path $o.Target '.mcp.json'
   if (-not (Test-Path $dest)) { '{ "mcpServers": {} }' | Set-Content $dest -Encoding utf8 }
@@ -545,6 +710,15 @@ function Add-McpServers ([string]$names) {
   if ($added -gt 0) {
     $destObj | ConvertTo-Json -Depth 100 | Set-Content $dest -Encoding utf8
     Ok ".mcp.json now serves: $((Get-Content $dest -Raw | ConvertFrom-Json -AsHashtable)['mcpServers'].Keys -join ', ')"
+  }
+}
+
+function Add-NativeMcpServers ([string]$names) {
+  if (Has-Claude) { Add-ClaudeMcpServers $names }
+  if (Has-Codex) {
+    $dest = Join-Path $o.Target '.codex/config.toml'
+    Update-CodexToml $dest $false $names
+    Ok "Codex MCP configuration → $dest"
   }
 }
 
@@ -610,7 +784,7 @@ function OrgPolicy-Install {
   Write-Host "  Admins: extend $orgSettings with org allow/deny rules as needed."
 }
 
-function Install-HandoffHooks {
+function Install-ClaudeHandoffHooks {
   $hooksDir = Join-Path $CcDir 'hooks'
   New-Item -ItemType Directory -Force -Path $hooksDir | Out-Null
   Copy-Item (Join-Path $HarnessDir 'hooks/handoff-on-keyword.sh')   (Join-Path $hooksDir 'handoff-on-keyword.sh')   -Force
@@ -638,6 +812,60 @@ function Install-HandoffHooks {
   Write-Host ''; Say "Handoff hooks installed."
   Write-Host "  • 'handoff' / 'wrap up' in a prompt → injects the safe-state + recall-prompt protocol (reliable)"
   Write-Host "  • context ≥ threshold used → one best-effort nudge (fragile — see hooks/README.md)"
+}
+
+function Add-CodexHook ([string]$event, [string]$command, [string]$matcher = '') {
+  $settings = Join-Path $CodexDir 'hooks.json'
+  New-Item -ItemType Directory -Force -Path $CodexDir | Out-Null
+  if (-not (Test-Path $settings)) { '{}' | Set-Content $settings -Encoding utf8 }
+  try { $s = Get-Content $settings -Raw | ConvertFrom-Json -AsHashtable }
+  catch { Warn "Codex hooks merge failed — hooks.json is not valid JSON; left it unchanged. Add the snippet from hooks/README.md by hand."; return $false }
+  if ($s -isnot [Collections.IDictionary]) { Warn 'Codex hooks merge failed — hooks.json must contain a JSON object; left it unchanged.'; return $false }
+  if (-not $s.ContainsKey('hooks')) { $s['hooks'] = @{} }
+  elseif ($s['hooks'] -isnot [Collections.IDictionary]) { Warn 'Codex hooks merge failed — hooks.json "hooks" must be a JSON object; left it unchanged.'; return $false }
+  if (-not $s['hooks'].ContainsKey($event)) { $s['hooks'][$event] = @() }
+  foreach ($group in @($s['hooks'][$event])) {
+    if (($group -isnot [Collections.IDictionary]) -or (-not $group.ContainsKey('hooks'))) { continue }
+    foreach ($handler in @($group['hooks'])) {
+      if (($handler -is [Collections.IDictionary]) -and $handler.ContainsKey('command') -and $handler['command'] -eq $command) {
+        Ok "Codex $event hook already wired in hooks.json"
+        return $true
+      }
+    }
+  }
+  $entry = @{ hooks = @(@{ type = 'command'; command = $command }) }
+  if ($matcher) { $entry['matcher'] = $matcher }
+  $s['hooks'][$event] = @($s['hooks'][$event]) + @($entry)
+  $bak = Backup-File $settings
+  try {
+    $tmp = "$settings.agentsmith-new"
+    $s | ConvertTo-Json -Depth 100 | Set-Content $tmp -Encoding utf8
+    Get-Content $tmp -Raw | ConvertFrom-Json -AsHashtable | Out-Null
+    Move-Item $tmp $settings -Force
+    Ok "wired Codex $event hook (backup: $(Split-Path $bak -Leaf))"
+    return $true
+  } catch {
+    Remove-Item "$settings.agentsmith-new" -Force -ErrorAction SilentlyContinue
+    Warn "Codex hooks merge failed — original left unchanged. Add the snippet from hooks/README.md by hand."
+    return $false
+  }
+}
+
+function Quote-BashPath ([string]$path) {
+  $bashPath = $path.Replace('\','/').Replace('"','\"')
+  return '"' + $bashPath + '"'
+}
+
+function Install-CodexHandoffHooks {
+  $hooksDir = Join-Path $CodexDir 'hooks'
+  New-Item -ItemType Directory -Force -Path $hooksDir | Out-Null
+  $script = Join-Path $hooksDir 'handoff-on-keyword.sh'
+  Copy-Item (Join-Path $HarnessDir 'hooks/handoff-on-keyword.sh') $script -Force
+  Ok "Codex handoff hook script → $script"
+  $cmd = 'bash ' + (Quote-BashPath $script)
+  Add-CodexHook 'UserPromptSubmit' $cmd | Out-Null
+  Say "Codex does not receive the context-percentage nudge; it depends on Claude's status line."
+  Say 'Open /hooks in Codex and trust the new hook before relying on it.'
 }
 
 # ---- design system (software-dev UI projects) ------------------------------
@@ -684,7 +912,7 @@ function Scaffold-DesignSystem {  # honor --design-system for a UI project. Idem
     Write-Host '      Or via its npm CLI (needs Node + Python 3):  npm i -g ui-ux-pro-max-cli && uipro'
   }
 }
-function Install-UiDesignHook {  # global PreToolUse nudge; PowerShell parses settings.json natively (no jq needed)
+function Install-ClaudeUiDesignHook {  # global PreToolUse nudge; PowerShell parses settings.json natively (no jq needed)
   $hooksDir = Join-Path $CcDir 'hooks'
   New-Item -ItemType Directory -Force -Path $hooksDir | Out-Null
   Copy-Item (Join-Path $HarnessDir 'hooks/ui-design-reminder.sh') (Join-Path $hooksDir 'ui-design-reminder.sh') -Force
@@ -702,6 +930,18 @@ function Install-UiDesignHook {  # global PreToolUse nudge; PowerShell parses se
     $s | ConvertTo-Json -Depth 100 | Set-Content $settings -Encoding utf8
     Ok "wired UI design-system hook into settings.json (backup .bak.$PID)"
   } catch { Warn 'merge failed — add the PreToolUse snippet from hooks/README.md by hand' }
+}
+
+function Install-CodexUiDesignHook {
+  $hooksDir = Join-Path $CodexDir 'hooks'
+  New-Item -ItemType Directory -Force -Path $hooksDir | Out-Null
+  $script = Join-Path $hooksDir 'ui-design-reminder.sh'
+  Copy-Item (Join-Path $HarnessDir 'hooks/ui-design-reminder.sh') $script -Force
+  Ok "Codex UI design-system hook script → $script"
+  $cmd = 'bash ' + (Quote-BashPath $script)
+  if (Add-CodexHook 'PreToolUse' $cmd '^apply_patch$') {
+    Say 'Open /hooks in Codex and trust the new hook before relying on it.'
+  }
 }
 
 # ============================================================================
@@ -804,11 +1044,21 @@ function Check-Git {
 function Run-Wizard {
   Banner
   Write-Host '  Welcome! This wizard sets up Agentsmith — the "house rules" that make your AI coding'
-  Write-Host '  assistant (Claude Code) work in a consistent, careful way on your projects.'
+  Write-Host '  assistant work in a consistent, careful way on your projects.'
   Write-Host "  I'll ask a few short questions, explain each in plain language, show you the exact"
   Write-Host '  command, and change NOTHING until you say yes. Any file I touch is backed up first.'
   Write-Host ''
   Check-Git
+  Write-Host '  Which assistant platform should Agentsmith install for?'
+  Write-Host '    1) Claude Code'
+  Write-Host '    2) Codex / Orca'
+  Write-Host '    3) Both (independent native copies)'
+  $pc = ''
+  while ($pc -notmatch '^[1-3]$') { $pc = Read-Host '  Choose [1-3, default 1]'; if ([string]::IsNullOrEmpty($pc)) { $pc = '1' } }
+  $wizPlatform = @('claude','codex','both')[[int]$pc - 1]
+  $wizHasClaude = $wizPlatform -in @('claude','both')
+  $wizHasCodex = $wizPlatform -in @('codex','both')
+  Write-Host ''
   Write-Host '  What would you like to set up?'
   Write-Host '    1) This project        — put the rules in ONE project folder you choose (most common)'
   Write-Host '    2) Everything (global) — one set of rules for every project on this computer'
@@ -820,7 +1070,7 @@ function Run-Wizard {
 
   $availProfiles = @(Get-ChildItem (Join-Path $HarnessDir 'profiles') -Filter *.md | Sort-Object Name | ForEach-Object { $_.BaseName })
   $availMcp = @((Get-Content (Join-Path $HarnessDir 'config/mcp.example.json') -Raw | ConvertFrom-Json -AsHashtable)['mcpServers'].Keys | Sort-Object)
-  $A = @()
+  $A = @('--platform', $wizPlatform)
   $wizSkills = 'n'   # init for StrictMode; set to 'y' if the project-mode skill pack is chosen
 
   switch ($mc) {
@@ -849,12 +1099,12 @@ function Run-Wizard {
         Wiz-Note "• the bundled harness skill pack (/handoff, /verify, /harness-help + 3 more)"
       }
       $poDefault = 'n'
-      $globalMd = Join-Path $CcDir 'CLAUDE.md'
+      $globalMd = if ($wizPlatform -eq 'codex') { Join-Path $CodexDir 'AGENTS.md' } else { Join-Path $CcDir 'CLAUDE.md' }
       if (Find-ManagedMarks $globalMd) { $poDefault = 'y'; Write-Host ''; Ok "Universal core already installed globally ($globalMd)." }
       Write-Host ''
       Wiz-Note "'Thin' = this project keeps only its profile; the shared core rules live in your"
       Wiz-Note 'global file and load automatically. Recommended once the core is global.'
-      if (Wiz-Yn 'Keep the project CLAUDE.md thin (profile only; core stays global)?' $poDefault) { $A += '--profile-only' }
+      if (Wiz-Yn 'Keep the project rules thin (profile only; core stays global)?' $poDefault) { $A += '--profile-only' }
       Write-Host ''
       Wiz-Note 'How careful should the assistant be about running things?'
       Wiz-Note 'Cautious = auto-apply file edits, but ASK before shell commands / network (recommended).'
@@ -876,23 +1126,25 @@ function Run-Wizard {
       Write-Host ''
       Wiz-Note 'MCP servers are optional extra tools the assistant can use (a browser, a docs fetcher).'
       Wiz-Note 'Skip if unsure — you can always add them later.'
-      if (Wiz-Yn "Add MCP server(s) to this project's .mcp.json?" 'n') { $m = @(Wiz-MultiSelect $true $availMcp); if ($m.Count) { $A += '--with-mcp'; $A += ($m -join ',') } }
-      Write-Host ''; Write-Host "  Optional plugin packs (installed via the 'claude' CLI — needs network):"
-      Wiz-Note 'Bundles of extra commands/skills. Skip if unsure.'
-      Write-Host '    • dev-workflow — feature-dev, frontend-design, workflow plugins'
-      Write-Host '    • stack-lsp    — language servers (example pack: Go + TypeScript)'
-      Write-Host '    • security     — claude-security (scan + independent verify) + the cybersecurity-skills catalog'
-      $dwDef  = if ($rec.Packs -match 'dev-workflow') { 'y' } else { 'n' }
-      $slDef  = if ($rec.Packs -match 'stack-lsp')    { 'y' } else { 'n' }
-      $secDef = if ($rec.Packs -match 'security')     { 'y' } else { 'n' }
-      $packs = @()
-      if (Wiz-Yn 'Add the dev-workflow pack?' $dwDef)  { $packs += 'dev-workflow' }
-      if (Wiz-Yn 'Add the stack-lsp pack?' $slDef)     { $packs += 'stack-lsp' }
-      if (Wiz-Yn 'Add the security pack?' $secDef)     { $packs += 'security' }
-      if ($packs.Count) { $A += '--with-plugins'; $A += ($packs -join ',') }
+      if (Wiz-Yn "Add MCP server(s) to this project's native config?" 'n') { $m = @(Wiz-MultiSelect $true $availMcp); if ($m.Count) { $A += '--with-mcp'; $A += ($m -join ',') } }
+      if ($wizHasClaude) {
+        Write-Host ''; Write-Host "  Optional Claude plugin packs (installed via the 'claude' CLI — needs network):"
+        Wiz-Note 'Bundles of extra commands/skills. Skip if unsure.'
+        Write-Host '    • dev-workflow — feature-dev, frontend-design, workflow plugins'
+        Write-Host '    • stack-lsp    — language servers (example pack: Go + TypeScript)'
+        Write-Host '    • security     — claude-security (scan + independent verify) + the cybersecurity-skills catalog'
+        $dwDef  = if ($rec.Packs -match 'dev-workflow') { 'y' } else { 'n' }
+        $slDef  = if ($rec.Packs -match 'stack-lsp')    { 'y' } else { 'n' }
+        $secDef = if ($rec.Packs -match 'security')     { 'y' } else { 'n' }
+        $packs = @()
+        if (Wiz-Yn 'Add the dev-workflow pack?' $dwDef)  { $packs += 'dev-workflow' }
+        if (Wiz-Yn 'Add the stack-lsp pack?' $slDef)     { $packs += 'stack-lsp' }
+        if (Wiz-Yn 'Add the security pack?' $secDef)     { $packs += 'security' }
+        if ($packs.Count) { $A += '--with-plugins'; $A += ($packs -join ',') }
+      }
       Write-Host ''
       Wiz-Note 'The bundled harness skill pack (/handoff, /verify, /harness-doctor, /harness-help,'
-      Wiz-Note '/new-research, /new-feedback) installs into this project .claude/skills/.'
+      Wiz-Note '/new-research, /new-feedback) installs into each selected platform skill directory.'
       if (Wiz-Yn 'Copy the bundled harness skill pack into this project?' 'y') { $A += '--with-skills'; $wizSkills = 'y' }
       Write-Host ''
       Wiz-Note 'Git guardrails are automatic safety checks in this project: block committing a'
@@ -919,9 +1171,8 @@ function Run-Wizard {
           if (Wiz-Yn 'Install the UI-edit nudge hook globally?' 'y') { $A += '--with-ui-design-hook' }
         }
       }
-      Wiz-Note 'Handoff hooks help the assistant save its place before it runs low on working memory.'
-      if (Wiz-Yn "Install handoff hooks globally ('handoff' keyword + best-effort context nudge)?" 'n') { $A += '--with-handoff-hooks' }
-      if (Wiz-Yn 'Also write AGENTS.md (for Codex & other assistants)?' 'n') { $A += '--also-agents-md' }
+      Wiz-Note 'Handoff hooks help the assistant save its place. Codex gets the keyword hook; the context-% nudge is Claude-only.'
+      if (Wiz-Yn "Install native handoff hooks globally?" 'n') { $A += '--with-handoff-hooks' }
       if (Wiz-Yn 'Also write GEMINI.md (for the Gemini CLI)?' 'n') { $A += '--also-gemini-md' }
     }
     '2' {
@@ -937,17 +1188,20 @@ function Run-Wizard {
         Wiz-Note 'you post. This applies to every project on this computer.'
         if (Wiz-Yn "Let the assistant write to $tk unprompted?" 'n') { $A += '--tracker-writes'; $A += 'allowed' }
       }
-      Write-Host ''; Write-Host "  Optional plugin packs (installed via the 'claude' CLI — needs network):"
-      $packs = @()
-      if (Wiz-Yn 'Add the dev-workflow pack?' 'n') { $packs += 'dev-workflow' }
-      if (Wiz-Yn 'Add the stack-lsp pack?' 'n')    { $packs += 'stack-lsp' }
-      if (Wiz-Yn 'Add the security pack?' 'n')     { $packs += 'security' }
-      if ($packs.Count) { $A += '--with-plugins'; $A += ($packs -join ',') }
+      if ($wizHasClaude) {
+        Write-Host ''; Write-Host "  Optional Claude plugin packs (installed via the 'claude' CLI — needs network):"
+        $packs = @()
+        if (Wiz-Yn 'Add the dev-workflow pack?' 'n') { $packs += 'dev-workflow' }
+        if (Wiz-Yn 'Add the stack-lsp pack?' 'n')    { $packs += 'stack-lsp' }
+        if (Wiz-Yn 'Add the security pack?' 'n')     { $packs += 'security' }
+        if ($packs.Count) { $A += '--with-plugins'; $A += ($packs -join ',') }
+      }
       Write-Host ''
-      if (Wiz-Yn 'Copy the bundled skills into ~/.claude/skills?' 'n') { $A += '--with-skills' }
-      if (Wiz-Yn "Install handoff hooks ('handoff' keyword + best-effort context nudge)?" 'y') { $A += '--with-handoff-hooks' }
+      if (Wiz-Yn 'Copy the bundled skills into the selected native skill directories?' 'n') { $A += '--with-skills' }
+      if (Wiz-Yn "Install native handoff hooks?" 'y') { $A += '--with-handoff-hooks' }
     }
     '3' {
+      if ($wizHasCodex) { Die "Codex organization policy is not supported in this release. Re-run the wizard with platform 'claude' for machine-wide policy." }
       Write-Host ''; Warn 'Machine-wide policy writes managed config as admin. The wizard prints an elevated command for you to run.'
       Wiz-Note 'Use this only on a shared computer where every account should follow the same rules.'
       if (Wiz-Yn 'Bake a profile into the managed core?' 'n') { Write-Host ''; $picks = @(Wiz-MultiSelect $false $availProfiles); $A += '--profile'; $A += ($picks -join ',') }
@@ -966,13 +1220,14 @@ function Run-Wizard {
   if ($mc -eq '1') {
     Write-Host ''; Say "Here's what I found, and what I'll do:"
     Write-Host "      • Folder:      $tgt"
-    $md = Join-Path $tgt 'CLAUDE.md'
+    $ruleLeaf = if ($wizPlatform -eq 'codex') { 'AGENTS.md' } else { 'CLAUDE.md' }
+    $md = Join-Path $tgt $ruleLeaf
     if (-not (Test-Path $md)) {
-      Write-Host "      • CLAUDE.md:   none yet → I'll create a new one"
+      Write-Host "      • ${ruleLeaf}:   none yet → I'll create a new one"
     } elseif (Find-ManagedMarks $md) {
-      Write-Host "      • CLAUDE.md:   a previous Agentsmith install → I'll update only my section (your edits stay)"
+      Write-Host "      • ${ruleLeaf}:   a previous Agentsmith install → I'll update only my section (your edits stay)"
     } else {
-      Write-Host "      • CLAUDE.md:   your own file (no Agentsmith section) → I'll add my section at the end,"
+      Write-Host "      • ${ruleLeaf}:   your own file (no Agentsmith section) → I'll add my section at the end,"
       Write-Host "                     after saving a timestamped backup of your original"
     }
     if ($poDefault -eq 'y') {
@@ -983,7 +1238,7 @@ function Run-Wizard {
     $ws = if ($wizSafety) { $wizSafety } else { 'cautious' }
     $wsNote = if ($ws -eq 'cautious') { 'asks before shell/network' } else { 'runs without asking' }
     Write-Host "      • Safety:      $ws  ($wsNote)"
-    if ($wizSkills -eq 'y') { Write-Host "      • Skills:      bundled harness pack → $(Join-Path $tgt '.claude/skills')" }
+    if ($wizSkills -eq 'y') { Write-Host "      • Skills:      bundled harness pack → native skill directory/directories" }
     Wiz-Note 'Backups are made before any existing file changes. Nothing is written until you confirm.'
   }
 
@@ -1002,7 +1257,7 @@ function Run-Wizard {
 
 # ---- self-update -----------------------------------------------------------
 # Pull the latest harness into the checkout this script lives in, then re-assemble
-# the managed CLAUDE.md blocks. Remote + auth are configurable; nothing secret is
+# the selected managed native rule blocks. Remote + auth are configurable; nothing secret is
 # ever written to a tracked file (Rule: no live creds in the repo).
 function Resolve-SelfUpdateRemote {
   if ($o.SelfUpdateRemote) { return $o.SelfUpdateRemote }
@@ -1116,6 +1371,8 @@ function Reassemble-ManagedTargets {
   $targets = @()
   $gmd = Join-Path $CcDir 'CLAUDE.md'
   if (Test-Path $gmd) { $targets += $gmd }
+  $codexGlobal = Join-Path $CodexDir 'AGENTS.md'
+  if (Test-Path $codexGlobal) { $targets += $codexGlobal }
   foreach ($f in @('CLAUDE.md','AGENTS.md','GEMINI.md')) { $p = Join-Path $here $f; if (Test-Path $p) { $targets += $p } }
   $seen = @{}; $n = 0
   foreach ($t in $targets) {
@@ -1216,30 +1473,31 @@ if ($o.Wizard -or (($args.Count -eq 0) -and ($env:WIZARD_RUN -ne '1'))) {
 }
 
 if ($o.Doctor) {
-  Say "Harness doctor — $CcDir"
-  $settings = Join-Path $CcDir 'settings.json'
-  if (Test-Path $settings) {
-    Ok 'settings.json present'
-    try {
-      $s = Get-Content $settings -Raw | ConvertFrom-Json -AsHashtable
-      foreach ($k in @('statusLine','effortLevel','autoMemoryEnabled','enabledPlugins')) {
-        if ($s.ContainsKey($k)) { Ok "settings.$k set" } else { Warn "settings.$k missing" }
-      }
-    } catch { Warn 'settings.json present but not valid JSON' }
-  } else { Warn "no $settings" }
-  if (Test-Path (Join-Path $CcDir 'statusline-command.sh')) { Ok 'statusline installed' } else { Warn 'no statusline-command.sh' }
-  $gmd = Join-Path $CcDir 'CLAUDE.md'
-  if (Test-Path $gmd) {
-    Ok "global ~/.claude/CLAUDE.md present ($(@(Get-Content $gmd).Count) lines)"
-  } else { Warn 'no global CLAUDE.md (per-project only)' }
-  $skills = Join-Path $CcDir 'skills'
-  if (Test-Path $skills) { Ok "skills dir: $(@(Get-ChildItem $skills -Directory).Count) skill(s)" } else { Warn 'no ~/.claude/skills' }
-  if (Have-Cmd claude) { Ok "'claude' CLI on PATH" } else { Warn "'claude' CLI not on PATH (plugin install/update unavailable from script)" }
-  if (Test-Path (Join-Path $CcDir 'plugins')) { Ok 'plugins dir present' } else { Warn 'no ~/.claude/plugins' }
+  Say "Harness doctor — platform: $($o.Platform)"
+  if (Has-Claude) {
+    $settings = Join-Path $CcDir 'settings.json'
+    if (Test-Path $settings) { Ok 'Claude settings.json present'; try { Get-Content $settings -Raw | ConvertFrom-Json -AsHashtable | Out-Null } catch { Warn 'Claude settings.json is not valid JSON' } }
+    else { Warn "no $settings" }
+    $gmd = Join-Path $CcDir 'CLAUDE.md'
+    if (Test-Path $gmd) { Ok "global Claude rules present ($(@(Get-Content $gmd).Count) lines)" } else { Warn 'no global Claude rules (per-project only)' }
+    $skills = Join-Path $CcDir 'skills'
+    if (Test-Path $skills) { Ok "Claude skills: $(@(Get-ChildItem $skills -Directory).Count)" } else { Warn 'no Claude skills directory' }
+    if (Have-Cmd claude) { Ok "'claude' CLI on PATH" } else { Warn "'claude' CLI not on PATH" }
+  }
+  if (Has-Codex) {
+    $config = Join-Path $CodexDir 'config.toml'
+    if (Test-Path $config) { if (Test-TomlFile $config) { Ok "Codex config valid: $config" } else { Warn "Codex config is not valid TOML: $config" } } else { Warn "no $config" }
+    $gmd = Join-Path $CodexDir 'AGENTS.md'
+    if (Test-Path $gmd) { Ok "global Codex rules present ($(@(Get-Content $gmd).Count) lines)" } else { Warn 'no global Codex rules (per-project only)' }
+    $skills = Join-Path $HOME '.agents/skills'
+    if (Test-Path $skills) { Ok "Codex skills: $(@(Get-ChildItem $skills -Directory).Count)" } else { Warn 'no Codex skills directory' }
+    if (Test-Path (Join-Path $CodexDir 'hooks.json')) { Ok 'Codex hooks.json present (review trust with /hooks)' } else { Warn 'no Codex hooks.json' }
+  }
   exit 0
 }
 
 if ($o.UpdatePlugins) {
+  if (-not (Has-Claude)) { Die '--update-plugins is Claude-only; choose --platform claude or both.' }
   if (-not (Have-Cmd claude)) { Die "'claude' CLI not on PATH — update in-app with /plugin update." }
   Say 'Updating installed plugins to latest'
   try { claude plugin update *> $null; Ok 'plugins updated' } catch { Warn 'update reported issues — try /plugin update in-app' }
@@ -1249,23 +1507,35 @@ if ($o.UpdatePlugins) {
 if ($o.SelfUpdate) { Self-Update; exit 0 }
 if ($o.Export)    { Export-Instructions; exit 0 }
 if ($o.OrgPolicy) { OrgPolicy-Install; exit 0 }
-if ($o.WithHandoffHooks -and (-not $o.Global) -and (-not $o.Profiles)) { Install-HandoffHooks; exit 0 }
-if ($o.WithUiDesignHook -and (-not $o.Global) -and (-not $o.Profiles)) { Install-UiDesignHook; exit 0 }
+if ($o.WithHandoffHooks -and (-not $o.Global) -and (-not $o.Profiles)) {
+  if (Has-Claude) { Install-ClaudeHandoffHooks }; if (Has-Codex) { Install-CodexHandoffHooks }; exit 0
+}
+if ($o.WithUiDesignHook -and (-not $o.Global) -and (-not $o.Profiles)) {
+  if (Has-Claude) { Install-ClaudeUiDesignHook }; if (Has-Codex) { Install-CodexUiDesignHook }; exit 0
+}
 
 if ($o.Uninstall) {
   if ($o.Global) {
-    Say "Uninstall — removing the Agentsmith core from $(Join-Path $CcDir 'CLAUDE.md')"
-    Uninstall-From (Join-Path $CcDir 'CLAUDE.md')
-    Warn 'Global config (settings.json, plugins) left in place — remove those by hand if you want them gone.'
-    if (Have-Cmd rtk) { Say 'rtk hook left in place. Remove it with:  rtk init -g --uninstall   (then remove the binary via brew/scoop/del).' }
+    Say "Uninstall — removing Agentsmith's global rules for $($o.Platform)"
+    if (Has-Claude) {
+      Uninstall-From (Join-Path $CcDir 'CLAUDE.md')
+      Warn 'Claude settings, plugins, hooks, and skills left in place.'
+      if (Have-Cmd rtk) { Say 'rtk hook left in place. Remove it with: rtk init -g --uninstall' }
+    }
+    if (Has-Codex) {
+      Uninstall-From (Join-Path $CodexDir 'AGENTS.md')
+      Remove-CodexTomlBlock (Join-Path $CodexDir 'config.toml')
+      Warn 'Codex hooks and skills left in place.'
+    }
   } else {
     if (-not $o.Target) { $o.Target = (Get-Location).Path }
     if (-not (Test-Path $o.Target -PathType Container)) { Die "Target dir does not exist: $($o.Target)" }
     $tgt = (Resolve-Path $o.Target).Path
-    Say "Uninstall — removing the Agentsmith section from CLAUDE.md/AGENTS.md/GEMINI.md in $tgt"
-    Uninstall-From (Join-Path $tgt 'CLAUDE.md')
-    Uninstall-From (Join-Path $tgt 'AGENTS.md')
-    Uninstall-From (Join-Path $tgt 'GEMINI.md')
+    Say "Uninstall — removing the Agentsmith section for $($o.Platform) in $tgt"
+    if (Has-Claude) { Uninstall-From (Join-Path $tgt 'CLAUDE.md') }
+    if (Has-Codex) { Uninstall-From (Join-Path $tgt 'AGENTS.md'); Remove-CodexTomlBlock (Join-Path $tgt '.codex/config.toml') }
+    if ($o.AlsoAgents -and (-not (Has-Codex))) { Uninstall-From (Join-Path $tgt 'AGENTS.md') }
+    if ($o.AlsoGemini) { Uninstall-From (Join-Path $tgt 'GEMINI.md') }
     Write-Host ''; Ok 'Done. Scaffolding (scripts/, .harness/, docs/) was left in place — delete it by hand for a full removal.'
     Write-Host '  Your original files (if any) were backed up as *.bak.<timestamp> next to each.'
   }
@@ -1274,13 +1544,16 @@ if ($o.Uninstall) {
 
 # ---- GLOBAL MODE -----------------------------------------------------------
 if ($o.Global) {
-  Say "GLOBAL install — universal core → $(Join-Path $CcDir 'CLAUDE.md') (applies to every project)"
+  if ($o.Platform -eq 'both') { $globalPrimary = Identity-Source (Join-Path $CcDir 'CLAUDE.md') (Join-Path $CodexDir 'AGENTS.md') }
+  elseif (Has-Claude) { $globalPrimary = Join-Path $CcDir 'CLAUDE.md' }
+  else { $globalPrimary = Join-Path $CodexDir 'AGENTS.md' }
+  Say "GLOBAL install — universal core → $(Platform-RulesLabel) (platform: $($o.Platform))"
   # --target does not constrain --global: the core has exactly one home. Refusing beats warning —
   # the whole of feedback 0003 is that a careful person passed --target BECAUSE it reads as "write
   # over there, not to my real config", and a printed warning is prose in a wall of output.
   if ($o.Target) {
     Die @"
---target is ignored by --global: the core always goes to $(Join-Path $CcDir 'CLAUDE.md'), never to $($o.Target).
+--target is ignored by --global: the core always goes to the selected platform's user rules directory, never to $($o.Target).
   For a project file:   ./setup.ps1 --profile <name> --target $($o.Target)
   For the global core:  ./setup.ps1 --global        (no --target)
 "@
@@ -1288,13 +1561,17 @@ if ($o.Global) {
   # Likewise --assemble-only reads like "touch nothing" but under --global, CLAUDE.md IS the
   # global file. Say so out loud rather than letting the flag imply a safety it does not provide.
   if ($o.AssembleOnly -and (-not $o.DryRun)) {
-    Warn "--assemble-only skips config/plugins but still WRITES $(Join-Path $CcDir 'CLAUDE.md') (a backup is made first). Use --dry-run to write nothing."
+    Warn "--assemble-only skips config/plugins but still WRITES the selected global rules file(s) (a backup is made first). Use --dry-run to write nothing."
   }
-  if ($o.WithMcp) { Warn '--with-mcp is project-scoped (writes a project .mcp.json) — ignored in --global mode. Run it per project.' }
-  Resolve-OperatorIdentity (Join-Path $CcDir 'CLAUDE.md')
-  Assemble-To (Join-Path $CcDir 'CLAUDE.md') $true
-  if (-not $o.DryRun) { Report-Todos (Join-Path $CcDir 'CLAUDE.md') }
-  if (-not $o.DryRun) { if ($o.AssembleOnly) { Say 'Skipping config/plugins (--assemble-only).' } else { Install-GlobalConfig } }
+  if ($o.WithMcp) { Warn '--with-mcp is project-scoped — ignored in --global mode. Run it per project.' }
+  Resolve-OperatorIdentity $globalPrimary
+  if (Has-Claude) { Assemble-To (Join-Path $CcDir 'CLAUDE.md') $true }
+  if (Has-Codex) { Assemble-To (Join-Path $CodexDir 'AGENTS.md') $true }
+  if (-not $o.DryRun) {
+    if (Has-Claude) { Report-Todos (Join-Path $CcDir 'CLAUDE.md') }
+    if (Has-Codex) { Report-Todos (Join-Path $CodexDir 'AGENTS.md') }
+    if ($o.AssembleOnly) { Say 'Skipping native config/plugins (--assemble-only).' } else { Install-PlatformConfig }
+  }
   Write-Host ''; Say 'Global core installed.'
   Write-Host "  Next per project:  ./setup.ps1 --profile <name> --profile-only --target C:\path\to\project"
   exit 0
@@ -1307,13 +1584,17 @@ if (-not (Test-Path $o.Target)) { Die "Target dir does not exist: $($o.Target)" 
 $o.Target = (Resolve-Path $o.Target).Path
 
 $includeCore = -not $o.ProfileOnly
-Say "Assembling CLAUDE.md (profiles: $($o.Profiles); core: $includeCore)"
+Say "Assembling $(Platform-RulesLabel) (profiles: $($o.Profiles); core: $includeCore)"
 # Same trap as --global, same fix: re-running setup on a project that already has a managed block
 # must not silently blank whoever is named in it (feedback 0003).
-Resolve-OperatorIdentity (Join-Path $o.Target 'CLAUDE.md')
-Assemble-To (Join-Path $o.Target 'CLAUDE.md') $includeCore
-if ($o.AlsoAgents -and (-not $o.DryRun)) { Assemble-To (Join-Path $o.Target 'AGENTS.md') $includeCore }
-if ($o.AlsoGemini -and (-not $o.DryRun)) { Assemble-To (Join-Path $o.Target 'GEMINI.md') $includeCore }
+if ($o.Platform -eq 'both') { $projectPrimary = Identity-Source (Join-Path $o.Target 'CLAUDE.md') (Join-Path $o.Target 'AGENTS.md') }
+elseif (Has-Claude) { $projectPrimary = Join-Path $o.Target 'CLAUDE.md' }
+else { $projectPrimary = Join-Path $o.Target 'AGENTS.md' }
+Resolve-OperatorIdentity $projectPrimary
+if (Has-Claude) { Assemble-To (Join-Path $o.Target 'CLAUDE.md') $includeCore }
+if (Has-Codex) { Assemble-To (Join-Path $o.Target 'AGENTS.md') $includeCore }
+if ($o.AlsoAgents -and (-not (Has-Codex))) { Assemble-To (Join-Path $o.Target 'AGENTS.md') $includeCore }
+if ($o.AlsoGemini) { Assemble-To (Join-Path $o.Target 'GEMINI.md') $includeCore }
 if ($o.DryRun) {
   Write-Host ''
   Say "DRY RUN — nothing was written. A real run would ALSO scaffold into $($o.Target):"
@@ -1321,14 +1602,14 @@ if ($o.DryRun) {
   Write-Host '    + hooks/git/      managed git hooks (secret-scan, protect-main, conventional-commits)'
   Write-Host '    + .harness/       verify.conf (+ .example), templates/, handoffs/'
   Write-Host '    + .planning/      progress-log.md'
-  if ($o.AssembleOnly) { Write-Host '    + .claude/        settings.local.json.example' }
-  else { Write-Host '    + .claude/        settings.local.json.example, skills/ pack (/handoff, /verify, /harness-help + 3 more)' }
+  if (Has-Claude) { Write-Host '    + .claude/        settings.local.json.example and optional native skills' }
+  if (Has-Codex) { Write-Host '    + .codex/, .agents/ native Codex config and optional skills' }
   Write-Host '    + docs/           feedback/README.md, research/ (+ _archive dirs)'
   Write-Host '    + FIRST-STEPS.md'
   if ($o.DesignSystem -and $o.DesignSystem -ne 'skip') { Write-Host "    + DESIGN.md       (--design-system $($o.DesignSystem))" }
-  if ($o.AlsoAgents) { Write-Host '    + AGENTS.md       (--also-agents-md)' }
+  if ($o.AlsoAgents -and (-not (Has-Codex))) { Write-Host '    + AGENTS.md       (--also-agents-md, instruction copy only)' }
   if ($o.AlsoGemini) { Write-Host '    + GEMINI.md       (--also-gemini-md)' }
-  if ($o.WithMcp) { Write-Host "    + .mcp.json       (--with-mcp: $($o.WithMcp))" }
+  if ($o.WithMcp) { Write-Host "    + native MCP config (--with-mcp: $($o.WithMcp))" }
   if ($o.WithHooks) { Write-Host '    ~ git hooks installed via scripts/install-git-hooks.sh (--with-hooks)' }
   Write-Host ''
   Say 'Re-run without --dry-run to write these.'
@@ -1336,7 +1617,10 @@ if ($o.DryRun) {
 }
 
 Say "Scaffolding project structure in $($o.Target)"
-foreach ($d in @('docs/research/_archive','docs/feedback/_archive','.planning','.harness/handoffs','scripts','.claude','hooks/git','.harness/templates')) {
+$dirs = @('docs/research/_archive','docs/feedback/_archive','.planning','.harness/handoffs','scripts','hooks/git','.harness/templates')
+if (Has-Claude) { $dirs += '.claude' }
+if (Has-Codex) { $dirs += @('.codex','.agents') }
+foreach ($d in $dirs) {
   New-Item -ItemType Directory -Force -Path (Join-Path $o.Target $d) | Out-Null
 }
 function Cpa ($src, $dst) { if (-not (Test-Path $dst)) { Copy-Item $src $dst -Force; Ok "added $($dst.Substring($o.Target.Length).TrimStart('/','\'))" } }
@@ -1350,7 +1634,7 @@ $verifyConf = Join-Path $o.Target '.harness/verify.conf'
 if (Test-Path $verifyConf) { Ok '.harness/verify.conf already present — left as-is' }
 else { Build-VerifyConf $verifyConf; Ok "added .harness/verify.conf (preset for: $($o.Profiles) — EDIT to wire real checks)" }
 Cpa (Join-Path $HarnessDir 'templates/progress-log.md') (Join-Path $o.Target '.planning/progress-log.md')
-Cpa (Join-Path $HarnessDir "config/settings.local.$($o.Safety).json.example") (Join-Path $o.Target '.claude/settings.local.json.example')
+if (Has-Claude) { Cpa (Join-Path $HarnessDir "config/settings.local.$($o.Safety).json.example") (Join-Path $o.Target '.claude/settings.local.json.example') }
 Get-ChildItem (Join-Path $HarnessDir 'templates') -Filter *.md | ForEach-Object { Copy-Item $_.FullName (Join-Path $o.Target ".harness/templates/$($_.Name)") -Force }
 Ok 'templates in .harness/templates/'
 # First-steps card: fill placeholders, write-if-absent (don't clobber a user-edited card)
@@ -1360,13 +1644,14 @@ else {
   (Get-Content (Join-Path $HarnessDir 'templates/first-steps.md') -Raw).
     Replace('{{PROFILES}}', $(if ($o.Profiles) { $o.Profiles } else { 'none' })).
     Replace('{{SAFETY}}', $o.Safety).
+    Replace('{{PLATFORM}}', $o.Platform).
     Replace('{{TARGET_NAME}}', (Split-Path $o.Target -Leaf)) |
     Set-Content $firstSteps -Encoding utf8
   Ok 'added FIRST-STEPS.md (your getting-started card)'
 }
 Scaffold-DesignSystem   # honors --design-system for a UI project (no-op on the default/backend path)
 
-if ($o.WithMcp) { Say "Adding MCP server(s) to .mcp.json: $($o.WithMcp)"; Add-McpServers $o.WithMcp }
+if ($o.WithMcp) { Say "Adding MCP server(s) to native project config: $($o.WithMcp)"; Add-NativeMcpServers $o.WithMcp }
 
 if ($o.WithHooks) {
   if (Test-Path (Join-Path $o.Target '.git')) {
@@ -1375,24 +1660,28 @@ if ($o.WithHooks) {
   } else { Warn "--with-hooks: $($o.Target) is not a git repo — run scripts/install-git-hooks.sh after 'git init'." }
 }
 
-if ($o.AssembleOnly) { Say 'Skipping global config (--assemble-only). See INSTALL.md for manual steps.' }
-else { $SkillsDest = Join-Path $o.Target '.claude/skills'; Install-GlobalConfig }   # project mode: skill pack is a project file
+if ($o.AssembleOnly) { Say 'Skipping native user config (--assemble-only). See INSTALL.md for manual steps.' }
+else { Install-PlatformConfig }
 
 Write-Host ''; Say 'Done.'
 Write-Host "  Profiles:   $($o.Profiles)   (core in this file: $includeCore)"
-Write-Host "  CLAUDE.md:  $(Join-Path $o.Target 'CLAUDE.md')"
-if ($o.WithSkills) { Write-Host "  Skills:     harness pack → $(Join-Path $o.Target '.claude/skills')  (/handoff · /verify · /harness-help + 3 more)" }
+if (Has-Claude) { Write-Host "  CLAUDE.md:  $(Join-Path $o.Target 'CLAUDE.md')" }
+if (Has-Codex) { Write-Host "  AGENTS.md:  $(Join-Path $o.Target 'AGENTS.md')" }
+if ($o.WithSkills) { Write-Host '  Skills:     harness pack → selected native skill directory/directories' }
 $safetyNote = if ($o.Safety -eq 'cautious') { 'auto-applies edits, asks before shell/network' } else { 'runs almost everything without asking — a machine you fully own' }
 Write-Host "  Safety:     $($o.Safety)   ($safetyNote)"
 Write-Host '  Next:  1) edit .harness/verify.conf with real checks'
-Write-Host '         2) skim CLAUDE.md (resolve any [TODO: …] placeholders)'
-Write-Host "         3) copy .claude/settings.local.json.example to settings.local.json (safety: $($o.Safety) — read the permissions note)"
+Write-Host "         2) skim $(Platform-RulesLabel) (resolve any [TODO: …] placeholders)"
+if (Has-Claude) { Write-Host "         3) copy .claude/settings.local.json.example to settings.local.json (safety: $($o.Safety))" }
+if (Has-Codex) { Write-Host "         3) review $(Join-Path $CodexDir 'config.toml') (Codex safety: $($o.Safety))" }
 Write-Host '         4) docs/01-harness-philosophy.md · docs/07-how-to-pick-a-profile.md · docs/13-platforms-and-tools.md'
 Write-Host ''
-Report-Todos (Join-Path $o.Target 'CLAUDE.md')
+if (Has-Claude) { Report-Todos (Join-Path $o.Target 'CLAUDE.md') }
+if (Has-Codex) { Report-Todos (Join-Path $o.Target 'AGENTS.md') }
 Report-Todos (Join-Path $o.Target 'DESIGN.md')   # names DESIGN_SYSTEM when a design system was scaffolded but not filled
 Write-Host ''
 Write-Host '  ▶ First 30 minutes' -ForegroundColor Cyan -NoNewline; Write-Host '  (also saved to FIRST-STEPS.md)'
-Write-Host '     1) start:  claude          — run it inside this folder'
+$startCmd = if ($o.Platform -eq 'codex') { 'codex' } elseif ($o.Platform -eq 'both') { 'claude or codex' } else { 'claude' }
+Write-Host "     1) start:  $startCmd          — run it inside this folder"
 Write-Host '     2) ask:    "what does my harness do, and what are my rules?"'
 Write-Host '     3) take one small task end-to-end, then say "handoff" to wrap up cleanly'

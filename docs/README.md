@@ -12,7 +12,7 @@ is a harness" to "make it your team's own," with the glossary as the appendix:
 | | One line |
 |---|---|
 | [`01-harness-philosophy.md`](01-harness-philosophy.md) | What a harness is and why the model is the small part — the 5-minute foundation. |
-| [`02-your-first-hour.md`](02-your-first-hour.md) | From "it installed" to "I know what changed": the tour of your own `CLAUDE.md`, first task, first handoff. |
+| [`02-your-first-hour.md`](02-your-first-hour.md) | From "it installed" to "I know what changed": the tour of your native rule file, first task, first handoff. |
 | [`03-verify-means-evidence.md`](03-verify-means-evidence.md) | The most load-bearing concept: what counts as proof, per kind of work. |
 | [`04-why-your-agent-ignored-the-rule.md`](04-why-your-agent-ignored-the-rule.md) | The economics of rules, the four ways they fail, and the guard for each. |
 | [`05-operating-modes.md`](05-operating-modes.md) | Attended sessions vs autonomous loops, and which model for which phase. |
@@ -23,7 +23,7 @@ is a harness" to "make it your team's own," with the glossary as the appendix:
 | [`10-best-practices.md`](10-best-practices.md) | Dos & don'ts, each traceable to a real incident. |
 | [`11-designing-uis.md`](11-designing-uis.md) | Product UI is `software-dev`: the `DESIGN.md` design-system workflow and how the harness holds UI to it. |
 | [`12-whats-built-in.md`](12-whats-built-in.md) | The catalog of conveniences setup can install — the machinery. |
-| [`13-platforms-and-tools.md`](13-platforms-and-tools.md) | What runs where, and how to run it in Codex / Gemini / claude.ai. |
+| [`13-platforms-and-tools.md`](13-platforms-and-tools.md) | Native Claude/Codex destinations, capabilities, and web/other surfaces. |
 | [`14-project-tracker-guide.md`](14-project-tracker-guide.md) | Tool-agnostic tracker conventions (and the write-consent rule). |
 | [`15-safety-model.md`](15-safety-model.md) | What the harness can do to your machine, and how to bound it. |
 | [`16-securing-what-you-build.md`](16-securing-what-you-build.md) | The *other* security question: making the code the agent writes safe — gates, the `security-audit` profile, the skills pack. |

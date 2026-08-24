@@ -9,29 +9,33 @@ If you're evaluating what the harness *does* rather than what it *believes*, thi
 For the reasoning behind any of it, the cross-links point back to the doc that explains why.
 
 - **Setup wizard** — `setup.sh --wizard` (or bare `./setup.sh`) asks the questions interactively
-  and builds + runs the right command, printing it first so you learn the flags.
+  — including Claude, Codex, or both — and builds + runs the right command, printing it first so
+  you learn the flags. Direct commands use `--platform claude|codex|both`; default is `claude`.
 - **Native Windows setup** — `setup.ps1` is a PowerShell port of `setup.sh` with the same flags
   and behaviour (including `--wizard`), so Windows users don't need Git Bash just to set up.
 - **Bundled skill pack** — `setup.sh --with-skills` installs seven invoke-by-name skills:
   `/handoff`, `/verify`, `/harness-doctor`, `/harness-help`, `/new-research`, `/writing-rules`,
   `/new-feedback`. The six procedural ones prefer a project-local `scripts/<x>.sh` when present,
   else run inline, so they work globally, in a harness project, or in a bare repo; `/writing-rules`
-  is pure reference. Project mode installs them into
-  `<project>/.claude/skills/`; `--global` into `~/.claude/skills/`. See [`skills/README.md`](../skills/README.md)
+  is pure reference. Claude installs into `.claude/skills` / `~/.claude/skills`; Codex into
+  `.agents/skills` / `~/.agents/skills`; `both` creates independent copies. See [`skills/README.md`](../skills/README.md)
   and [`skills/RECOMMENDED.md`](../skills/RECOMMENDED.md).
 - **Feedback / self-improvement loop** — a `docs/feedback/` convention + `scripts/new-feedback.sh`
   scaffolder makes the System-Evolution loop a one-liner (mirrors `new-research.sh`); see
   [`feedback/README.md`](feedback/README.md) and the recurring harness-review checkpoint.
-- **CLAUDE.md leanness lint** — `scripts/lint-leanness.sh` (and `setup.sh --doctor`) warn when the
+- **Rule-file leanness lint** — `scripts/lint-leanness.sh` (and `setup.sh --doctor`) warn when the
   assembled static context grows past its budget, nudging knowledge into skills/docs. The *why* is
   in [`04-why-your-agent-ignored-the-rule.md`](04-why-your-agent-ignored-the-rule.md).
-- **Handoff hooks** — `setup.sh --with-handoff-hooks` installs a reliable "handoff"-keyword prompt
-  hook plus a best-effort context-% nudge (the % part is fragile by design — see `hooks/README.md`).
+- **Handoff hooks** — `setup.sh --with-handoff-hooks` installs a reliable, native
+  "handoff"-keyword prompt hook. Claude also gets a best-effort context-% nudge; Codex does not,
+  because that signal comes from Claude's status line. No `PreCompact` hook is installed. Review
+  and trust Codex hooks through `/hooks` after installation (see `hooks/README.md`).
 - **Design-system scaffold** — `setup.sh --design-system stub|catalog:<brand>|generate` (software-dev
   UI projects) drops a root `DESIGN.md` the agent reads before building UI: an empty template to fill,
   a ready-made one from the [awesome-design-md](https://github.com/VoltAgent/awesome-design-md) catalog,
   or the ui-ux-pro-max generate steps. Pair it with `--with-ui-design-hook` — a once-per-session
-  PreToolUse nudge to consult `DESIGN.md` on UI edits. Why it exists:
+  native pre-tool nudge to consult `DESIGN.md` on UI edits (including Codex `apply_patch` calls).
+  Why it exists:
   [`07-how-to-pick-a-profile.md`](07-how-to-pick-a-profile.md) (product UI is `software-dev`).
 - **Guardrail hooks** — `scripts/install-git-hooks.sh` / `setup.sh --with-hooks`: secret-scan +
   protect-main + conventional-commit (default), branch-naming + tests-green (opt-in). These are the
@@ -43,14 +47,18 @@ For the reasoning behind any of it, the cross-links point back to the doc that e
   laptop" and "green in CI" can't drift. Setup does **not** install it into your project — copy it as a
   starting point. The **CI section below** covers why it's worth it, hosted-vs-self-hosted runners, and
   what *not* to run it on.
-- **MCP picker** — `setup.sh --with-mcp <name[,name]>` writes the right block from
-  `config/mcp.example.json` into the project's `.mcp.json`.
+- **MCP picker** — `setup.sh --with-mcp <name[,name]>` writes Claude JSON into `.mcp.json` and/or
+  Codex `[mcp_servers.<name>]` tables into `.codex/config.toml`. Codex merges preserve foreign
+  settings/servers, union earlier Agentsmith selections, back up before editing, validate TOML,
+  and skip manually owned name conflicts with an actionable warning.
 - **rtk output compressor** — `setup.sh`/`setup.ps1 --with-rtk` (default-ON for `software-dev` /
   `devops-setup`; `--no-rtk` to skip) installs [`rtk`](https://github.com/rtk-ai/rtk) and runs its
   own `rtk init -g` to wire a PreToolUse hook that compresses noisy CLI output 60–90% before it
-  reaches context. A binary + hook, not a plugin — see [`../config/plugins.md`](../config/plugins.md).
+  reaches context. A binary + hook, not a plugin, and Claude-only: Codex-only installs never invoke
+  its Claude wiring. See [`../config/plugins.md`](../config/plugins.md).
 - **Org-policy variant** — `sudo setup.sh --org-policy` installs a managed `CLAUDE.md` at the OS
   policy path (applies to all users on a shared box) + a stricter, no-bypass settings profile.
+  This is Claude-only; an `--org-policy` run with platform `codex` or `both` is rejected.
 - **Cowork / claude.ai export** — `setup.sh --export-instructions` emits a single paste-ready
   instructions blob for surfaces without on-disk config (web Projects, Cowork). See
   [`13-platforms-and-tools.md`](13-platforms-and-tools.md) for which surfaces need it.

@@ -1,8 +1,8 @@
 # How to pick a profile
 
 A profile tailors the universal core to a kind of work — it defines what "done" and "verified"
-mean, the quality gates, and the failure modes to guard against. You assemble `CLAUDE.md` from
-the core plus one (or a few) profiles.
+mean, the quality gates, and the failure modes to guard against. You assemble the selected native
+rule file (`CLAUDE.md`, `AGENTS.md`, or both) from the core plus one (or a few) profiles.
 
 ## The ten profiles
 
@@ -30,7 +30,7 @@ your work to see the end state — a filled `CLAUDE.md` project-specifics layer 
 
 - **One main profile** is the norm. Pick the one that matches the bulk of the project's work.
 - **Mixed projects** are common and supported — assemble several:
-  `./setup.sh --profile devops-setup,software-dev`
+  `./setup.sh --platform codex --profile devops-setup,software-dev`
   A project that ships a service *and* its install scripts wants both. A consultancy deliverable
   that's a researched report wants `deep-research,document-creation`.
 - **`autonomous-loops` stacks, it doesn't replace.** It's a *modifier*: it says how the work is
@@ -57,7 +57,8 @@ your work to see the end state — a filled `CLAUDE.md` project-specifics layer 
 - **When in doubt**, `general-admin` is the safe catch-all — it assumes outward-facing/irreversible
   actions need confirmation and that summaries must be faithful.
 - You can **re-assemble any time** as a project's focus shifts: re-run `setup.sh --assemble-only`
-  with a different `--profile` list. It only rewrites the managed `CLAUDE.md` block.
+  with the same `--platform` and a different `--profile` list. It only rewrites the selected
+  managed rule block(s).
 
 ## Layered: global core + per-project profile
 
@@ -65,13 +66,14 @@ If you work across several projects, install the universal **core** once globall
 project carry only its **profile**:
 
 ```bash
-./setup.sh --global --operator-name "You"                                   # core → ~/.claude/CLAUDE.md
-./setup.sh --profile software-dev --profile-only --target /path/to/project  # profile only
+./setup.sh --platform both --global --operator-name "You"                   # native global core for both
+./setup.sh --platform both --profile software-dev --profile-only --target /path/to/project
 ```
 
-Claude Code loads the global `~/.claude/CLAUDE.md` *and* the project `./CLAUDE.md` together, so
-the rules apply everywhere and each repo stays thin. Without `--global`, a per-project run writes
-a **self-contained** core+profile file (good for one-offs). See `docs/13-platforms-and-tools.md`.
+Claude loads `~/.claude/CLAUDE.md` + `./CLAUDE.md`; Codex loads `$CODEX_HOME/AGENTS.md` +
+`./AGENTS.md` (`CODEX_HOME` defaults to `~/.codex`). The rules apply everywhere and each repo stays
+thin. Without `--global`, a per-project run writes a **self-contained** core+profile file (good for
+one-offs). See `docs/13-platforms-and-tools.md`.
 
 ## Order matters slightly
 
