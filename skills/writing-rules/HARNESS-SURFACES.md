@@ -5,8 +5,9 @@ writing is part of the harness itself. Everything about *how* to write it is in 
 
 ## The surfaces, ranked by what they cost
 
-`core/` and the profile are **static context** — assembled into `CLAUDE.md` and paid on every turn
-of every session. Everything below them is **dynamic**: paid only when it fires.
+`core/` and the profile are **static context** — assembled into the active instruction file
+(`CLAUDE.md`, `AGENTS.md`, or equivalent copies of both) and paid on every turn of every session.
+Everything below them is **dynamic**: paid only when it fires.
 
 | Surface | Cost | Put a line here when |
 |---|---|---|

@@ -12,11 +12,15 @@ an expert developer, most of the friction here is words — clear that, and the 
 - **Context window** — the model's working memory for a session. Finite, and quality degrades as
   it fills — which is why sessions hand off early (~25–30% used), not when full.
 - **Static context** — what's loaded *every turn* and paid for every turn: the assembled
-  `CLAUDE.md`. Rationed hard (600 lines / ~10k tokens here). → [`04-why-your-agent-ignored-the-rule.md`](04-why-your-agent-ignored-the-rule.md)
+  native rule file (`CLAUDE.md` or `AGENTS.md`). Rationed hard (600 lines / ~10k tokens here). → [`04-why-your-agent-ignored-the-rule.md`](04-why-your-agent-ignored-the-rule.md)
 - **Dynamic context** — loaded only on demand: skills, docs, memory, tool results. Free until used.
-- **`CLAUDE.md`** — the assembled rulebook the agent re-reads every turn. A contract, not a
-  config file — nothing parses it; the agent *understands* it. → [`02-your-first-hour.md`](02-your-first-hour.md)
-- **Managed block** — the `<!-- BEGIN AGENTSMITH … -->` region of `CLAUDE.md` that setup owns and
+- **`CLAUDE.md` / `AGENTS.md`** — the native Claude/Codex filenames for the assembled rulebook.
+  A contract the agent understands, distinct from runtime JSON/TOML config. → [`02-your-first-hour.md`](02-your-first-hour.md)
+- **Platform** — the installation target selected by `--platform claude|codex|both`. Default:
+  Claude. `both` means independent native copies, not links. → [`13-platforms-and-tools.md`](13-platforms-and-tools.md)
+- **`CODEX_HOME`** — Codex's selected user directory; defaults to `~/.codex`. Agentsmith resolves
+  this one path and does not search other Orca account homes.
+- **Managed block** — the marked region of a rule file or Codex TOML that setup owns and
   rewrites. Anything outside it is yours and survives re-runs.
 
 ## The rulebook's parts
@@ -48,7 +52,9 @@ an expert developer, most of the friction here is words — clear that, and the 
 - **Skill** — a named, on-demand procedure the agent can invoke (`/handoff`, `/verify`).
   Dynamic context: costs nothing until triggered.
 - **MCP** — Model Context Protocol; how external tools/services (trackers, CRMs, browsers) are
-  wired in. A *connected* tool is not a *writable* tool — see availability vs authorization.
+  wired in. Claude project entries live in `.mcp.json`; Codex entries are
+  `[mcp_servers.<name>]` tables in `.codex/config.toml`. A *connected* tool is not a *writable*
+  tool — see availability vs authorization.
 - **Tracker** — wherever your team records work (GitHub issues, Linear, a markdown file). The
   harness treats naming it and being allowed to write to it as two different consents.
   → [`14-project-tracker-guide.md`](14-project-tracker-guide.md)
@@ -63,7 +69,7 @@ an expert developer, most of the friction here is words — clear that, and the 
 - **Guard** — a deterministic check outside the model — a hook, a verify phase, a test — that
   fails mechanically when a rule is broken. "Guardrails hold what prose forgets."
 - **Hook** — code that runs at a lifecycle point (pre-commit, pre-tool-call) and can block the
-  action. The strongest kind of guard.
+  action. The strongest kind of guard. Codex user hooks require review/trust through `/hooks`.
 - **`verify.sh` / `verify.conf`** — the project's "is this shippable?" gate and its definition:
   `label :: command` phases, run in order, first failure stops.
 

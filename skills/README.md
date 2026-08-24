@@ -7,12 +7,15 @@ tokens until it's triggered). It's just a folder with a `SKILL.md`.
 
 | Location | Scope | Use for |
 |---|---|---|
-| `~/.claude/skills/<name>/` | every project on this machine | your personal, cross-project skills |
-| `<project>/.claude/skills/<name>/` | one project (git-committable) | team/project-specific skills |
+| `~/.claude/skills/<name>/` | every Claude project on this machine | personal Claude skills |
+| `<project>/.claude/skills/<name>/` | one Claude project (git-committable) | team/project Claude skills |
+| `~/.agents/skills/<name>/` | every Codex project on this machine | personal Codex skills |
+| `<project>/.agents/skills/<name>/` | one Codex project (git-committable) | team/project Codex skills |
 | bundled in a plugin | wherever the plugin is enabled | shared/distributed skills |
 
-The agent auto-discovers them. Type `/` to list; the agent invokes a skill when its description
-matches the task, or you call it explicitly with `/<name>`.
+The agent auto-discovers them and may invoke one when its description matches the task. Invoke a
+skill explicitly as `/<name>` in Claude Code or `$<name>` in Codex. With `--platform both`, setup
+installs independent copies in both native trees rather than symlinks.
 
 ## Minimal structure
 
@@ -64,18 +67,20 @@ They're work-type-neutral and follow `core/` rules (verify before done, no secre
 ./setup.sh --with-skills                          # bundled pack + example (see targets below)
 # or copy one by hand:
 cp -r skills/handoff <project>/.claude/skills/
+cp -r skills/handoff <project>/.agents/skills/
 ```
 
 `--with-skills` installs **every** skill folder in `skills/`. The **target depends on mode**:
 
-- **Project mode** (`--profile … --target <project> --with-skills`) → `<project>/.claude/skills/`
-  (committable, travels with the repo). The wizard offers this on the per-project path.
-- **Global mode** (`--global --with-skills`) → `~/.claude/skills/` (every project on the machine).
+- **Project mode** → `<project>/.claude/skills/` for Claude, `<project>/.agents/skills/` for Codex,
+  or both native directories with `--platform both` (committable, travels with the repo).
+- **Global mode** → `~/.claude/skills/` for Claude, `~/.agents/skills/` for Codex, or both.
 
 ## Best practices (R10 — keep the surface small)
 
-- **Most skills arrive via plugins** — superpowers and claude-mem each bundle many. Install the
-  plugin, get the skills. See `RECOMMENDED.md` and `../config/plugins.md`.
+- **Many Claude skills arrive via plugins** — superpowers and claude-mem each bundle many. Codex
+  can use skills installed in its native tree; a Codex-only setup does not invoke Claude plugin
+  marketplaces. See `RECOMMENDED.md` and `../config/plugins.md`.
 - **Review before installing** a third-party skill — it can run tools and shell commands.
 - **One precise `description`** beats a vague one — it's how the agent decides to load it.
 - **Capture, don't repeat.** When you keep doing the same multi-step thing by hand, that's the

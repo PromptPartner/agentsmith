@@ -1,6 +1,6 @@
 ---
 name: writing-rules
-description: Write or review anything an agent reads — a core rule, a profile gate, a SKILL.md description, a CLAUDE.md line, a subagent prompt, a handoff note, a verify-phase label. Part of the Agentsmith harness; supplies the levers that decide whether a line changes behaviour or only costs tokens — the two loads, context pointers, the ladder, completion criteria, leading words, the no-op test. Its default move is deletion, so it earns most on a draft that already exists.
+description: Write or review anything an agent reads — a core rule, a profile gate, a SKILL.md description, an instruction-file line, a subagent prompt, a handoff note, a verify-phase label. Part of the Agentsmith harness; supplies the levers that decide whether a line changes behaviour or only costs tokens — the two loads, context pointers, the ladder, completion criteria, leading words, the no-op test. Its default move is deletion, so it earns most on a draft that already exists.
 ---
 
 # Writing rules — and anything else an agent reads
@@ -17,12 +17,20 @@ same *process* every run rather than producing the same output.
 When the document is a harness surface — a `core/` rule, a profile, a skill, a hook — read
 [`HARNESS-SURFACES.md`](HARNESS-SURFACES.md) for where it goes and what it costs.
 
+## Platform vocabulary
+Identify the active runtime from this skill's path (`.claude/skills` = Claude,
+`.agents/skills` = Codex). Independently inspect the managed rule files for install mode: only
+`CLAUDE.md` means Claude, only `AGENTS.md` means Codex, and both mean both-platform. Use that as the
+runtime fallback if the skill path is unavailable. “Instruction file” below means the matching
+file. In both mode require the generated rule blocks to remain equivalent; edit their shared
+`core/` or `profiles/` source, never one generated copy.
+
 ## The two loads
 
 Every document and every pointer spends one of two budgets. Most authoring decisions are this one
 trade made in different places:
 
-- **Context load** — what always-loaded material costs the agent's window: a `CLAUDE.md` line, a
+- **Context load** — what always-loaded material costs the agent's window: an instruction-file line, a
   skill `description`, anything sitting in context every turn whether or not it fires.
 - **Cognitive load** — what it costs *you*: knowing which documents exist and when to reach for
   each. You are the index. Not a cost to minimise — it's the price of human agency. Spend it where
@@ -34,7 +42,7 @@ with no pointer at all rides entirely on cognitive load.
 ## Context pointers
 
 A **context pointer** is a reference held in context that names out-of-context material and encodes
-when to reach it. A skill's `description` and a `CLAUDE.md` line naming a doc are **the same
+when to reach it. A skill's `description` and an instruction-file line naming a doc are **the same
 object**. The pointer's *wording*, not its target, decides how reliably the agent reaches through
 it — so a must-have target behind a weak pointer is a variance bug. Sharpen the wording first;
 inline the material only if sharpening fails.

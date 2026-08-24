@@ -11,6 +11,13 @@ whenever work winds down — even if no one asked (core/50).
 ## When this fires
 "handoff" / "wrap up" / "let's stop here" / "I'm running low on context" / a phase or task just closed.
 
+## Platform
+Identify the active runtime from this skill's path (`.claude/skills` = Claude,
+`.agents/skills` = Codex), falling back to managed rule files: only `CLAUDE.md` means Claude, only
+`AGENTS.md` means Codex, and both mean both-platform. The handoff artifact and protocol are
+identical on both platforms; use “fresh chat” rather than a runtime-specific reset command so the
+note remains portable.
+
 ## Fast path — if `./scripts/handoff.sh` exists
 1. Run `./scripts/handoff.sh [item-id]` — it pre-fills branch/HEAD/dirty count and scaffolds
    `.harness/handoffs/handoff-<stamp>.md` with the standard sections.
@@ -25,10 +32,10 @@ whenever work winds down — even if no one asked (core/50).
    - **Deviations / decisions made** (so they're not re-litigated).
    - **Exact next step** — the single first action for the next session.
    - **Gotchas** a fresh session would otherwise re-derive.
-3. Emit a fenced **"Kickoff prompt for after reset"** block: 3–6 sentences of self-contained
+3. Emit a fenced **"Kickoff prompt for a fresh chat"** block: 3–6 sentences of self-contained
    prose (not bullets — they paste it straight in) covering the item id, branch + HEAD, what's
    done, the single next step, decisions already made, and the handoff note path.
 
 ## Report
-Name the handoff file you wrote and end your message with the fenced kickoff block. If you notice
-mid-wrap that you haven't written the note yet, stop and write it before continuing.
+Name the active platform and handoff file, then end your message with the fenced kickoff block. If
+you notice mid-wrap that you haven't written the note yet, stop and write it before continuing.

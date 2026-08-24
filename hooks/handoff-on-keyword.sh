@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# UserPromptSubmit hook — RELIABLE handoff trigger.
+# UserPromptSubmit hook — RELIABLE handoff trigger for Claude Code and Codex.
 # When the user says "handoff" or "wrap up", inject the handoff protocol so the agent
 # safe-states and emits a recall prompt before context runs out. This path needs NO
 # context-% visibility — it keys off the prompt text, which the hook always receives.
@@ -12,10 +12,20 @@ set -euo pipefail
 command -v jq >/dev/null 2>&1 || exit 0   # no jq → silently no-op, never block the prompt
 
 input=$(cat)
-prompt=$(printf '%s' "$input" | jq -r '.prompt_text // .prompt // empty' 2>/dev/null)
+prompt=$(printf '%s' "$input" | jq -r '.prompt_text // .prompt // empty' 2>/dev/null) || exit 0
 shopt -s nocasematch 2>/dev/null || true
 
 if [[ "$prompt" =~ handoff || "$prompt" =~ wrap[[:space:]]+up ]]; then
-  jq -n '{additionalContext: "HANDOFF REQUESTED. Before anything else: (1) bring the working tree to a SAFE STATE — commit or stash so nothing half-edited is lost; (2) write a durable handoff note (memory and/or the project tracker); (3) output a ready-to-paste, post-/clear recall prompt that carries the issue/branch IDs, what is done (commit SHAs / PR links / merge state), the EXACT next step, and the gotchas/decisions a fresh session would otherwise re-derive. Keep it tight; do this before any new work."}'
+  context='HANDOFF REQUESTED. Before anything else: (1) bring the working tree to a SAFE STATE — commit or stash so nothing half-edited is lost; (2) write a durable handoff note (memory and/or the project tracker); (3) output a ready-to-paste fresh-chat recall prompt that carries the issue/branch IDs, what is done (commit SHAs / PR links / merge state), the EXACT next step, and the gotchas/decisions a fresh session would otherwise re-derive. Keep it tight; do this before any new work.'
+
+  # Current Claude Code and Codex both require event-specific context beneath hookSpecificOutput.
+  # Preserve the pre-current-Claude prompt_text/top-level shape for existing installations that
+  # still send it. Unknown/malformed input stays fail-open: it never blocks the user's prompt.
+  legacy_claude=$(printf '%s' "$input" | jq -r 'has("prompt_text") and (has("prompt") | not)' 2>/dev/null) || exit 0
+  if [ "$legacy_claude" = true ]; then
+    jq -n --arg c "$context" '{additionalContext:$c}'
+  else
+    jq -n --arg c "$context" '{hookSpecificOutput:{hookEventName:"UserPromptSubmit", additionalContext:$c}}'
+  fi
 fi
 exit 0

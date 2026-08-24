@@ -7,15 +7,18 @@ between "it installed" and "I know what it did" is where most people quit; this 
 
 ## Minutes 0–10: what setup actually wrote
 
-A project install (`./setup.sh --profile software-dev --target .`, or the wizard) leaves this
-behind — nothing else:
+A project install (`./setup.sh --platform <claude|codex|both> --profile software-dev --target .`,
+or the wizard) leaves these project-local surfaces. Unless you pass `--assemble-only`, it also
+updates the selected runtime's user config in `~/.claude` and/or resolved `CODEX_HOME`:
 
 ```
-CLAUDE.md                        the assembled rulebook (the whole point — tour below)
+CLAUDE.md and/or AGENTS.md       the selected runtime's assembled rulebook (tour below)
 FIRST-STEPS.md                   your 30-minute getting-started card
 .harness/verify.conf             your project's definition of "shippable" (starts as a stub)
 .harness/templates/              plan, handoff, research, progress-log, quality-gate templates
-.claude/settings.local.json.example   the safety-mode preset — copy it live to activate
+.claude/settings.local.json.example   Claude project safety example (when Claude is selected)
+.codex/config.toml                 Codex project MCP (only with --with-mcp)
+.claude/skills and/or .agents/skills   independent copies (only with --with-skills)
 .planning/progress-log.md        a running log the agent appends to
 docs/feedback/README.md          the post-incident convention (see below)
 scripts/                         verify.sh, handoff.sh, new-feedback.sh, secret-scan.sh …
@@ -23,15 +26,15 @@ hooks/git/                       protect-main, conventional-commit, branch-namin
 ```
 
 The scripts and templates are *copied in*, so your project is self-contained — nothing at runtime
-depends on the harness checkout you cloned. And `CLAUDE.md` is written inside marker comments
+depends on the harness checkout you cloned. Each rule file is written inside marker comments
 (`<!-- BEGIN AGENTSMITH … -->`): that block belongs to setup. To change the rules, edit `core/`
 or `profiles/` in your harness checkout and re-run setup; anything you add *outside* the markers
 (project specifics) is yours and survives every re-run.
 
-## Minutes 10–25: read your CLAUDE.md — the tour
+## Minutes 10–25: read your native rule file — the tour
 
-Here's the reframe that makes everything else make sense: **`CLAUDE.md` is not a config file.**
-Nothing parses it. The agent *reads* it — the whole thing, effectively re-read on every turn of
+Here's the reframe that makes everything else make sense: **`CLAUDE.md` / `AGENTS.md` is not a
+runtime config file.** The agent *reads* it — the whole thing, effectively re-read on every turn of
 every session — and behaves according to what it understood. It's a contract written for a very
 fast, very literal colleague. Editing it is programming the agent, in prose. That's also why
 every line is rationed (see [`04-why-your-agent-ignored-the-rule.md`](04-why-your-agent-ignored-the-rule.md)).
@@ -65,7 +68,7 @@ nothing (the full story: [`03-verify-means-evidence.md`](03-verify-means-evidenc
 
 ## Minutes 30–50: the first task
 
-Start `claude` in the project and ask: *"what does my harness do, and what are my rules?"* — the
+Start `claude` or `codex` in the project and ask: *"what does my harness do, and what are my rules?"* — the
 agent explains its own contract back to you, which is both a sanity check and the fastest tour.
 
 Then give it one small, real task — a typo-level fix, a tiny function, something you'd trust a
@@ -76,7 +79,8 @@ evidence* — not "done!" but "here's the test that failed before and passes now
 What it won't do is ask permission between steps. It pauses only for the three things it can't
 decide (credentials, external-service surprises, the first write to a system outside the repo).
 If that autonomy is more than you signed up for, the **cautious** safety mode — the wizard
-default — keeps shell commands and network calls behind a prompt while you build trust; see
+default — keeps higher-risk actions behind a prompt and Codex writes inside its workspace sandbox
+while you build trust; see
 README → "Permissions & dangerous mode."
 
 ## Minutes 50–60: the first handoff
@@ -90,6 +94,11 @@ Say **"handoff"**. The agent brings the work to a safe state, writes a memory no
 shipped, what's pending, the gotchas), and prints a paste-ready kickoff block. That block is the
 *only* bridge to the next session — a fresh session remembers nothing. Next time, paste the
 kickoff and it resumes exactly where this one stopped.
+
+The optional keyword hook understands both runtimes' payloads. After a Codex hook install, run
+`/hooks` once and review/trust it. The automatic context-percentage nudge is Claude-only because it
+depends on Claude's status line; Codex gets no percentage nudge and this release adds no
+`PreCompact` hook. The written handoff protocol is the dependable mechanism on both platforms.
 
 That's the loop you'll live in: one unit of work, verified with evidence, handed off clean.
 
