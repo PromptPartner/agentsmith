@@ -114,6 +114,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: install cross-platform verifier dependencies
+        shell: pwsh
+        run: choco install jq ripgrep -y --no-progress
+
+      - name: verify.sh (complete suite under Git Bash)
+        shell: bash
+        run: bash scripts/verify.sh
+
       - name: setup.ps1 parses
         shell: pwsh
         run: |
@@ -153,3 +165,24 @@ jobs:
             }
           }
           if ($failed) { exit 1 }
+
+      - name: setup.ps1 native platform flows
+        shell: pwsh
+        run: ./scripts/test-platform-install.ps1
+
+  macos-codex:
+    name: verify (macOS / Codex flows)
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: ensure jq is available
+        run: command -v jq >/dev/null || brew install jq
+
+      - name: complete repository verification (includes spaced CODEX_HOME flows)
+        run: bash scripts/verify.sh

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ============================================================================
 #  Agentsmith — the universal agent harness — setup
-#  Assembles a lean CLAUDE.md from core/ + chosen profiles, and (optionally)
-#  installs global config, plugins, and skills on this machine.
+#  Assembles lean native rules for Claude Code, Codex, or both, and (optionally)
+#  installs each runtime's config, hooks, and skills on this machine.
 #
 #  DEFAULT — just run it. With no options, the interactive wizard walks you through
 #  everything (and prints the exact command it runs, so you learn the flags):
@@ -10,21 +10,22 @@
 #
 #  Everything below is the non-interactive path — pass options to skip the wizard.
 #
-#  Per-project (self-contained CLAUDE.md = core + profile):
-#    ./setup.sh --profile software-dev --target /path/to/project
+#  Per-project (self-contained native rules = core + profile):
+#    ./setup.sh --platform codex --profile software-dev --target /path/to/project
 #    ./setup.sh --profile devops-setup,software-dev --operator-name "Your Name" \
 #               --operator-role "sysadmin / GTM" --tracker linear --target .
 #
 #  Layered (recommended): install the core ONCE globally, thin profile per project:
-#    ./setup.sh --global --operator-name "Your Name"      # core -> ~/.claude/CLAUDE.md + config
-#    ./setup.sh --profile software-dev --profile-only --target /path/to/project
+#    ./setup.sh --platform both --global --operator-name "Your Name"
+#    ./setup.sh --platform both --profile software-dev --profile-only --target /path/to/project
 #
-#  About --global: it writes ~/.claude/CLAUDE.md and nothing else can redirect it — --target is
-#  refused, and --assemble-only only skips config/plugins, it does NOT make the run local. A
+#  About --global: it writes the selected native global rule file(s) and --target cannot redirect
+#  them. --assemble-only only skips config/plugins; it does NOT make the run local. A
 #  re-run keeps the operator name/role/tracker already in the file unless you pass new ones, so
 #  `--global` on its own is safe to repeat. Use --dry-run to write nothing at all.
 #
 #  Other options:
+#    ./setup.sh --platform claude|codex|both  # default: claude (backward compatible)
 #    ./setup.sh --tracker linear --tracker-writes ask|allowed
 #                                       # --tracker says WHERE the team tracks work. It does NOT
 #                                       #   grant write access — that's --tracker-writes:
@@ -34,31 +35,31 @@
 #    ./setup.sh --safety cautious|trusted  # cautious = auto-apply edits, ask before shell/network;
 #                                       #   trusted = run almost everything without asking (default
 #                                       #   on the flag path; the wizard defaults to cautious)
-#    ./setup.sh --assemble-only ...     # skip the config/plugins install; still writes CLAUDE.md
-#                                       #   (under --global that IS ~/.claude/CLAUDE.md — see above)
+#    ./setup.sh --assemble-only ...     # skip config/plugins; still writes selected rule file(s)
 #    ./setup.sh --with-plugins dev-workflow,stack-lsp,security ...  # opt-in plugin packs (latest)
 #    ./setup.sh --with-rtk | --no-rtk   # rtk CLI-output compressor (default: ON for software-dev/devops-setup)
-#    ./setup.sh --with-mcp playwright,context7 ...   # add named MCP server(s) to project .mcp.json
+#    ./setup.sh --with-mcp playwright,context7 ...   # add named MCP server(s) to native project config
 #    ./setup.sh --with-skills ...       # install the bundled skill pack (handoff, verify,
 #                                       #   harness-doctor, new-research, new-feedback, harness-help);
-#                                       #   project mode → <project>/.claude/skills, --global → ~/.claude/skills
+#                                       #   native .claude/skills and/or .agents/skills destinations
 #    ./setup.sh --with-hooks ...        # install git guardrails (secret-scan+protect-main+conventional) in --target
 #    ./setup.sh --update-plugins        # update installed plugins to latest, then exit
-#    ./setup.sh --doctor                # print install health, then exit
+#    ./setup.sh --platform both --doctor # print selected runtime health, then exit
 #    ./setup.sh --profile X --export-instructions > inst.md   # paste-ready blob for web/Cowork
 #    sudo ./setup.sh --org-policy       # machine-wide managed CLAUDE.md + hardened (no-bypass) settings
-#    ./setup.sh --with-handoff-hooks    # install reliable 'handoff' keyword hook (+ best-effort ctx-% nudge)
+#    ./setup.sh --with-handoff-hooks    # native keyword hook; Claude also gets its ctx-% nudge
 #    ./setup.sh --design-system skip|stub|catalog:<slug>|generate   # software-dev UI projects: establish a
 #                                       #   design system. stub = scaffold DESIGN.md to fill in; catalog:stripe =
 #                                       #   pull a ready-made one from the awesome-design-md catalog; generate =
 #                                       #   print the ui-ux-pro-max steps. default = skip (no DESIGN.md).
 #    ./setup.sh --with-ui-design-hook   # global PreToolUse nudge: consult DESIGN.md when editing UI files
-#    ./setup.sh --self-update           # pull the latest harness into this checkout + re-assemble managed CLAUDE.md
+#    ./setup.sh --self-update           # pull latest + re-assemble managed native rule files
 #                                       #   remote: --from <url> | $HARNESS_REMOTE | .harness/remote | the checkout's origin
 #                                       #   auth:   git@/ssh:// → SSH key; https:// → $HARNESS_GH_TOKEN (never stored)
 #                                       #   add --no-reassemble to fetch only; --dry-run to preview without pulling
 #    ./setup.sh --profile auto --target .   # auto-detect the profile from the project's files
-#    ./setup.sh --uninstall --target .  # remove the harness section (auto-backup first); --global for the core
+#    ./setup.sh --also-agents-md        # deprecated: extra instruction-file copy only; use --platform both
+#    ./setup.sh --uninstall --target .  # remove native harness sections (auto-backup first); --global for the core
 #    ./setup.sh --help
 #
 #  Idempotent. Never clobbers your files without --force.
@@ -67,10 +68,12 @@ set -euo pipefail
 
 HARNESS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CC_DIR="$HOME/.claude"
+CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
 
 # ---- defaults --------------------------------------------------------------
 PROFILES=""
 TARGET=""
+PLATFORM="claude"
 # Operator identity starts EMPTY on purpose. Empty means "the flag was not passed" — which is the
 # only thing that lets a re-run tell "leave this alone" apart from "set it to exactly this". The
 # real defaults are DEFAULT_* below, applied LAST, after any recovery from an existing block.
@@ -102,7 +105,6 @@ DRY_RUN=false
 ALSO_AGENTS_MD=false
 ALSO_GEMINI_MD=false
 WITH_SKILLS=false
-SKILLS_DEST=""            # empty → install_skills defaults to global ~/.claude/skills; project mode sets $TARGET/.claude/skills
 WITH_HOOKS=false
 WITH_HANDOFF_HOOKS=false
 WITH_UI_DESIGN_HOOK=false
@@ -130,6 +132,22 @@ LEGACY_BEGIN_MARK="<!-- BEGIN UNIVERSAL CLAUDE HARNESS (managed by setup.sh — 
 LEGACY_END_MARK="<!-- END UNIVERSAL CLAUDE HARNESS -->"
 ALL_BEGIN_MARKS=("$BEGIN_MARK" "$LEGACY_BEGIN_MARK")   # newest first; index-paired with ALL_END_MARKS
 ALL_END_MARKS=("$END_MARK" "$LEGACY_END_MARK")
+
+CODEX_BEGIN_MARK="# BEGIN AGENTSMITH MANAGED — edit via setup.sh"
+CODEX_END_MARK="# END AGENTSMITH MANAGED"
+
+has_claude() { [ "$PLATFORM" = claude ] || [ "$PLATFORM" = both ]; }
+has_codex()  { [ "$PLATFORM" = codex ]  || [ "$PLATFORM" = both ]; }
+platform_rules_label() {
+  case "$PLATFORM" in claude) echo CLAUDE.md;; codex) echo AGENTS.md;; both) echo 'CLAUDE.md + AGENTS.md';; esac
+}
+identity_source() {  # <preferred> [fallback] — preserve identity when adding a second platform
+  local preferred="$1" fallback="${2:-}"
+  if locate_managed_block "$preferred"; then echo "$preferred"
+  elif [ -n "$fallback" ] && locate_managed_block "$fallback"; then echo "$fallback"
+  else echo "$preferred"
+  fi
+}
 
 locate_managed_block() {  # <file> -> sets FOUND_BEGIN/FOUND_END to the marker pair present; rc=1 if none
   local f="$1" i
@@ -375,11 +393,17 @@ check_git() {
 run_wizard() {
   banner
   echo "  Welcome! This wizard sets up Agentsmith — the \"house rules\" that make your AI coding"
-  echo "  assistant (Claude Code) work in a consistent, careful way on your projects."
+  echo "  assistant work in a consistent, careful way on your projects."
   echo "  I'll ask a few short questions, explain each in plain language, show you the exact"
   echo "  command, and change NOTHING until you say yes. Any file I touch is backed up first."
   echo
   check_git
+  echo "  Which assistant should receive native rules, config, hooks, and skills?"
+  echo "    1) Claude Code   — CLAUDE.md + .claude"
+  echo "    2) Codex         — AGENTS.md + .codex/.agents"
+  echo "    3) Both          — independent native copies (portable; no symlinks)"
+  local pc; while :; do printf '  Choose platform [1-3, default 1]: '; read -r pc || pc=1; [ -z "$pc" ] && pc=1; [[ "$pc" =~ ^[1-3]$ ]] && break; echo "  ! enter 1-3"; done
+  local wiz_platform; case "$pc" in 1) wiz_platform=claude;; 2) wiz_platform=codex;; 3) wiz_platform=both;; esac
   echo "  What would you like to set up?"
   echo "    1) This project        — put the rules in ONE project folder you choose (most common)"
   echo "    2) Everything (global) — one set of rules for every project on this computer"
@@ -388,7 +412,7 @@ run_wizard() {
   wiz_note "Not sure? Pick 1 — it's self-contained and the easiest to undo."
   local mc; while :; do printf '  Choose [1-4]: '; read -r mc || die "wizard aborted (no input)"; [[ "$mc" =~ ^[1-4]$ ]] && break; echo "  ! enter 1-4"; done
 
-  local -a A=()
+  local -a A=(--platform "$wiz_platform")
   local oname orole otrack target po_default
 
   case "$mc" in
@@ -417,14 +441,15 @@ run_wizard() {
         wiz_note "• the bundled harness skill pack (/handoff, /verify, /harness-help + 3 more)"
       fi
       po_default=n
-      if locate_managed_block "$CC_DIR/CLAUDE.md"; then
+      local wiz_global_rules="$CC_DIR/CLAUDE.md"; [ "$wiz_platform" = codex ] && wiz_global_rules="$CODEX_DIR/AGENTS.md"
+      if locate_managed_block "$wiz_global_rules"; then
         po_default=y
-        echo; ok "Universal core already installed globally ($CC_DIR/CLAUDE.md)."
+        echo; ok "Universal core already installed globally ($wiz_global_rules)."
       fi
       echo
       wiz_note "'Thin' = this project keeps only its profile; the shared core rules live in your"
       wiz_note "global file and load automatically. Recommended once the core is global."
-      wiz_yn "Keep the project CLAUDE.md thin (profile only; core stays global)?" "$po_default" && A+=(--profile-only)
+      wiz_yn "Keep the project rules thin (profile only; core stays global)?" "$po_default" && A+=(--profile-only)
       echo
       wiz_note "How careful should the assistant be about running things?"
       wiz_note "Cautious = auto-apply file edits, but ASK before shell commands / network (recommended)."
@@ -446,11 +471,12 @@ run_wizard() {
       echo; wiz_note "MCP servers are optional extra tools the assistant can use (e.g. a web browser,"
       wiz_note "a docs fetcher). Skip if unsure — you can always add them later."
       wiz_pick_mcp;     [ -n "$WIZ_MCP" ]     && A+=(--with-mcp "$WIZ_MCP")
-      echo; wiz_note "Plugin packs are optional bundles of extra commands/skills. Skip if unsure."
-      wiz_pick_plugins; [ -n "$WIZ_PLUGINS" ] && A+=(--with-plugins "$WIZ_PLUGINS")
+      if [ "$wiz_platform" != codex ]; then
+        echo; wiz_note "Claude plugin packs are optional bundles of extra commands/skills. Skip if unsure."
+        wiz_pick_plugins; [ -n "$WIZ_PLUGINS" ] && A+=(--with-plugins "$WIZ_PLUGINS")
+      fi
       echo
-      wiz_note "The bundled harness skill pack (/handoff, /verify, /harness-doctor, /harness-help,"
-      wiz_note "/new-research, /new-feedback) installs into this project's .claude/skills/."
+      wiz_note "The bundled skill pack installs natively for $wiz_platform (.claude/skills and/or .agents/skills)."
       if wiz_yn "Copy the bundled harness skill pack into this project?" y; then A+=(--with-skills); wiz_skills=y; fi
       echo
       wiz_note "Git guardrails are automatic safety checks in this project: block committing a"
@@ -477,9 +503,8 @@ run_wizard() {
         fi
         ;;
       esac
-      wiz_note "Handoff hooks help the assistant save its place before it runs low on working memory."
-      wiz_yn "Install handoff hooks globally ('handoff' keyword + best-effort context nudge)?" n && A+=(--with-handoff-hooks)
-      wiz_yn "Also write AGENTS.md (for Codex & other assistants)?" n && A+=(--also-agents-md)
+      wiz_note "Handoff hooks save the assistant's place on 'handoff'; Claude also gets its status-line context nudge."
+      wiz_yn "Install handoff hooks globally?" n && A+=(--with-handoff-hooks)
       wiz_yn "Also write GEMINI.md (for the Gemini CLI)?" n && A+=(--also-gemini-md)
       ;;
     2)  # ---- global core --------------------------------------------------
@@ -495,12 +520,13 @@ run_wizard() {
         wiz_note "you post. This applies to every project on this computer."
         wiz_yn "Let the assistant write to $otrack unprompted?" n && A+=(--tracker-writes allowed)
       fi
-      echo; wiz_pick_plugins; [ -n "$WIZ_PLUGINS" ] && A+=(--with-plugins "$WIZ_PLUGINS")
+      if [ "$wiz_platform" != codex ]; then echo; wiz_pick_plugins; [ -n "$WIZ_PLUGINS" ] && A+=(--with-plugins "$WIZ_PLUGINS"); fi
       echo
-      wiz_yn "Copy the bundled skills into ~/.claude/skills?" n && A+=(--with-skills)
-      wiz_yn "Install handoff hooks ('handoff' keyword + best-effort context nudge)?" y && A+=(--with-handoff-hooks)
+      wiz_yn "Copy the bundled skills into the native global skill directory/directories?" n && A+=(--with-skills)
+      wiz_yn "Install native handoff hooks?" y && A+=(--with-handoff-hooks)
       ;;
     3)  # ---- org policy ---------------------------------------------------
+      [ "$wiz_platform" = claude ] || die "Codex organization policy is not supported in this release. Re-run the wizard with platform 'claude' for machine-wide policy."
       echo; warn "Machine-wide policy writes managed config as root. The wizard prints a sudo command for you to run."
       wiz_note "Use this only on a shared computer where every account should follow the same rules."
       if wiz_yn "Bake a profile into the managed core?" n; then
@@ -526,13 +552,14 @@ run_wizard() {
   if [ "$mc" = 1 ]; then
     echo; say "Here's what I found, and what I'll do:"
     echo "      • Folder:      $target"
-    local md="$target/CLAUDE.md"
+    local md
+    if [ "$wiz_platform" = codex ]; then md="$target/AGENTS.md"; else md="$target/CLAUDE.md"; fi
     if [ ! -f "$md" ]; then
-      echo "      • CLAUDE.md:   none yet → I'll create a new one"
+      echo "      • Rules:       none yet → I'll create $( [ "$wiz_platform" = both ] && echo 'CLAUDE.md + AGENTS.md' || basename "$md" )"
     elif locate_managed_block "$md"; then
-      echo "      • CLAUDE.md:   a previous Agentsmith install → I'll update only my section (your edits stay)"
+      echo "      • Rules:       previous Agentsmith install → I'll update only my section (your edits stay)"
     else
-      echo "      • CLAUDE.md:   your own file (no Agentsmith section) → I'll add my section at the end,"
+      echo "      • Rules:       your own file (no Agentsmith section) → I'll add my section at the end,"
       echo "                     after saving a timestamped backup of your original"
     fi
     if [ "$po_default" = y ]; then
@@ -541,7 +568,7 @@ run_wizard() {
       echo "      • Core rules:  not global yet → this file includes the full core"
     fi
     echo "      • Safety:      ${wiz_safety:-cautious}  ($([ "${wiz_safety:-cautious}" = cautious ] && echo 'asks before shell/network' || echo 'runs without asking'))"
-    [ "${wiz_skills:-n}" = y ] && echo "      • Skills:      bundled harness pack → $target/.claude/skills/"
+    [ "${wiz_skills:-n}" = y ] && echo "      • Skills:      bundled harness pack → native $wiz_platform destination(s)"
     wiz_note "Backups are made before any existing file changes. Nothing is written until you confirm."
   fi
 
@@ -567,6 +594,7 @@ run_wizard() {
 ORIG_ARGC=$#      # remembered so a bare invocation (no options) defaults to the wizard
 while [ $# -gt 0 ]; do
   case "$1" in
+    --platform) shift; PLATFORM="${1:-}";;
     --profile) shift; PROFILES="${1:-}";;
     --target) shift; TARGET="${1:-}";;
     --operator-name) shift; OPERATOR_NAME="${1:-}";;
@@ -624,31 +652,48 @@ if $DO_WIZARD || { [ "$ORIG_ARGC" -eq 0 ] && [ "${WIZARD_RUN:-}" != 1 ]; }; then
 fi
 
 case "$SAFETY" in cautious|trusted) ;; *) die "--safety must be 'cautious' or 'trusted' (got: '$SAFETY')";; esac
+case "$PLATFORM" in claude|codex|both) ;; *) die "--platform must be 'claude', 'codex', or 'both' (got: '$PLATFORM')";; esac
+$ALSO_AGENTS_MD && warn "--also-agents-md is deprecated and copies instructions only. Use --platform both for native Codex config, skills, MCP, and hooks."
+$DO_ORG_POLICY && has_codex && die "Codex organization-policy installation is not supported in this release. Use --platform claude --org-policy; Codex organization policy must be managed separately."
+if ! has_claude; then
+  [ -z "$WITH_PLUGINS" ] || warn "--with-plugins is Claude-only and was ignored for --platform codex."
+  [ "$WITH_RTK" != true ] || warn "--with-rtk is Claude-specific wiring and was ignored for --platform codex."
+fi
 
 # ---- standalone actions ----------------------------------------------------
 if $DO_DOCTOR; then
-  say "Harness doctor — $CC_DIR"
-  [ -f "$CC_DIR/settings.json" ] && ok "settings.json present" || warn "no ~/.claude/settings.json"
-  if [ -f "$CC_DIR/settings.json" ] && command -v jq >/dev/null 2>&1; then
-    for k in statusLine effortLevel autoMemoryEnabled enabledPlugins; do
-      v=$(jq -r ".${k} // empty" "$CC_DIR/settings.json" 2>/dev/null)
-      [ -n "$v" ] && ok "settings.$k set" || warn "settings.$k missing"
-    done
+  say "Harness doctor — platform: $PLATFORM"
+  if has_claude; then
+    [ -f "$CC_DIR/settings.json" ] && ok "Claude settings.json present" || warn "no ~/.claude/settings.json"
+    [ -f "$CC_DIR/statusline-command.sh" ] && ok "Claude statusline installed" || warn "no Claude statusline-command.sh"
+    if [ -f "$CC_DIR/CLAUDE.md" ]; then
+      ok "Claude global rules present ($(wc -l < "$CC_DIR/CLAUDE.md") lines)"
+      [ -f "$HARNESS_DIR/scripts/lint-leanness.sh" ] && bash "$HARNESS_DIR/scripts/lint-leanness.sh" "$CC_DIR/CLAUDE.md" 2>/dev/null | sed 's/^/  /'
+    else warn "no Claude global rules (per-project only)"; fi
+    [ -d "$CC_DIR/skills" ] && ok "Claude skills: $(find "$CC_DIR/skills" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')" || warn "no Claude skills directory"
+    command -v claude >/dev/null 2>&1 && ok "'claude' CLI on PATH" || warn "'claude' CLI not on PATH"
   fi
-  [ -f "$CC_DIR/statusline-command.sh" ] && ok "statusline installed" || warn "no statusline-command.sh"
-  if [ -f "$CC_DIR/CLAUDE.md" ]; then
-    ok "global ~/.claude/CLAUDE.md present ($(wc -l < "$CC_DIR/CLAUDE.md") lines)"
-    [ -f "$HARNESS_DIR/scripts/lint-leanness.sh" ] && bash "$HARNESS_DIR/scripts/lint-leanness.sh" "$CC_DIR/CLAUDE.md" 2>/dev/null | sed 's/^/  /'
-  else
-    warn "no global CLAUDE.md (per-project only)"
+  if has_codex; then
+    [ -f "$CODEX_DIR/config.toml" ] && ok "Codex config.toml present and parsed" || warn "no Codex config.toml"
+    if [ -f "$CODEX_DIR/config.toml" ]; then
+      python3 -c 'import sys,tomllib; tomllib.load(open(sys.argv[1],"rb"))' "$CODEX_DIR/config.toml" 2>/dev/null || warn "Codex config.toml is invalid TOML"
+    fi
+    if [ -f "$CODEX_DIR/AGENTS.md" ]; then
+      ok "Codex global rules present ($(wc -l < "$CODEX_DIR/AGENTS.md") lines)"
+      [ -f "$HARNESS_DIR/scripts/lint-leanness.sh" ] && bash "$HARNESS_DIR/scripts/lint-leanness.sh" "$CODEX_DIR/AGENTS.md" 2>/dev/null | sed 's/^/  /'
+    else warn "no Codex global rules (per-project only)"; fi
+    [ -d "$HOME/.agents/skills" ] && ok "Codex skills: $(find "$HOME/.agents/skills" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')" || warn "no Codex global skills directory"
+    [ -f "$CODEX_DIR/hooks.json" ] && ok "Codex hooks.json present (review trust with /hooks)" || warn "no Codex hooks.json"
+    command -v codex >/dev/null 2>&1 && ok "'codex' CLI on PATH" || warn "'codex' CLI not on PATH"
   fi
-  [ -d "$CC_DIR/skills" ] && ok "skills dir: $(ls -1 "$CC_DIR/skills" 2>/dev/null | wc -l | tr -d ' ') skill(s)" || warn "no ~/.claude/skills"
-  if command -v claude >/dev/null 2>&1; then ok "'claude' CLI on PATH"; else warn "'claude' CLI not on PATH (plugin install/update unavailable from script)"; fi
-  [ -d "$CC_DIR/plugins" ] && ok "plugins dir present" || warn "no ~/.claude/plugins"
+  if [ "$PLATFORM" = both ] && [ -f "$CC_DIR/CLAUDE.md" ] && [ -f "$CODEX_DIR/AGENTS.md" ]; then
+    cmp -s "$CC_DIR/CLAUDE.md" "$CODEX_DIR/AGENTS.md" && ok "Claude/Codex global rule copies are identical" || warn "Claude/Codex global rule copies differ — re-run --platform both --global"
+  fi
   exit 0
 fi
 
 if $DO_UPDATE_PLUGINS; then
+  has_claude || die "--update-plugins is Claude-only; choose --platform claude or both."
   command -v claude >/dev/null 2>&1 || die "'claude' CLI not on PATH — update in-app with /plugin update."
   say "Updating installed plugins to latest"
   claude plugin update >/dev/null 2>&1 && ok "plugins updated" || warn "update reported issues — try /plugin update in-app"
@@ -729,7 +774,8 @@ report_todos() {  # <rendered-file>
 
 backup_file() {  # <path> -> if it exists, save a timestamped copy beside it; echo the backup path
   [ -f "$1" ] || return 0
-  local bak; bak="$1.bak.$(date +%Y%m%d-%H%M%S)"
+  local bak base n=0; base="$1.bak.$(date +%Y%m%d-%H%M%S)"; bak="$base"
+  while [ -e "$bak" ]; do n=$((n+1)); bak="$base.$n"; done
   cp "$1" "$bak" && printf '%s' "$bak"
 }
 
@@ -738,6 +784,7 @@ write_first_steps() {  # <dest> — the "first 30 minutes" card, filled + write-
   [ -e "$dest" ] && { ok "FIRST-STEPS.md already present — left as-is"; return 0; }
   sed -e "s|{{PROFILES}}|${PROFILES:-none}|g" \
       -e "s|{{SAFETY}}|$SAFETY|g" \
+      -e "s|{{PLATFORM}}|$PLATFORM|g" \
       -e "s|{{TARGET_NAME}}|$(basename "$TARGET")|g" \
       "$HARNESS_DIR/templates/first-steps.md" > "$dest" && ok "added FIRST-STEPS.md (your getting-started card)"
 }
@@ -785,7 +832,7 @@ assemble_to() {  # <dest> <include_core>
 install_marketplace() { command -v claude >/dev/null 2>&1 && claude plugin marketplace add "$1" >/dev/null 2>&1 && ok "marketplace $1" || warn "add later: /plugin marketplace add $1"; }
 install_plugin()      { command -v claude >/dev/null 2>&1 && claude plugin install "$1" >/dev/null 2>&1 && ok "plugin $1" || warn "install later: /plugin install $1"; }
 
-install_global_config() {
+install_claude_config() {
   say "Installing global config into $CC_DIR"
   mkdir -p "$CC_DIR"
   [ -e "$CC_DIR/statusline-command.sh" ] || { cp "$HARNESS_DIR/config/statusline-command.sh" "$CC_DIR/statusline-command.sh"; chmod +x "$CC_DIR/statusline-command.sh" 2>/dev/null || true; ok "statusline installed"; }
@@ -848,14 +895,11 @@ install_global_config() {
   esac
   # rtk — token-compressing CLI proxy (github.com/rtk-ai/rtk). Default-ON for code profiles; --no-rtk opts out.
   rtk_wanted && install_rtk
-  $WITH_SKILLS && install_skills "$SKILLS_DEST"
-  $WITH_HANDOFF_HOOKS && install_handoff_hooks
-  $WITH_UI_DESIGN_HOOK && install_ui_design_hook
   return 0   # never let a false trailing `&&` (both hooks/skills off) abort the caller under set -e
 }
 
-install_skills() {  # [dest] — default global ~/.claude/skills; project mode passes $TARGET/.claude/skills
-  local dest="${1:-$CC_DIR/skills}"
+install_skills() {  # <dest> — copy, never link, so repos remain portable across runtimes/OSes
+  local dest="$1"
   mkdir -p "$dest"
   local n=0
   for d in "$HARNESS_DIR"/skills/*/; do
@@ -865,6 +909,134 @@ install_skills() {  # [dest] — default global ~/.claude/skills; project mode p
     cp -r "$d" "$dest/$name"; ok "skill $name"; n=$((n+1))
   done
   ok "skills installed: $n (into $dest/)"
+}
+
+install_native_skills() {
+  $WITH_SKILLS || return 0
+  if $GLOBAL; then
+    has_claude && install_skills "$CC_DIR/skills"
+    has_codex  && install_skills "$HOME/.agents/skills"
+  else
+    has_claude && install_skills "$TARGET/.claude/skills"
+    has_codex  && install_skills "$TARGET/.agents/skills"
+  fi
+  return 0
+}
+
+# Update a Codex TOML file without reserializing foreign content. Root settings must appear before
+# the first table in TOML, so the managed block is inserted at that boundary; its MCP tables then
+# end immediately when the first foreign table begins. Re-runs replace only this block and union
+# earlier Agentsmith MCP selections. Manual server names outside the block always win.
+update_codex_toml() {  # <dest> <include-safety:true|false> <comma-separated-mcp>
+  local dest="$1" include_safety="$2" names="$3"
+  command -v python3 >/dev/null 2>&1 || die "Codex config installation needs Python 3.11+ for TOML validation (tomllib)."
+  python3 -c 'import tomllib' 2>/dev/null || die "Codex config installation needs Python 3.11+ with tomllib."
+  mkdir -p "$(dirname "$dest")"
+  local bak=""
+  [ -f "$dest" ] && bak="$(backup_file "$dest")"
+  local result
+  if ! result="$(python3 - "$dest" "$include_safety" "$SAFETY" "$names" "$HARNESS_DIR/config/mcp.example.json" "$CODEX_BEGIN_MARK" "$CODEX_END_MARK" <<'PY'
+import json, pathlib, re, sys, tempfile, tomllib
+
+dest = pathlib.Path(sys.argv[1])
+include_safety = sys.argv[2] == "true"
+safety, requested, source_path, begin, end = sys.argv[3:8]
+original = dest.read_text(encoding="utf-8") if dest.exists() else ""
+block_re = re.compile(rf"(?ms)^\s*{re.escape(begin)}\n.*?^{re.escape(end)}\s*\n?")
+old_match = block_re.search(original)
+old_block = old_match.group(0) if old_match else ""
+prior = set(re.findall(r"(?m)^\[mcp_servers\.([A-Za-z0-9_-]+)\]\s*$", old_block))
+foreign = block_re.sub("", original).lstrip("\n")
+manual = set(re.findall(r"(?m)^\[mcp_servers\.([A-Za-z0-9_-]+)(?:\.[^]]+)?\]\s*$", foreign))
+selected = prior | {x.strip() for x in requested.split(",") if x.strip()}
+source = json.loads(pathlib.Path(source_path).read_text(encoding="utf-8"))["mcpServers"]
+
+def q(value):
+    if isinstance(value, bool): return "true" if value else "false"
+    if isinstance(value, (int, float)): return str(value)
+    if isinstance(value, str): return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, list): return "[" + ", ".join(q(v) for v in value) + "]"
+    raise TypeError(type(value).__name__)
+
+lines = [begin]
+if include_safety:
+    if safety == "cautious":
+        lines += ['approval_policy = "on-request"', 'sandbox_mode = "workspace-write"']
+    else:
+        lines += ['approval_policy = "never"', 'sandbox_mode = "danger-full-access"']
+for name in sorted(selected):
+    if name in manual:
+        print(f"WARN: MCP server '{name}' is defined outside the Agentsmith block; kept the manual definition and skipped the managed copy.")
+        continue
+    if name not in source:
+        print(f"WARN: no MCP server '{name}' in config/mcp.example.json; skipped.")
+        continue
+    entry = {k:v for k,v in source[name].items() if k != "_use"}
+    lines += ["", f"[mcp_servers.{name}]"]
+    for key, value in entry.items():
+        if key == "env": continue
+        lines.append(f"{key} = {q(value)}")
+    if entry.get("env"):
+        lines += ["", f"[mcp_servers.{name}.env]"]
+        for key, value in entry["env"].items(): lines.append(f"{key} = {q(value)}")
+lines.append(end)
+managed = "\n".join(lines) + "\n"
+
+# Preserve the complete foreign root preamble and place managed tables immediately before its
+# first table. That keeps all original root keys/comments at root and all original tables intact.
+m = re.search(r"(?m)^\s*\[", foreign)
+if m:
+    prefix, tables = foreign[:m.start()], foreign[m.start():]
+    rendered = prefix.rstrip("\n") + ("\n" if prefix.strip() else "") + managed + tables.lstrip("\n")
+else:
+    rendered = foreign.rstrip("\n") + ("\n" if foreign.strip() else "") + managed
+try:
+    tomllib.loads(rendered)
+except Exception as exc:
+    raise SystemExit(f"generated TOML did not validate; original left in place: {exc}")
+dest.parent.mkdir(parents=True, exist_ok=True)
+tmp = dest.with_name(dest.name + ".agentsmith-new")
+tmp.write_text(rendered, encoding="utf-8")
+tmp.replace(dest)
+print("OK")
+PY
+)"; then
+    warn "Codex TOML update failed; original left in place${bak:+ (backup: $(basename "$bak"))}."
+    return 1
+  fi
+  while IFS= read -r line; do
+    case "$line" in WARN:*) warn "${line#WARN: }";; esac
+  done <<< "$result"
+  ok "Codex TOML updated: $dest${bak:+ (backup: $(basename "$bak"))}"
+}
+
+remove_codex_toml_block() {  # <dest>
+  local dest="$1"
+  [ -f "$dest" ] || return 0
+  local bak; bak="$(backup_file "$dest")"
+  python3 - "$dest" "$CODEX_BEGIN_MARK" "$CODEX_END_MARK" <<'PY'
+import pathlib, re, sys
+p, begin, end = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+text = p.read_text(encoding="utf-8")
+new = re.sub(rf"(?ms)^\s*{re.escape(begin)}\n.*?^{re.escape(end)}\s*\n?", "", text)
+if new.strip(): p.write_text(new.lstrip("\n"), encoding="utf-8")
+else: p.unlink()
+PY
+  ok "removed Agentsmith's Codex TOML block from $(basename "$dest") (backup: $(basename "$bak"))"
+}
+
+install_codex_config() {
+  say "Installing Codex config into $CODEX_DIR"
+  update_codex_toml "$CODEX_DIR/config.toml" true ""
+}
+
+install_platform_config() {
+  has_claude && install_claude_config
+  has_codex  && install_codex_config
+  install_native_skills
+  $WITH_HANDOFF_HOOKS && install_handoff_hooks
+  $WITH_UI_DESIGN_HOOK && install_ui_design_hook
+  return 0
 }
 
 rtk_wanted() {  # install rtk? explicit flag wins; else auto = only for code profiles (software-dev/devops-setup)
@@ -916,7 +1088,7 @@ build_verify_conf() {  # <dest> — generate .harness/verify.conf from the chose
   } > "$dest"
 }
 
-add_mcp_servers() {  # merge chosen servers from config/mcp.example.json into <TARGET>/.mcp.json
+add_claude_mcp_servers() {  # merge chosen servers into <TARGET>/.mcp.json
   local names="$1" src="$HARNESS_DIR/config/mcp.example.json" dest="$TARGET/.mcp.json"
   local have; have="$(command -v jq >/dev/null 2>&1 && jq -r '.mcpServers|keys|join(", ")' "$src" 2>/dev/null || echo '')"
   if ! command -v jq >/dev/null 2>&1; then
@@ -934,6 +1106,13 @@ add_mcp_servers() {  # merge chosen servers from config/mcp.example.json into <T
       || { warn "failed to merge '$n' (left .mcp.json unchanged)"; rm -f "$dest.tmp"; }
   done
   [ "$added" -gt 0 ] && ok ".mcp.json now serves: $(jq -r '.mcpServers|keys|join(", ")' "$dest")"
+}
+
+add_mcp_servers() {
+  local names="$1"
+  has_claude && add_claude_mcp_servers "$names"
+  has_codex  && update_codex_toml "$TARGET/.codex/config.toml" false "$names"
+  return 0
 }
 
 export_instructions() {  # print a portable, paste-ready instructions blob to STDOUT
@@ -1004,7 +1183,7 @@ org_policy_install() {  # machine-wide managed CLAUDE.md + hardened settings (al
   echo "  Admins: extend $org_settings with org allow/deny rules as needed."
 }
 
-install_handoff_hooks() {  # global: 'handoff' keyword hook (reliable) + best-effort ctx-% Stop nudge
+install_claude_handoff_hooks() {  # keyword hook + Claude-only status-line context nudge
   command -v jq >/dev/null 2>&1 || die "--with-handoff-hooks needs jq (it edits settings.json)."
   mkdir -p "$CC_DIR/hooks"
   cp "$HARNESS_DIR/hooks/handoff-on-keyword.sh"   "$CC_DIR/hooks/handoff-on-keyword.sh"
@@ -1033,6 +1212,35 @@ install_handoff_hooks() {  # global: 'handoff' keyword hook (reliable) + best-ef
   echo; say "$(c '1;32' 'Handoff hooks installed.')"
   echo "  • 'handoff' / 'wrap up' in a prompt → injects the safe-state + recall-prompt protocol (reliable)"
   echo "  • context ≥ ${HANDOFF_PCT_THRESHOLD:-30}% used → one best-effort nudge to hand off early (fragile — see hooks/README.md)"
+}
+
+install_codex_handoff_hooks() {
+  command -v jq >/dev/null 2>&1 || die "Codex hook installation needs jq (it safely merges hooks.json)."
+  mkdir -p "$CODEX_DIR/hooks"
+  cp "$HARNESS_DIR/hooks/handoff-on-keyword.sh" "$CODEX_DIR/hooks/handoff-on-keyword.sh"
+  chmod +x "$CODEX_DIR/hooks/handoff-on-keyword.sh" 2>/dev/null || true
+  [ -f "$CODEX_DIR/hooks.json" ] || echo '{}' > "$CODEX_DIR/hooks.json"
+  local script_q cmd; printf -v script_q '%q' "$CODEX_DIR/hooks/handoff-on-keyword.sh"; cmd="bash $script_q"
+  if jq -e --arg c "$cmd" 'any(.hooks.UserPromptSubmit[]?.hooks[]?; .command == $c)' "$CODEX_DIR/hooks.json" >/dev/null 2>&1; then
+    ok "Codex handoff hook already wired in hooks.json"
+  else
+    local bak; bak="$(backup_file "$CODEX_DIR/hooks.json")"
+    if jq --arg c "$cmd" '.hooks.UserPromptSubmit = ((.hooks.UserPromptSubmit // []) + [{hooks:[{type:"command", command:$c}]}])' \
+         "$CODEX_DIR/hooks.json" > "$CODEX_DIR/hooks.json.new"; then
+      mv "$CODEX_DIR/hooks.json.new" "$CODEX_DIR/hooks.json"
+      ok "wired Codex handoff keyword hook (backup: $(basename "$bak"))"
+    else
+      rm -f "$CODEX_DIR/hooks.json.new"; warn "Codex hooks merge failed — add the snippet from hooks/README.md by hand"
+    fi
+  fi
+  say "Codex does not receive the context-percentage nudge; it depends on Claude's status line."
+  say "Open /hooks in Codex and trust the new hook before relying on it."
+}
+
+install_handoff_hooks() {
+  has_claude && install_claude_handoff_hooks
+  has_codex  && install_codex_handoff_hooks
+  return 0
 }
 
 # ---- design system (software-dev UI projects) ------------------------------
@@ -1078,7 +1286,7 @@ scaffold_design_system() {  # honor --design-system for a UI project. Idempotent
       echo "      Or via its npm CLI (needs Node + Python 3):  npm i -g ui-ux-pro-max-cli && uipro" ;;
   esac
 }
-install_ui_design_hook() {  # global PreToolUse nudge; warn-and-skip (don't abort setup) if jq is missing
+install_claude_ui_design_hook() {  # global PreToolUse nudge; warn-and-skip if jq is missing
   if ! command -v jq >/dev/null 2>&1; then
     warn "UI design-system hook needs jq to edit settings.json — skipped (install jq, then --with-ui-design-hook)."
     return 0
@@ -1100,9 +1308,39 @@ install_ui_design_hook() {  # global PreToolUse nudge; warn-and-skip (don't abor
   fi
 }
 
+install_codex_ui_design_hook() {
+  if ! command -v jq >/dev/null 2>&1; then
+    warn "Codex UI design-system hook needs jq to merge hooks.json — skipped."
+    return 0
+  fi
+  mkdir -p "$CODEX_DIR/hooks"
+  cp "$HARNESS_DIR/hooks/ui-design-reminder.sh" "$CODEX_DIR/hooks/ui-design-reminder.sh"
+  chmod +x "$CODEX_DIR/hooks/ui-design-reminder.sh" 2>/dev/null || true
+  [ -f "$CODEX_DIR/hooks.json" ] || echo '{}' > "$CODEX_DIR/hooks.json"
+  local script_q cmd; printf -v script_q '%q' "$CODEX_DIR/hooks/ui-design-reminder.sh"; cmd="bash $script_q"
+  if jq -e --arg c "$cmd" 'any(.hooks.PreToolUse[]?.hooks[]?; .command == $c)' "$CODEX_DIR/hooks.json" >/dev/null 2>&1; then
+    ok "Codex UI design-system hook already wired in hooks.json"; return 0
+  fi
+  local bak; bak="$(backup_file "$CODEX_DIR/hooks.json")"
+  if jq --arg c "$cmd" '.hooks.PreToolUse = ((.hooks.PreToolUse // []) + [{matcher:"^apply_patch$", hooks:[{type:"command", command:$c}]}])' \
+       "$CODEX_DIR/hooks.json" > "$CODEX_DIR/hooks.json.new"; then
+    mv "$CODEX_DIR/hooks.json.new" "$CODEX_DIR/hooks.json"
+    ok "wired Codex UI design-system hook (backup: $(basename "$bak"))"
+    say "Open /hooks in Codex and trust the new hook before relying on it."
+  else
+    rm -f "$CODEX_DIR/hooks.json.new"; warn "Codex hooks merge failed — add the snippet from hooks/README.md by hand"
+  fi
+}
+
+install_ui_design_hook() {
+  has_claude && install_claude_ui_design_hook
+  has_codex  && install_codex_ui_design_hook
+  return 0
+}
+
 # ---- self-update -----------------------------------------------------------
 # Pull the latest harness into the checkout this script lives in, then re-assemble
-# the managed CLAUDE.md blocks. Remote resolution + auth are configurable; nothing
+# the selected managed native rule blocks. Remote resolution + auth are configurable; nothing
 # secret is ever written to a tracked file (Rule: no live creds in the repo).
 resolve_self_update_remote() {  # echoes the remote URL, or returns 1
   if [ -n "$SELF_UPDATE_REMOTE" ]; then echo "$SELF_UPDATE_REMOTE"; return 0; fi
@@ -1211,6 +1449,7 @@ reassemble_managed_targets() {
   local here t n=0 targets=() seen=" " f
   here="${TARGET:-$(pwd)}"
   [ -f "$CC_DIR/CLAUDE.md" ] && targets+=("$CC_DIR/CLAUDE.md")
+  [ -f "$CODEX_DIR/AGENTS.md" ] && targets+=("$CODEX_DIR/AGENTS.md")
   for f in CLAUDE.md AGENTS.md GEMINI.md; do [ -f "$here/$f" ] && targets+=("$here/$f"); done
   for t in "${targets[@]}"; do
     case "$seen" in *" $t "*) continue;; esac
@@ -1297,18 +1536,26 @@ if $WITH_UI_DESIGN_HOOK && ! $GLOBAL && [ -z "$PROFILES" ]; then install_ui_desi
 
 if $DO_UNINSTALL; then
   if $GLOBAL; then
-    say "Uninstall — removing the Agentsmith core from $CC_DIR/CLAUDE.md"
-    uninstall_from "$CC_DIR/CLAUDE.md"
-    warn "Global config (settings.json, plugins) left in place — remove those by hand if you want them gone."
-    command -v rtk >/dev/null 2>&1 && say "rtk hook left in place. Remove it with:  rtk init -g --uninstall   (then remove the binary via brew/cargo/rm)."
+    say "Uninstall — removing Agentsmith's managed global surfaces for $PLATFORM"
+    if has_claude; then
+      uninstall_from "$CC_DIR/CLAUDE.md"
+      warn "Claude settings/plugins/hooks were left in place; remove them by hand if wanted."
+      command -v rtk >/dev/null 2>&1 && say "rtk hook left in place. Remove it with: rtk init -g --uninstall"
+    fi
+    if has_codex; then
+      uninstall_from "$CODEX_DIR/AGENTS.md"
+      remove_codex_toml_block "$CODEX_DIR/config.toml"
+      warn "Codex hooks and copied skills were left in place; review hooks with /hooks and remove only what you no longer want."
+    fi
   else
     [ -n "$TARGET" ] || TARGET="$(pwd)"
     [ -d "$TARGET" ] || die "Target dir does not exist: $TARGET"
     TARGET="$(cd "$TARGET" && pwd)"
-    say "Uninstall — removing the Agentsmith section from CLAUDE.md/AGENTS.md/GEMINI.md in $TARGET"
-    uninstall_from "$TARGET/CLAUDE.md"
-    uninstall_from "$TARGET/AGENTS.md"
-    uninstall_from "$TARGET/GEMINI.md"
+    say "Uninstall — removing Agentsmith's managed project surfaces for $PLATFORM in $TARGET"
+    has_claude && uninstall_from "$TARGET/CLAUDE.md"
+    has_codex && { uninstall_from "$TARGET/AGENTS.md"; remove_codex_toml_block "$TARGET/.codex/config.toml"; }
+    $ALSO_AGENTS_MD && uninstall_from "$TARGET/AGENTS.md"
+    $ALSO_GEMINI_MD && uninstall_from "$TARGET/GEMINI.md"
     echo; ok "Done. Scaffolding (scripts/, .harness/, docs/) was left in place — delete it by hand for a full removal."
     echo "  Your original files (if any) were backed up as *.bak.<timestamp> next to each."
   fi
@@ -1319,24 +1566,33 @@ fi
 #  GLOBAL MODE — core rules to ~/.claude/CLAUDE.md + machine config
 # ============================================================================
 if $GLOBAL; then
-  say "GLOBAL install — universal core → $CC_DIR/CLAUDE.md (applies to every project)"
+  say "GLOBAL install — universal core → $(platform_rules_label) (platform: $PLATFORM)"
   # --target does not constrain --global: the core has exactly one home. Refusing beats warning —
   # the whole of feedback 0003 is that a careful person passed --target BECAUSE it reads as "write
   # over there, not to my real config", and a printed warning is prose in a wall of output.
-  [ -n "$TARGET" ] && die "--target is ignored by --global: the core always goes to $CC_DIR/CLAUDE.md, never to $TARGET.
+  [ -n "$TARGET" ] && die "--target is ignored by --global: native global rules have fixed homes, never $TARGET.
   For a project file:   ./setup.sh --profile <name> --target $TARGET
   For the global core:  ./setup.sh --global        (no --target)"
   # Likewise --assemble-only reads like "touch nothing" but under --global, CLAUDE.md IS the
   # global file. Say so out loud rather than letting the flag imply a safety it does not provide.
-  $ASSEMBLE_ONLY && ! $DRY_RUN && warn "--assemble-only skips config/plugins but still WRITES $CC_DIR/CLAUDE.md (a backup is made first). Use --dry-run to write nothing."
-  [ -n "$WITH_MCP" ] && warn "--with-mcp is project-scoped (writes a project .mcp.json) — ignored in --global mode. Run it per project."
-  resolve_operator_identity "$CC_DIR/CLAUDE.md"
-  assemble_to "$CC_DIR/CLAUDE.md" true
-  $DRY_RUN || report_todos "$CC_DIR/CLAUDE.md"
-  $DRY_RUN || { $ASSEMBLE_ONLY && say "Skipping config/plugins (--assemble-only)." || install_global_config; }
+  case "$PLATFORM" in
+    claude) global_primary="$CC_DIR/CLAUDE.md";;
+    codex) global_primary="$CODEX_DIR/AGENTS.md";;
+    both) global_primary="$(identity_source "$CC_DIR/CLAUDE.md" "$CODEX_DIR/AGENTS.md")";;
+  esac
+  $ASSEMBLE_ONLY && ! $DRY_RUN && warn "--assemble-only skips config/plugins but still WRITES native global rule files (backups are made first). Use --dry-run to write nothing."
+  [ -n "$WITH_MCP" ] && warn "--with-mcp is project-scoped — ignored in --global mode. Run it per project."
+  resolve_operator_identity "$global_primary"
+  has_claude && assemble_to "$CC_DIR/CLAUDE.md" true
+  has_codex && assemble_to "$CODEX_DIR/AGENTS.md" true
+  if ! $DRY_RUN; then
+    has_claude && report_todos "$CC_DIR/CLAUDE.md"
+    has_codex && report_todos "$CODEX_DIR/AGENTS.md"
+    if $ASSEMBLE_ONLY; then say "Skipping config/plugins (--assemble-only)."; else install_platform_config; fi
+  fi
   echo; say "$(c '1;32' 'Global core installed.')"
   echo "  Next per project:  ./setup.sh --profile <name> --profile-only --target /path/to/project"
-  echo "  (the project CLAUDE.md will carry just the profile; the core is now global)"
+  echo "  (the project's native rule file(s) will carry just the profile; the core is now global)"
   exit 0
 fi
 
@@ -1349,14 +1605,20 @@ fi
 TARGET="$(cd "$TARGET" && pwd)"
 
 INCLUDE_CORE=true; $PROFILE_ONLY && INCLUDE_CORE=false
-say "Assembling CLAUDE.md (profiles: $PROFILES; core: $INCLUDE_CORE)"
+say "Assembling $(platform_rules_label) (profiles: $PROFILES; core: $INCLUDE_CORE)"
 # Same trap as --global, same fix: re-running setup on a project that already has a managed block
 # must not silently blank whoever is named in it. Feedback 0003 was reported against --global, but
 # the mechanism is in assemble_to, so project mode had the identical bug on the identical line.
-resolve_operator_identity "$TARGET/CLAUDE.md"
-assemble_to "$TARGET/CLAUDE.md" "$INCLUDE_CORE"
-$ALSO_AGENTS_MD && ! $DRY_RUN && assemble_to "$TARGET/AGENTS.md" "$INCLUDE_CORE"
-$ALSO_GEMINI_MD && ! $DRY_RUN && assemble_to "$TARGET/GEMINI.md" "$INCLUDE_CORE"
+case "$PLATFORM" in
+  claude) project_primary="$TARGET/CLAUDE.md";;
+  codex) project_primary="$TARGET/AGENTS.md";;
+  both) project_primary="$(identity_source "$TARGET/CLAUDE.md" "$TARGET/AGENTS.md")";;
+esac
+resolve_operator_identity "$project_primary"
+has_claude && assemble_to "$TARGET/CLAUDE.md" "$INCLUDE_CORE"
+has_codex && assemble_to "$TARGET/AGENTS.md" "$INCLUDE_CORE"
+$ALSO_AGENTS_MD && ! has_codex && assemble_to "$TARGET/AGENTS.md" "$INCLUDE_CORE"
+$ALSO_GEMINI_MD && assemble_to "$TARGET/GEMINI.md" "$INCLUDE_CORE"
 if $DRY_RUN; then
   echo
   say "DRY RUN — nothing was written. A real run would ALSO scaffold into $TARGET:"
@@ -1364,17 +1626,21 @@ if $DRY_RUN; then
   echo "    + hooks/git/      managed git hooks (secret-scan, protect-main, conventional-commits)"
   echo "    + .harness/       verify.conf (+ .example), templates/, handoffs/"
   echo "    + .planning/      progress-log.md"
-  if $ASSEMBLE_ONLY; then
-    echo "    + .claude/        settings.local.json.example"
-  else
-    echo "    + .claude/        settings.local.json.example, skills/ pack (/handoff, /verify, /harness-help + 3 more)"
+  has_claude && echo "    + .claude/        Claude project settings example"
+  has_codex && echo "    + .codex/         Codex project MCP config when selected"
+  if $WITH_SKILLS; then
+    has_claude && echo "    + .claude/skills/ bundled skills"
+    has_codex && echo "    + .agents/skills/ bundled skills"
   fi
   echo "    + docs/           feedback/README.md, research/ (+ _archive dirs)"
   echo "    + FIRST-STEPS.md"
   if [ -n "$DESIGN_SYSTEM" ] && [ "$DESIGN_SYSTEM" != skip ]; then echo "    + DESIGN.md       (--design-system $DESIGN_SYSTEM)"; fi
-  if $ALSO_AGENTS_MD; then echo "    + AGENTS.md       (--also-agents-md)"; fi
+  if $ALSO_AGENTS_MD && ! has_codex; then echo "    + AGENTS.md       (--also-agents-md; instructions only)"; fi
   if $ALSO_GEMINI_MD; then echo "    + GEMINI.md       (--also-gemini-md)"; fi
-  if [ -n "$WITH_MCP" ]; then echo "    + .mcp.json       (--with-mcp: $WITH_MCP)"; fi
+  if [ -n "$WITH_MCP" ]; then
+    has_claude && echo "    + .mcp.json       (--with-mcp: $WITH_MCP)"
+    has_codex && echo "    + .codex/config.toml (--with-mcp: $WITH_MCP)"
+  fi
   if $WITH_HOOKS; then echo "    ~ git hooks installed via scripts/install-git-hooks.sh (--with-hooks)"; fi
   echo
   say "Re-run without --dry-run to write these."
@@ -1382,7 +1648,9 @@ if $DRY_RUN; then
 fi
 
 say "Scaffolding project structure in $TARGET"
-mkdir -p "$TARGET/docs/research/_archive" "$TARGET/docs/feedback/_archive" "$TARGET/.planning" "$TARGET/.harness/handoffs" "$TARGET/scripts" "$TARGET/.claude"
+mkdir -p "$TARGET/docs/research/_archive" "$TARGET/docs/feedback/_archive" "$TARGET/.planning" "$TARGET/.harness/handoffs" "$TARGET/scripts"
+has_claude && mkdir -p "$TARGET/.claude"
+has_codex && mkdir -p "$TARGET/.codex" "$TARGET/.agents"
 cpa() { [ -e "$2" ] || { cp "$1" "$2"; ok "added ${2#$TARGET/}"; }; }
 cpa "$HARNESS_DIR/scripts/verify.sh"            "$TARGET/scripts/verify.sh"
 cpa "$HARNESS_DIR/scripts/new-research.sh"      "$TARGET/scripts/new-research.sh"
@@ -1404,13 +1672,13 @@ else
   ok "added .harness/verify.conf (preset for: $PROFILES — EDIT to wire real checks)"
 fi
 cpa "$HARNESS_DIR/templates/progress-log.md"    "$TARGET/.planning/progress-log.md"
-cpa "$HARNESS_DIR/config/settings.local.$SAFETY.json.example" "$TARGET/.claude/settings.local.json.example"
+has_claude && cpa "$HARNESS_DIR/config/settings.local.$SAFETY.json.example" "$TARGET/.claude/settings.local.json.example"
 mkdir -p "$TARGET/.harness/templates"; cp "$HARNESS_DIR"/templates/*.md "$TARGET/.harness/templates/" 2>/dev/null || true; ok "templates in .harness/templates/"
 write_first_steps "$TARGET/FIRST-STEPS.md"
 scaffold_design_system   # honors --design-system for a UI project (no-op on the default/backend path)
 
 if [ -n "$WITH_MCP" ]; then
-  say "Adding MCP server(s) to .mcp.json: $WITH_MCP"
+  say "Adding MCP server(s) to native project config: $WITH_MCP"
   add_mcp_servers "$WITH_MCP"
 fi
 
@@ -1426,26 +1694,30 @@ fi
 if $ASSEMBLE_ONLY; then
   say "Skipping global config (--assemble-only). See INSTALL.md for manual steps."
 else
-  SKILLS_DEST="$TARGET/.claude/skills"   # project mode: the bundled skill pack is a project file, not global
-  install_global_config
+  install_platform_config
 fi
 
 echo
 say "$(c '1;32' 'Done.')"
 echo "  Profiles:   $PROFILES   (core in this file: $INCLUDE_CORE)"
-echo "  CLAUDE.md:  $TARGET/CLAUDE.md"
-$WITH_SKILLS && echo "  Skills:     harness pack → $TARGET/.claude/skills/  (/handoff · /verify · /harness-help + 3 more)"
-[ -n "$WITH_MCP" ] && [ -f "$TARGET/.mcp.json" ] && echo "  .mcp.json:   $(command -v jq >/dev/null 2>&1 && jq -r '.mcpServers|keys|join(\", \")' "$TARGET/.mcp.json" 2>/dev/null)"
+has_claude && echo "  CLAUDE.md:  $TARGET/CLAUDE.md"
+has_codex && echo "  AGENTS.md:  $TARGET/AGENTS.md"
+$WITH_SKILLS && echo "  Skills:     independent native copies for $PLATFORM"
+[ -n "$WITH_MCP" ] && has_claude && [ -f "$TARGET/.mcp.json" ] && echo "  .mcp.json:   $(command -v jq >/dev/null 2>&1 && jq -r '.mcpServers|keys|join(\", \")' "$TARGET/.mcp.json" 2>/dev/null)"
+[ -n "$WITH_MCP" ] && has_codex && [ -f "$TARGET/.codex/config.toml" ] && echo "  Codex MCP:   $TARGET/.codex/config.toml"
 echo "  Safety:     $SAFETY   ($([ "$SAFETY" = cautious ] && echo 'auto-applies edits, asks before shell/network' || echo 'runs almost everything without asking — a machine you fully own'))"
 echo "  Next:  1) edit .harness/verify.conf with real checks"
-echo "         2) skim CLAUDE.md (resolve any [TODO: …] placeholders — named below if there are any)"
-echo "         3) cp .claude/settings.local.json.example .claude/settings.local.json (safety: $SAFETY — read the permissions note)"
+echo "         2) skim $(platform_rules_label) (resolve any [TODO: …] placeholders — named below if there are any)"
+has_claude && echo "         3) cp .claude/settings.local.json.example .claude/settings.local.json (Claude project permissions)"
+has_codex && echo "         3) review $CODEX_DIR/config.toml (Codex safety: $SAFETY)"
 echo "         4) docs/01-harness-philosophy.md · docs/07-how-to-pick-a-profile.md · docs/13-platforms-and-tools.md"
 echo
-report_todos "$TARGET/CLAUDE.md"
+has_claude && report_todos "$TARGET/CLAUDE.md"
+has_codex && report_todos "$TARGET/AGENTS.md"
 report_todos "$TARGET/DESIGN.md"   # names DESIGN_SYSTEM when a design system was scaffolded but not filled
 echo
 echo "  $(c '1;36' '▶ First 30 minutes')  (also saved to FIRST-STEPS.md)"
-echo "     1) start:  claude          — run it inside this folder"
+case "$PLATFORM" in claude) start_cmd=claude;; codex) start_cmd=codex;; both) start_cmd='claude or codex';; esac
+echo "     1) start:  $start_cmd          — run it inside this folder"
 echo "     2) ask:    \"what does my harness do, and what are my rules?\""
 echo "     3) take one small task end-to-end, then say \"handoff\" to wrap up cleanly"

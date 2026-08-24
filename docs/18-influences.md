@@ -23,6 +23,7 @@ of it.
 | **Understand before you change** | G.K. Chesterton — Chesterton's Fence, 1929 |
 | **Fix the system, not the symptom** — regression-gate every rule change | *Self-Harness* (Shanghai AI Lab, 2026); Google whitepaper's "quality flywheel" / "factory model" |
 | **No secrets, ever** — enforced by a deterministic hook | Google whitepaper (the canonical commit-blocking hook example); Simon Willison (prompt injection) |
+| **Write rules the way you'd write code** — the no-op test, single source of truth, leading words | Matt Pocock, *writing-for-agents* |
 
 ## The people and the work
 
@@ -91,6 +92,23 @@ testing.** Bounded edits, regression-gated. That's exactly "fix the system, not 
 and **LLM-as-judge** for foundation-model apps; a grounding text for the evidence/eval discipline the
 harness leans on (the `code-review` + `codex` review gates are this idea in practice).
 → [AI Engineering](https://www.oreilly.com/library/view/ai-engineering/9781098166298/)
+
+**Matt Pocock — *writing-for-agents*** (MIT, 2026) — the source for the `writing-rules` skill. This
+harness's entire product is prose an agent reads, and this is the reference for writing it. Its
+central idea is the **two loads**: *context load*, what always-loaded material costs the agent's
+window every turn, versus *cognitive load*, what it costs the human to remember which document
+exists and when to reach for it — *"You are the index. Not a cost to minimise: it is the price of
+human agency."* Naming both halves completed what `core/60` only had one side of. Three more travel
+with it: a **context pointer** (a skill's `description` and a `CLAUDE.md` line naming a doc are *the
+same object*, and the pointer's wording, not its target, decides how reliably the agent reaches
+through it); **leading words** (a compact concept already in the model's pretraining, repeated as a
+token and never as a sentence, that anchors a region of behaviour in the fewest tokens); and the
+**no-op test** — delete the line and ask whether behaviour changed. That last one is the sharpest
+correction to this repo: `lint-leanness.sh` measures *length*, and Matt's point is that an agent
+told to "streamline" optimises for length because length is what it can see. The real test is
+behavioural. Applying it to `core/60` found two adjacent bullets stating one meaning, and the merge
+paid for the new pointer.
+→ [mattpocock/skills](https://github.com/mattpocock/skills) · [the reference](https://github.com/mattpocock/skills/blob/main/skills/productivity/writing-for-agents/SKILL.md)
 
 **Cobus Greyling — *Loop Engineering*** (MIT, 2026) — the source for `profiles/autonomous-loops.md`.
 Its framing draws the line this harness sits on: **`Harness = single session setup` / `Loop = harness

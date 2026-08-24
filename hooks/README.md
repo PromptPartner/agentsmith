@@ -1,24 +1,30 @@
 # Hooks
 
 Two kinds live here:
-- **Claude Code session hooks** (this file, below) — handoff automation, installed globally.
+- **Claude Code and Codex session hooks** (this file, below) — handoff automation and UI reminders,
+  installed globally for the selected runtime.
 - **Git guardrails** (`hooks/git/`) — pre-commit / commit-msg / pre-push checks, installed per repo
   via `scripts/install-git-hooks.sh`. See the **Git guardrails** section at the bottom.
 
-## Handoff hooks (Claude Code session hooks)
+## Handoff hooks
 
-Two hooks that automate the harness's handoff discipline (core/50): bring work to a safe state
-and emit a recall prompt **before** context runs out, so a session never dies mid-edit.
+The keyword hook automates the harness's handoff discipline (core/50) in both Claude Code and
+Codex: bring work to a safe state and emit a recall prompt before a session ends mid-edit. The
+same script understands each runtime's `UserPromptSubmit` payload and emits its expected context
+shape.
 
-Install both (global) with:
+Install the native hook set for the selected platform with:
 
 ```bash
-./setup.sh --with-handoff-hooks
+./setup.sh --platform claude --with-handoff-hooks
+./setup.sh --platform codex  --with-handoff-hooks
+./setup.sh --platform both   --with-handoff-hooks
 ```
 
-That copies the scripts to `~/.claude/hooks/`, refreshes `~/.claude/statusline-command.sh` (so it
-persists the context-% signal), and wires both hooks into `~/.claude/settings.json` (idempotent;
-keeps a `.bak`). Needs `jq`.
+Claude stores the scripts under `~/.claude/hooks/` and hook definitions in `settings.json`. Codex
+stores them under `$CODEX_HOME/hooks/` and definitions in `$CODEX_HOME/hooks.json`. Both merges are
+idempotent and preserve unrelated hooks. Codex requires a one-time trust review after installation:
+open `/hooks`, inspect the definitions, and approve them. Needs `jq`.
 
 ## What you get
 
@@ -28,6 +34,8 @@ When your prompt contains **"handoff"** or **"wrap up"**, it injects the handoff
 the prompt text, which the hook always receives. This is the recommended primary trigger.
 
 ### 2. `context-budget-nudge.sh` — Stop — **best-effort / experimental**
+Claude Code only. This hook is not installed for Codex because it depends on Claude's status line.
+
 When context **used** crosses a threshold (default **30%**, set `HANDOFF_PCT_THRESHOLD`), it nudges
 **once per session** toward a handoff. The default is deliberately *low* — the cue is to hand off
 **early**, when the window is ~25–30% used, not when it's nearly full: model quality degrades as
@@ -60,22 +68,36 @@ If you'd rather edit `settings.json` yourself instead of `--with-handoff-hooks`:
 
 Keep only the `UserPromptSubmit` entry if you want the reliable half without the experimental one.
 
-Hook stdin/output schemas can shift between Claude Code versions — if a hook seems inert, check
-the current `hooks` docs (the scripts fail safe: no `jq`, bad input, or stale signal → no-op,
-never a blocked prompt).
+Codex uses the same event in `$CODEX_HOME/hooks.json`; setup writes an absolute, safely quoted
+command because `CODEX_HOME` may contain spaces. A minimal definition is:
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "bash \"/absolute/path/to/CODEX_HOME/hooks/handoff-on-keyword.sh\"" } ] }
+    ]
+  }
+}
+```
+
+After adding or changing a Codex command hook, review it through `/hooks`; Codex skips untrusted
+non-managed hooks.
+
+Hook schemas can shift between runtime versions — if a hook seems inert, check the current hook
+docs. The scripts fail safe: no `jq`, bad input, or stale signal is a no-op, never a blocked prompt.
 
 ---
 
 ## UI design-system nudge (`ui-design-reminder.sh`) — PreToolUse — opt-in
 
-A third session hook, for the `software-dev` profile's design-system discipline. On an `Edit`/
-`Write`/`MultiEdit` to a **UI file** (`*.tsx *.jsx *.vue *.svelte *.css *.scss *.less *.astro`, or a
-path under `components/`/`ui/`) it injects a **once-per-session**, **non-blocking** reminder to
-consult `DESIGN.md` and match the declared design system. It **self-gates on a `DESIGN.md` at the
-project root**, so backend/CLI/library projects never see it, and it uses PreToolUse
-`additionalContext` only — it never blocks the edit and never auto-approves it (normal permission
-flow still applies). Every surprise (no `jq`, non-UI path, no `DESIGN.md`, already nudged) is a
-silent no-op.
+A third session hook, for the `software-dev` profile's design-system discipline. It recognizes
+Claude `Edit`/`Write`/`MultiEdit` file paths and every affected path in a Codex `apply_patch`. On a
+**UI file** (`*.tsx *.jsx *.vue *.svelte *.css *.scss *.less *.astro`, or a path under
+`components/`/`ui/`) it injects a **once-per-session**, **non-blocking** reminder to consult
+`DESIGN.md`. It self-gates on a project-root `DESIGN.md` and returns only PreToolUse
+`additionalContext`: it never blocks or auto-approves the edit. Unknown or malformed patch input
+is a silent no-op.
 
 Install it at setup, when you tell the wizard the project has a UI:
 
@@ -96,9 +118,13 @@ Or wire it by hand (global `~/.claude/settings.json`):
 }
 ```
 
-Non-regression test: `bash scripts/test-ui-design-reminder.sh` (wired as the `ui-design-hook` phase
-in this repo's `.harness/verify.conf`) — it fails if the nudge regresses to silent, fires on backend
-files, or fires more than once per session.
+For Codex, put the equivalent entry in `$CODEX_HOME/hooks.json` with matcher `^apply_patch$` and
+an absolute command path to `$CODEX_HOME/hooks/ui-design-reminder.sh`, then approve it through
+`/hooks`.
+
+Non-regression tests: `bash scripts/test-handoff-on-keyword.sh` and
+`bash scripts/test-ui-design-reminder.sh`. They exercise both runtime schemas, fail-open behavior,
+once-per-session behavior, and Codex add/update/delete/multi-file patches.
 
 ---
 

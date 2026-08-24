@@ -21,7 +21,7 @@ anything you need, show me what you'll change, and then run its setup.
 ## Instructions for the agent
 
 You are an AI coding agent with shell and file access, working in the user's project directory. Your
-job is to install the **Agentsmith** harness (a lean `CLAUDE.md` of operating rules + supporting
+job is to install the **Agentsmith** harness (native Claude/Codex operating rules + supporting
 scaffold) for this user. Follow these steps in order. **Ask the user the questions in step 4 — don't
 guess — and show them the plan before you write anything.** The setup script backs up any file it
 changes, but you should still confirm first.
@@ -46,20 +46,23 @@ Both take the **same flags**. Everywhere below, `<setup>` means whichever applie
 ### 3. Detect the right profile
 Run the detector against the current project (this writes nothing):
 ```
-<setup> --profile auto --assemble-only --target . --dry-run
+<setup> --platform claude --profile auto --assemble-only --target . --dry-run
 ```
 Note the auto-detected profile it prints (`software-dev`, `devops-setup`, `data-crunching`,
-`document-creation`, or `general-admin`). If the project clearly mixes types, note that too.
+`document-creation`, or `general-admin`). Platform does not affect detection and dry-run writes
+nothing; ask for the real destination in step 4. If the project clearly mixes types, note that too.
 
 ### 4. Ask the user (only what's needed)
 Ask these briefly, accept short answers, and use sensible defaults if they don't care:
-1. **Profile** — "This looks like a `<detected>` project — good, or should I use a different one?"
+1. **Platform** — "Install for Claude, Codex, or both?" Default: `claude` for compatibility. If
+   you are Codex, recommend `codex`; if the user actively uses both, recommend `both`.
+2. **Profile** — "This looks like a `<detected>` project — good, or should I use a different one?"
    (offer the list above).
-2. **Your name & role** — optional; it just personalises the rules. Blank is fine.
-3. **Scope** — "Install it **globally** so every project on this computer follows the core rules
+3. **Your name & role** — optional; it just personalises the rules. Blank is fine.
+4. **Scope** — "Install it **globally** so every project on this computer follows the core rules
    (recommended), or **just this project**?" Default: **global** (the full install).
-4. **Tracker** — optional: where they track bugs/tasks (Linear, GitHub, or a `KNOWN-ISSUES.md`).
-5. **Tracker writes** — only if they named a tracker in 4. Ask it as its own question; do **not**
+5. **Tracker** — optional: where they track bugs/tasks (Linear, GitHub, or a `KNOWN-ISSUES.md`).
+6. **Tracker writes** — only if they named a tracker in 5. Ask it as its own question; do **not**
    infer it from the answer above: *"Should I be able to create issues and post comments in
    `<tracker>` myself, or should I draft them and let you post?"* Default (and the answer if they
    don't care): **draft** → omit the flag. Only pass `--tracker-writes allowed` on an explicit yes.
@@ -71,29 +74,38 @@ Show the exact command(s) first, then run on confirmation.
 - **Global (recommended default)** — install the core + machine config once, then a thin
   per-project profile:
   ```
-  <setup> --global --operator-name "<name>" --operator-role "<role>" --tracker "<tracker>"
-  <setup> --profile <chosen> --profile-only --target .
+  <setup> --platform <chosen-platform> --global --operator-name "<name>" --operator-role "<role>" --tracker "<tracker>"
+  <setup> --platform <chosen-platform> --profile <chosen> --profile-only --target .
   ```
   Append `--tracker-writes allowed` to the first command **only** if they explicitly said yes to
-  question 5. Omitted = the safe default (you draft the item, they post it).
+  question 6. Omitted = the safe default (you draft the item, they post it).
 - **This project only** — a single self-contained file, nothing global:
   ```
-  <setup> --profile <chosen> --operator-name "<name>" --target . --assemble-only
+  <setup> --platform <chosen-platform> --profile <chosen> --operator-name "<name>" --target . --assemble-only
   ```
 
 The script is idempotent and backs up any existing file before changing it (look for the
 `backup: …bak…` lines in its output). It does **not** overwrite anything without `--force`.
 
 ### 6. Verify and report
-- Confirm it wrote `CLAUDE.md` (and, for a global install, `~/.claude/CLAUDE.md`).
+- Confirm it wrote the selected native rule file: Claude `CLAUDE.md`, Codex `AGENTS.md`, or both.
+  For global installs, also confirm `~/.claude/CLAUDE.md` and/or `$CODEX_HOME/AGENTS.md` (default
+  Codex home: `~/.codex`). Do not inspect other Orca account homes.
 - Tell the user what changed, then give them the three next steps the script prints:
   1. edit `.harness/verify.conf` with the project's real checks,
-  2. skim the new `CLAUDE.md` and resolve any `[TODO: …]` placeholders,
+  2. skim the new native rule file(s) and resolve any `[TODO: …]` placeholders,
   3. read `docs/01-harness-philosophy.md` for the 5-minute "why".
-- To undo everything later: `<setup> --uninstall --target .` (and `<setup> --uninstall --global`).
+- To remove Agentsmith-managed content later, use the same platform and scope:
+  `<setup> --platform <chosen-platform> --uninstall --target .` (and `--uninstall --global`).
+  Report the scaffolding/config the command intentionally retains; do not describe it as deleting
+  manually owned configuration.
 
 ### Guardrails
 - **Confirm before writing.** Show the plan; don't run setup silently.
-- **Global install touches `~/.claude`** — say so before you do it.
+- **Global install touches platform homes** — say exactly which ones before you do it:
+  `~/.claude` for Claude; resolved `$CODEX_HOME` plus `~/.agents/skills` for Codex.
+- **Codex hook trust is interactive** — if hooks were installed, tell the user to review them with
+  `/hooks`. Do not claim the Claude context-percentage nudge or a `PreCompact` hook exists in Codex.
+- **Org policy is Claude-only** — never combine `--org-policy` with platform `codex` or `both`.
 - **Never invent the harness files.** If you couldn't get the repo in step 1, stop.
 - **When unsure, ask** rather than guess — that's the whole point of step 4.

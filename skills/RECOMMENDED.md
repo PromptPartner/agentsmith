@@ -1,27 +1,34 @@
 # Recommended skills (by profile)
 
 Two sources of skills: the **bundled harness pack** (ships in this repo, installed with
-`--with-skills`) and **plugins** (installing the plugin gives you its skills — no separate
-download). Install plugins with `./setup.sh --with-plugins ...` or `/plugin install`. A few skills
-are built into Claude Code. Keep the set tight (R10) — add per need.
+`--with-skills`) and platform-specific **plugins**. Claude plugins may be installed with
+`./setup.sh --with-plugins ...` or `/plugin install`; Codex-only setup does not invoke that
+marketplace. Keep the set tight (R10) — add per need. Skill names below omit invocation syntax:
+use `/<name>` in Claude Code and `$<name>` in Codex.
 
 The `<!-- MAP ... -->` line under each profile is machine-readable: the setup wizard parses it to
 recommend packs and skills for the profile you pick. Edit the prose and the MAP line together —
 they're the single source of truth.
 
 ## Bundled with the harness (install with `--with-skills`)
-Six small, self-contained, work-type-neutral skills — they prefer a project-local `scripts/<x>.sh`
-when present, else run an inline procedure, so they work globally, in a harness project, or in a
-bare repo:
-- **handoff** — wrap up a session: durable note + paste-ready kickoff block (`/handoff`).
-- **verify** — "is this shippable?" with evidence, never a bare "should pass" (`/verify`).
-- **harness-doctor** — is this project's harness installed correctly and lean? (`/harness-doctor`).
+Seven small, work-type-neutral skills. Six prefer a project-local `scripts/<x>.sh` when present,
+else run an inline procedure, so they work globally, in a harness project, or in a bare repo; the
+seventh is pure reference:
+- **handoff** — wrap up a session: durable note + paste-ready kickoff block.
+- **verify** — "is this shippable?" with evidence, never a bare "should pass".
+- **harness-doctor** — is this project's harness installed correctly and lean?
 - **harness-help** — orient a non-coder: your profile, rules, safety mode, what to type next.
 - **new-research** — scaffold a durable `docs/research/` source note (R9).
 - **new-feedback** — scaffold a numbered `docs/feedback/` post-incident (the System-Evolution loop).
+- **writing-rules** — the reference for anything an agent reads: a `core/` rule, a profile gate, a
+  skill description, a subagent prompt. Its default move is deletion, so it earns
+  most on a draft you already have. Adapted from Matt Pocock's
+  [`writing-for-agents`](https://github.com/mattpocock/skills) (MIT) — install his upstream pack for
+  the original plus its skill-frontmatter companion.
 
-Project mode installs these into `<project>/.claude/skills/`; `--global` installs them into
-`~/.claude/skills/`.
+Project mode installs these into `<project>/.claude/skills/` (Claude),
+`<project>/.agents/skills/` (Codex), or both. Global mode uses `~/.claude/skills/`,
+`~/.agents/skills/`, or both respectively.
 
 ## Universal (worth having everywhere)
 - **brainstorming**, **writing-plans**, **executing-plans** — from `superpowers`. Plan before you build.
@@ -79,7 +86,7 @@ updates arrive free, and the harness owns none of it (R10). It installs as one p
 - **ui-ux-pro-max** — third-party (MIT), for real interface work: design systems, colour/type
   pairing, layout rules. Not bundled here and deliberately so — it needs **Python 3**, which
   nothing else in this harness does, and it is only useful if you are actually designing a UI.
-  Install it yourself when you want it:
+  Claude Code users can install it when needed:
   `/plugin marketplace add nextlevelbuilder/ui-ux-pro-max-skill` then
   `/plugin install ui-ux-pro-max@ui-ux-pro-max-skill`.
 - a slide/deck skill if your build ships one (e.g. a "document → deck" skill).
@@ -126,8 +133,9 @@ than working from memory. Match the skill to the engagement:
 <!-- MAP autonomous-loops | packs: - | skills: using-git-worktrees,verify -->
 - **using-git-worktrees** — one isolated worktree per fix attempt; discard it on reject.
 - **verify** — what the *checker* actually runs. The check must be one the maker can't fake.
-- Otherwise deliberately bare: the scheduler (`/loop`, `/schedule`, cron) and the maker/checker
-  subagent split are native. Resist bolting on a loop framework — the rules are the product (R10).
+- Otherwise deliberately bare: use the active platform's scheduler (Claude `/loop` or `/schedule`,
+  or an external scheduler) and its maker/checker subagent split. Resist bolting on a loop
+  framework — the rules are the product (R10).
 
 ## marketing-outreach / general-admin / data-crunching
 <!-- MAP marketing-outreach | packs: - | skills: - -->
