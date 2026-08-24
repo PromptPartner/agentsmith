@@ -8,4 +8,4 @@
 #   this file never trips the identity check on itself. It is anchored to README.md, so a name
 #   in any other tracked file still fails the gate. Proven by scripts/test-leak-gate.sh
 #   ("README operator-credit exception" block).
-^README\.md:[0-9]+:(L[u]kas|H[e]rtig)$
+^README\.md:[0-9]+:.*(L[u]kas|H[e]rtig)

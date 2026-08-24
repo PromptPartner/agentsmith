@@ -93,22 +93,25 @@ check() {
 }
 
 # 1. The operator's identity. The evidenced failure: --operator-name "<author>" sat in the
-#    --help of both setup scripts, so every open-source user read a stranger's name.
+#    --help of both setup scripts, so every open-source user read a stranger's name. Use POSIX
+#    character classes for boundaries: BSD grep treats \b as backspace rather than a word edge.
 check "operator identity" \
-      "\\b(${TERMS})\\b" \
+      "(^|[^[:alnum:]_])(${TERMS})([^[:alnum:]_]|$)" \
       "" \
       "a specific person's name — use the repo's placeholder convention (\"Your Name\", \"You\", \"you/...\")"
 
 # 2. Routable IPv4. Loopback/private/link-local/broadcast and the RFC 5737 documentation
-#    ranges are legitimate in docs and examples, so only a real, routable address fails.
+#    ranges are legitimate in docs and examples, so only a real, routable address fails. The
+#    numeric shape supplies its own practical boundary; avoiding \b keeps this portable to BSD.
 check "public IP address" \
-      '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' \
+      '([0-9]{1,3}\.){3}[0-9]{1,3}' \
       ':(0\.0\.0\.0|127\.[0-9.]+|10\.[0-9.]+|192\.168\.[0-9.]+|169\.254\.[0-9.]+|172\.(1[6-9]|2[0-9]|3[01])\.[0-9.]+|255\.255\.[0-9.]+|192\.0\.2\.[0-9]+|198\.51\.100\.[0-9]+|203\.0\.113\.[0-9]+)$' \
       "a routable IP pins this to one environment — use a private/documentation range (192.0.2.x)"
 
-# 3. Real email addresses. example.com/.org/.net are the reserved documentation domains.
+# 3. Real email addresses. example.com/.org/.net are the reserved documentation domains. The
+#    address character classes delimit the match without GNU-specific word-boundary syntax.
 check "email address" \
-      '\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b' \
+      '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' \
       ':(noreply@|[A-Za-z0-9._%+-]+@(example\.(com|org|net)|host|localhost|domain\.com))' \
       "a real address — use user@example.com"
 
