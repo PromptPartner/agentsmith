@@ -8,6 +8,10 @@
 #   2. An unrendered {{PLACEHOLDER}} reaches the agent — it improvises around the gap.
 #   3. A [TODO: set X] reaches the agent — a rule that reads as an unfilled blank is not a rule.
 #   4. --help stops rendering, so nobody can discover the flags.
+#   5. The assembly quietly outgrows its budget. Static context is paid every turn; past the
+#      budget, rules stop competing for attention and start drowning each other (docs/04).
+#      Gated per-profile (core + one profile) because that is the supported common case.
+#      Stacked assemblies are measured and reported below, not gated — see docs/feedback/0007.
 #
 # Runs OFFLINE and touches nothing global. Never uses --global: under --global, --assemble-only
 # does NOT stop the write and --target is ignored, so a --global run here would overwrite the
@@ -78,6 +82,17 @@ for p in "${profiles[@]}"; do
   else
     ok "$name: assembles clean (no unrendered tokens, no TODO blanks)"
   fi
+
+  # Budget gate. Prose in core/60 asked for lean static context and got drift instead; this is the
+  # check that goes red rather than the reminder that gets skipped. --strict exits 1 over budget.
+  measured="$(bash "$ROOT_DIR/scripts/lint-leanness.sh" --strict "$f" 2>&1)"; budget_rc=$?
+  # Keep only the two measurement lines; the WARN prose and the temp path are noise here.
+  summary="$(printf '%s' "$measured" | awk '/lines *:|tokens *:/{printf "%s  ", $0}' | tr -s ' ')"
+  if [ "$budget_rc" -eq 0 ]; then
+    ok "$name: within static-context budget — $summary"
+  else
+    bad "$name: OVER static-context budget — $summary(trim core/, or move it into a skill or docs/)"
+  fi
 done
 
 # Stacking is a documented feature (a work-type profile + autonomous-loops). If it only worked for
@@ -89,6 +104,10 @@ if [ -f "$ROOT_DIR/profiles/software-dev.md" ] && [ -f "$ROOT_DIR/profiles/auton
      && [ -s "$out/CLAUDE.md" ] \
      && ! grep -qE '\{\{[A-Z_]+\}\}' "$out/CLAUDE.md"; then
     ok "stacked profiles (software-dev,autonomous-loops) assemble clean"
+    # Measured, not gated: stacking two large profiles already exceeds the budget, so gating here
+    # would be red on arrival and train people to ignore this suite. Reported so it stays visible.
+    printf '  \033[33m•\033[0m stacked budget (measured, not gated): %s\n' \
+      "$(bash "$ROOT_DIR/scripts/lint-leanness.sh" "$out/CLAUDE.md" 2>&1 | awk '/lines|tokens/{printf "%s ", $0}' | tr -s ' ')"
   else
     bad "stacked profiles failed to assemble clean"
   fi

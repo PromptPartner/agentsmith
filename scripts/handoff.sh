@@ -30,11 +30,11 @@ $( [ "$DIRTY" != "0" ] && echo '> ⚠ Tree is dirty — commit or stash BEFORE h
 ## Gotchas a fresh session would otherwise re-derive
 
 ---
-## Kickoff prompt for after reset
+## Kickoff prompt for a fresh chat
 \`\`\`
 Resume $ITEM on branch $BRANCH (HEAD $HEAD). <one-paragraph: what's done, the single next step,
 key decisions already made, and the handoff note path: .harness/handoffs/handoff-$STAMP.md>
 \`\`\`
 EOF
 echo "Created $FILE"
-echo "Fill it in, then paste the kickoff block as your last message before /clear."
+echo "Fill it in, then paste the kickoff block as your last message before starting a fresh chat."

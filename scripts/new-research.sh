@@ -6,7 +6,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TITLE="${*:-}"
 [ -z "$TITLE" ] && { echo "Usage: $0 \"topic name\""; exit 2; }
-SLUG="$(echo "$TITLE" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]\+/-/g;s/^-//;s/-$//')"
+# NOTE: [^a-z0-9][^a-z0-9]* not [^a-z0-9]\+ — \+ is a GNU sed extension. BSD/macOS sed reads it as
+# a literal '+', so the slugify silently no-ops and you get filenames with spaces in them.
+SLUG="$(echo "$TITLE" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9][^a-z0-9]*/-/g;s/^-//;s/-$//')"
 DIR="$ROOT_DIR/docs/research"
 FILE="$DIR/$SLUG.md"
 mkdir -p "$DIR"

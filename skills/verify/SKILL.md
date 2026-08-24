@@ -11,6 +11,13 @@ description: Answer "is this shippable / done?" with evidence before a commit or
 ## When this fires
 "verify" / "is this done / shippable / ready to merge?" / just before a commit or PR.
 
+## Platform
+Identify the active runtime from this skill's path (`.claude/skills` = Claude,
+`.agents/skills` = Codex), falling back to managed rule files: only `CLAUDE.md` means Claude, only
+`AGENTS.md` means Codex, and both mean both-platform. The verification runner and evidence standard
+are platform-neutral; use the platform only to label the report and to name the matching
+instruction file when a rule is relevant.
+
 ## Fast path — if `./scripts/verify.sh` exists
 1. Run `./scripts/verify.sh` (runs every phase in `.harness/verify.conf`, stops at the first
    failure). `--list` shows the phases; `--only <tag>` iterates just one.
@@ -27,5 +34,6 @@ description: Answer "is this shippable / done?" with evidence before a commit or
    `.harness/verify.conf` — but still run the checks by hand this time.
 
 ## Report
-State each check and its evidence: "build ok, 42 tests green, lint clean" — with the output, not
-"should pass". Anything skipped is "deferred: reason", never silence.
+Start with the active platform, then state each check and its evidence: "build ok, 42 tests green,
+lint clean" — with the output, not "should pass". Anything skipped is "deferred: reason", never
+silence.

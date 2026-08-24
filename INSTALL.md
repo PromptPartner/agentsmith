@@ -3,7 +3,12 @@
 `setup.sh` does all of this for you — and if you're unsure which flags you need, `./setup.sh
 --wizard` asks the questions interactively and prints the exact command before running it. Use
 the manual steps below only if you're on a shared/locked-down machine, don't want a script
-touching `~/.claude`, or just want to understand what setup does.
+touching your Claude/Codex home, or just want to understand what setup does.
+
+Choose a native target with `--platform claude|codex|both`. The default is `claude`, so old
+commands keep their behavior. `--platform both` writes independent copies rather than symlinks;
+that keeps repositories portable across Windows and across machines. `--also-agents-md` remains
+as a deprecated, instruction-file-only compatibility flag; use `--platform both` for full support.
 
 ## On Windows / PowerShell — use `setup.ps1`
 
@@ -27,17 +32,20 @@ blocks the script, run it as shown above (`pwsh ./setup.ps1 …`) or allow local
 session with `Set-ExecutionPolicy -Scope Process Bypass`.
 
 The rest of this guide uses `setup.sh` for brevity; Windows users mentally substitute `setup.ps1`.
+Native Codex config requires Python 3.11+ on either path so setup can validate TOML with the
+standard `tomllib` before replacing a file.
 
-## 1. Assemble the rules (CLAUDE.md)
+## 1. Assemble the native rules
 
 Either run the assembler without touching anything global:
 
 ```bash
-./setup.sh --profile <name[,name]> --assemble-only --target /path/to/project
+./setup.sh --platform codex --profile <name[,name]> --assemble-only --target /path/to/project
 ```
 
 …or do it by hand: concatenate `core/*.md` (in filename order: 00,10,20,30,40,50,60) followed by
-your chosen `profiles/<name>.md` into `<project>/CLAUDE.md`, then replace the placeholders:
+your chosen `profiles/<name>.md` into `<project>/CLAUDE.md` (Claude), `<project>/AGENTS.md`
+(Codex), or both, then replace the placeholders:
 
 | Placeholder | Replace with |
 |---|---|
@@ -48,14 +56,14 @@ your chosen `profiles/<name>.md` into `<project>/CLAUDE.md`, then replace the pl
 | `{{TRACKER_POLICY}}` | **whether the agent may write there.** Set by `--tracker-writes ask\|allowed`, *not* by `{{TRACKER}}` — naming a tracker is a pointer, not permission. Default `ask` = the agent drafts the item and you post it. See [the tracker guide](docs/14-project-tracker-guide.md#grant-or-withhold-write-access). |
 | `{{BRAND_PALETTE}}`, `{{BRAND_FONT}}` | only in `creative-design` — your brand colors/typeface |
 
-**Global vs per-project:** for the layered model, install the core once globally
-(`./setup.sh --global` → `~/.claude/CLAUDE.md`) and make each project's file profile-only
-(`--profile-only`). Claude Code merges global + project automatically. By hand: concatenate
-`core/*.md` into `~/.claude/CLAUDE.md`, and put only `profiles/<name>.md` in each `./CLAUDE.md`.
+**Global vs per-project:** for the layered model, install the core once globally and make each
+project's file profile-only (`--profile-only`). Claude uses `~/.claude/CLAUDE.md` + `CLAUDE.md`.
+Codex uses `$CODEX_HOME/AGENTS.md` + `AGENTS.md`, where `CODEX_HOME` defaults to `~/.codex`.
+Setup reads only that resolved Codex home; it never scans or modifies other Orca account homes.
 
 > **What `--global` writes, and what does not stop it.** `--global` always writes
-> `~/.claude/CLAUDE.md` — that is the whole point of it, and it is the *only* place it writes the
-> core. Two flags look like they redirect or defuse it and do not:
+> the selected platform's global rule file — that is the whole point of it. Two flags look like
+> they redirect or defuse it and do not:
 > `--target` is **refused** under `--global` (it would be silently ignored otherwise), and
 > `--assemble-only` only skips the settings/plugins install — it still writes the file. The flag
 > that writes nothing is `--dry-run`.
@@ -68,17 +76,31 @@ your chosen `profiles/<name>.md` into `<project>/CLAUDE.md`, then replace the pl
 ## 2. Scaffold the project
 
 ```bash
-mkdir -p docs/research/_archive .planning .harness/handoffs scripts .claude
+mkdir -p docs/research/_archive .planning .harness/handoffs scripts .claude .codex .agents
 cp scripts/verify.sh scripts/new-research.sh scripts/handoff.sh   <project>/scripts/
 cp .harness/verify.conf.example                                   <project>/.harness/verify.conf   # then EDIT it
 cp templates/progress-log.md                                      <project>/.planning/
-cp config/settings.local.cautious.json.example                    <project>/.claude/settings.local.json   # cautious default; swap for settings.local.trusted.json.example to run without prompts
+cp config/settings.local.cautious.json.example                    <project>/.claude/settings.local.json   # Claude only; swap for trusted when appropriate
 chmod +x <project>/scripts/*.sh
 ```
 
 Edit `<project>/.harness/verify.conf` so `scripts/verify.sh` runs your project's real checks.
 
-## 3. Global config (`~/.claude/`)
+## 3. Native global config
+
+The installer owns different surfaces for each platform:
+
+| Surface | Claude | Codex |
+|---|---|---|
+| Global rules | `~/.claude/CLAUDE.md` | `$CODEX_HOME/AGENTS.md` |
+| Project rules | `CLAUDE.md` | `AGENTS.md` |
+| Global skills | `~/.claude/skills` | `~/.agents/skills` |
+| Project skills | `.claude/skills` | `.agents/skills` |
+| User config | `~/.claude/settings.json` | `$CODEX_HOME/config.toml` |
+| Project config/MCP | `.mcp.json` | `.codex/config.toml` |
+| User hooks | Claude settings + `~/.claude/hooks` | `$CODEX_HOME/hooks.json` + `$CODEX_HOME/hooks` |
+
+For Claude:
 
 ```bash
 cp config/statusline-command.sh ~/.claude/statusline-command.sh
@@ -94,7 +116,26 @@ Note: the template intentionally does **not** set `skipDangerousModePermissionPr
 `defaultMode: bypassPermissions`. Add those only on a sandbox you fully own and trust — they
 trade safety prompts for speed.
 
-## 4. Marketplaces + universal plugins
+For Codex, setup creates or updates an Agentsmith-owned block in `$CODEX_HOME/config.toml`:
+
+```toml
+# cautious
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+# trusted
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+```
+
+Setup makes a timestamped backup before changing an existing TOML file, preserves unrelated
+tables and comments, validates the result, and updates the same block idempotently on re-run.
+Do not copy a whole template over an existing `config.toml`.
+
+## 4. Claude marketplaces + universal plugins
+
+This section applies only when the selected platform includes Claude. A Codex-only run never calls
+Claude marketplaces/plugins and never installs Claude status-line or `rtk` wiring.
 
 In Claude Code:
 
@@ -114,10 +155,10 @@ later with `/plugin update` (or `setup.sh --update-plugins`). See [`config/plugi
 
 ## 4b. Skills & git hooks (optional)
 
-- **Skills:** `setup.sh --with-skills` installs the bundled 6-skill harness pack (`handoff`,
-  `verify`, `harness-doctor`, `harness-help`, `new-research`, `new-feedback`) plus the example.
-  **Target follows the mode:** project mode → `<project>/.claude/skills/` (committable, travels with
-  the repo); `--global` → `~/.claude/skills/`. The skills are self-contained + script-aware (they
+- **Skills:** `setup.sh --with-skills` installs the bundled harness skill pack. **Target follows
+  platform and scope:** Claude uses `<project>/.claude/skills` or `~/.claude/skills`; Codex uses
+  `<project>/.agents/skills` or `~/.agents/skills`. `both` creates independent copies and preserves
+  existing skills. The skills are self-contained + script-aware (they
   prefer a project-local `scripts/<x>.sh`, else run inline). Add your own — see
   [`skills/README.md`](skills/README.md).
 - **Git guardrails:** in your project repo, `bash scripts/install-git-hooks.sh` (or
@@ -127,14 +168,17 @@ later with `/plugin update` (or `setup.sh --update-plugins`). See [`config/plugi
   pattern so PRs auto-link) and `--tests-green` (run `verify.sh` before push); `--all` enables
   everything, `--minimal` is secret-scan only. Each is bypassable for one commit/push with
   `--no-verify`. Details: [`hooks/README.md`](hooks/README.md).
-- **Handoff hooks (Claude Code):** `setup.sh --with-handoff-hooks` installs two session hooks —
-  a **reliable** one that fires when you type "handoff"/"wrap up" (injects the safe-state +
-  recall-prompt protocol) and a **best-effort** one that nudges when context passes ~30% used —
+- **Handoff hooks:** `setup.sh --with-handoff-hooks` installs a keyword hook for each selected
+  runtime. It fires when you type "handoff"/"wrap up" and injects the safe-state + recall-prompt
+  protocol. Claude additionally gets the best-effort context-percentage nudge when context passes
+  ~30% used —
   i.e. hand off *early*: Opus 4.8's quality sweet spot is ~25–40% used, so the cue is when used
   *reaches* ~25–30%, not when the window is nearly full.
-  Honest caveat: no hook sees the live context-% (only the statusline does), so the %-nudge reads
+  Honest caveat: no Claude hook sees the live context-% (only its status line does), so the %-nudge reads
   a temp-file signal and is fragile — the keyword hook and the human-watched `ctx:NN%` gauge are
-  the dependable triggers. Full detail: [`hooks/README.md`](hooks/README.md).
+  the dependable triggers. Codex does **not** install this nudge because it depends on Claude's
+  status line. This release does not add a `PreCompact` handoff. After installing Codex hooks,
+  open `/hooks` and explicitly review/trust them. Full detail: [`hooks/README.md`](hooks/README.md).
 - **Leanness lint:** `scripts/lint-leanness.sh [CLAUDE.md]` (or `setup.sh --doctor`) warns when
   the assembled instructions grow past a token/line budget — the cue to move knowledge into a
   skill/doc instead of bloating static context. `--strict` makes it a verify phase.
@@ -145,7 +189,7 @@ When the harness lives in a git checkout (you cloned it rather than copied a zip
 without re-cloning:
 
 ```bash
-./setup.sh --self-update            # fast-forward this checkout, then re-assemble managed CLAUDE.md
+./setup.sh --self-update            # fast-forward this checkout, then re-assemble selected native rules
 ./setup.sh --self-update --dry-run  # show the plan (remote, branch, auth scheme) — pull nothing
 ./setup.sh --self-update --no-reassemble   # update files only; re-run setup yourself later
 ```
@@ -172,11 +216,17 @@ without re-cloning:
 
 ## 5. (Optional) MCP servers
 
-Let setup do it: `setup.sh --profile <name> --with-mcp playwright,context7 --target .` extracts the
-named block(s) from [`config/mcp.example.json`](config/mcp.example.json), drops the `_use` comment,
-and merges them into the project's `.mcp.json` (idempotent — re-running adds without clobbering, and
-an unknown name just warns with the available list). Needs `jq`. Or copy the blocks by hand into
-`.mcp.json` (project scope) or `~/.claude/settings.json` (global). None are required.
+Let setup do it:
+
+```bash
+./setup.sh --platform both --profile <name> --with-mcp playwright,context7 --target .
+```
+
+Claude receives the selected JSON blocks in `.mcp.json`. Codex receives equivalent
+`[mcp_servers.<name>]` tables in `.codex/config.toml`. Re-runs union prior Agentsmith selections,
+preserve unrelated settings and foreign servers, and skip a manually defined server with the same
+name instead of overwriting it; the warning tells you how to resolve the conflict. Existing Codex
+TOML is backed up and the result is parsed before replacement. None of these servers is required.
 
 ## 6. Verify the install
 
@@ -185,7 +235,8 @@ cd <project> && ./scripts/verify.sh --list      # shows your configured phases
 ./scripts/verify.sh                              # runs them
 ```
 
-You're set. Open the project in Claude Code; it reads `CLAUDE.md` automatically.
+You're set. Start Claude Code (`claude`), Codex (`codex`), or both in the project; each reads its
+native rule file automatically. If Codex hooks were installed, run `/hooks` once to review/trust them.
 
 ## 7. (Optional) Surfaces with no on-disk config — web Projects, Cowork
 
@@ -227,3 +278,21 @@ If a managed-settings.json already exists, the hardening is **merged** into it (
 allow/deny rules are preserved, a `.bak` is kept). Needs root/sudo to write the policy dir.
 Set `HARNESS_ORG_DIR=/custom/path` to target a non-standard location (or to test). Use
 `--dry-run` to preview the exact paths without writing.
+
+Organization policy is Claude-only in this release. Any `--org-policy` run whose platform includes
+Codex (`codex` or `both`) is rejected with an explanation; Agentsmith does not inspect or write
+Orca organization/account homes.
+
+## 9. Preview and uninstall
+
+Add `--dry-run` to a project or global command to print every selected destination without writing
+anything. Use the same platform selection to remove managed rule blocks:
+
+```bash
+./setup.sh --platform codex --uninstall --target .
+./setup.sh --platform both --uninstall --global
+```
+
+Uninstall removes Agentsmith-managed content for the selected platform and reports deliberately
+retained config/scaffolding. Backups remain beside files that were changed; manually owned TOML,
+MCP servers, comments, and tables are never deleted.

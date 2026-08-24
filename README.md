@@ -1,13 +1,13 @@
 # AgentSmith — the universal agent harness
 
 <p align="center">
-  <img src="docs/assets/agentsmith-explainer.png" alt="AgentSmith explained: you give a plain-English task, Claude Code wrapped in AgentSmith's house rules turns it into work you can trust. Inside the rules — it fits your work (profiles + safety), works carefully (understand, plan, do, verify, hand off), and stays on track (proof not vibes, auto-handoff at ~30% context, on-brand UIs). Autonomy is earned in stages, never just switched on." width="820">
+  <img src="docs/assets/agentsmith-explainer.png" alt="AgentSmith explained: you give a plain-English task, Claude Code or Codex wrapped in AgentSmith's house rules turns it into work you can trust. Inside the rules — it fits your work (profiles + safety), works carefully (understand, plan, do, verify, hand off), and stays on track (proof not vibes, clean handoffs, on-brand UIs). Autonomy is earned in stages, never just switched on." width="820">
 </p>
 
 Vibe coding gets you a working demo. **AI-assisted engineering** is what keeps it standing once
 customers arrive, the product changes, or another engineer has to touch it. Agentsmith is that
-second layer — a portable, battle-tested operating system for Claude Code (and any agent that
-reads a `CLAUDE.md` / `AGENTS.md` / `GEMINI.md`). Drop it on any machine, pick the kind of work
+second layer — a portable, battle-tested operating system for **Claude Code and OpenAI Codex**
+(and any agent that reads a `CLAUDE.md` / `AGENTS.md` / `GEMINI.md`). Drop it on any machine, pick the kind of work
 you're doing, and the same disciplined core adapts to it — **software, devops/setup, marketing &
 outreach, document creation, data crunching, research, design, and general admin.**
 
@@ -27,7 +27,8 @@ swappable work-type profiles.
 
 ## How it works in 4 steps
 
-1. **Install once.** `setup.sh` assembles a deliberately lean `CLAUDE.md` from the universal
+1. **Install once.** `setup.sh` assembles a deliberately lean `CLAUDE.md`, `AGENTS.md`, or both
+   from the universal
    **core** (the rules that never change) plus the **profile(s)** for the kind of work you're doing.
    Install the core globally once, then add a thin profile per project. Just run
    `./setup.sh` (with no flags it's the wizard) — it builds the command for you and shows it
@@ -39,8 +40,9 @@ swappable work-type profiles.
 3. **Verify before "done."** Nothing ships on vibes. `verify.sh` runs *your* project's real checks,
    bug fixes need a failing test first (prove-it), and review gates catch what tests can't — evidence
    before assertion, every time.
-4. **Hand off early, and improve the harness.** At ~25–30% context used (or when you say "handoff"),
-   the agent safe-states and writes a recall prompt so the next session resumes clean. And when
+4. **Hand off early, and improve the harness.** When you say "handoff," the agent safe-states and
+   writes a recall prompt so the next session resumes clean. Claude can also provide a best-effort
+   nudge around ~25–30% context used; Codex does not install that status-line-dependent nudge. And when
    something goes wrong, the habit is to **fix the system, not just the symptom** — sharpen a rule,
    add a gate — so that class of failure is less likely next time.
 
@@ -93,8 +95,8 @@ git clone https://github.com/PromptPartner/agentsmith.git ~/tools/agentsmith && 
 ./setup.sh          # ← no flags = the wizard
 ```
 
-That's the default — **bare `./setup.sh` launches the wizard**. It walks you through scope (this
-project / global / machine-wide / portable export), profile, how careful the assistant should be
+That's the default — **bare `./setup.sh` launches the wizard**. It walks you through platform
+(Claude, Codex, or both), scope (this project / global / machine-wide / portable export), profile, how careful the assistant should be
 (**safety mode** — cautious by default), operator info, MCP servers, plugin packs, and hooks — then
 prints the exact command it's about to run (so you learn the flags) and runs it on your confirm.
 Nothing is written until you say yes, and any file it touches is backed up first.
@@ -122,6 +124,7 @@ prompts — see [Permissions](#permissions--dangerous-mode-)); add `--safety cau
 
 ```bash
 ./setup.sh \
+  --platform codex \
   --profile software-dev \
   --operator-name "Your Name" \
   --operator-role "your role" \
@@ -135,33 +138,56 @@ prompts — see [Permissions](#permissions--dangerous-mode-)); add `--safety cau
 ./setup.sh --profile document-creation --safety cautious --assemble-only --target .
 ```
 
+`--platform` accepts `claude`, `codex`, or `both`; omitting it means `claude`, preserving existing
+commands. The older `--also-agents-md` flag still emits an extra instruction file, but is
+deprecated: use `--platform both` when you want complete native installs, including each runtime's
+config, skills, MCP, and hooks.
+
+| Platform | Project rules | Global rules |
+|---|---|---|
+| Claude | `CLAUDE.md` | `~/.claude/CLAUDE.md` |
+| Codex | `AGENTS.md` | `$CODEX_HOME/AGENTS.md` (`CODEX_HOME` defaults to `~/.codex`) |
+
+Codex skills use `.agents/skills` / `~/.agents/skills`, its user config is
+`$CODEX_HOME/config.toml`, and project MCP lives in `.codex/config.toml`. Agentsmith resolves only
+the selected `CODEX_HOME`; it does not inspect other Orca account homes.
+
 **Layered setup (recommended once you run this across several projects):** install the universal
 **core** once globally, then add only the **profile** per project —
 
 ```bash
-./setup.sh --global --operator-name "Your Name"        # core → ~/.claude/CLAUDE.md + config + plugins
-./setup.sh --profile software-dev --profile-only --target /path/to/project   # thin per-project file
+./setup.sh --platform both --global --operator-name "Your Name"  # core + native config for both
+./setup.sh --platform both --profile software-dev --profile-only --target /path/to/project
 ```
 
-Claude Code concatenates the global core with each project's file automatically. See
+Claude Code and Codex each layer their native global core with the project's native rule file. See
 [`docs/13-platforms-and-tools.md`](docs/13-platforms-and-tools.md) for per-project vs global.
 
-That writes a lean `CLAUDE.md` into your project, scaffolds the supporting structure, and (unless
-`--assemble-only`) installs the global config + the four universal plugins. Re-run any time —
+That writes the selected native rule file(s) into your project, scaffolds the supporting structure,
+and installs only the selected platform's integration. Codex-only runs do not touch Claude
+marketplaces, plugins, status line, or `rtk` wiring. Re-run any time —
 it's idempotent and only rewrites its own managed block.
 
 **Useful flags:** `--with-plugins dev-workflow,stack-lsp` (opt-in plugin packs, latest from
-source) · `--with-skills` (install the bundled 6-skill harness pack — see below) · `--with-hooks`
-(pre-commit secret-scan) · `--also-agents-md` / `--also-gemini-md` (emit cross-tool rule files) ·
+source) · `--with-skills` (install the bundled 7-skill harness pack — see below) · `--with-hooks`
+(pre-commit secret-scan) · `--platform claude|codex|both` · `--also-agents-md` (deprecated,
+instruction-file-only compatibility) · `--also-gemini-md` ·
 `--update-plugins` · `--self-update` (pull a newer harness + re-assemble — see below) · `--doctor`
 (check install health) · `--dry-run`.
 
-**The bundled skill pack (`--with-skills`).** Six self-contained, work-type-neutral skills you can
-invoke by name: **`/handoff`** (wrap up cleanly), **`/verify`** (is this shippable?),
+`--dry-run` previews the selected Claude/Codex destinations without writing. Uninstall with the
+same scope, for example `./setup.sh --platform both --uninstall --target .` or `--uninstall
+--global`; it removes managed content and reports config/scaffolding deliberately left in place.
+After installing Codex hooks, review and trust them with `/hooks`.
+
+**The bundled skill pack (`--with-skills`).** Seven self-contained, work-type-neutral skills you
+can invoke by name: **`/handoff`** (wrap up cleanly), **`/verify`** (is this shippable?),
 **`/harness-help`** (non-coder? start here — it explains your profile, rules, and what to type
-next), **`/harness-doctor`** (is my harness healthy?), **`/new-research`**, **`/new-feedback`**.
-In project mode they install into `<project>/.claude/skills/`; with `--global`, into
-`~/.claude/skills/`. New to this? Just run `claude` in your project and type `/harness-help`.
+next), **`/harness-doctor`** (is my harness healthy?), **`/new-research`**, **`/new-feedback`**,
+**`/writing-rules`** (writing or reviewing anything an agent reads — a rule, a gate, a prompt).
+They install into `.claude/skills` / `~/.claude/skills` for Claude and `.agents/skills` /
+`~/.agents/skills` for Codex; `both` creates independent copies. New to this? Start the selected
+runtime in your project and invoke `harness-help`.
 
 **Keeping the harness current — `--self-update`.** Once the harness lives in a git checkout,
 `./setup.sh --self-update` (or `./setup.ps1 --self-update`) fast-forwards that checkout from its
@@ -181,14 +207,14 @@ Prefer to do it by hand? See [`INSTALL.md`](INSTALL.md).
 
 ```
 core/         The universal rules — loaded every session. Lean by design (static context).
-profiles/     9 work-type modules — one (or more) gets assembled into CLAUDE.md.
-examples/     6 worked end-to-end projects (filled CLAUDE.md + verify.conf, two bundle a skill).
-config/       Global settings.json, statusline, MCP examples, the plugin matrix.
-skills/       Skill bundle: how-to, RECOMMENDED map, the 6-skill harness pack + example (--with-skills).
+profiles/     10 work-type modules — one (or more) gets assembled into the native rule file.
+examples/     6 worked end-to-end projects (filled rule file + verify.conf, two bundle a skill).
+config/       Claude settings, Codex TOML support, statusline, MCP examples, the plugin matrix.
+skills/       Skill bundle: how-to, RECOMMENDED map, the 7-skill harness pack + example (--with-skills).
 scripts/      verify.sh (gate), new-research.sh, new-feedback.sh, handoff.sh, secret-scan.sh + leak-gate.sh (+their tests), install-git-hooks.sh.
 templates/    plan, progress-log, handoff, research-doc, quality-gate.
 docs/         The docs set — docs/README.md is the index: philosophy, newcomer guides, profiles, feedback/ log.
-setup.sh      Assembles CLAUDE.md + installs config/plugins/skills/hooks. The one command you run.
+setup.sh      Assembles native rule files + installs selected config/skills/hooks. The one command you run.
 setup.ps1     Native-Windows PowerShell port of setup.sh — same flags, same behaviour (incl. --wizard).
 .harness/     verify.conf.example (your project's definition of "shippable") + this repo's own verify.conf.
 ```
@@ -228,16 +254,17 @@ that gets a little better every session beats any one-off fix.
 
 ## Permissions & dangerous mode ⚠
 
-**Safety mode** decides how much the agent does without asking. Setup ships two presets and
-picks one for you:
+**Safety mode** decides how much the agent does without asking. Setup maps the same two choices to
+each runtime:
 
-| Mode | `defaultMode` | Behaviour | Chosen when |
+| Mode | Claude | Codex | Behaviour |
 |---|---|---|---|
-| **cautious** | `acceptEdits` | Auto-applies **file edits**, but **prompts before shell commands and network calls**. | The **wizard default** (`./setup.sh` with no flags). |
-| **trusted** | `bypassPermissions` | Runs **most tool calls without asking** — edits, shell, network. (The `rm -rf /` and `rm -rf ~` circuit-breakers still prompt.) | The **flag-path default** (direct `--profile …`), and whenever you pass `--safety trusted`. |
+| **cautious** | `defaultMode: acceptEdits` | `approval_policy = "on-request"`, `sandbox_mode = "workspace-write"` | Edits are allowed in the workspace; higher-risk actions prompt. |
+| **trusted** | `defaultMode: bypassPermissions` | `approval_policy = "never"`, `sandbox_mode = "danger-full-access"` | Most actions run without asking; use only on a machine you fully own. |
 
-Override either way with `--safety cautious|trusted`. The chosen preset is scaffolded to
-`.claude/settings.local.json.example`; copy it to `.claude/settings.local.json` to activate.
+The wizard defaults to cautious; direct flag runs remain trusted for backward compatibility.
+Override either way with `--safety cautious|trusted`. Claude receives its JSON preset; Codex's
+settings are written into an Agentsmith-owned block in `config.toml`.
 (Under **cautious**, setup also leaves the global dangerous-mode confirmation **on** —
 `skipDangerousModePermissionPrompt: false` — instead of the trusted box's `true`.)
 
@@ -252,15 +279,22 @@ cautious (the default) until you trust the setup.
   `"default"` (prompt for everything), or `"bypassPermissions"` (trusted).
 - Toggle `"skipDangerousModePermissionPrompt"` in `~/.claude/settings.json` to restore or skip
   the dangerous-mode confirmation.
+- For Codex, re-run setup with `--safety cautious|trusted`; setup backs up `config.toml`, updates
+  only its managed block, preserves unrelated comments/tables, and validates the result.
 - Org-wide lock: a managed-settings policy can set
   `"permissions": { "disableBypassPermissionsMode": "disable" }` so no project can re-enable it.
+  This organization-policy installer is Claude-only; any `--org-policy` run whose platform
+  includes Codex (`codex` or `both`) is rejected.
 
 ## Requirements
 
-- **Claude Code** (or another agent that reads a `CLAUDE.md`/`AGENTS.md`). The rules are plain
-  Markdown and work with any of them.
+- **Claude Code, OpenAI Codex, or both.** The rules are plain Markdown; setup installs the native
+  filename and integration for the selected runtime.
 - **bash + jq** for `setup.sh` (jq optional but recommended — it merges settings instead of
-  overwriting). Scripts are POSIX-ish bash; no other runtime required.
+  overwriting). Runtime helper scripts are POSIX-ish bash.
+- **Python 3.11+** for Codex configuration on either installer path; both use the standard
+  `tomllib` parser to validate TOML before replacing an existing config. PowerShell CI exercises
+  the same parse check natively through `setup.ps1`.
 - Plugins are optional and load on demand — nothing here *requires* them to function.
 
 ## Principles & influences

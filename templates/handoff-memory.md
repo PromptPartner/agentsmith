@@ -1,6 +1,6 @@
 # Handoff — <item id> — <date/session>
 
-> Written BEFORE the kickoff block and BEFORE /clear, while context is fresh (core/50).
+> Written BEFORE the kickoff block and BEFORE starting a fresh chat, while context is fresh (core/50).
 > The next session reads this to resume without re-deriving anything.
 
 **Branch / version:** <branch + HEAD SHA, or saved-version name>
@@ -22,7 +22,7 @@
 <things that would cost the next session time to rediscover>
 
 ---
-## Kickoff prompt for after reset
+## Kickoff prompt for a fresh chat
 ```
 <self-contained prose, 3–6 sentences: item id(s), branch + SHA, what's done, the single
 next step, key decisions, and "see handoff note <this file's path>". Paste-ready — no bullets.>

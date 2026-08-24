@@ -27,12 +27,11 @@ deterministically, or a feedback note in memory. Small, specific, traceable to t
 - **Prefer the deterministic fix over the reminder, and prove it** (R2): a harness edit isn't done
   until a check — a hook, a verify phase, a guard test, even a grep assertion — fails if the mistake
   recurs. Guardrails hold what prose forgets; until that guard exists, the change is a draft, not a fix.
-- **Respect context economics.** This assembled file is *static context*, paid every turn — keep it
-  lean. Specialized knowledge belongs in *dynamic context* (skills, templates, `docs/`, memory) that
-  loads only when the task needs it. Tempted to add a paragraph here? Ask whether it's a skill or a doc.
-- **Don't silently bloat.** A harness change earns its place like code. Check the budget with
-  `scripts/lint-leanness.sh` (or `setup.sh --doctor`) — over budget is the cue to move knowledge into
-  a skill/doc, not to keep growing this file.
+- **Respect the two loads.** *Context load* is what this assembled file costs the agent every turn;
+  *cognitive load* is what you pay remembering which doc exists. Specialized knowledge belongs behind
+  a pointer — a skill, a template, a `docs/` page — that loads only when the task needs it. Before a
+  line earns a place here, apply the **no-op test**: delete it; does behaviour change? Measure with
+  `scripts/lint-leanness.sh` (or `setup.sh --doctor`). Writing anything an agent reads → `/writing-rules`.
 
 The payoff is compounding: a harness that gets a little more reliable every time it's used is
 worth far more than any single fix. Invest in the factory, not just the widget.
