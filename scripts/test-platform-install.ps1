@@ -44,12 +44,12 @@ $oldHome = $env:HOME
 $oldUserProfile = $env:USERPROFILE
 $oldCodexHome = $env:CODEX_HOME
 try {
-  $home = Join-Path $sandbox 'home'
+  $fixtureHome = Join-Path $sandbox 'home'
   $codex = Join-Path $sandbox 'Orca Accounts/account one/codex home'
   $project = Join-Path $sandbox 'codex project'
-  New-Item -ItemType Directory -Force -Path $home,$codex,$project | Out-Null
-  $env:HOME = $home
-  $env:USERPROFILE = $home
+  New-Item -ItemType Directory -Force -Path $fixtureHome,$codex,$project | Out-Null
+  $env:HOME = $fixtureHome
+  $env:USERPROFILE = $fixtureHome
   $env:CODEX_HOME = $codex
 
   $help = Run-Setup @('--help')
@@ -67,7 +67,7 @@ try {
   Assert-True (Test-Path (Join-Path $project 'AGENTS.md')) 'Codex project rules were not installed'
   Assert-True (-not (Test-Path (Join-Path $project 'CLAUDE.md'))) 'Codex-only run wrote CLAUDE.md'
   Assert-True (-not (Test-Path (Join-Path $project '.claude'))) 'Codex-only run created .claude'
-  Assert-True (-not (Test-Path (Join-Path $home '.claude'))) 'Codex-only run touched the Claude user home'
+  Assert-True (-not (Test-Path (Join-Path $fixtureHome '.claude'))) 'Codex-only run touched the Claude user home'
   Assert-True (Test-Path (Join-Path $project '.agents/skills/existing/SKILL.md')) 'existing Codex skill was removed'
   Assert-Contains (Join-Path $codex 'config.toml') '# keep user comment'
   Assert-Contains (Join-Path $codex 'config.toml') 'approval_policy = "on-request"'
