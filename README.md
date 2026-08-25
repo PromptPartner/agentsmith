@@ -165,11 +165,15 @@ Claude Code and Codex each layer their native global core with the project's nat
 
 That writes the selected native rule file(s) into your project, scaffolds the supporting structure,
 and installs only the selected platform's integration. Codex-only runs do not touch Claude
-marketplaces, plugins, status line, or `rtk` wiring. Re-run any time —
+marketplaces, plugins, or status line; RTK initializes Codex's own instruction wiring. Re-run any time —
 it's idempotent and only rewrites its own managed block.
 
+`software-dev` additionally receives the finite local autonomous-run controller and manifest
+template. Other profiles keep the universal Wayfinder skill without carrying coding-only runtime
+machinery.
+
 **Useful flags:** `--with-plugins dev-workflow,stack-lsp` (opt-in plugin packs, latest from
-source) · `--with-skills` (install the bundled 7-skill harness pack — see below) · `--with-hooks`
+source) · `--with-skills` (install the bundled 9-skill harness pack — see below) · `--with-hooks`
 (pre-commit secret-scan) · `--platform claude|codex|both` · `--also-agents-md` (deprecated,
 instruction-file-only compatibility) · `--also-gemini-md` ·
 `--update-plugins` · `--self-update` (pull a newer harness + re-assemble — see below) · `--doctor`
@@ -180,11 +184,13 @@ same scope, for example `./setup.sh --platform both --uninstall --target .` or `
 --global`; it removes managed content and reports config/scaffolding deliberately left in place.
 After installing Codex hooks, review and trust them with `/hooks`.
 
-**The bundled skill pack (`--with-skills`).** Seven self-contained, work-type-neutral skills you
+**The bundled skill pack (`--with-skills`).** Nine work-type-neutral skills you
 can invoke by name: **`/handoff`** (wrap up cleanly), **`/verify`** (is this shippable?),
 **`/harness-help`** (non-coder? start here — it explains your profile, rules, and what to type
 next), **`/harness-doctor`** (is my harness healthy?), **`/new-research`**, **`/new-feedback`**,
-**`/writing-rules`** (writing or reviewing anything an agent reads — a rule, a gate, a prompt).
+**`/writing-rules`** (writing or reviewing anything an agent reads — a rule, a gate, a prompt),
+**`/wayfinder`** (turn foggy work into an accepted spec and separate implementation tickets), and
+**`/autonomous-run`** (operate a bounded local maker/checker run from an accepted spec).
 They install into `.claude/skills` / `~/.claude/skills` for Claude and `.agents/skills` /
 `~/.agents/skills` for Codex; `both` creates independent copies. New to this? Start the selected
 runtime in your project and invoke `harness-help`.
@@ -210,9 +216,9 @@ core/         The universal rules — loaded every session. Lean by design (stat
 profiles/     10 work-type modules — one (or more) gets assembled into the native rule file.
 examples/     6 worked end-to-end projects (filled rule file + verify.conf, two bundle a skill).
 config/       Claude settings, Codex TOML support, statusline, MCP examples, the plugin matrix.
-skills/       Skill bundle: how-to, RECOMMENDED map, the 7-skill harness pack + example (--with-skills).
+skills/       Skill bundle: how-to, RECOMMENDED map, the 9-skill harness pack + example (--with-skills).
 scripts/      verify.sh (gate), new-research.sh, new-feedback.sh, handoff.sh, secret-scan.sh + leak-gate.sh (+their tests), install-git-hooks.sh.
-templates/    plan, progress-log, handoff, research-doc, quality-gate.
+templates/    plan, Wayfinder spec, progress-log, handoff, research-doc, quality-gate.
 docs/         The docs set — docs/README.md is the index: philosophy, newcomer guides, profiles, feedback/ log.
 setup.sh      Assembles native rule files + installs selected config/skills/hooks. The one command you run.
 setup.ps1     Native-Windows PowerShell port of setup.sh — same flags, same behaviour (incl. --wizard).

@@ -40,7 +40,8 @@
 #    ./setup.sh --with-rtk | --no-rtk   # rtk CLI-output compressor (default: ON for software-dev/devops-setup)
 #    ./setup.sh --with-mcp playwright,context7 ...   # add named MCP server(s) to native project config
 #    ./setup.sh --with-skills ...       # install the bundled skill pack (handoff, verify,
-#                                       #   harness-doctor, new-research, new-feedback, harness-help);
+#                                       #   harness-doctor, new-research, new-feedback, harness-help,
+#                                       #   writing-rules, wayfinder, autonomous-run);
 #                                       #   native .claude/skills and/or .agents/skills destinations
 #    ./setup.sh --with-hooks ...        # install git guardrails (secret-scan+protect-main+conventional) in --target
 #    ./setup.sh --update-plugins        # update installed plugins to latest, then exit
@@ -1107,7 +1108,15 @@ rtk_wanted() {  # install rtk? explicit flag wins; else auto = only for code pro
   return 1
 }
 
-install_rtk() {  # install the rtk binary (per-OS), then let rtk wire its own Claude Code hook
+autonomous_tools_wanted() {  # v1 is intentionally code-first; other profiles still get the spec skill
+  local p
+  for p in "${PROFILE_ARR[@]:-}"; do
+    [ "$p" = software-dev ] && return 0
+  done
+  return 1
+}
+
+install_rtk() {  # install rtk once, then initialize each selected runtime independently
   if command -v rtk >/dev/null 2>&1; then
     ok "rtk already installed ($(rtk --version 2>/dev/null || echo present))"
   else
@@ -1721,7 +1730,8 @@ $ALSO_GEMINI_MD && assemble_to "$TARGET/GEMINI.md" "$INCLUDE_CORE"
 if $DRY_RUN; then
   echo
   say "DRY RUN — nothing was written. A real run would ALSO scaffold into $TARGET:"
-  echo "    + scripts/        verify.sh, handoff.sh, new-research.sh, new-feedback.sh, secret-scan.sh, install-git-hooks.sh, lint-leanness.sh"
+  echo "    + scripts/        verify.sh, handoff/research/feedback helpers, git guards"
+  autonomous_tools_wanted && echo "    + autonomous      autonomous-run.py + run manifest template (software-dev)"
   echo "    + hooks/git/      managed git hooks (secret-scan, protect-main, conventional-commits)"
   echo "    + .harness/       verify.conf (+ .example), templates/, handoffs/"
   echo "    + .planning/      progress-log.md"
@@ -1758,7 +1768,9 @@ cpa "$HARNESS_DIR/scripts/handoff.sh"           "$TARGET/scripts/handoff.sh"
 cpa "$HARNESS_DIR/scripts/secret-scan.sh"       "$TARGET/scripts/secret-scan.sh"
 cpa "$HARNESS_DIR/scripts/install-git-hooks.sh" "$TARGET/scripts/install-git-hooks.sh"
 cpa "$HARNESS_DIR/scripts/lint-leanness.sh"     "$TARGET/scripts/lint-leanness.sh"
+autonomous_tools_wanted && cpa "$HARNESS_DIR/scripts/autonomous-run.py" "$TARGET/scripts/autonomous-run.py"
 chmod +x "$TARGET/scripts/"*.sh 2>/dev/null || true
+autonomous_tools_wanted && chmod +x "$TARGET/scripts/autonomous-run.py" 2>/dev/null || true
 cpa "$HARNESS_DIR/docs/feedback/README.md"      "$TARGET/docs/feedback/README.md"
 mkdir -p "$TARGET/hooks/git"
 for g in "$HARNESS_DIR"/hooks/git/*.sh; do cpa "$g" "$TARGET/hooks/git/$(basename "$g")"; done
@@ -1773,6 +1785,7 @@ fi
 cpa "$HARNESS_DIR/templates/progress-log.md"    "$TARGET/.planning/progress-log.md"
 has_claude && cpa "$HARNESS_DIR/config/settings.local.$SAFETY.json.example" "$TARGET/.claude/settings.local.json.example"
 mkdir -p "$TARGET/.harness/templates"; cp "$HARNESS_DIR"/templates/*.md "$TARGET/.harness/templates/" 2>/dev/null || true; ok "templates in .harness/templates/"
+autonomous_tools_wanted && cpa "$HARNESS_DIR/templates/autonomous-run.json" "$TARGET/.harness/templates/autonomous-run.json"
 write_first_steps "$TARGET/FIRST-STEPS.md"
 scaffold_design_system   # honors --design-system for a UI project (no-op on the default/backend path)
 

@@ -46,7 +46,8 @@
 #    ./setup.ps1 --with-rtk | --no-rtk   # rtk CLI-output compressor (default: ON for software-dev/devops-setup)
 #    ./setup.ps1 --with-mcp playwright,context7 ...   # add named MCP server(s) to native project config
 #    ./setup.ps1 --with-skills ...      # install the bundled skill pack (handoff, verify, harness-doctor,
-#                                       #   new-research, new-feedback, harness-help); project mode →
+#                                       #   new-research, new-feedback, harness-help, writing-rules,
+#                                       #   wayfinder, autonomous-run); project mode →
 #                                       #   native .claude/skills and/or .agents/skills destinations
 #    ./setup.ps1 --with-hooks ...       # install git guardrails (secret-scan+protect-main+conventional)
 #    ./setup.ps1 --update-plugins       # update installed plugins to latest, then exit
@@ -1750,7 +1751,8 @@ if ($o.AlsoGemini) { Assemble-To (Join-Path $o.Target 'GEMINI.md') $includeCore 
 if ($o.DryRun) {
   Write-Host ''
   Say "DRY RUN — nothing was written. A real run would ALSO scaffold into $($o.Target):"
-  Write-Host '    + scripts/        verify.sh, handoff.sh, new-research.sh, new-feedback.sh, secret-scan.sh, install-git-hooks.sh, lint-leanness.sh'
+  Write-Host '    + scripts/        verify.sh, handoff/research/feedback helpers, git guards'
+  if (Autonomous-ToolsWanted) { Write-Host '    + autonomous      autonomous-run.py + run manifest template (software-dev)' }
   Write-Host '    + hooks/git/      managed git hooks (secret-scan, protect-main, conventional-commits)'
   Write-Host '    + .harness/       verify.conf (+ .example), templates/, handoffs/'
   Write-Host '    + .planning/      progress-log.md'
@@ -1779,6 +1781,7 @@ function Cpa ($src, $dst) { if (-not (Test-Path $dst)) { Copy-Item $src $dst -Fo
 foreach ($s in @('verify.sh','new-research.sh','new-feedback.sh','handoff.sh','secret-scan.sh','install-git-hooks.sh','lint-leanness.sh')) {
   Cpa (Join-Path $HarnessDir "scripts/$s") (Join-Path $o.Target "scripts/$s")
 }
+if (Autonomous-ToolsWanted) { Cpa (Join-Path $HarnessDir 'scripts/autonomous-run.py') (Join-Path $o.Target 'scripts/autonomous-run.py') }
 Cpa (Join-Path $HarnessDir 'docs/feedback/README.md') (Join-Path $o.Target 'docs/feedback/README.md')
 Get-ChildItem (Join-Path $HarnessDir 'hooks/git') -Filter *.sh | ForEach-Object { Cpa $_.FullName (Join-Path $o.Target "hooks/git/$($_.Name)") }
 Cpa (Join-Path $HarnessDir '.harness/verify.conf.example') (Join-Path $o.Target '.harness/verify.conf.example')
@@ -1788,6 +1791,7 @@ else { Build-VerifyConf $verifyConf; Ok "added .harness/verify.conf (preset for:
 Cpa (Join-Path $HarnessDir 'templates/progress-log.md') (Join-Path $o.Target '.planning/progress-log.md')
 if (Has-Claude) { Cpa (Join-Path $HarnessDir "config/settings.local.$($o.Safety).json.example") (Join-Path $o.Target '.claude/settings.local.json.example') }
 Get-ChildItem (Join-Path $HarnessDir 'templates') -Filter *.md | ForEach-Object { Copy-Item $_.FullName (Join-Path $o.Target ".harness/templates/$($_.Name)") -Force }
+if (Autonomous-ToolsWanted) { Cpa (Join-Path $HarnessDir 'templates/autonomous-run.json') (Join-Path $o.Target '.harness/templates/autonomous-run.json') }
 Ok 'templates in .harness/templates/'
 # First-steps card: fill placeholders, write-if-absent (don't clobber a user-edited card)
 $firstSteps = Join-Path $o.Target 'FIRST-STEPS.md'

@@ -119,6 +119,8 @@ exit 0
   Assert-True (-not (Test-Path (Join-Path $project '.claude'))) 'Codex-only run created .claude'
   Assert-True (-not (Test-Path (Join-Path $fixtureHome '.claude'))) 'Codex-only run touched the Claude user home'
   Assert-True (Test-Path (Join-Path $project '.agents/skills/existing/SKILL.md')) 'existing Codex skill was removed'
+  Assert-True (-not (Test-Path (Join-Path $project 'scripts/autonomous-run.py'))) 'non-code profile installed autonomous controller'
+  Assert-True (-not (Test-Path (Join-Path $project '.harness/templates/autonomous-run.json'))) 'non-code profile installed autonomous manifest template'
   Assert-Contains (Join-Path $codex 'config.toml') '# keep user comment'
   Assert-Contains (Join-Path $codex 'config.toml') 'approval_policy = "on-request"'
   Assert-Contains (Join-Path $codex 'config.toml') 'sandbox_mode = "workspace-write"'
@@ -130,6 +132,12 @@ exit 0
   Assert-True ((Get-HookCommandCount (Join-Path $codex 'hooks.json') 'Stop' 'foreign-stop-hook') -eq 1) 'foreign Codex Stop hook was lost'
   Assert-Toml (Join-Path $codex 'config.toml')
   Assert-Toml (Join-Path $project '.codex/config.toml')
+
+  $softwareProject = Join-Path $fixtureHome 'autonomous-software'
+  New-Item -ItemType Directory -Force -Path $softwareProject | Out-Null
+  Run-Setup @('--platform','codex','--profile','software-dev','--no-rtk','--target',$softwareProject) | Out-Null
+  Assert-True (Test-Path (Join-Path $softwareProject 'scripts/autonomous-run.py')) 'software-dev missing autonomous controller'
+  Assert-True (Test-Path (Join-Path $softwareProject '.harness/templates/autonomous-run.json')) 'software-dev missing autonomous manifest template'
 
   # Re-run: update safety, union MCP selections, keep hook entries duplicate-free, and create backups.
   Set-Content (Join-Path $codex 'hooks/handoff-on-keyword.sh') '# stale Codex handoff hook' -Encoding utf8
