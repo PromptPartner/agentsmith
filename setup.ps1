@@ -159,6 +159,23 @@ function Platform-RulesLabel {
   return 'CLAUDE.md + AGENTS.md'
 }
 
+function Report-RtkHealth ([string]$RuntimeLabel, [string]$RulesPath, [string]$RuntimeDir) {
+  $import = $null
+  if (Test-Path $RulesPath) {
+    $import = Get-Content $RulesPath | Where-Object { $_ -match '^@.*RTK\.md\s*$' } | Select-Object -First 1
+  }
+  if ($import) {
+    $target = $import.Substring(1).TrimEnd("`r")
+    if (-not [IO.Path]::IsPathRooted($target)) { $target = Join-Path $RuntimeDir $target }
+    if (Test-Path $target -PathType Leaf) { Ok "$RuntimeLabel RTK instructions wired" }
+    else { Warn "$RuntimeLabel RTK import is dangling: $target — re-run with --with-rtk" }
+  } elseif (Test-Path (Join-Path $RuntimeDir 'RTK.md') -PathType Leaf) {
+    Warn "$RuntimeLabel RTK.md is present but not imported by $(Split-Path $RulesPath -Leaf) — re-run with --with-rtk"
+  } else {
+    Warn "$RuntimeLabel RTK.md missing — re-run with --with-rtk"
+  }
+}
+
 # ---- profile auto-detect + uninstall (used by --profile auto, the wizard, --uninstall) -----
 function Test-Has ([string]$dir, [string[]]$globs) {  # $true if any glob matches an entry in $dir
   foreach ($g in $globs) {
@@ -258,7 +275,6 @@ if ($o.OrgPolicy -and (Has-Codex)) {
 }
 if (-not (Has-Claude)) {
   if ($o.WithPlugins) { Warn '--with-plugins is Claude-only and was ignored for --platform codex.' }
-  if ($o.WithRtk -eq 'true') { Warn '--with-rtk is Claude-specific wiring and was ignored for --platform codex.' }
 }
 
 # Resolve --profile auto by inspecting the target project (before validation).
@@ -549,7 +565,11 @@ function Rtk-Wanted {  # install rtk? explicit flag wins; else auto = only for c
   return $false
 }
 
-function Install-Rtk {  # install the rtk binary (per-OS), then let rtk wire its own Claude Code hook
+function Autonomous-ToolsWanted {
+  return $ProfileArr -contains 'software-dev'
+}
+
+function Install-Rtk {  # install rtk once, then initialize each selected runtime independently
   if (Have-Cmd rtk) {
     Ok "rtk already installed ($(try { rtk --version } catch { 'present' }))"
   } else {
@@ -581,11 +601,24 @@ function Install-Rtk {  # install the rtk binary (per-OS), then let rtk wire its
       Warn 'rtk: no supported installer found — install by hand: https://github.com/rtk-ai/rtk#installation'; return
     }
   }
-  if (-not (Have-Cmd rtk)) { Warn 'rtk not on PATH after install — open a new shell, then run: rtk init -g --auto-patch'; return }
+  if (-not (Have-Cmd rtk)) { Warn 'rtk not on PATH after install — open a new shell, then re-run setup with --with-rtk'; return }
   if (-not (Have-Cmd rg))  { Warn 'rtk: ripgrep (rg) not on PATH — some filters need it (winget install BurntSushi.ripgrep.MSVC)' }
-  rtk init -g --auto-patch *> $null
-  if ($LASTEXITCODE -eq 0) { Ok 'rtk wired into Claude Code (hook + RTK.md) — restart Claude Code to load it' }
-  else { Warn "rtk: 'rtk init -g --auto-patch' failed — run it by hand to wire the hook" }
+  if (Has-Claude) {
+    rtk init -g --auto-patch *> $null
+    if ($LASTEXITCODE -eq 0) { Ok 'rtk wired into Claude Code (hook + RTK.md) — restart Claude Code to load it' }
+    else { Warn 'rtk: Claude initialization failed — run: rtk init -g --auto-patch' }
+  }
+  if (Has-Codex) {
+    $previousCodexHome = $env:CODEX_HOME
+    try {
+      $env:CODEX_HOME = $CodexDir
+      rtk init -g --codex *> $null
+      if ($LASTEXITCODE -eq 0) { Ok 'rtk wired into Codex (AGENTS.md + RTK.md instructions)' }
+      else { Warn "rtk: Codex initialization failed — set CODEX_HOME to '$CodexDir' and run: rtk init -g --codex" }
+    } finally {
+      $env:CODEX_HOME = $previousCodexHome
+    }
+  }
 }
 
 function Install-ClaudeConfig {
@@ -651,8 +684,6 @@ function Install-ClaudeConfig {
     Say "  29 security skills available on demand — owasp-audit, threat-modeling, api-audit,"
     Say "  dependency-audit, prompt-injection, container-audit, cloud-audit, iam-audit, and more."
   }
-  # rtk — token-compressing CLI proxy (github.com/rtk-ai/rtk). Default-ON for code profiles; --no-rtk opts out.
-  if (Rtk-Wanted) { Install-Rtk }
 }
 
 function Install-CodexConfig {
@@ -663,6 +694,8 @@ function Install-CodexConfig {
 function Install-PlatformConfig {
   if (Has-Claude) { Install-ClaudeConfig }
   if (Has-Codex) { Install-CodexConfig }
+  # Default-ON for code profiles; initialize every selected runtime, not only Claude.
+  if (Rtk-Wanted) { Install-Rtk }
   Install-NativeSkills
   if ($o.WithHandoffHooks) {
     if (Has-Claude) { Install-ClaudeHandoffHooks }
@@ -1565,6 +1598,7 @@ if ($o.Doctor) {
     } else { Warn "no $settings" }
     $gmd = Join-Path $CcDir 'CLAUDE.md'
     if (Test-Path $gmd) { Ok "global Claude rules present ($(@(Get-Content $gmd).Count) lines)" } else { Warn 'no global Claude rules (per-project only)' }
+    Report-RtkHealth 'Claude' $gmd $CcDir
     $skills = Join-Path $CcDir 'skills'
     if (Test-Path $skills) { Ok "Claude skills: $(@(Get-ChildItem $skills -Directory).Count)" } else { Warn 'no Claude skills directory' }
     $kw = 'bash ~/.claude/hooks/handoff-on-keyword.sh'
@@ -1594,6 +1628,7 @@ if ($o.Doctor) {
     if (Test-Path $config) { if (Test-TomlFile $config) { Ok "Codex config valid: $config" } else { Warn "Codex config is not valid TOML: $config" } } else { Warn "no $config" }
     $gmd = Join-Path $CodexDir 'AGENTS.md'
     if (Test-Path $gmd) { Ok "global Codex rules present ($(@(Get-Content $gmd).Count) lines)" } else { Warn 'no global Codex rules (per-project only)' }
+    Report-RtkHealth 'Codex' $gmd $CodexDir
     $skills = Join-Path $HOME '.agents/skills'
     if (Test-Path $skills) { Ok "Codex skills: $(@(Get-ChildItem $skills -Directory).Count)" } else { Warn 'no Codex skills directory' }
     $codexHookScript = Join-Path $CodexDir 'hooks/handoff-on-keyword.sh'
