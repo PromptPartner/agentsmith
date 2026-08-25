@@ -11,9 +11,9 @@ recommend packs and skills for the profile you pick. Edit the prose and the MAP 
 they're the single source of truth.
 
 ## Bundled with the harness (install with `--with-skills`)
-Seven small, work-type-neutral skills. Six prefer a project-local `scripts/<x>.sh` when present,
-else run an inline procedure, so they work globally, in a harness project, or in a bare repo; the
-seventh is pure reference:
+Nine small, work-type-neutral skills. Procedural skills prefer a project-local `scripts/<x>.sh`
+when present and otherwise carry their fallback in the skill; the rest are repository-native
+workflow/reference:
 - **handoff** — wrap up a session: durable note + paste-ready kickoff block.
 - **verify** — "is this shippable?" with evidence, never a bare "should pass".
 - **harness-doctor** — is this project's harness installed correctly and lean?
@@ -25,6 +25,11 @@ seventh is pure reference:
   most on a draft you already have. Adapted from Matt Pocock's
   [`writing-for-agents`](https://github.com/mattpocock/skills) (MIT) — install his upstream pack for
   the original plus its skill-frontmatter companion.
+- **wayfinder** — turn a foggy, multi-session effort into a repository-native decision map,
+  operator-accepted terminal spec, and separate implementation-ticket drafts. Adapted from Matt
+  Pocock's [`wayfinder`](https://github.com/mattpocock/skills) (MIT), with tracker consent retained.
+- **autonomous-run** — prepare/start/status/resume/stop a finite local maker/checker run from an
+  accepted spec, with durable receipts and no push, merge, or external writes.
 
 Project mode installs these into `<project>/.claude/skills/` (Claude),
 `<project>/.agents/skills/` (Codex), or both. Global mode uses `~/.claude/skills/`,
@@ -130,9 +135,12 @@ than working from memory. Match the skill to the engagement:
   to *refute* each one. Same job the `codex` two-AI gate does for a diff.
 
 ## autonomous-loops
-<!-- MAP autonomous-loops | packs: - | skills: using-git-worktrees,verify -->
+<!-- MAP autonomous-loops | packs: - | skills: using-git-worktrees,verify,wayfinder,autonomous-run -->
 - **using-git-worktrees** — one isolated worktree per fix attempt; discard it on reject.
 - **verify** — what the *checker* actually runs. The check must be one the maker can't fake.
+- **wayfinder** — require an accepted terminal spec before an autonomous run consumes its separate
+  implementation ticket.
+- **autonomous-run** — the bounded local controller interface once that spec is accepted.
 - Otherwise deliberately bare: use the active platform's scheduler (Claude `/loop` or `/schedule`,
   or an external scheduler) and its maker/checker subagent split. Resist bolting on a loop
   framework — the rules are the product (R10).

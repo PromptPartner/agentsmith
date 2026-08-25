@@ -104,6 +104,8 @@ assert "Codex-only invokes no Claude/rtk command" test ! -e "$c/calls"
 assert "CODEX_HOME with spaces receives config" test -f "$c/Orca Account/codex home/config.toml"
 assert "Codex project skills preserve an existing skill" test -d "$c/project/.agents/skills/existing"
 assert "Codex project skills install bundled skills" test -f "$c/project/.agents/skills/handoff/SKILL.md"
+assert "non-code profile omits autonomous controller" test ! -e "$c/project/scripts/autonomous-run.py"
+assert "non-code profile omits autonomous manifest template" test ! -e "$c/project/.harness/templates/autonomous-run.json"
 assert "Codex-only creates no Claude home" test ! -e "$c/home/.claude"
 assert "Codex handoff hook installed" test -x "$c/Orca Account/codex home/hooks/handoff-on-keyword.sh"
 assert "Codex UI hook installed" test -x "$c/Orca Account/codex home/hooks/ui-design-reminder.sh"
@@ -126,6 +128,11 @@ assert project['mcp_servers']['playwright']['command'] == 'manual'
 assert project['mcp_servers']['context7']['command'] == 'npx'
 PY
 assert "cautious mapping and TOML parse exactly" test $? -eq 0
+
+software_case="$(new_case autonomous-software)"
+run "$software_case" --platform codex --profile software-dev --no-rtk --target "$software_case/project"
+assert "software-dev scaffolds autonomous controller" test -x "$software_case/project/scripts/autonomous-run.py"
+assert "software-dev scaffolds autonomous manifest template" test -f "$software_case/project/.harness/templates/autonomous-run.json"
 
 # Re-run adds a new managed server, retains the prior selection, and does not duplicate hooks/tables.
 printf '%s\n' '# stale Codex handoff hook' > "$c/Orca Account/codex home/hooks/handoff-on-keyword.sh"
