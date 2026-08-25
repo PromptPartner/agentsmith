@@ -784,30 +784,121 @@ function OrgPolicy-Install {
   Write-Host "  Admins: extend $orgSettings with org allow/deny rules as needed."
 }
 
+function Test-JsonHookCommand ([Collections.IDictionary]$settings, [string]$event, [string]$command) {
+  if (-not $settings.ContainsKey('hooks') -or ($settings['hooks'] -isnot [Collections.IDictionary])) { return $false }
+  if (-not $settings['hooks'].ContainsKey($event)) { return $false }
+  foreach ($group in @($settings['hooks'][$event])) {
+    if (($group -isnot [Collections.IDictionary]) -or (-not $group.ContainsKey('hooks'))) { continue }
+    foreach ($handler in @($group['hooks'])) {
+      if (($handler -is [Collections.IDictionary]) -and $handler.ContainsKey('command') -and $handler['command'] -eq $command) {
+        return $true
+      }
+    }
+  }
+  return $false
+}
+
+function Ensure-JsonHookCommand ([Collections.IDictionary]$settings, [string]$event, [string]$command, [string]$matcher = '') {
+  # Preserve every unrelated hook and the first matching handler, but collapse duplicate copies
+  # left by older installer runs. Each event is reconciled independently: a keyword hook must not
+  # make us assume the Stop hook is also present (or vice versa).
+  $changed = $false
+  if (-not $settings.ContainsKey('hooks')) { $settings['hooks'] = @{}; $changed = $true }
+  if ($settings['hooks'] -isnot [Collections.IDictionary]) { throw 'settings.json "hooks" must be a JSON object' }
+  if (-not $settings['hooks'].ContainsKey($event)) { $settings['hooks'][$event] = @(); $changed = $true }
+
+  $groups = @($settings['hooks'][$event])
+  $seen = $false
+  foreach ($group in $groups) {
+    if (($group -isnot [Collections.IDictionary]) -or (-not $group.ContainsKey('hooks'))) { continue }
+    $kept = @()
+    foreach ($handler in @($group['hooks'])) {
+      $isMatch = (($handler -is [Collections.IDictionary]) -and $handler.ContainsKey('command') -and $handler['command'] -eq $command)
+      if ($isMatch -and $seen) { $changed = $true; continue }
+      if ($isMatch) { $seen = $true }
+      $kept += @($handler)
+    }
+    if (@($kept).Count -ne @($group['hooks']).Count) { $group['hooks'] = @($kept) }
+  }
+  if (-not $seen) {
+    $entry = @{ hooks = @(@{ type = 'command'; command = $command }) }
+    if ($matcher) { $entry['matcher'] = $matcher }
+    $groups += @($entry)
+    $changed = $true
+  }
+  if ($changed) { $settings['hooks'][$event] = @($groups) }
+  return $changed
+}
+
+function Report-ManagedScriptHealth ([string]$label, [string]$source, [string]$installed) {
+  if (-not (Test-Path $installed -PathType Leaf)) { Warn "$label missing: $installed"; return }
+  if (-not (Test-Path $source -PathType Leaf)) { Warn "$label source missing from harness: $source"; return }
+  if ((Get-FileHash $source -Algorithm SHA256).Hash -eq (Get-FileHash $installed -Algorithm SHA256).Hash) {
+    Ok "$label healthy (matches this harness)"
+  } else {
+    Warn "$label stale or customized: $installed"
+  }
+}
+
+function Report-ClaudeStatuslineSignal ([string]$path) {
+  # Static inspection only. Doctor must never execute a user's configured statusLine command.
+  if (-not (Test-Path $path -PathType Leaf)) { Warn "standard Claude statusline missing: $path"; return }
+  $body = Get-Content $path -Raw
+  if (($body -match [regex]::Escape('context_window')) -and
+      ($body -match [regex]::Escape('used_percentage')) -and
+      ($body -match [regex]::Escape('session_id')) -and
+      ($body -match [regex]::Escape('claude-ctx-'))) {
+    Ok 'standard Claude statusline contains the per-session context-signal writer'
+  } else {
+    Warn 'standard Claude statusline is present but no per-session context-signal writer was detected'
+  }
+}
+
 function Install-ClaudeHandoffHooks {
   $hooksDir = Join-Path $CcDir 'hooks'
   New-Item -ItemType Directory -Force -Path $hooksDir | Out-Null
   Copy-Item (Join-Path $HarnessDir 'hooks/handoff-on-keyword.sh')   (Join-Path $hooksDir 'handoff-on-keyword.sh')   -Force
   Copy-Item (Join-Path $HarnessDir 'hooks/context-budget-nudge.sh') (Join-Path $hooksDir 'context-budget-nudge.sh') -Force
-  Ok "handoff hook scripts → $hooksDir"
-  Copy-Item (Join-Path $HarnessDir 'config/statusline-command.sh') (Join-Path $CcDir 'statusline-command.sh') -Force
+  Ok "handoff hook scripts refreshed → $hooksDir"
+
+  $statusline = Join-Path $CcDir 'statusline-command.sh'
+  if (Test-Path $statusline) {
+    Ok "existing Claude statusline preserved → $statusline"
+  } else {
+    Copy-Item (Join-Path $HarnessDir 'config/statusline-command.sh') $statusline -Force
+    Ok "Claude statusline installed → $statusline"
+  }
+  Report-ClaudeStatuslineSignal $statusline
+
   $settings = Join-Path $CcDir 'settings.json'
-  if (-not (Test-Path $settings)) { '{}' | Set-Content $settings -Encoding utf8 }
   $kw = 'bash ~/.claude/hooks/handoff-on-keyword.sh'
   $st = 'bash ~/.claude/hooks/context-budget-nudge.sh'
-  if (Select-String -Path $settings -SimpleMatch $kw -Quiet) { Ok "handoff hooks already wired in settings.json" }
-  else {
-    Copy-Item $settings "$settings.bak.$PID" -Force
-    try {
-      $s = Get-Content $settings -Raw | ConvertFrom-Json -AsHashtable
-      if (-not $s.ContainsKey('statusLine')) { $s['statusLine'] = @{ type = 'command'; command = 'bash ~/.claude/statusline-command.sh' } }
-      if (-not $s.ContainsKey('hooks')) { $s['hooks'] = @{} }
-      foreach ($evt in @('UserPromptSubmit','Stop')) { if (-not $s['hooks'].ContainsKey($evt)) { $s['hooks'][$evt] = @() } }
-      $s['hooks']['UserPromptSubmit'] = @($s['hooks']['UserPromptSubmit']) + @(@{ hooks = @(@{ type = 'command'; command = $kw }) })
-      $s['hooks']['Stop']             = @($s['hooks']['Stop'])             + @(@{ hooks = @(@{ type = 'command'; command = $st }) })
-      $s | ConvertTo-Json -Depth 100 | Set-Content $settings -Encoding utf8
-      Ok "wired handoff hooks into settings.json (backup .bak.$PID)"
-    } catch { Warn "merge failed — add the snippet from hooks/README.md by hand" }
+  try {
+    $existed = Test-Path $settings
+    $s = if ($existed) { Get-Content $settings -Raw | ConvertFrom-Json -AsHashtable } else { @{} }
+    if ($s -isnot [Collections.IDictionary]) { throw 'settings.json must contain a JSON object' }
+    $changed = $false
+    if (-not $s.ContainsKey('statusLine')) {
+      $s['statusLine'] = @{ type = 'command'; command = 'bash ~/.claude/statusline-command.sh' }
+      $changed = $true
+    }
+    if (Ensure-JsonHookCommand $s 'UserPromptSubmit' $kw) { $changed = $true }
+    if (Ensure-JsonHookCommand $s 'Stop' $st) { $changed = $true }
+
+    if ($changed) {
+      $bak = if ($existed) { Backup-File $settings } else { $null }
+      $tmp = "$settings.agentsmith-new"
+      $s | ConvertTo-Json -Depth 100 | Set-Content $tmp -Encoding utf8
+      Get-Content $tmp -Raw | ConvertFrom-Json -AsHashtable | Out-Null
+      Move-Item $tmp $settings -Force
+      if ($bak) { Ok "reconciled handoff hooks in settings.json (backup: $(Split-Path $bak -Leaf))" }
+      else { Ok 'wired handoff hooks into new settings.json' }
+    } else {
+      Ok 'handoff hooks already wired once each in settings.json'
+    }
+  } catch {
+    Remove-Item "$settings.agentsmith-new" -Force -ErrorAction SilentlyContinue
+    Warn "merge failed — settings.json left unchanged; add the snippet from hooks/README.md by hand ($($_.Exception.Message))"
   }
   Write-Host ''; Say "Handoff hooks installed."
   Write-Host "  • 'handoff' / 'wrap up' in a prompt → injects the safe-state + recall-prompt protocol (reliable)"
@@ -821,28 +912,15 @@ function Add-CodexHook ([string]$event, [string]$command, [string]$matcher = '')
   try { $s = Get-Content $settings -Raw | ConvertFrom-Json -AsHashtable }
   catch { Warn "Codex hooks merge failed — hooks.json is not valid JSON; left it unchanged. Add the snippet from hooks/README.md by hand."; return $false }
   if ($s -isnot [Collections.IDictionary]) { Warn 'Codex hooks merge failed — hooks.json must contain a JSON object; left it unchanged.'; return $false }
-  if (-not $s.ContainsKey('hooks')) { $s['hooks'] = @{} }
-  elseif ($s['hooks'] -isnot [Collections.IDictionary]) { Warn 'Codex hooks merge failed — hooks.json "hooks" must be a JSON object; left it unchanged.'; return $false }
-  if (-not $s['hooks'].ContainsKey($event)) { $s['hooks'][$event] = @() }
-  foreach ($group in @($s['hooks'][$event])) {
-    if (($group -isnot [Collections.IDictionary]) -or (-not $group.ContainsKey('hooks'))) { continue }
-    foreach ($handler in @($group['hooks'])) {
-      if (($handler -is [Collections.IDictionary]) -and $handler.ContainsKey('command') -and $handler['command'] -eq $command) {
-        Ok "Codex $event hook already wired in hooks.json"
-        return $true
-      }
-    }
-  }
-  $entry = @{ hooks = @(@{ type = 'command'; command = $command }) }
-  if ($matcher) { $entry['matcher'] = $matcher }
-  $s['hooks'][$event] = @($s['hooks'][$event]) + @($entry)
-  $bak = Backup-File $settings
   try {
+    $changed = Ensure-JsonHookCommand $s $event $command $matcher
+    if (-not $changed) { Ok "Codex $event hook already wired once in hooks.json"; return $true }
+    $bak = Backup-File $settings
     $tmp = "$settings.agentsmith-new"
     $s | ConvertTo-Json -Depth 100 | Set-Content $tmp -Encoding utf8
     Get-Content $tmp -Raw | ConvertFrom-Json -AsHashtable | Out-Null
     Move-Item $tmp $settings -Force
-    Ok "wired Codex $event hook (backup: $(Split-Path $bak -Leaf))"
+    Ok "reconciled Codex $event hook (backup: $(Split-Path $bak -Leaf))"
     return $true
   } catch {
     Remove-Item "$settings.agentsmith-new" -Force -ErrorAction SilentlyContinue
@@ -1476,12 +1554,39 @@ if ($o.Doctor) {
   Say "Harness doctor — platform: $($o.Platform)"
   if (Has-Claude) {
     $settings = Join-Path $CcDir 'settings.json'
-    if (Test-Path $settings) { Ok 'Claude settings.json present'; try { Get-Content $settings -Raw | ConvertFrom-Json -AsHashtable | Out-Null } catch { Warn 'Claude settings.json is not valid JSON' } }
-    else { Warn "no $settings" }
+    $claudeSettings = $null
+    if (Test-Path $settings) {
+      try {
+        $claudeSettings = Get-Content $settings -Raw | ConvertFrom-Json -AsHashtable
+        if ($claudeSettings -is [Collections.IDictionary]) { Ok 'Claude settings.json present and valid' }
+        else { Warn 'Claude settings.json must contain a JSON object'; $claudeSettings = $null }
+      }
+      catch { Warn 'Claude settings.json is not valid JSON' }
+    } else { Warn "no $settings" }
     $gmd = Join-Path $CcDir 'CLAUDE.md'
     if (Test-Path $gmd) { Ok "global Claude rules present ($(@(Get-Content $gmd).Count) lines)" } else { Warn 'no global Claude rules (per-project only)' }
     $skills = Join-Path $CcDir 'skills'
     if (Test-Path $skills) { Ok "Claude skills: $(@(Get-ChildItem $skills -Directory).Count)" } else { Warn 'no Claude skills directory' }
+    $kw = 'bash ~/.claude/hooks/handoff-on-keyword.sh'
+    $st = 'bash ~/.claude/hooks/context-budget-nudge.sh'
+    Report-ManagedScriptHealth 'Claude keyword handoff script' (Join-Path $HarnessDir 'hooks/handoff-on-keyword.sh') (Join-Path $CcDir 'hooks/handoff-on-keyword.sh')
+    Report-ManagedScriptHealth 'Claude context-budget script' (Join-Path $HarnessDir 'hooks/context-budget-nudge.sh') (Join-Path $CcDir 'hooks/context-budget-nudge.sh')
+    if ($claudeSettings -is [Collections.IDictionary]) {
+      if (Test-JsonHookCommand $claudeSettings 'UserPromptSubmit' $kw) { Ok 'Claude keyword handoff hook wired' } else { Warn 'Claude keyword handoff hook not wired' }
+      if (Test-JsonHookCommand $claudeSettings 'Stop' $st) { Ok 'Claude context-budget Stop hook wired' } else { Warn 'Claude context-budget Stop hook not wired' }
+      $standardStatusline = 'bash ~/.claude/statusline-command.sh'
+      if (-not $claudeSettings.ContainsKey('statusLine')) {
+        Warn 'Claude statusLine is not configured; the context-percentage handoff cannot receive a signal'
+      } elseif (($claudeSettings['statusLine'] -isnot [Collections.IDictionary]) -or
+                (-not $claudeSettings['statusLine'].ContainsKey('command'))) {
+        Warn 'Claude statusLine configuration has no command'
+      } elseif ($claudeSettings['statusLine']['command'] -eq $standardStatusline) {
+        Ok 'Claude statusLine uses the standard local path'
+      } else {
+        Warn 'Claude uses a custom statusLine command; doctor did not execute it'
+      }
+    }
+    Report-ClaudeStatuslineSignal (Join-Path $CcDir 'statusline-command.sh')
     if (Have-Cmd claude) { Ok "'claude' CLI on PATH" } else { Warn "'claude' CLI not on PATH" }
   }
   if (Has-Codex) {
@@ -1491,7 +1596,19 @@ if ($o.Doctor) {
     if (Test-Path $gmd) { Ok "global Codex rules present ($(@(Get-Content $gmd).Count) lines)" } else { Warn 'no global Codex rules (per-project only)' }
     $skills = Join-Path $HOME '.agents/skills'
     if (Test-Path $skills) { Ok "Codex skills: $(@(Get-ChildItem $skills -Directory).Count)" } else { Warn 'no Codex skills directory' }
-    if (Test-Path (Join-Path $CodexDir 'hooks.json')) { Ok 'Codex hooks.json present (review trust with /hooks)' } else { Warn 'no Codex hooks.json' }
+    $codexHookScript = Join-Path $CodexDir 'hooks/handoff-on-keyword.sh'
+    Report-ManagedScriptHealth 'Codex keyword handoff script' (Join-Path $HarnessDir 'hooks/handoff-on-keyword.sh') $codexHookScript
+    $codexHooks = Join-Path $CodexDir 'hooks.json'
+    if (Test-Path $codexHooks) {
+      try {
+        $codexSettings = Get-Content $codexHooks -Raw | ConvertFrom-Json -AsHashtable
+        if ($codexSettings -isnot [Collections.IDictionary]) { throw 'hooks.json must contain a JSON object' }
+        Ok 'Codex hooks.json present and valid (review trust with /hooks)'
+        $codexCommand = 'bash ' + (Quote-BashPath $codexHookScript)
+        if (Test-JsonHookCommand $codexSettings 'UserPromptSubmit' $codexCommand) { Ok 'Codex keyword handoff hook wired' }
+        else { Warn 'Codex keyword handoff hook not wired' }
+      } catch { Warn 'Codex hooks.json is not valid JSON' }
+    } else { Warn 'no Codex hooks.json' }
   }
   exit 0
 }

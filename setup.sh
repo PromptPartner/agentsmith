@@ -167,6 +167,24 @@ warn() { echo "  $(c '0;33' '!') $*"; }
 die()  { echo "$(c '0;31' '✗') $*" >&2; exit 1; }
 usage() { sed -n '2,/^# ====/p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
 
+# Statusline files are user-controlled code, even at the standard path. Doctor and installer
+# checks inspect the known signal filename only; they must never execute the file implicitly.
+statusline_has_context_signal_writer() {  # <script>
+  [ -f "$1" ] \
+    && grep -qF 'context_window' "$1" 2>/dev/null \
+    && grep -qF 'used_percentage' "$1" 2>/dev/null \
+    && grep -qF 'session_id' "$1" 2>/dev/null \
+    && grep -qF 'claude-ctx-' "$1" 2>/dev/null
+}
+
+doctor_script_state() {  # <label> <installed> <source>
+  local label="$1" installed="$2" source="$3"
+  if [ ! -f "$installed" ]; then warn "$label missing: $installed"
+  elif cmp -s "$installed" "$source"; then ok "$label current"
+  else warn "$label stale or locally modified — re-run --with-handoff-hooks"
+  fi
+}
+
 # ---- profile auto-detect + uninstall (used by --profile auto, the wizard, --uninstall) -----
 _has() {  # <dir> <glob...> -> 0 if any glob matches an existing entry (glob-safe under set -e)
   local d="$1"; shift; local p f
@@ -666,6 +684,21 @@ if $DO_DOCTOR; then
   if has_claude; then
     [ -f "$CC_DIR/settings.json" ] && ok "Claude settings.json present" || warn "no ~/.claude/settings.json"
     [ -f "$CC_DIR/statusline-command.sh" ] && ok "Claude statusline installed" || warn "no Claude statusline-command.sh"
+    doctor_script_state "Claude keyword handoff hook" "$CC_DIR/hooks/handoff-on-keyword.sh" "$HARNESS_DIR/hooks/handoff-on-keyword.sh"
+    doctor_script_state "Claude context handoff hook" "$CC_DIR/hooks/context-budget-nudge.sh" "$HARNESS_DIR/hooks/context-budget-nudge.sh"
+    if [ -f "$CC_DIR/settings.json" ] && command -v jq >/dev/null 2>&1; then
+      claude_kw="bash ~/.claude/hooks/handoff-on-keyword.sh"
+      claude_st="bash ~/.claude/hooks/context-budget-nudge.sh"
+      jq -e --arg c "$claude_kw" 'any(.hooks.UserPromptSubmit[]?.hooks[]?; .command == $c)' "$CC_DIR/settings.json" >/dev/null 2>&1 \
+        && ok "Claude keyword handoff hook wired" || warn "Claude keyword handoff hook not wired"
+      jq -e --arg c "$claude_st" 'any(.hooks.Stop[]?.hooks[]?; .command == $c)' "$CC_DIR/settings.json" >/dev/null 2>&1 \
+        && ok "Claude 30% handoff hook wired" || warn "Claude 30% handoff hook not wired"
+    else
+      warn "cannot inspect Claude hook wiring (settings.json or jq missing)"
+    fi
+    statusline_has_context_signal_writer "$CC_DIR/statusline-command.sh" \
+      && ok "Claude statusline contains the per-session context signal writer" \
+      || warn "Claude statusline has no context signal writer — keyword handoff still works, 30% handoff does not"
     if [ -f "$CC_DIR/CLAUDE.md" ]; then
       ok "Claude global rules present ($(wc -l < "$CC_DIR/CLAUDE.md") lines)"
       [ -f "$HARNESS_DIR/scripts/lint-leanness.sh" ] && bash "$HARNESS_DIR/scripts/lint-leanness.sh" "$CC_DIR/CLAUDE.md" 2>/dev/null | sed 's/^/  /'
@@ -684,6 +717,15 @@ if $DO_DOCTOR; then
     else warn "no Codex global rules (per-project only)"; fi
     [ -d "$HOME/.agents/skills" ] && ok "Codex skills: $(find "$HOME/.agents/skills" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')" || warn "no Codex global skills directory"
     [ -f "$CODEX_DIR/hooks.json" ] && ok "Codex hooks.json present (review trust with /hooks)" || warn "no Codex hooks.json"
+    doctor_script_state "Codex keyword handoff hook" "$CODEX_DIR/hooks/handoff-on-keyword.sh" "$HARNESS_DIR/hooks/handoff-on-keyword.sh"
+    printf -v codex_handoff_q '%q' "$CODEX_DIR/hooks/handoff-on-keyword.sh"
+    codex_handoff_cmd="bash $codex_handoff_q"
+    if [ -f "$CODEX_DIR/hooks.json" ] && command -v jq >/dev/null 2>&1 \
+       && jq -e --arg c "$codex_handoff_cmd" 'any(.hooks.UserPromptSubmit[]?.hooks[]?; .command == $c)' "$CODEX_DIR/hooks.json" >/dev/null 2>&1; then
+      ok "Codex keyword handoff hook wired (trust separately with /hooks)"
+    else
+      warn "Codex keyword handoff hook not wired"
+    fi
     command -v codex >/dev/null 2>&1 && ok "'codex' CLI on PATH" || warn "'codex' CLI not on PATH"
   fi
   if [ "$PLATFORM" = both ] && [ -f "$CC_DIR/CLAUDE.md" ] && [ -f "$CODEX_DIR/AGENTS.md" ]; then
@@ -1186,29 +1228,53 @@ org_policy_install() {  # machine-wide managed CLAUDE.md + hardened settings (al
 install_claude_handoff_hooks() {  # keyword hook + Claude-only status-line context nudge
   command -v jq >/dev/null 2>&1 || die "--with-handoff-hooks needs jq (it edits settings.json)."
   mkdir -p "$CC_DIR/hooks"
+  # These two paths are AgentSmith-owned: refresh them on every run so an existing JSON entry
+  # cannot disguise a stale, incompatible script as a healthy installation (feedback 0010).
   cp "$HARNESS_DIR/hooks/handoff-on-keyword.sh"   "$CC_DIR/hooks/handoff-on-keyword.sh"
   cp "$HARNESS_DIR/hooks/context-budget-nudge.sh" "$CC_DIR/hooks/context-budget-nudge.sh"
   chmod +x "$CC_DIR/hooks/"*.sh 2>/dev/null || true
   ok "handoff hook scripts → $CC_DIR/hooks/"
-  # refresh the statusline so it persists the context-% signal the Stop hook reads
-  cp "$HARNESS_DIR/config/statusline-command.sh" "$CC_DIR/statusline-command.sh"; chmod +x "$CC_DIR/statusline-command.sh" 2>/dev/null || true
+
+  # A statusline is user-facing and commonly customized. Install ours only when absent; an
+  # existing one must be preserved byte-for-byte and probed for the side-channel signal.
+  if [ ! -e "$CC_DIR/statusline-command.sh" ]; then
+    cp "$HARNESS_DIR/config/statusline-command.sh" "$CC_DIR/statusline-command.sh"
+    chmod +x "$CC_DIR/statusline-command.sh" 2>/dev/null || true
+    ok "statusline installed"
+  else
+    ok "existing statusline preserved"
+  fi
   [ -f "$CC_DIR/settings.json" ] || echo '{}' > "$CC_DIR/settings.json"
   local kw="bash ~/.claude/hooks/handoff-on-keyword.sh"
   local st="bash ~/.claude/hooks/context-budget-nudge.sh"
-  if grep -qF "$kw" "$CC_DIR/settings.json" 2>/dev/null; then
-    ok "handoff hooks already wired in settings.json"
-  else
-    cp "$CC_DIR/settings.json" "$CC_DIR/settings.json.bak.$$"
-    if jq --arg kw "$kw" --arg st "$st" '
-        .statusLine = (.statusLine // {type:"command", command:"bash ~/.claude/statusline-command.sh"})
-        | .hooks.UserPromptSubmit = ((.hooks.UserPromptSubmit // []) + [{hooks:[{type:"command", command:$kw}]}])
-        | .hooks.Stop = ((.hooks.Stop // []) + [{hooks:[{type:"command", command:$st}]}])
-      ' "$CC_DIR/settings.json" > "$CC_DIR/settings.json.new"; then
-      mv "$CC_DIR/settings.json.new" "$CC_DIR/settings.json"; ok "wired handoff hooks into settings.json (backup .bak.$$)"
+  if jq --arg kw "$kw" --arg st "$st" '
+      def without_command($groups; $cmd):
+        [$groups[]
+          | if (.hooks | type) == "array" then
+              .hooks = [.hooks[] | select((.command // "") != $cmd)]
+              | select((.hooks | length) > 0)
+            else . end];
+      .statusLine = (.statusLine // {type:"command", command:"bash ~/.claude/statusline-command.sh"})
+      | .hooks = (.hooks // {})
+      | .hooks.UserPromptSubmit = (without_command((.hooks.UserPromptSubmit // []); $kw)
+          + [{hooks:[{type:"command", command:$kw}]}])
+      | .hooks.Stop = (without_command((.hooks.Stop // []); $st)
+          + [{hooks:[{type:"command", command:$st}]}])
+    ' "$CC_DIR/settings.json" > "$CC_DIR/settings.json.new"; then
+    if cmp -s "$CC_DIR/settings.json" "$CC_DIR/settings.json.new"; then
+      rm -f "$CC_DIR/settings.json.new"
+      ok "handoff hooks already wired in settings.json"
     else
-      rm -f "$CC_DIR/settings.json.new"; warn "jq merge failed — add the snippet from hooks/README.md by hand"
+      local bak; bak="$(backup_file "$CC_DIR/settings.json")"
+      mv "$CC_DIR/settings.json.new" "$CC_DIR/settings.json"
+      ok "wired missing handoff hook entries (backup: $(basename "$bak"))"
     fi
+  else
+    rm -f "$CC_DIR/settings.json.new"; warn "jq merge failed — add the snippet from hooks/README.md by hand"
   fi
+  statusline_has_context_signal_writer "$CC_DIR/statusline-command.sh" \
+    && ok "statusline context signal writer detected" \
+    || warn "existing statusline has no context signal writer — keyword handoff works, 30% handoff will remain inactive"
   echo; say "$(c '1;32' 'Handoff hooks installed.')"
   echo "  • 'handoff' / 'wrap up' in a prompt → injects the safe-state + recall-prompt protocol (reliable)"
   echo "  • context ≥ ${HANDOFF_PCT_THRESHOLD:-30}% used → one best-effort nudge to hand off early (fragile — see hooks/README.md)"
@@ -1221,17 +1287,26 @@ install_codex_handoff_hooks() {
   chmod +x "$CODEX_DIR/hooks/handoff-on-keyword.sh" 2>/dev/null || true
   [ -f "$CODEX_DIR/hooks.json" ] || echo '{}' > "$CODEX_DIR/hooks.json"
   local script_q cmd; printf -v script_q '%q' "$CODEX_DIR/hooks/handoff-on-keyword.sh"; cmd="bash $script_q"
-  if jq -e --arg c "$cmd" 'any(.hooks.UserPromptSubmit[]?.hooks[]?; .command == $c)' "$CODEX_DIR/hooks.json" >/dev/null 2>&1; then
-    ok "Codex handoff hook already wired in hooks.json"
-  else
-    local bak; bak="$(backup_file "$CODEX_DIR/hooks.json")"
-    if jq --arg c "$cmd" '.hooks.UserPromptSubmit = ((.hooks.UserPromptSubmit // []) + [{hooks:[{type:"command", command:$c}]}])' \
-         "$CODEX_DIR/hooks.json" > "$CODEX_DIR/hooks.json.new"; then
-      mv "$CODEX_DIR/hooks.json.new" "$CODEX_DIR/hooks.json"
-      ok "wired Codex handoff keyword hook (backup: $(basename "$bak"))"
+  if jq --arg c "$cmd" '
+      .hooks = (.hooks // {})
+      | .hooks.UserPromptSubmit = (
+          [.hooks.UserPromptSubmit[]?
+            | if (.hooks | type) == "array" then
+                .hooks = [.hooks[] | select((.command // "") != $c)]
+                | select((.hooks | length) > 0)
+              else . end]
+          + [{hooks:[{type:"command", command:$c}]}])
+    ' "$CODEX_DIR/hooks.json" > "$CODEX_DIR/hooks.json.new"; then
+    if cmp -s "$CODEX_DIR/hooks.json" "$CODEX_DIR/hooks.json.new"; then
+      rm -f "$CODEX_DIR/hooks.json.new"
+      ok "Codex handoff hook already wired once in hooks.json"
     else
-      rm -f "$CODEX_DIR/hooks.json.new"; warn "Codex hooks merge failed — add the snippet from hooks/README.md by hand"
+      local bak; bak="$(backup_file "$CODEX_DIR/hooks.json")"
+      mv "$CODEX_DIR/hooks.json.new" "$CODEX_DIR/hooks.json"
+      ok "reconciled Codex handoff keyword hook (backup: $(basename "$bak"))"
     fi
+  else
+    rm -f "$CODEX_DIR/hooks.json.new"; warn "Codex hooks merge failed — add the snippet from hooks/README.md by hand"
   fi
   say "Codex does not receive the context-percentage nudge; it depends on Claude's status line."
   say "Open /hooks in Codex and trust the new hook before relying on it."

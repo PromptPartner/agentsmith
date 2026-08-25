@@ -16,7 +16,8 @@
 # full. Reason: model quality degrades as the window fills; for Opus 4.8 the sweet spot is ~25-40%
 # used, so you hand off near the BOTTOM of that band (leaving headroom to write the handoff and
 # clear before quality drifts). Default 30 used. Tune with HANDOFF_PCT_THRESHOLD (e.g. 25 to fire
-# earlier, up to ~40 to use more of the band).
+# earlier, up to ~40 to use more of the band). Signals older than 300 seconds fail open; tune that
+# bounded freshness window with HANDOFF_SIGNAL_MAX_AGE_SECONDS (1–3600).
 #
 # Wire it (global ~/.claude/settings.json):
 #   "hooks": { "Stop": [ { "hooks": [
@@ -25,19 +26,40 @@ set -euo pipefail
 command -v jq >/dev/null 2>&1 || exit 0
 
 THRESHOLD="${HANDOFF_PCT_THRESHOLD:-30}"
+MAX_SIGNAL_AGE="${HANDOFF_SIGNAL_MAX_AGE_SECONDS:-300}"
 input=$(cat)
-sid=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)
-pf="${TMPDIR:-/tmp}/claude-ctx-${sid:-default}.pct"
-marker="${TMPDIR:-/tmp}/claude-ctx-${sid:-default}.nudged"
+sid=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null) || exit 0
+
+# Invalid configuration and unscoped events must stay silent. Falling back to a shared
+# "default" file can leak a percentage between sessions and produce a false handoff cue.
+[[ "$THRESHOLD" =~ ^[0-9]+$ ]] || exit 0
+[ "$THRESHOLD" -ge 1 ] 2>/dev/null && [ "$THRESHOLD" -le 100 ] 2>/dev/null || exit 0
+[[ "$MAX_SIGNAL_AGE" =~ ^[0-9]+$ ]] || exit 0
+[ "$MAX_SIGNAL_AGE" -ge 1 ] 2>/dev/null && [ "$MAX_SIGNAL_AGE" -le 3600 ] 2>/dev/null || exit 0
+[[ "$sid" =~ ^[A-Za-z0-9._-]{1,128}$ ]] || exit 0
+
+pf="${TMPDIR:-/tmp}/claude-ctx-${sid}.pct"
+marker="${TMPDIR:-/tmp}/claude-ctx-${sid}.nudged"
 
 [ -f "$pf" ] || exit 0                       # no signal yet → do nothing
 [ -f "$marker" ] && exit 0                    # already nudged this session → don't loop
 
-pct=$(tr -dc '0-9.' < "$pf" 2>/dev/null); pint=${pct%.*}
-[ -z "${pint:-}" ] && exit 0
+# A statusline may stop rendering or a runtime may reuse a session identifier after recovery.
+# Never act on a side-channel value older than five minutes (configurable, capped at one hour).
+mtime=$(stat -f %m "$pf" 2>/dev/null || stat -c %Y "$pf" 2>/dev/null) || exit 0
+now=$(date +%s 2>/dev/null) || exit 0
+[[ "$mtime" =~ ^[0-9]+$ ]] && [[ "$now" =~ ^[0-9]+$ ]] || exit 0
+age=$((now - mtime))
+[ "$age" -ge 0 ] 2>/dev/null && [ "$age" -le "$MAX_SIGNAL_AGE" ] 2>/dev/null || exit 0
+
+pct=$(tr -d '[:space:]' < "$pf" 2>/dev/null) || exit 0
+[[ "$pct" =~ ^[0-9]+([.][0-9]+)?$ ]] || exit 0
+pint=${pct%%.*}
+[ "$pint" -le 100 ] 2>/dev/null || exit 0
 
 if [ "$pint" -ge "$THRESHOLD" ]; then
+  output=$(jq -n --arg p "$pint" '{decision:"block", reason:("Context is at " + $p + "% used — at the handoff cue (hand off EARLY, while the model is still sharp, not when the window is nearly full). Before you stop: bring the working tree to a safe state (commit/stash), write a handoff note, and output a ready-to-paste post-/clear recall prompt (issue/branch IDs, what is done, exact next step, gotchas). Then stop.")}') || exit 0
   : > "$marker"
-  jq -n --arg p "$pint" '{decision:"block", reason:("Context is at " + $p + "% used — at the handoff cue (hand off EARLY, while the model is still sharp, not when the window is nearly full). Before you stop: bring the working tree to a safe state (commit/stash), write a handoff note, and output a ready-to-paste post-/clear recall prompt (issue/branch IDs, what is done, exact next step, gotchas). Then stop.")}'
+  printf '%s\n' "$output"
 fi
 exit 0
