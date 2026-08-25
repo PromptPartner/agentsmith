@@ -57,6 +57,7 @@ mkdir -p "$c/bin" "$c/project/.codex" "$c/project/.agents/skills/existing" "$c/O
 printf '#!/usr/bin/env bash\nprintf invoked >> "$AGENTSMITH_CALL_LOG"\n' > "$c/bin/claude"
 cp "$c/bin/claude" "$c/bin/rtk"; chmod +x "$c/bin/claude" "$c/bin/rtk"
 printf '# keep-user-comment\nmodel = "gpt-test"\n\n[foreign]\nvalue = 7\n' > "$c/Orca Account/codex home/config.toml"
+printf '%s\n' '{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"foreign-user-hook"}]}],"Stop":[{"hooks":[{"type":"command","command":"foreign-stop-hook"}]}]}}' > "$c/Orca Account/codex home/hooks.json"
 printf '# keep-project-comment\n\n[mcp_servers.playwright]\ncommand = "manual"\n' > "$c/project/.codex/config.toml"
 AGENTSMITH_CALL_LOG="$c/calls" PATH="$c/bin:$PATH" HOME="$c/home" CODEX_HOME="$c/Orca Account/codex home" \
   bash "$ROOT/setup.sh" --platform codex --profile general-admin --target "$c/project" --with-skills \
@@ -74,6 +75,8 @@ assert "foreign TOML comments survive" grep -Eq 'keep-user-comment' "$c/Orca Acc
 assert "foreign TOML tables survive" grep -Eq '^\[foreign\]' "$c/Orca Account/codex home/config.toml"
 assert "manual MCP name wins" grep -Eq 'command = "manual"' "$c/project/.codex/config.toml"
 assert "selected non-conflicting MCP is installed" grep -Eq '^\[mcp_servers\.context7\]' "$c/project/.codex/config.toml"
+assert "foreign Codex UserPromptSubmit hook survives" test "$(jq '[.hooks.UserPromptSubmit[].hooks[] | select(.command == "foreign-user-hook")] | length' "$c/Orca Account/codex home/hooks.json")" -eq 1
+assert "foreign Codex Stop hook survives" test "$(jq '[.hooks.Stop[].hooks[] | select(.command == "foreign-stop-hook")] | length' "$c/Orca Account/codex home/hooks.json")" -eq 1
 python3 - "$c/Orca Account/codex home/config.toml" "$c/project/.codex/config.toml" <<'PY'
 import sys, tomllib
 user = tomllib.load(open(sys.argv[1], 'rb'))
@@ -87,15 +90,56 @@ PY
 assert "cautious mapping and TOML parse exactly" test $? -eq 0
 
 # Re-run adds a new managed server, retains the prior selection, and does not duplicate hooks/tables.
+printf '%s\n' '# stale Codex handoff hook' > "$c/Orca Account/codex home/hooks/handoff-on-keyword.sh"
+jq '.hooks.UserPromptSubmit += [.hooks.UserPromptSubmit[] | select(any(.hooks[]?; .command | contains("handoff-on-keyword.sh")))]' \
+  "$c/Orca Account/codex home/hooks.json" > "$c/Orca Account/codex home/hooks.json.duplicated"
+mv "$c/Orca Account/codex home/hooks.json.duplicated" "$c/Orca Account/codex home/hooks.json"
 run "$c" --platform codex --profile general-admin --target "$c/project" --with-mcp excalidraw --with-handoff-hooks --with-ui-design-hook --safety cautious
 assert "re-run unions prior MCP selections" grep -Eq '^\[mcp_servers\.context7\]' "$c/project/.codex/config.toml"
 assert "re-run adds new MCP selection" grep -Eq '^\[mcp_servers\.excalidraw\]' "$c/project/.codex/config.toml"
 assert "managed MCP table is duplicate-free" test "$(grep -Ec '^\[mcp_servers\.context7\]$' "$c/project/.codex/config.toml")" -eq 1
 assert "handoff hook definition is duplicate-free" test "$(jq '[.hooks.UserPromptSubmit[].hooks[] | select(.command | contains("handoff-on-keyword.sh"))] | length' "$c/Orca Account/codex home/hooks.json")" -eq 1
+assert "stale Codex handoff script is refreshed" cmp -s "$ROOT/hooks/handoff-on-keyword.sh" "$c/Orca Account/codex home/hooks/handoff-on-keyword.sh"
 assert "UI hook definition is duplicate-free" test "$(jq '[.hooks.PreToolUse[].hooks[] | select(.command | contains("ui-design-reminder.sh"))] | length' "$c/Orca Account/codex home/hooks.json")" -eq 1
 assert "Codex UI hook matches apply_patch only" test "$(jq -r '.hooks.PreToolUse[] | select(any(.hooks[]; .command | contains("ui-design-reminder.sh"))) | .matcher' "$c/Orca Account/codex home/hooks.json")" = '^apply_patch$'
 assert "re-run produces parseable user TOML" python3 -c 'import sys,tomllib; tomllib.load(open(sys.argv[1],"rb"))' "$c/Orca Account/codex home/config.toml"
 assert "re-run produces parseable project TOML" python3 -c 'import sys,tomllib; tomllib.load(open(sys.argv[1],"rb"))' "$c/project/.codex/config.toml"
+
+echo "platform-install — Claude handoff hook refresh and statusline ownership"
+c="$(new_case claude-existing-handoff)"
+mkdir -p "$c/home/.claude/hooks"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "custom statusline\\n"' > "$c/home/.claude/statusline-command.sh"
+cp "$c/home/.claude/statusline-command.sh" "$c/custom-statusline.before"
+printf '%s\n' '# stale keyword hook' > "$c/home/.claude/hooks/handoff-on-keyword.sh"
+printf '%s\n' '# stale context hook' > "$c/home/.claude/hooks/context-budget-nudge.sh"
+printf '%s\n' '{"statusLine":{"type":"command","command":"bash ~/.claude/statusline-command.sh"},"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"foreign-user-hook"}]},{"hooks":[{"type":"command","command":"bash ~/.claude/hooks/handoff-on-keyword.sh"}]},{"hooks":[{"type":"command","command":"bash ~/.claude/hooks/handoff-on-keyword.sh"}]}],"Stop":[{"hooks":[{"type":"command","command":"foreign-stop-hook"}]},{"hooks":[{"type":"command","command":"bash ~/.claude/hooks/context-budget-nudge.sh"}]},{"hooks":[{"type":"command","command":"bash ~/.claude/hooks/context-budget-nudge.sh"}]}]}}' > "$c/home/.claude/settings.json"
+HOME="$c/home" CODEX_HOME="$c/Orca Account/codex home" bash "$ROOT/setup.sh" --platform claude --doctor > "$c/doctor-before" 2>&1
+assert "doctor reports a stale Claude handoff script before repair" grep -q 'Claude keyword handoff hook stale or locally modified' "$c/doctor-before"
+run "$c" --platform claude --profile general-admin --target "$c/project" --with-handoff-hooks --no-rtk
+assert "stale Claude keyword hook is refreshed" cmp -s "$ROOT/hooks/handoff-on-keyword.sh" "$c/home/.claude/hooks/handoff-on-keyword.sh"
+assert "stale Claude context hook is refreshed" cmp -s "$ROOT/hooks/context-budget-nudge.sh" "$c/home/.claude/hooks/context-budget-nudge.sh"
+assert "existing custom Claude statusline is byte-identical" cmp -s "$c/custom-statusline.before" "$c/home/.claude/statusline-command.sh"
+assert "unrelated Claude UserPromptSubmit hook survives" test "$(jq '[.hooks.UserPromptSubmit[].hooks[] | select(.command == "foreign-user-hook")] | length' "$c/home/.claude/settings.json")" -eq 1
+assert "unrelated Claude Stop hook survives" test "$(jq '[.hooks.Stop[].hooks[] | select(.command == "foreign-stop-hook")] | length' "$c/home/.claude/settings.json")" -eq 1
+assert "pre-existing duplicate Claude keyword hooks collapse" test "$(jq '[.hooks.UserPromptSubmit[].hooks[] | select(.command == "bash ~/.claude/hooks/handoff-on-keyword.sh")] | length' "$c/home/.claude/settings.json")" -eq 1
+assert "pre-existing duplicate Claude context hooks collapse" test "$(jq '[.hooks.Stop[].hooks[] | select(.command == "bash ~/.claude/hooks/context-budget-nudge.sh")] | length' "$c/home/.claude/settings.json")" -eq 1
+run "$c" --platform claude --profile general-admin --target "$c/project" --with-handoff-hooks --no-rtk
+assert "Claude keyword hook remains duplicate-free" test "$(jq '[.hooks.UserPromptSubmit[].hooks[] | select(.command == "bash ~/.claude/hooks/handoff-on-keyword.sh")] | length' "$c/home/.claude/settings.json")" -eq 1
+assert "Claude context hook remains duplicate-free" test "$(jq '[.hooks.Stop[].hooks[] | select(.command == "bash ~/.claude/hooks/context-budget-nudge.sh")] | length' "$c/home/.claude/settings.json")" -eq 1
+assert "custom Claude statusline survives re-run byte-identically" cmp -s "$c/custom-statusline.before" "$c/home/.claude/statusline-command.sh"
+HOME="$c/home" CODEX_HOME="$c/Orca Account/codex home" bash "$ROOT/setup.sh" --platform claude --doctor > "$c/doctor" 2>&1
+assert "doctor reports current refreshed Claude scripts" grep -q 'Claude keyword handoff hook current' "$c/doctor"
+assert "doctor reports custom statusline without a signal writer" grep -q 'statusline has no context signal writer' "$c/doctor"
+
+c_missing="$(new_case handoff-doctor-missing)"
+mkdir -p "$c_missing/home/.claude"
+printf '%s\n' '{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"echo handoff-on-keyword.sh"}]}],"Stop":[{"hooks":[{"type":"command","command":"echo context-budget-nudge.sh"}]}]}}' > "$c_missing/home/.claude/settings.json"
+printf '%s\n' '{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"echo handoff-on-keyword.sh"}]}]}}' > "$c_missing/Orca Account/codex home/hooks.json"
+HOME="$c_missing/home" CODEX_HOME="$c_missing/Orca Account/codex home" bash "$ROOT/setup.sh" --platform both --doctor > "$c_missing/doctor" 2>&1
+assert "doctor reports missing Claude handoff script" grep -q 'Claude keyword handoff hook missing' "$c_missing/doctor"
+assert "doctor reports missing Codex handoff script" grep -q 'Codex keyword handoff hook missing' "$c_missing/doctor"
+assert "doctor rejects a Claude command that only names the hook" grep -q 'Claude keyword handoff hook not wired' "$c_missing/doctor"
+assert "doctor rejects a Codex command that only names the hook" grep -q 'Codex keyword handoff hook not wired' "$c_missing/doctor"
 
 c="$(new_case both-full)"
 mkdir -p "$c/bin"
@@ -112,6 +156,12 @@ assert "both full install writes Claude MCP" test -f "$c/project/.mcp.json"
 assert "both full install writes Codex MCP" test -f "$c/project/.codex/config.toml"
 assert "both installs Claude context nudge only in Claude home" test -f "$c/home/.claude/hooks/context-budget-nudge.sh"
 assert "both does not put context nudge in Codex home" test ! -e "$c/Orca Account/codex home/hooks/context-budget-nudge.sh"
+assert "fresh Claude handoff install supplies the managed statusline" cmp -s "$ROOT/config/statusline-command.sh" "$c/home/.claude/statusline-command.sh"
+assert "fresh Claude handoff install wires one keyword hook" test "$(jq '[.hooks.UserPromptSubmit[].hooks[] | select(.command == "bash ~/.claude/hooks/handoff-on-keyword.sh")] | length' "$c/home/.claude/settings.json")" -eq 1
+assert "fresh Claude handoff install wires one context hook" test "$(jq '[.hooks.Stop[].hooks[] | select(.command == "bash ~/.claude/hooks/context-budget-nudge.sh")] | length' "$c/home/.claude/settings.json")" -eq 1
+HOME="$c/home" CODEX_HOME="$c/Orca Account/codex home" bash "$ROOT/setup.sh" --platform both --doctor > "$c/doctor" 2>&1
+assert "doctor recognizes a healthy Claude context signal writer" grep -q 'statusline contains the per-session context signal writer' "$c/doctor"
+assert "doctor recognizes current Codex handoff script" grep -q 'Codex keyword handoff hook current' "$c/doctor"
 
 echo "platform-install — global paths, safety mapping, legacy flag, and uninstall"
 c="$(new_case claude-global)"
