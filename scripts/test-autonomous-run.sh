@@ -113,6 +113,25 @@ invoke() {
     python3 "$repo/../fake/controller.py" "$@"
 }
 
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    if python3 - "$ROOT/scripts/autonomous-run.py" "$ROOT" <<'PY'
+from pathlib import Path
+import sys
+namespace = {'__name__': 'agentsmith_sandbox_probe', '__file__': sys.argv[1]}
+exec(compile(Path(sys.argv[1]).read_text(), sys.argv[1], 'exec'), namespace)
+result = namespace['sandboxed_verify'](
+    'exit 0', Path(sys.argv[2]), 15, namespace['verifier_env']())
+raise SystemExit(0 if result.returncode == 126 else 1)
+PY
+    then ok 'unsupported Windows verifier fails closed instead of running unrestricted'
+    else bad 'unsupported Windows verifier did not fail closed'; fi
+    printf 'autonomous-run: %d passed, %d failed (state machine covered on macOS/Linux)\n' "$pass" "$fail"
+    [ "$fail" -eq 0 ]
+    exit
+    ;;
+esac
+
 if [ "$(uname -s)" = Darwin ] && [[ "$ROOT" = "$HOME/"* ]] &&
    [ "$(git -C "$ROOT" rev-parse --git-dir)" != "$(git -C "$ROOT" rev-parse --git-common-dir)" ]; then
   if python3 - "$ROOT/scripts/autonomous-run.py" "$ROOT" "$HOME/.gitconfig" <<'PY'
