@@ -93,7 +93,8 @@ and **LLM-as-judge** for foundation-model apps; a grounding text for the evidenc
 harness leans on (the `code-review` + `codex` review gates are this idea in practice).
 → [AI Engineering](https://www.oreilly.com/library/view/ai-engineering/9781098166298/)
 
-**Matt Pocock — *writing-for-agents*** (MIT, 2026) — the source for the `writing-rules` skill. This
+**Matt Pocock — *writing-for-agents* and *wayfinder*** (MIT, 2026) — the source for the
+`writing-rules` skill and the decision-map concepts in `wayfinder`. This
 harness's entire product is prose an agent reads, and this is the reference for writing it. Its
 central idea is the **two loads**: *context load*, what always-loaded material costs the agent's
 window every turn, versus *cognitive load*, what it costs the human to remember which document
@@ -109,6 +110,11 @@ told to "streamline" optimises for length because length is what it can see. The
 behavioural. Applying it to `core/60` found two adjacent bullets stating one meaning, and the merge
 paid for the new pointer.
 → [mattpocock/skills](https://github.com/mattpocock/skills) · [the reference](https://github.com/mattpocock/skills/blob/main/skills/productivity/writing-for-agents/SKILL.md)
+
+His `wayfinder` contributes destination, frontier, fog, and decision-index concepts for work too
+large or uncertain to plan in one pass. Agentsmith adapts those concepts to a repository-native
+terminal spec and retains its own external-write consent and decision/implementation ticket split.
+→ [the upstream skill](https://github.com/mattpocock/skills/blob/main/skills/engineering/wayfinder/SKILL.md)
 
 **Cobus Greyling — *Loop Engineering*** (MIT, 2026) — the source for `profiles/autonomous-loops.md`.
 Its framing draws the line this harness sits on: **`Harness = single session setup` / `Loop = harness
