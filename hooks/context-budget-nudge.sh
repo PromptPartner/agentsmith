@@ -46,7 +46,13 @@ marker="${TMPDIR:-/tmp}/claude-ctx-${sid}.nudged"
 
 # A statusline may stop rendering or a runtime may reuse a session identifier after recovery.
 # Never act on a side-channel value older than five minutes (configurable, capped at one hour).
-mtime=$(stat -f %m "$pf" 2>/dev/null || stat -c %Y "$pf" 2>/dev/null) || exit 0
+if mtime=$(stat -c %Y "$pf" 2>/dev/null); then       # GNU/Linux
+  :
+elif mtime=$(stat -f %m "$pf" 2>/dev/null); then    # BSD/macOS
+  :
+else
+  exit 0
+fi
 now=$(date +%s 2>/dev/null) || exit 0
 [[ "$mtime" =~ ^[0-9]+$ ]] && [[ "$now" =~ ^[0-9]+$ ]] || exit 0
 age=$((now - mtime))
