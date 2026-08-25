@@ -28,26 +28,41 @@ open `/hooks`, inspect the definitions, and approve them. Needs `jq`.
 
 ## What you get
 
+These hooks automate the **cue inside the current session**, not the session transition itself.
+The keyword hook injects the handoff protocol, and Claude's Stop hook can prevent one stop long
+enough for the agent to run it. Neither hook proves that the tree is safe, verifies the handoff
+note, or opens a fresh context. Complete the safe-state + note steps, then start a fresh chat with
+the generated kickoff block. A controller that verifies those steps and creates the successor
+session would be a separate rollover orchestrator; it is not part of the current hook set.
+
 ### 1. `handoff-on-keyword.sh` — UserPromptSubmit — **reliable**
 When your prompt contains **"handoff"** or **"wrap up"**, it injects the handoff protocol
 (safe-state → handoff note → paste-ready recall prompt). This is the path to trust: it keys off
 the prompt text, which the hook always receives. This is the recommended primary trigger.
 
 ### 2. `context-budget-nudge.sh` — Stop — **best-effort / experimental**
-Claude Code only. This hook is not installed for Codex because it depends on Claude's status line.
+Claude Code only. This hook is not installed for Codex because it depends on Claude's status line;
+Codex therefore gets the reliable keyword hook, but no percentage-triggered handoff.
 
-When context **used** crosses a threshold (default **30%**, set `HANDOFF_PCT_THRESHOLD`), it nudges
-**once per session** toward a handoff. The default is deliberately *low* — the cue is to hand off
+When context **used** crosses a threshold (default **30%**, set `HANDOFF_PCT_THRESHOLD` to an
+integer from 1–100), it nudges **once per session** toward a handoff. The default is deliberately
+*low* — the cue is to hand off
 **early**, when the window is ~25–30% used, not when it's nearly full: model quality degrades as
 context fills (Opus 4.8's sweet spot is ~25–40% used, so you hand off near the bottom of the band).
+When a valid threshold signal exists, the Stop response is an enforced cue: it blocks that stop and
+returns the handoff reason to the agent. It still does not execute or verify the handoff itself.
 
 > **Honest caveat.** No Claude Code hook receives the live context-% — only the **statusline**
 > does. So this hook reads the % that `statusline-command.sh` writes to a temp file
 > (`$TMPDIR/claude-ctx-<session>.pct`). That makes it inherently fragile: the file can be stale
 > (the statusline hasn't re-rendered since the last turn) or missing (statusline not installed).
+> Files older than 300 seconds are ignored; `HANDOFF_SIGNAL_MAX_AGE_SECONDS` can set a 1–3600
+> second freshness window.
 > The dependable signals remain the **"handoff" keyword** above and the **human-watched
 > `ctx:NN%` gauge** in the status line. Treat this as a backstop, not a guarantee. Full
-> feasibility write-up: `docs/research/claude-code-hooks-and-managed-policy.md`.
+> feasibility write-up: `docs/research/claude-code-hooks-and-managed-policy.md`. The separate
+> automatic-rollover decision is recorded in
+> `docs/research/handoff-rollover-orchestration.md`.
 
 ## Manual wiring
 
@@ -122,9 +137,10 @@ For Codex, put the equivalent entry in `$CODEX_HOME/hooks.json` with matcher `^a
 an absolute command path to `$CODEX_HOME/hooks/ui-design-reminder.sh`, then approve it through
 `/hooks`.
 
-Non-regression tests: `bash scripts/test-handoff-on-keyword.sh` and
-`bash scripts/test-ui-design-reminder.sh`. They exercise both runtime schemas, fail-open behavior,
-once-per-session behavior, and Codex add/update/delete/multi-file patches.
+Non-regression tests: `bash scripts/test-handoff-on-keyword.sh`,
+`bash scripts/test-context-budget-nudge.sh`, and `bash scripts/test-ui-design-reminder.sh`. They
+exercise both runtime schemas, fail-open and threshold behavior, once-per-session behavior, and
+Codex add/update/delete/multi-file patches.
 
 ---
 
