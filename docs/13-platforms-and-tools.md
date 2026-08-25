@@ -52,7 +52,8 @@ are skipped with an actionable warning.
 | UI-design reminder | Claude edit/write tools | Recognizes `apply_patch` and affected UI paths |
 | Context-percentage nudge | Best-effort; depends on Claude status line | ❌ |
 | `PreCompact` handoff | Not introduced in this release | Not introduced in this release |
-| Claude marketplaces/plugins/status line/`rtk` wiring | ✅ when selected | Never invoked by Codex-only installs |
+| Claude marketplaces/plugins/status line | ✅ when selected | Never invoked by Codex-only installs |
+| `rtk` wiring | Transparent hook + instructions | Instruction-level command guidance |
 | Organization policy | ✅ | Out of scope; rejected with an explanation |
 
 The keyword hook and written handoff procedure are the dependable cross-runtime mechanisms. Codex
@@ -62,8 +63,8 @@ approve them before relying on automatic invocation.
 ## Local, web, and other surfaces
 
 - **Claude Code locally** gets native rules, plugins, skills, hooks, MCP, and helper scripts.
-- **Codex locally** gets native rules, skills, hooks, MCP, and helper scripts without Claude-only
-  marketplaces, status line, or `rtk` setup.
+- **Codex locally** gets native rules, skills, hooks, MCP, helper scripts, and its own `rtk`
+  instruction setup, without Claude-only marketplaces or status line.
 - **claude.ai Projects / Cowork** can use `--export-instructions` for a paste-ready rules blob;
   local hooks, skills, and scripts do not travel into a prompt field.
 - **Gemini CLI** remains an instruction-file compatibility target through `--also-gemini-md`.

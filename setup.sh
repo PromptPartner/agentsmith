@@ -40,7 +40,8 @@
 #    ./setup.sh --with-rtk | --no-rtk   # rtk CLI-output compressor (default: ON for software-dev/devops-setup)
 #    ./setup.sh --with-mcp playwright,context7 ...   # add named MCP server(s) to native project config
 #    ./setup.sh --with-skills ...       # install the bundled skill pack (handoff, verify,
-#                                       #   harness-doctor, new-research, new-feedback, harness-help);
+#                                       #   harness-doctor, new-research, new-feedback, harness-help,
+#                                       #   writing-rules, wayfinder, autonomous-run);
 #                                       #   native .claude/skills and/or .agents/skills destinations
 #    ./setup.sh --with-hooks ...        # install git guardrails (secret-scan+protect-main+conventional) in --target
 #    ./setup.sh --update-plugins        # update installed plugins to latest, then exit
@@ -182,6 +183,22 @@ doctor_script_state() {  # <label> <installed> <source>
   if [ ! -f "$installed" ]; then warn "$label missing: $installed"
   elif cmp -s "$installed" "$source"; then ok "$label current"
   else warn "$label stale or locally modified — re-run --with-handoff-hooks"
+  fi
+}
+
+doctor_rtk_state() {  # <runtime label> <global rules file> <runtime config dir>
+  local label="$1" rules="$2" runtime_dir="$3" import_line="" target=""
+  [ -f "$rules" ] && import_line="$(grep -E '^@.*RTK\.md[[:space:]]*$' "$rules" 2>/dev/null | head -n 1 || true)"
+  if [ -n "$import_line" ]; then
+    target="${import_line#@}"
+    target="${target%$'\r'}"
+    case "$target" in /*) ;; *) target="$runtime_dir/$target";; esac
+    if [ -f "$target" ]; then ok "$label RTK instructions wired"
+    else warn "$label RTK import is dangling: $target — re-run with --with-rtk"; fi
+  elif [ -f "$runtime_dir/RTK.md" ]; then
+    warn "$label RTK.md is present but not imported by $(basename "$rules") — re-run with --with-rtk"
+  else
+    warn "$label RTK.md missing — re-run with --with-rtk"
   fi
 }
 
@@ -675,7 +692,6 @@ $ALSO_AGENTS_MD && warn "--also-agents-md is deprecated and copies instructions 
 $DO_ORG_POLICY && has_codex && die "Codex organization-policy installation is not supported in this release. Use --platform claude --org-policy; Codex organization policy must be managed separately."
 if ! has_claude; then
   [ -z "$WITH_PLUGINS" ] || warn "--with-plugins is Claude-only and was ignored for --platform codex."
-  [ "$WITH_RTK" != true ] || warn "--with-rtk is Claude-specific wiring and was ignored for --platform codex."
 fi
 
 # ---- standalone actions ----------------------------------------------------
@@ -703,6 +719,7 @@ if $DO_DOCTOR; then
       ok "Claude global rules present ($(wc -l < "$CC_DIR/CLAUDE.md") lines)"
       [ -f "$HARNESS_DIR/scripts/lint-leanness.sh" ] && bash "$HARNESS_DIR/scripts/lint-leanness.sh" "$CC_DIR/CLAUDE.md" 2>/dev/null | sed 's/^/  /'
     else warn "no Claude global rules (per-project only)"; fi
+    doctor_rtk_state "Claude" "$CC_DIR/CLAUDE.md" "$CC_DIR"
     [ -d "$CC_DIR/skills" ] && ok "Claude skills: $(find "$CC_DIR/skills" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')" || warn "no Claude skills directory"
     command -v claude >/dev/null 2>&1 && ok "'claude' CLI on PATH" || warn "'claude' CLI not on PATH"
   fi
@@ -715,6 +732,7 @@ if $DO_DOCTOR; then
       ok "Codex global rules present ($(wc -l < "$CODEX_DIR/AGENTS.md") lines)"
       [ -f "$HARNESS_DIR/scripts/lint-leanness.sh" ] && bash "$HARNESS_DIR/scripts/lint-leanness.sh" "$CODEX_DIR/AGENTS.md" 2>/dev/null | sed 's/^/  /'
     else warn "no Codex global rules (per-project only)"; fi
+    doctor_rtk_state "Codex" "$CODEX_DIR/AGENTS.md" "$CODEX_DIR"
     [ -d "$HOME/.agents/skills" ] && ok "Codex skills: $(find "$HOME/.agents/skills" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')" || warn "no Codex global skills directory"
     [ -f "$CODEX_DIR/hooks.json" ] && ok "Codex hooks.json present (review trust with /hooks)" || warn "no Codex hooks.json"
     doctor_script_state "Codex keyword handoff hook" "$CODEX_DIR/hooks/handoff-on-keyword.sh" "$HARNESS_DIR/hooks/handoff-on-keyword.sh"
@@ -935,8 +953,6 @@ install_claude_config() {
     say "  29 security skills available on demand — owasp-audit, threat-modeling, api-audit,"
     say "  dependency-audit, prompt-injection, container-audit, cloud-audit, iam-audit, and more." ;;
   esac
-  # rtk — token-compressing CLI proxy (github.com/rtk-ai/rtk). Default-ON for code profiles; --no-rtk opts out.
-  rtk_wanted && install_rtk
   return 0   # never let a false trailing `&&` (both hooks/skills off) abort the caller under set -e
 }
 
@@ -1075,6 +1091,8 @@ install_codex_config() {
 install_platform_config() {
   has_claude && install_claude_config
   has_codex  && install_codex_config
+  # Default-ON for code profiles; initialize every selected runtime, not only Claude.
+  rtk_wanted && install_rtk
   install_native_skills
   $WITH_HANDOFF_HOOKS && install_handoff_hooks
   $WITH_UI_DESIGN_HOOK && install_ui_design_hook
@@ -1090,7 +1108,15 @@ rtk_wanted() {  # install rtk? explicit flag wins; else auto = only for code pro
   return 1
 }
 
-install_rtk() {  # install the rtk binary (per-OS), then let rtk wire its own Claude Code hook
+autonomous_tools_wanted() {  # v1 is intentionally code-first; other profiles still get the spec skill
+  local p
+  for p in "${PROFILE_ARR[@]:-}"; do
+    [ "$p" = software-dev ] && return 0
+  done
+  return 1
+}
+
+install_rtk() {  # install rtk once, then initialize each selected runtime independently
   if command -v rtk >/dev/null 2>&1; then
     ok "rtk already installed ($(rtk --version 2>/dev/null || echo present))"
   else
@@ -1102,11 +1128,18 @@ install_rtk() {  # install the rtk binary (per-OS), then let rtk wire its own Cl
         || { warn "rtk: installer failed — install by hand: https://github.com/rtk-ai/rtk#installation"; return 0; }
     fi
   fi
-  command -v rtk >/dev/null 2>&1 || { warn "rtk installed but not on PATH — add \$HOME/.local/bin to PATH, then run: rtk init -g --auto-patch"; return 0; }
+  command -v rtk >/dev/null 2>&1 || { warn "rtk installed but not on PATH — add \$HOME/.local/bin to PATH, then re-run setup with --with-rtk"; return 0; }
   command -v rg  >/dev/null 2>&1 || warn "rtk: ripgrep (rg) not on PATH — some filters need it (install ripgrep via brew/apt/winget)"
-  # rtk writes its own PreToolUse hook + RTK.md + settings.json entry + @RTK.md import — idempotent, no prompt
-  if rtk init -g --auto-patch >/dev/null 2>&1; then ok "rtk wired into Claude Code (hook + RTK.md) — restart Claude Code to load it"
-  else warn "rtk: 'rtk init -g --auto-patch' failed — run it by hand to wire the hook"; fi
+  if has_claude; then
+    # Claude gets transparent PreToolUse rewriting plus RTK.md instructions.
+    if rtk init -g --auto-patch >/dev/null 2>&1; then ok "rtk wired into Claude Code (hook + RTK.md) — restart Claude Code to load it"
+    else warn "rtk: Claude initialization failed — run: rtk init -g --auto-patch"; fi
+  fi
+  if has_codex; then
+    # Codex has no updatedInput hook support; rtk installs instruction-level guidance instead.
+    if CODEX_HOME="$CODEX_DIR" rtk init -g --codex >/dev/null 2>&1; then ok "rtk wired into Codex (AGENTS.md + RTK.md instructions)"
+    else warn "rtk: Codex initialization failed — set CODEX_HOME to '$CODEX_DIR' and run: rtk init -g --codex"; fi
+  fi
   return 0
 }
 
@@ -1697,7 +1730,8 @@ $ALSO_GEMINI_MD && assemble_to "$TARGET/GEMINI.md" "$INCLUDE_CORE"
 if $DRY_RUN; then
   echo
   say "DRY RUN — nothing was written. A real run would ALSO scaffold into $TARGET:"
-  echo "    + scripts/        verify.sh, handoff.sh, new-research.sh, new-feedback.sh, secret-scan.sh, install-git-hooks.sh, lint-leanness.sh"
+  echo "    + scripts/        verify.sh, handoff/research/feedback helpers, git guards"
+  autonomous_tools_wanted && echo "    + autonomous      autonomous-run.py + run manifest template (software-dev)"
   echo "    + hooks/git/      managed git hooks (secret-scan, protect-main, conventional-commits)"
   echo "    + .harness/       verify.conf (+ .example), templates/, handoffs/"
   echo "    + .planning/      progress-log.md"
@@ -1734,7 +1768,9 @@ cpa "$HARNESS_DIR/scripts/handoff.sh"           "$TARGET/scripts/handoff.sh"
 cpa "$HARNESS_DIR/scripts/secret-scan.sh"       "$TARGET/scripts/secret-scan.sh"
 cpa "$HARNESS_DIR/scripts/install-git-hooks.sh" "$TARGET/scripts/install-git-hooks.sh"
 cpa "$HARNESS_DIR/scripts/lint-leanness.sh"     "$TARGET/scripts/lint-leanness.sh"
+autonomous_tools_wanted && cpa "$HARNESS_DIR/scripts/autonomous-run.py" "$TARGET/scripts/autonomous-run.py"
 chmod +x "$TARGET/scripts/"*.sh 2>/dev/null || true
+autonomous_tools_wanted && chmod +x "$TARGET/scripts/autonomous-run.py" 2>/dev/null || true
 cpa "$HARNESS_DIR/docs/feedback/README.md"      "$TARGET/docs/feedback/README.md"
 mkdir -p "$TARGET/hooks/git"
 for g in "$HARNESS_DIR"/hooks/git/*.sh; do cpa "$g" "$TARGET/hooks/git/$(basename "$g")"; done
@@ -1749,6 +1785,7 @@ fi
 cpa "$HARNESS_DIR/templates/progress-log.md"    "$TARGET/.planning/progress-log.md"
 has_claude && cpa "$HARNESS_DIR/config/settings.local.$SAFETY.json.example" "$TARGET/.claude/settings.local.json.example"
 mkdir -p "$TARGET/.harness/templates"; cp "$HARNESS_DIR"/templates/*.md "$TARGET/.harness/templates/" 2>/dev/null || true; ok "templates in .harness/templates/"
+autonomous_tools_wanted && cpa "$HARNESS_DIR/templates/autonomous-run.json" "$TARGET/.harness/templates/autonomous-run.json"
 write_first_steps "$TARGET/FIRST-STEPS.md"
 scaffold_design_system   # honors --design-system for a UI project (no-op on the default/backend path)
 

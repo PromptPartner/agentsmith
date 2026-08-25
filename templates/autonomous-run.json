@@ -1,0 +1,52 @@
+{
+  "base_ref": "HEAD",
+  "external_writes": false,
+  "git": {
+    "history_rewrite": false,
+    "local_commits": true,
+    "merge": false,
+    "push": false
+  },
+  "implementation_ticket": "",
+  "limits": {
+    "claude_max_usd": 20,
+    "codex_goal_tokens": 200000,
+    "max_attempts": 3,
+    "wall_minutes": 480
+  },
+  "roles": {
+    "checker": {
+      "effort": "high",
+      "model": "",
+      "runtime": "claude"
+    },
+    "maker": {
+      "effort": "high",
+      "model": "",
+      "runtime": "codex"
+    }
+  },
+  "run_id": "",
+  "schema_version": 1,
+  "scope": {
+    "allowed_paths": [
+      "src/**",
+      "tests/**",
+      "docs/**"
+    ],
+    "denied_paths": [
+      ".env*",
+      ".git/**",
+      ".github/workflows/**",
+      "**/*secret*",
+      "**/*credential*",
+      "**/migrations/**",
+      "**/terraform/**",
+      "**/k8s/**"
+    ]
+  },
+  "spec_path": "",
+  "verify": {
+    "command": "./scripts/verify.sh"
+  }
+}
