@@ -73,6 +73,39 @@ try {
   $orgFailure = Run-SetupExpectFailure @('--platform','codex','--org-policy')
   Assert-True ($orgFailure.Contains('organization-policy installation is not supported')) 'Codex org-policy rejection is unclear'
 
+  # RTK is default-on for code profiles and uses the selected account-specific CODEX_HOME.
+  $fakeBin = Join-Path $sandbox 'fake bin'
+  New-Item -ItemType Directory -Force -Path $fakeBin | Out-Null
+  $fakeRtk = Join-Path $fakeBin 'rtk.ps1'
+  [IO.File]::WriteAllText($fakeRtk, @'
+if ($args[0] -eq '--version') { Write-Output 'rtk fake'; exit 0 }
+Add-Content -LiteralPath $env:AGENTSMITH_RTK_CALL_LOG -Value ("{0}|{1}" -f $env:CODEX_HOME, ($args -join ' '))
+exit 0
+'@, [Text.UTF8Encoding]::new($false))
+  $oldPath = $env:PATH
+  $rtkLog = Join-Path $sandbox 'rtk calls.log'
+  $env:PATH = "$fakeBin$([IO.Path]::PathSeparator)$oldPath"
+  $env:AGENTSMITH_RTK_CALL_LOG = $rtkLog
+  $rtkProject = Join-Path $sandbox 'rtk codex project'
+  New-Item -ItemType Directory -Force -Path $rtkProject | Out-Null
+  $rtkOutput = Run-Setup @('--platform','codex','--profile','software-dev','--target',$rtkProject)
+  Assert-True ((Get-Content $rtkLog -Raw).Contains("$codex|init -g --codex")) 'Codex code profile did not initialize RTK with CODEX_HOME'
+  Assert-True (-not $rtkOutput.Contains('Claude-specific wiring')) 'Codex RTK still emitted the obsolete Claude-only warning'
+  Remove-Item $rtkLog -Force
+  Run-Setup @('--platform','codex','--profile','software-dev','--target',$rtkProject,'--no-rtk') | Out-Null
+  Assert-True (-not (Test-Path $rtkLog)) '--no-rtk did not suppress the code-profile default'
+
+  $rtkRules = Join-Path $codex 'AGENTS.md'
+  Set-Content $rtkRules '@RTK.md' -Encoding utf8
+  $rtkDoctorMissing = Run-Setup @('--platform','codex','--doctor')
+  Assert-True ($rtkDoctorMissing.Contains("Codex RTK import is dangling: $(Join-Path $codex 'RTK.md')")) 'doctor did not report a dangling Codex RTK import'
+  Set-Content (Join-Path $codex 'RTK.md') '# generated RTK instructions' -Encoding utf8
+  $rtkDoctorHealthy = Run-Setup @('--platform','codex','--doctor')
+  Assert-True ($rtkDoctorHealthy.Contains('Codex RTK instructions wired')) 'doctor did not recognize healthy Codex RTK wiring'
+  Remove-Item $rtkRules,(Join-Path $codex 'RTK.md') -Force
+  $env:PATH = $oldPath
+  Remove-Item Env:AGENTSMITH_RTK_CALL_LOG -ErrorAction SilentlyContinue
+
   # Seed foreign configuration and an existing skill; Agentsmith must preserve both.
   Set-Content (Join-Path $codex 'config.toml') "# keep user comment`nmodel = `"gpt-test`"`n`n[features]`nkeep_me = true`n" -Encoding utf8
   Set-Content (Join-Path $codex 'hooks.json') '{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"foreign-user-hook"}]}],"Stop":[{"hooks":[{"type":"command","command":"foreign-stop-hook"}]}]}}' -Encoding utf8

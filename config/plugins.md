@@ -97,19 +97,21 @@ compresses noisy command output — `git`, tests, package managers, `kubectl`/`t
 60–90% *before* it reaches the context window. It's the token-economics rule (keep context lean,
 fight context rot) applied to **tool output** instead of the rules file.
 
-Unlike everything else here it's **not a Claude Code plugin** — it's a small native binary plus a
-`PreToolUse` hook that transparently rewrites Bash commands (`git status` → `rtk git status`). So
-`setup.sh`/`setup.ps1` install it on its own track:
+Unlike everything else here it's **not a plugin** — it's a small native binary with runtime-specific
+wiring. Claude's `PreToolUse` hook transparently rewrites Bash commands (`git status` →
+`rtk git status`); Codex receives `RTK.md` command guidance because its hooks cannot replace tool
+input. `setup.sh`/`setup.ps1` install it on its own track:
 
 - **Default-ON for the code profiles** (`software-dev`, `devops-setup`); off everywhere else.
   Force it with `--with-rtk`, skip it with `--no-rtk`.
 - Install is per-OS (Homebrew / the official installer / a native Windows binary), then rtk's own
-  `rtk init -g --auto-patch` wires the hook, an `RTK.md`, and the `settings.json` entry — the
-  harness doesn't hand-maintain any of that. **Restart Claude Code** after install to load the hook.
+  initializer runs for every selected runtime: `rtk init -g --auto-patch` for Claude and
+  `rtk init -g --codex` for Codex (using the selected `CODEX_HOME`). The harness doesn't
+  hand-maintain those generated files. **Restart Claude Code** after install to load its hook.
 - Windows needs **ripgrep** (`rg`) on PATH for some filters (`winget install BurntSushi.ripgrep.MSVC`).
 - **Nothing is silently hidden:** the hook only touches Bash calls (Read/Grep/Glob bypass it), full
   output is teed to a log on failure, and `rtk proxy <cmd>` runs any command raw. Remove it all with
-  `rtk init -g --uninstall`.
+  the matching rtk uninstall command.
 
 ## A note on restraint (R10)
 
