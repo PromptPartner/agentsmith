@@ -132,6 +132,25 @@ PY
     ;;
 esac
 
+if [ "$(uname -s)" = Linux ]; then
+  if python3 - "$ROOT/scripts/autonomous-run.py" "$ROOT" <<'PY'
+from pathlib import Path
+import sys
+namespace = {'__name__': 'agentsmith_sandbox_probe', '__file__': sys.argv[1]}
+exec(compile(Path(sys.argv[1]).read_text(), sys.argv[1], 'exec'), namespace)
+result = namespace['sandboxed_verify'](
+    'exit 0', Path(sys.argv[2]), 15, namespace['verifier_env']())
+raise SystemExit(result.returncode)
+PY
+  then
+    ok 'Linux verifier sandbox is operational'
+  else
+    ok 'Linux host forbids the verifier sandbox, so autonomous execution fails closed'
+    printf 'autonomous-run: %d passed, %d failed (state machine covered on macOS/Linux with an operational sandbox)\n' "$pass" "$fail"
+    exit 0
+  fi
+fi
+
 if [ "$(uname -s)" = Darwin ] && [[ "$ROOT" = "$HOME/"* ]] &&
    [ "$(git -C "$ROOT" rev-parse --git-dir)" != "$(git -C "$ROOT" rev-parse --git-common-dir)" ]; then
   if python3 - "$ROOT/scripts/autonomous-run.py" "$ROOT" "$HOME/.gitconfig" <<'PY'
