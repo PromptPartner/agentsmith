@@ -46,7 +46,8 @@
 #    ./setup.ps1 --with-rtk | --no-rtk   # rtk CLI-output compressor (default: ON for software-dev/devops-setup)
 #    ./setup.ps1 --with-mcp playwright,context7 ...   # add named MCP server(s) to native project config
 #    ./setup.ps1 --with-skills ...      # install the bundled skill pack (handoff, verify, harness-doctor,
-#                                       #   new-research, new-feedback, harness-help); project mode →
+#                                       #   new-research, new-feedback, harness-help, writing-rules,
+#                                       #   wayfinder, autonomous-run); project mode →
 #                                       #   native .claude/skills and/or .agents/skills destinations
 #    ./setup.ps1 --with-hooks ...       # install git guardrails (secret-scan+protect-main+conventional)
 #    ./setup.ps1 --update-plugins       # update installed plugins to latest, then exit
@@ -159,6 +160,23 @@ function Platform-RulesLabel {
   return 'CLAUDE.md + AGENTS.md'
 }
 
+function Report-RtkHealth ([string]$RuntimeLabel, [string]$RulesPath, [string]$RuntimeDir) {
+  $import = $null
+  if (Test-Path $RulesPath) {
+    $import = Get-Content $RulesPath | Where-Object { $_ -match '^@.*RTK\.md\s*$' } | Select-Object -First 1
+  }
+  if ($import) {
+    $target = $import.Substring(1).TrimEnd("`r")
+    if (-not [IO.Path]::IsPathRooted($target)) { $target = Join-Path $RuntimeDir $target }
+    if (Test-Path $target -PathType Leaf) { Ok "$RuntimeLabel RTK instructions wired" }
+    else { Warn "$RuntimeLabel RTK import is dangling: $target — re-run with --with-rtk" }
+  } elseif (Test-Path (Join-Path $RuntimeDir 'RTK.md') -PathType Leaf) {
+    Warn "$RuntimeLabel RTK.md is present but not imported by $(Split-Path $RulesPath -Leaf) — re-run with --with-rtk"
+  } else {
+    Warn "$RuntimeLabel RTK.md missing — re-run with --with-rtk"
+  }
+}
+
 # ---- profile auto-detect + uninstall (used by --profile auto, the wizard, --uninstall) -----
 function Test-Has ([string]$dir, [string[]]$globs) {  # $true if any glob matches an entry in $dir
   foreach ($g in $globs) {
@@ -258,7 +276,6 @@ if ($o.OrgPolicy -and (Has-Codex)) {
 }
 if (-not (Has-Claude)) {
   if ($o.WithPlugins) { Warn '--with-plugins is Claude-only and was ignored for --platform codex.' }
-  if ($o.WithRtk -eq 'true') { Warn '--with-rtk is Claude-specific wiring and was ignored for --platform codex.' }
 }
 
 # Resolve --profile auto by inspecting the target project (before validation).
@@ -549,7 +566,11 @@ function Rtk-Wanted {  # install rtk? explicit flag wins; else auto = only for c
   return $false
 }
 
-function Install-Rtk {  # install the rtk binary (per-OS), then let rtk wire its own Claude Code hook
+function Autonomous-ToolsWanted {
+  return $ProfileArr -contains 'software-dev'
+}
+
+function Install-Rtk {  # install rtk once, then initialize each selected runtime independently
   if (Have-Cmd rtk) {
     Ok "rtk already installed ($(try { rtk --version } catch { 'present' }))"
   } else {
@@ -581,11 +602,24 @@ function Install-Rtk {  # install the rtk binary (per-OS), then let rtk wire its
       Warn 'rtk: no supported installer found — install by hand: https://github.com/rtk-ai/rtk#installation'; return
     }
   }
-  if (-not (Have-Cmd rtk)) { Warn 'rtk not on PATH after install — open a new shell, then run: rtk init -g --auto-patch'; return }
+  if (-not (Have-Cmd rtk)) { Warn 'rtk not on PATH after install — open a new shell, then re-run setup with --with-rtk'; return }
   if (-not (Have-Cmd rg))  { Warn 'rtk: ripgrep (rg) not on PATH — some filters need it (winget install BurntSushi.ripgrep.MSVC)' }
-  rtk init -g --auto-patch *> $null
-  if ($LASTEXITCODE -eq 0) { Ok 'rtk wired into Claude Code (hook + RTK.md) — restart Claude Code to load it' }
-  else { Warn "rtk: 'rtk init -g --auto-patch' failed — run it by hand to wire the hook" }
+  if (Has-Claude) {
+    rtk init -g --auto-patch *> $null
+    if ($LASTEXITCODE -eq 0) { Ok 'rtk wired into Claude Code (hook + RTK.md) — restart Claude Code to load it' }
+    else { Warn 'rtk: Claude initialization failed — run: rtk init -g --auto-patch' }
+  }
+  if (Has-Codex) {
+    $previousCodexHome = $env:CODEX_HOME
+    try {
+      $env:CODEX_HOME = $CodexDir
+      rtk init -g --codex *> $null
+      if ($LASTEXITCODE -eq 0) { Ok 'rtk wired into Codex (AGENTS.md + RTK.md instructions)' }
+      else { Warn "rtk: Codex initialization failed — set CODEX_HOME to '$CodexDir' and run: rtk init -g --codex" }
+    } finally {
+      $env:CODEX_HOME = $previousCodexHome
+    }
+  }
 }
 
 function Install-ClaudeConfig {
@@ -651,8 +685,6 @@ function Install-ClaudeConfig {
     Say "  29 security skills available on demand — owasp-audit, threat-modeling, api-audit,"
     Say "  dependency-audit, prompt-injection, container-audit, cloud-audit, iam-audit, and more."
   }
-  # rtk — token-compressing CLI proxy (github.com/rtk-ai/rtk). Default-ON for code profiles; --no-rtk opts out.
-  if (Rtk-Wanted) { Install-Rtk }
 }
 
 function Install-CodexConfig {
@@ -663,6 +695,8 @@ function Install-CodexConfig {
 function Install-PlatformConfig {
   if (Has-Claude) { Install-ClaudeConfig }
   if (Has-Codex) { Install-CodexConfig }
+  # Default-ON for code profiles; initialize every selected runtime, not only Claude.
+  if (Rtk-Wanted) { Install-Rtk }
   Install-NativeSkills
   if ($o.WithHandoffHooks) {
     if (Has-Claude) { Install-ClaudeHandoffHooks }
@@ -1565,6 +1599,7 @@ if ($o.Doctor) {
     } else { Warn "no $settings" }
     $gmd = Join-Path $CcDir 'CLAUDE.md'
     if (Test-Path $gmd) { Ok "global Claude rules present ($(@(Get-Content $gmd).Count) lines)" } else { Warn 'no global Claude rules (per-project only)' }
+    Report-RtkHealth 'Claude' $gmd $CcDir
     $skills = Join-Path $CcDir 'skills'
     if (Test-Path $skills) { Ok "Claude skills: $(@(Get-ChildItem $skills -Directory).Count)" } else { Warn 'no Claude skills directory' }
     $kw = 'bash ~/.claude/hooks/handoff-on-keyword.sh'
@@ -1594,6 +1629,7 @@ if ($o.Doctor) {
     if (Test-Path $config) { if (Test-TomlFile $config) { Ok "Codex config valid: $config" } else { Warn "Codex config is not valid TOML: $config" } } else { Warn "no $config" }
     $gmd = Join-Path $CodexDir 'AGENTS.md'
     if (Test-Path $gmd) { Ok "global Codex rules present ($(@(Get-Content $gmd).Count) lines)" } else { Warn 'no global Codex rules (per-project only)' }
+    Report-RtkHealth 'Codex' $gmd $CodexDir
     $skills = Join-Path $HOME '.agents/skills'
     if (Test-Path $skills) { Ok "Codex skills: $(@(Get-ChildItem $skills -Directory).Count)" } else { Warn 'no Codex skills directory' }
     $codexHookScript = Join-Path $CodexDir 'hooks/handoff-on-keyword.sh'
@@ -1715,7 +1751,8 @@ if ($o.AlsoGemini) { Assemble-To (Join-Path $o.Target 'GEMINI.md') $includeCore 
 if ($o.DryRun) {
   Write-Host ''
   Say "DRY RUN — nothing was written. A real run would ALSO scaffold into $($o.Target):"
-  Write-Host '    + scripts/        verify.sh, handoff.sh, new-research.sh, new-feedback.sh, secret-scan.sh, install-git-hooks.sh, lint-leanness.sh'
+  Write-Host '    + scripts/        verify.sh, handoff/research/feedback helpers, git guards'
+  if (Autonomous-ToolsWanted) { Write-Host '    + autonomous      autonomous-run.py + run manifest template (software-dev)' }
   Write-Host '    + hooks/git/      managed git hooks (secret-scan, protect-main, conventional-commits)'
   Write-Host '    + .harness/       verify.conf (+ .example), templates/, handoffs/'
   Write-Host '    + .planning/      progress-log.md'
@@ -1744,6 +1781,7 @@ function Cpa ($src, $dst) { if (-not (Test-Path $dst)) { Copy-Item $src $dst -Fo
 foreach ($s in @('verify.sh','new-research.sh','new-feedback.sh','handoff.sh','secret-scan.sh','install-git-hooks.sh','lint-leanness.sh')) {
   Cpa (Join-Path $HarnessDir "scripts/$s") (Join-Path $o.Target "scripts/$s")
 }
+if (Autonomous-ToolsWanted) { Cpa (Join-Path $HarnessDir 'scripts/autonomous-run.py') (Join-Path $o.Target 'scripts/autonomous-run.py') }
 Cpa (Join-Path $HarnessDir 'docs/feedback/README.md') (Join-Path $o.Target 'docs/feedback/README.md')
 Get-ChildItem (Join-Path $HarnessDir 'hooks/git') -Filter *.sh | ForEach-Object { Cpa $_.FullName (Join-Path $o.Target "hooks/git/$($_.Name)") }
 Cpa (Join-Path $HarnessDir '.harness/verify.conf.example') (Join-Path $o.Target '.harness/verify.conf.example')
@@ -1753,6 +1791,7 @@ else { Build-VerifyConf $verifyConf; Ok "added .harness/verify.conf (preset for:
 Cpa (Join-Path $HarnessDir 'templates/progress-log.md') (Join-Path $o.Target '.planning/progress-log.md')
 if (Has-Claude) { Cpa (Join-Path $HarnessDir "config/settings.local.$($o.Safety).json.example") (Join-Path $o.Target '.claude/settings.local.json.example') }
 Get-ChildItem (Join-Path $HarnessDir 'templates') -Filter *.md | ForEach-Object { Copy-Item $_.FullName (Join-Path $o.Target ".harness/templates/$($_.Name)") -Force }
+if (Autonomous-ToolsWanted) { Cpa (Join-Path $HarnessDir 'templates/autonomous-run.json') (Join-Path $o.Target '.harness/templates/autonomous-run.json') }
 Ok 'templates in .harness/templates/'
 # First-steps card: fill placeholders, write-if-absent (don't clobber a user-edited card)
 $firstSteps = Join-Path $o.Target 'FIRST-STEPS.md'

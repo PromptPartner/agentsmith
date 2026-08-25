@@ -71,7 +71,7 @@ jobs:
       - name: shellcheck (advisory)
         continue-on-error: true
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck bubblewrap
           shellcheck --severity=warning setup.sh scripts/*.sh hooks/*.sh hooks/git/*.sh
 
       # The real gate. Same entry point the agent and the human use locally.

@@ -73,6 +73,39 @@ try {
   $orgFailure = Run-SetupExpectFailure @('--platform','codex','--org-policy')
   Assert-True ($orgFailure.Contains('organization-policy installation is not supported')) 'Codex org-policy rejection is unclear'
 
+  # RTK is default-on for code profiles and uses the selected account-specific CODEX_HOME.
+  $fakeBin = Join-Path $sandbox 'fake bin'
+  New-Item -ItemType Directory -Force -Path $fakeBin | Out-Null
+  $fakeRtk = Join-Path $fakeBin 'rtk.ps1'
+  [IO.File]::WriteAllText($fakeRtk, @'
+if ($args[0] -eq '--version') { Write-Output 'rtk fake'; exit 0 }
+Add-Content -LiteralPath $env:AGENTSMITH_RTK_CALL_LOG -Value ("{0}|{1}" -f $env:CODEX_HOME, ($args -join ' '))
+exit 0
+'@, [Text.UTF8Encoding]::new($false))
+  $oldPath = $env:PATH
+  $rtkLog = Join-Path $sandbox 'rtk calls.log'
+  $env:PATH = "$fakeBin$([IO.Path]::PathSeparator)$oldPath"
+  $env:AGENTSMITH_RTK_CALL_LOG = $rtkLog
+  $rtkProject = Join-Path $sandbox 'rtk codex project'
+  New-Item -ItemType Directory -Force -Path $rtkProject | Out-Null
+  $rtkOutput = Run-Setup @('--platform','codex','--profile','software-dev','--target',$rtkProject)
+  Assert-True ((Get-Content $rtkLog -Raw).Contains("$codex|init -g --codex")) 'Codex code profile did not initialize RTK with CODEX_HOME'
+  Assert-True (-not $rtkOutput.Contains('Claude-specific wiring')) 'Codex RTK still emitted the obsolete Claude-only warning'
+  Remove-Item $rtkLog -Force
+  Run-Setup @('--platform','codex','--profile','software-dev','--target',$rtkProject,'--no-rtk') | Out-Null
+  Assert-True (-not (Test-Path $rtkLog)) '--no-rtk did not suppress the code-profile default'
+
+  $rtkRules = Join-Path $codex 'AGENTS.md'
+  Set-Content $rtkRules '@RTK.md' -Encoding utf8
+  $rtkDoctorMissing = Run-Setup @('--platform','codex','--doctor')
+  Assert-True ($rtkDoctorMissing.Contains("Codex RTK import is dangling: $(Join-Path $codex 'RTK.md')")) 'doctor did not report a dangling Codex RTK import'
+  Set-Content (Join-Path $codex 'RTK.md') '# generated RTK instructions' -Encoding utf8
+  $rtkDoctorHealthy = Run-Setup @('--platform','codex','--doctor')
+  Assert-True ($rtkDoctorHealthy.Contains('Codex RTK instructions wired')) 'doctor did not recognize healthy Codex RTK wiring'
+  Remove-Item $rtkRules,(Join-Path $codex 'RTK.md') -Force
+  $env:PATH = $oldPath
+  Remove-Item Env:AGENTSMITH_RTK_CALL_LOG -ErrorAction SilentlyContinue
+
   # Seed foreign configuration and an existing skill; Agentsmith must preserve both.
   Set-Content (Join-Path $codex 'config.toml') "# keep user comment`nmodel = `"gpt-test`"`n`n[features]`nkeep_me = true`n" -Encoding utf8
   Set-Content (Join-Path $codex 'hooks.json') '{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"foreign-user-hook"}]}],"Stop":[{"hooks":[{"type":"command","command":"foreign-stop-hook"}]}]}}' -Encoding utf8
@@ -86,6 +119,8 @@ try {
   Assert-True (-not (Test-Path (Join-Path $project '.claude'))) 'Codex-only run created .claude'
   Assert-True (-not (Test-Path (Join-Path $fixtureHome '.claude'))) 'Codex-only run touched the Claude user home'
   Assert-True (Test-Path (Join-Path $project '.agents/skills/existing/SKILL.md')) 'existing Codex skill was removed'
+  Assert-True (-not (Test-Path (Join-Path $project 'scripts/autonomous-run.py'))) 'non-code profile installed autonomous controller'
+  Assert-True (-not (Test-Path (Join-Path $project '.harness/templates/autonomous-run.json'))) 'non-code profile installed autonomous manifest template'
   Assert-Contains (Join-Path $codex 'config.toml') '# keep user comment'
   Assert-Contains (Join-Path $codex 'config.toml') 'approval_policy = "on-request"'
   Assert-Contains (Join-Path $codex 'config.toml') 'sandbox_mode = "workspace-write"'
@@ -97,6 +132,12 @@ try {
   Assert-True ((Get-HookCommandCount (Join-Path $codex 'hooks.json') 'Stop' 'foreign-stop-hook') -eq 1) 'foreign Codex Stop hook was lost'
   Assert-Toml (Join-Path $codex 'config.toml')
   Assert-Toml (Join-Path $project '.codex/config.toml')
+
+  $softwareProject = Join-Path $fixtureHome 'autonomous-software'
+  New-Item -ItemType Directory -Force -Path $softwareProject | Out-Null
+  Run-Setup @('--platform','codex','--profile','software-dev','--no-rtk','--target',$softwareProject) | Out-Null
+  Assert-True (Test-Path (Join-Path $softwareProject 'scripts/autonomous-run.py')) 'software-dev missing autonomous controller'
+  Assert-True (Test-Path (Join-Path $softwareProject '.harness/templates/autonomous-run.json')) 'software-dev missing autonomous manifest template'
 
   # Re-run: update safety, union MCP selections, keep hook entries duplicate-free, and create backups.
   Set-Content (Join-Path $codex 'hooks/handoff-on-keyword.sh') '# stale Codex handoff hook' -Encoding utf8

@@ -42,11 +42,9 @@ only when the skill needs them.
 
 ## The bundled skill pack
 
-Seven small skills ship in this repo. Six are **self-contained + script-aware**: each prefers a
-project-local `scripts/<x>.sh` when present (the fast path a harness-installed project already has),
-and otherwise runs a complete inline procedure — so they work installed globally, inside a harness
-project, or in a bare repo, with no dependency on a harness checkout. The seventh,
-**writing-rules**, is pure reference: no script, nothing to run, consulted while you write.
+Nine small skills ship in this repo. Procedural skills prefer a project-local `scripts/<x>.sh` when
+present and otherwise carry their fallback in the skill. **writing-rules** is pure reference;
+**wayfinder** is the repository-native decision-to-spec workflow.
 
 | Skill | Fires on | What it does |
 |---|---|---|
@@ -57,6 +55,8 @@ project, or in a bare repo, with no dependency on a harness checkout. The sevent
 | **new-research** | "start a research note" | Scaffolds a durable `docs/research/` source note (R9). |
 | **new-feedback** | "log a harness lesson" | Scaffolds a numbered `docs/feedback/` post-incident (System-Evolution loop). |
 | **writing-rules** | writing/reviewing a rule, gate, skill description, or agent prompt | The levers that decide whether a line changes behaviour or only costs tokens. |
+| **wayfinder** | a foggy effort whose destination is known but route is not | Builds a decision map and an operator-accepted spec before separate implementation tickets. |
+| **autonomous-run** | start/status/resume/stop a bounded local run from an accepted spec | Drives the finite maker/checker controller without granting external writes. |
 
 They're work-type-neutral and follow `core/` rules (verify before done, no secrets). See
 `RECOMMENDED.md` for the per-profile map.

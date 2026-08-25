@@ -1,4 +1,10 @@
-# Research: automatic handoff rollover orchestration
+# Research: automatic handoff rollover orchestration (partially superseded)
+
+> **Superseded finding:** current Codex releases now document fresh thread creation and durable
+> goals, and both first-class runtimes expose stable headless execution. The no-go below remains
+> correct for *percentage-triggered transparent rollover*, but no longer blocks finite role-to-role
+> orchestration. Agentsmith now uses explicit, schema-validated role receipts instead; see
+> [`../21-autonomous-runs.md`](../21-autonomous-runs.md). This source note is retained under R9.
 
 > Decision note, verified 2026-08-25 against the shipped hooks and the locally installed
 > `codex-cli 0.149.0`. Keep this source material under `docs/research/` (R9); obsolete material
@@ -18,6 +24,8 @@ against undocumented runtime internals.
 | 1 | [Claude Code hooks reference](https://code.claude.com/docs/en/hooks) and [guide](https://code.claude.com/docs/en/hooks-guide) | 2026-08-25 | primary/vendor |
 | 2 | `hooks/context-budget-nudge.sh`, `hooks/handoff-on-keyword.sh`, `config/statusline-command.sh`, and `scripts/handoff.sh` in this repository | 2026-08-25 | primary/local |
 | 3 | Local `codex-cli 0.149.0` help for `queue`, `fork`, and experimental `app-server` | 2026-08-25 | primary/runtime |
+| 4 | [Codex non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode), [goals](https://learn.chatgpt.com/use-cases/follow-goals), and [App Server](https://learn.chatgpt.com/docs/app-server) | 2026-08-25 | primary/vendor |
+| 5 | Local Claude Code 2.1.245 help for headless JSON output, structured schemas, budgets, sessions, and worktrees | 2026-08-25 | primary/runtime |
 
 ## Current trigger availability
 
@@ -72,7 +80,7 @@ Build a small, opt-in prototype for a runtime only when all of these are true:
 
 ## Conclusion / recommendation
 
-**No-go for an automatic rollover orchestrator today.** Keep the 30%-used Claude nudge as a
+**No-go for an automatic percentage-triggered rollover orchestrator.** Keep the 30%-used Claude nudge as a
 best-effort enforced cue and the keyword hook as the cross-runtime path. Do not build on Codex's
 experimental `app-server` or infer context consumption from internal/runtime files. Revisit with a
 bounded prototype when at least one runtime exposes both a stable context-usage event and a
@@ -84,4 +92,5 @@ able to prove the two facts that matter: *handoff completed* and *successor is f
 - Whether future Claude or Codex releases add a stable early-context event.
 - Whether a future Codex session-creation API documents blank-context rather than fork semantics.
 - Cross-platform process supervision and UI presentation; these matter only after the two primary
-  API gates above pass.
+  API gates above pass. Finite autonomous runs do not require this trigger: each declared role is
+  a fresh headless process and advances only after a validated durable receipt.

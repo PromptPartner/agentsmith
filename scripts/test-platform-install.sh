@@ -51,6 +51,44 @@ for p in claude codex both; do
   assert "$p global dry-run writes no home files" test -z "$(find "$c/home" "$c/Orca Account/codex home" -mindepth 1 -print -quit)"
 done
 
+echo "platform-install — RTK runtime wiring and doctor diagnostics"
+make_fake_rtk() {
+  local bin="$1"
+  mkdir -p "$bin"
+  printf '%s\n' '#!/usr/bin/env bash' \
+    'if [ "${1:-}" = "--version" ]; then echo "rtk fake"; exit 0; fi' \
+    'printf "%s|%s\n" "${CODEX_HOME:-}" "$*" >> "$AGENTSMITH_RTK_CALL_LOG"' \
+    > "$bin/rtk"
+  chmod +x "$bin/rtk"
+}
+
+c="$(new_case rtk-codex-default)"; make_fake_rtk "$c/bin"
+AGENTSMITH_RTK_CALL_LOG="$c/calls" PATH="$c/bin:$PATH" HOME="$c/home" CODEX_HOME="$c/Orca Account/codex home" \
+  bash "$ROOT/setup.sh" --platform codex --profile software-dev --target "$c/project" >"$c/out" 2>&1
+assert "Codex code profile enables RTK by default" grep -Fxq "$c/Orca Account/codex home|init -g --codex" "$c/calls"
+assert "Codex RTK wiring preserves CODEX_HOME paths with spaces" grep -Fq "$c/Orca Account/codex home|" "$c/calls"
+assert "Codex RTK no longer emits a Claude-only warning" sh -c "! grep -q 'Claude-specific wiring.*ignored' '$c/out'"
+
+c="$(new_case rtk-both)"; make_fake_rtk "$c/bin"
+AGENTSMITH_RTK_CALL_LOG="$c/calls" PATH="$c/bin:$PATH" HOME="$c/home" CODEX_HOME="$c/Orca Account/codex home" \
+  bash "$ROOT/setup.sh" --platform both --profile general-admin --with-rtk --target "$c/project" >"$c/out" 2>&1
+assert "both-mode initializes Claude RTK" grep -Fq '|init -g --auto-patch' "$c/calls"
+assert "both-mode initializes Codex RTK" grep -Fxq "$c/Orca Account/codex home|init -g --codex" "$c/calls"
+assert "both-mode initializes RTK exactly once per runtime" test "$(wc -l < "$c/calls" | tr -d ' ')" -eq 2
+
+c="$(new_case rtk-opt-out)"; make_fake_rtk "$c/bin"
+AGENTSMITH_RTK_CALL_LOG="$c/calls" PATH="$c/bin:$PATH" HOME="$c/home" CODEX_HOME="$c/Orca Account/codex home" \
+  bash "$ROOT/setup.sh" --platform codex --profile software-dev --no-rtk --target "$c/project" >"$c/out" 2>&1
+assert "--no-rtk suppresses default Codex RTK initialization" test ! -e "$c/calls"
+
+c="$(new_case rtk-doctor)"
+printf '%s\n' '@RTK.md' > "$c/Orca Account/codex home/AGENTS.md"
+HOME="$c/home" CODEX_HOME="$c/Orca Account/codex home" bash "$ROOT/setup.sh" --platform codex --doctor > "$c/doctor-missing" 2>&1
+assert "doctor reports a dangling Codex RTK import" grep -Fq "Codex RTK import is dangling: $c/Orca Account/codex home/RTK.md" "$c/doctor-missing"
+printf '%s\n' '# generated RTK instructions' > "$c/Orca Account/codex home/RTK.md"
+HOME="$c/home" CODEX_HOME="$c/Orca Account/codex home" bash "$ROOT/setup.sh" --platform codex --doctor > "$c/doctor-healthy" 2>&1
+assert "doctor recognizes healthy Codex RTK wiring" grep -Fq 'Codex RTK instructions wired' "$c/doctor-healthy"
+
 echo "platform-install — Codex config, MCP, skills, hooks, and re-runs"
 c="$(new_case codex-full)"
 mkdir -p "$c/bin" "$c/project/.codex" "$c/project/.agents/skills/existing" "$c/Orca Account/codex home"
@@ -66,6 +104,8 @@ assert "Codex-only invokes no Claude/rtk command" test ! -e "$c/calls"
 assert "CODEX_HOME with spaces receives config" test -f "$c/Orca Account/codex home/config.toml"
 assert "Codex project skills preserve an existing skill" test -d "$c/project/.agents/skills/existing"
 assert "Codex project skills install bundled skills" test -f "$c/project/.agents/skills/handoff/SKILL.md"
+assert "non-code profile omits autonomous controller" test ! -e "$c/project/scripts/autonomous-run.py"
+assert "non-code profile omits autonomous manifest template" test ! -e "$c/project/.harness/templates/autonomous-run.json"
 assert "Codex-only creates no Claude home" test ! -e "$c/home/.claude"
 assert "Codex handoff hook installed" test -x "$c/Orca Account/codex home/hooks/handoff-on-keyword.sh"
 assert "Codex UI hook installed" test -x "$c/Orca Account/codex home/hooks/ui-design-reminder.sh"
@@ -88,6 +128,11 @@ assert project['mcp_servers']['playwright']['command'] == 'manual'
 assert project['mcp_servers']['context7']['command'] == 'npx'
 PY
 assert "cautious mapping and TOML parse exactly" test $? -eq 0
+
+software_case="$(new_case autonomous-software)"
+run "$software_case" --platform codex --profile software-dev --no-rtk --target "$software_case/project"
+assert "software-dev scaffolds autonomous controller" test -x "$software_case/project/scripts/autonomous-run.py"
+assert "software-dev scaffolds autonomous manifest template" test -f "$software_case/project/.harness/templates/autonomous-run.json"
 
 # Re-run adds a new managed server, retains the prior selection, and does not duplicate hooks/tables.
 printf '%s\n' '# stale Codex handoff hook' > "$c/Orca Account/codex home/hooks/handoff-on-keyword.sh"

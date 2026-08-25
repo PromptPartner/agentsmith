@@ -30,6 +30,8 @@ is a harness" to "make it your team's own," with the glossary as the appendix:
 | [`17-troubleshooting.md`](17-troubleshooting.md) | Symptom → cause → fix, for when it's behaving oddly at runtime. |
 | [`18-influences.md`](18-influences.md) | Full credits — who said each idea first, plus complementary work. |
 | [`19-glossary.md`](19-glossary.md) | Every harness term, one line each, with pointers. The appendix. |
+| [`20-wayfinding-spec-flow.md`](20-wayfinding-spec-flow.md) | Turn a foggy effort into an accepted terminal spec without collapsing decision and implementation tickets. |
+| [`21-autonomous-runs.md`](21-autonomous-runs.md) | Run one accepted coding ticket overnight through a local maker/checker controller. |
 | [`feedback/README.md`](feedback/README.md) | The post-incident log: how lessons become system changes. |
 | [`research/`](research/) | Source research the docs above were distilled from. |
 

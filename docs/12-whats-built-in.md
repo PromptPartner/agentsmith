@@ -13,11 +13,11 @@ For the reasoning behind any of it, the cross-links point back to the doc that e
   you learn the flags. Direct commands use `--platform claude|codex|both`; default is `claude`.
 - **Native Windows setup** — `setup.ps1` is a PowerShell port of `setup.sh` with the same flags
   and behaviour (including `--wizard`), so Windows users don't need Git Bash just to set up.
-- **Bundled skill pack** — `setup.sh --with-skills` installs seven invoke-by-name skills:
+- **Bundled skill pack** — `setup.sh --with-skills` installs nine invoke-by-name skills:
   `/handoff`, `/verify`, `/harness-doctor`, `/harness-help`, `/new-research`, `/writing-rules`,
-  `/new-feedback`. The six procedural ones prefer a project-local `scripts/<x>.sh` when present,
-  else run inline, so they work globally, in a harness project, or in a bare repo; `/writing-rules`
-  is pure reference. Claude installs into `.claude/skills` / `~/.claude/skills`; Codex into
+  `/new-feedback`, `/wayfinder`, `/autonomous-run`. Procedural skills prefer a project-local
+  `scripts/<x>.sh`; `/writing-rules` is pure reference and `/wayfinder` is the decision-to-spec workflow.
+  Claude installs into `.claude/skills` / `~/.claude/skills`; Codex into
   `.agents/skills` / `~/.agents/skills`; `both` creates independent copies. See [`skills/README.md`](../skills/README.md)
   and [`skills/RECOMMENDED.md`](../skills/RECOMMENDED.md).
 - **Feedback / self-improvement loop** — a `docs/feedback/` convention + `scripts/new-feedback.sh`
@@ -42,6 +42,10 @@ For the reasoning behind any of it, the cross-links point back to the doc that e
   deterministic guards behind the rules ([`15-safety-model.md`](15-safety-model.md) covers the posture).
 - **Profile-aware `verify.conf` presets** — setup drops a starter `.harness/verify.conf` matched to
   the chosen profile(s) (dev → build/test; docs → spell/links; data → row-count reconcile).
+- **Finite autonomous-run controller** — `software-dev` setup scaffolds
+  `scripts/autonomous-run.py` and its manifest template for bounded, local-only Claude/Codex
+  maker-checker runs. Other profiles do not receive this coding-first v1 machinery; Wayfinder
+  remains universal. See [`21-autonomous-runs.md`](21-autonomous-runs.md).
 - **CI workflow (shipped example)** — [`.github/workflows/verify.yml`](../.github/workflows/verify.yml)
   runs the same `scripts/verify.sh` on every push/PR (plus a Windows `setup.ps1` job), so "green on my
   laptop" and "green in CI" can't drift. Setup does **not** install it into your project — copy it as a
@@ -53,9 +57,9 @@ For the reasoning behind any of it, the cross-links point back to the doc that e
   and skip manually owned name conflicts with an actionable warning.
 - **rtk output compressor** — `setup.sh`/`setup.ps1 --with-rtk` (default-ON for `software-dev` /
   `devops-setup`; `--no-rtk` to skip) installs [`rtk`](https://github.com/rtk-ai/rtk) and runs its
-  own `rtk init -g` to wire a PreToolUse hook that compresses noisy CLI output 60–90% before it
-  reaches context. A binary + hook, not a plugin, and Claude-only: Codex-only installs never invoke
-  its Claude wiring. See [`../config/plugins.md`](../config/plugins.md).
+  initializer for every selected runtime. Claude gets transparent PreToolUse command rewriting;
+  Codex gets `AGENTS.md` + `RTK.md` command guidance because its hooks cannot replace tool input.
+  See [`../config/plugins.md`](../config/plugins.md).
 - **Org-policy variant** — `sudo setup.sh --org-policy` installs a managed `CLAUDE.md` at the OS
   policy path (applies to all users on a shared box) + a stricter, no-bypass settings profile.
   This is Claude-only; an `--org-policy` run with platform `codex` or `both` is rejected.

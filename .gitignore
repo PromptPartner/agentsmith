@@ -1,5 +1,7 @@
 # generated/assembled artifacts (the template ships sources, not outputs)
 *.zip
+__pycache__/
+*.pyc
 .harness/handoffs/
 # self-update remote (a user's private repo URL — keep it out of the tracked tree)
 .harness/remote
