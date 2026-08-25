@@ -1,11 +1,10 @@
-# Operating modes — sessions and loops
+# Operating modes — sessions, runs, and loops
 
-There are two ways to run this harness, and they differ in one thing only: **whether a human sees
-the output before it lands.** In an attended session you're in the loop — reading results,
-answering questions, merging PRs. In an autonomous loop the work takes effect with nobody
-watching. The dividing question, from the `autonomous-loops` profile: *"if this is wrong, will
-anyone notice before it lands?"* If yes, you're in session mode. If no, everything about how you
-operate has to change.
+There are three ways to run this harness, differing in duration and in whether a human sees the
+output before it lands. In an attended session, you read the result. A finite autonomous run works
+one accepted ticket overnight. A loop watches for recurring work. The dividing question from the
+`autonomous-loops` profile still governs both unattended modes: *"if this is wrong, will anyone
+notice before it lands?"* If no, the verification chain and blast-radius controls are mandatory.
 
 Rules live in the profiles (they're static context — restating them here would pay for them
 twice and drift). This doc is the part the profiles don't carry: when each mode fits, and how you
@@ -38,6 +37,18 @@ you, drop to conductor.**
 **End early, on purpose.** Hand off at ~25–30% of context *used* — quality degrades as the window
 fills, and the handoff note written while the agent still remembers everything is worth ten
 written at the bitter end. Saying "handoff" is not stopping work; it's how work survives.
+
+## Autonomous-run mode (finite, approved, unattended)
+
+A run is one accepted implementation ticket executed for hours without a person watching every
+turn. Unlike a loop, it has no watcher or schedule and cannot discover new work. Unlike an attended
+session, a controller automatically hands a committed attempt from a fresh maker to a fresh
+checker and either retries within the fixed contract or escalates.
+
+The run begins only after a human accepts a repository-owned terminal spec and names a separate
+implementation ticket. Its v1 authority ends at local commits on an isolated branch: no push,
+merge, tracker write, deployment, or other external action. See
+[`21-autonomous-runs.md`](21-autonomous-runs.md) for the protocol and commands.
 
 ## Loop mode (autonomy you earn, not configure)
 
@@ -122,10 +133,9 @@ regardless of which model or tool produced the work ([`03-verify-means-evidence.
 
 ## Choosing, and moving between them
 
-Start everything in session mode. Notice what's become routine — the items where you merge
-without reading closely, the sweeps you've watched succeed ten times. That's the work that's
-earned a loop, and the calibration you did watching it *was* L1. Move it out, one loop at a time,
-each with its own state file and metric.
+Start everything in session mode. A decision-complete, human-accepted ticket may graduate to a
+finite run. Repeated work that has become boring and measurable may graduate to a loop; the
+calibration you did while watching it was L1. Move it out one item or loop at a time.
 
 And the reverse rule is stricter: **a loop that surprises you drops back to session mode** —
 same day, no debate. Autonomy is cheap to revoke and expensive to over-extend. When a loop's work

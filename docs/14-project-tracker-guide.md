@@ -28,6 +28,19 @@ historical record. This guide makes that concrete without assuming a specific to
 - **Branch from the item** when the tool supports it, so the branch ↔ item ↔ PR links itself and
   status transitions automatically.
 
+## Decision tickets and implementation tickets
+
+A decision ticket answers one question that blocks a safe plan. Its deliverable is a recorded
+answer and rationale, not code, copy, configuration, or another slice of the destination. For
+foggy multi-session work, `/wayfinder` or `$wayfinder` keeps the decision map in a repository spec
+under `docs/specs/`; see [`20-wayfinding-spec-flow.md`](20-wayfinding-spec-flow.md).
+
+The decision item closes only after the operator accepts the terminal spec. Implementation then
+starts from new, separately scoped tickets linked back to that spec. Never reuse the decision
+ticket as an implementation ticket: doing so hides the acceptance boundary and leaves later agents
+unable to tell which choices are settled. The write-consent policy applies to every create, update,
+comment, and close; ask-first mode produces paste-ready drafts for the operator.
+
 ## Mapping to common tools
 
 | Concept | Linear | GitHub | Jira | No tracker |

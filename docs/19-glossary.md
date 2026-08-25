@@ -59,6 +59,17 @@ an expert developer, most of the friction here is words — clear that, and the 
   harness treats naming it and being allowed to write to it as two different consents.
   → [`14-project-tracker-guide.md`](14-project-tracker-guide.md)
 
+## Wayfinding
+
+- **Wayfinder** — the dynamic workflow that turns a destination with an unclear route into an
+  operator-accepted repository spec. → [`20-wayfinding-spec-flow.md`](20-wayfinding-spec-flow.md)
+- **Decision ticket / implementation ticket** — the first resolves a question and records its
+  rationale; the second delivers one scoped part of an accepted spec. They are never the same item.
+- **Frontier / fog** — the frontier is the set of sharp, unblocked decisions available now; fog is
+  in-scope uncertainty that cannot yet be phrased as a precise decision.
+- **Terminal spec** — a spec with no unresolved choice an implementer must make. It remains a draft
+  until the operator explicitly accepts it.
+
 ## Verification
 
 - **Evidence** — an artifact a check produced (failing→passing test, wire response, rendered
@@ -75,6 +86,9 @@ an expert developer, most of the friction here is words — clear that, and the 
 
 ## Loops (unattended work)
 
+- **Autonomous run** — one finite, accepted implementation ticket executed by a local controller:
+  fresh maker → deterministic verifier → fresh checker → accept, retry, or escalate. Its v1
+  authority ends at local commits. → [`21-autonomous-runs.md`](21-autonomous-runs.md)
 - **Loop** — a harness plus a schedule, durable state, and a verification chain; work that lands
   with no human watching. → [`05-operating-modes.md`](05-operating-modes.md), `profiles/autonomous-loops.md`
 - **Maker / checker** — the mandatory split: the agent that did the work never judges it; a
