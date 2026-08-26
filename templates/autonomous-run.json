@@ -47,6 +47,6 @@
   },
   "spec_path": "",
   "verify": {
-    "command": "./scripts/verify.sh"
+    "command": "./.agentsmith/agentsmith verify"
   }
 }

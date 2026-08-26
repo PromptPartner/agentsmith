@@ -27,8 +27,8 @@ is exactly what the attempt cap (three, then escalate) is for — if it's not ca
 isn't persisting in the state file ([`06-your-first-loop.md`](06-your-first-loop.md)).
 
 **"It said 'done' but the work wasn't actually verified."** Almost always a stub `verify.conf`. A
-fresh install ships a placeholder phase that just echoes, so `verify.sh` passes vacuously until you
-wire real checks. Replace the sanity line with your build/test commands — that's what makes "done"
+fresh install ships a deliberately failing `unwired` phase, so `agentsmith verify` stays red until
+you wire real checks. Replace that line with your build/test commands — that's what makes "done"
 mean something ([`03-verify-means-evidence.md`](03-verify-means-evidence.md)).
 
 **"The context-% handoff nudge didn't fire."** On Codex, expected: it is intentionally not
@@ -76,13 +76,13 @@ another. Recover from the backup or from history. The durable lesson (re-verify 
 claim *after* the last destructive step, not after the one that preserved it) is in
 [`10-best-practices.md`](10-best-practices.md).
 
-**"The rules don't seem to apply in my tool."** Check both `--platform` and scope. Claude needs
-`CLAUDE.md`; Codex needs `AGENTS.md`. A deprecated `--also-agents-md` run created only an extra
-rule file, not native Codex skills/config/hooks — re-run with `--platform codex` or `both`. Web
-surfaces get rules but not local hooks, skills, or scripts. See
+**"The rules don't seem to apply in my tool."** Run `agentsmith doctor --agent <id>` and inspect
+the instruction result separately from skills, MCP, and hooks. Project `AGENTS.md` is canonical;
+Claude gets a generated `CLAUDE.md`, while configured adapters must still point to the canonical
+file. Web surfaces do not gain local hooks merely by reading instructions. See
 [`13-platforms-and-tools.md`](13-platforms-and-tools.md).
 
 **Still stuck?** If a genuinely new failure mode turns up — something none of the above covers —
 that's not just a nuisance to work around, it's the raw material for a system fix. Run
-`./scripts/new-feedback.sh` and walk it through the loop; the next person (or the next you) gets a
+`agentsmith new-feedback "symptom"` and walk it through the loop; the next person gets a
 guard instead of the same surprise ([`09-adapting-it-to-your-team.md`](09-adapting-it-to-your-team.md)).

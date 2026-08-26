@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "canonical_project_instructions": "AGENTS.md",
+  "support_tiers": {
+    "native": "Managed instructions, skills, MCP/config, supported hooks, doctor, and lifecycle operations.",
+    "certified": "Verified instruction discovery plus explicitly declared standard capabilities and thin adapters where required.",
+    "community-compatible": "Expected to consume AGENTS.md but not tested by this project."
+  },
+  "evidence_levels": [
+    "fixture",
+    "observed",
+    "manual"
+  ],
+  "capability_statuses": [
+    "supported",
+    "unverified",
+    "unsupported"
+  ],
+  "management_statuses": ["native", "planned", "none"],
+  "required_registry_fields": [
+    "id",
+    "name",
+    "target_tier",
+    "certification",
+    "instructions",
+    "skills_tools",
+    "native_runtime",
+    "operating_systems",
+    "local_models",
+    "evidence"
+  ],
+  "required_instruction_fields": [
+    "discovery",
+    "project_paths",
+    "global_paths",
+    "nesting"
+  ],
+  "required_capability_fields": ["client_support", "agentsmith_management", "notes"],
+  "agents": [
+    {"id": "claude", "name": "Claude Code", "tier": "native", "adapter": "native"},
+    {"id": "codex", "name": "Codex", "tier": "native", "adapter": "native"},
+    {"id": "github-copilot", "name": "GitHub Copilot", "tier": "certified", "adapter": "direct"},
+    {"id": "cursor", "name": "Cursor", "tier": "certified", "adapter": "direct"},
+    {"id": "gemini-cli", "name": "Gemini CLI", "tier": "certified", "adapter": "configured"},
+    {"id": "windsurf-devin", "name": "Windsurf / Devin", "tier": "certified", "adapter": "direct"},
+    {"id": "cline", "name": "Cline", "tier": "certified", "adapter": "direct"},
+    {"id": "roo-code", "name": "Roo Code", "tier": "certified", "adapter": "direct"},
+    {"id": "aider", "name": "Aider", "tier": "certified", "adapter": "configured"},
+    {"id": "continue", "name": "Continue", "tier": "certified", "adapter": "configured"},
+    {"id": "openhands", "name": "OpenHands", "tier": "certified", "adapter": "direct"},
+    {"id": "goose", "name": "Goose", "tier": "certified", "adapter": "configured"},
+    {"id": "opencode", "name": "OpenCode", "tier": "certified", "adapter": "direct"},
+    {"id": "jetbrains-junie", "name": "JetBrains Junie", "tier": "certified", "adapter": "direct"},
+    {"id": "zed", "name": "Zed", "tier": "certified", "adapter": "direct"},
+    {"id": "jules", "name": "Jules", "tier": "certified", "adapter": "direct"}
+  ],
+  "excluded_backends": ["lm-studio", "tabby"],
+  "selection_cases": [
+    {"argv": ["--agent", "claude", "--agent", "codex"], "result": ["claude", "codex"]},
+    {"argv": ["--agent", "claude,codex"], "result": ["claude", "codex"]},
+    {"argv": ["--platform", "claude"], "result": ["claude"]},
+    {"argv": ["--platform", "codex"], "result": ["codex"]},
+    {"argv": ["--platform", "both"], "result": ["claude", "codex"]},
+    {"argv": ["--agent", "native"], "result": ["claude", "codex"]},
+    {"argv": ["--agent", "all"], "result": "ALL"},
+    {"argv": ["--agent", "claude", "--platform", "codex"], "error": "mixed-selection"}
+  ],
+  "conformance_scenarios": [
+    "canonical-root-instructions",
+    "configured-adapter-discovery",
+    "nested-rule-precedence",
+    "skill-identity-independent-of-install-path",
+    "capabilities-reported-separately",
+    "managed-content-idempotence",
+    "foreign-config-preservation",
+    "uninstall-ownership",
+    "dry-run-isolation",
+    "spaces-and-unicode-paths",
+    "lf-and-crlf-inputs",
+    "native-windows-without-bash"
+  ]
+}

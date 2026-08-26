@@ -50,7 +50,7 @@ creative-design profile: establish the look once, write it down, and hold every 
 
 Adherence is a judgment rule, not something a script can grep for. It's held by the quality-gate
 checkbox below, the STOP-table row, and the UI-edit nudge hook — deliberately **not** by
-`verify.sh` (design correctness isn't automatable, so the verify preset stays out of it).
+`agentsmith verify` (design correctness isn't automatable, so the verify preset stays out of it).
 
 ### Quality gates
 Before calling code done, tick each — "deferred: reason" is allowed, silence is not:
@@ -74,11 +74,9 @@ Before calling code done, tick each — "deferred: reason" is allowed, silence i
       are fixed in this same unit (R6)
 - [ ] a defect ticket exists for anything found-but-not-fixed (R7)
 
-Single entry point: run `scripts/verify.sh` (it should chain build → typecheck →
-lint → tests). The actual commands live in `.harness/verify.conf` so the script
-and the human stay in sync — edit the conf, not the call sites. If `verify.sh`
-doesn't exist yet, create it to wrap the conf; never scatter raw commands across
-sessions.
+Single entry point: run `agentsmith verify` (it should chain build → typecheck →
+lint → tests). The actual commands live in `.harness/verify.conf` so the CLI and
+the human stay in sync — edit the conf, not the call sites.
 
 ### Failure modes to guard against
 - **Fix-on-fix spiral.** Skipping R1, you patch a symptom, it breaks elsewhere,
