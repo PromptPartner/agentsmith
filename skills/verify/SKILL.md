@@ -1,6 +1,7 @@
 ---
 name: verify
 description: Answer "is this shippable / done?" with evidence before a commit or PR — fires on "verify", "is this done", "ready to ship?", pre-commit or pre-PR. Part of the Agentsmith harness; runs the project's verify phases and never claims "passing" without showing the output (R5).
+compatibility: Requires command access; the fast path requires the cross-platform Agentsmith CLI.
 ---
 
 # Verify — evidence before "done"
@@ -11,15 +12,15 @@ description: Answer "is this shippable / done?" with evidence before a commit or
 ## When this fires
 "verify" / "is this done / shippable / ready to merge?" / just before a commit or PR.
 
-## Platform
-Identify the active runtime from this skill's path (`.claude/skills` = Claude,
-`.agents/skills` = Codex), falling back to managed rule files: only `CLAUDE.md` means Claude, only
-`AGENTS.md` means Codex, and both mean both-platform. The verification runner and evidence standard
-are platform-neutral; use the platform only to label the report and to name the matching
-instruction file when a rule is relevant.
+## Runtime neutrality
+The verification runner and evidence standard are client-neutral. Never infer the active agent
+from this skill's install path: `.agents/skills` is the shared Agent Skills location. Use canonical
+`AGENTS.md` when an instruction is relevant.
 
-## Fast path — if `./scripts/verify.sh` exists
-1. Run `./scripts/verify.sh` (runs every phase in `.harness/verify.conf`, stops at the first
+## Fast path — if the Agentsmith CLI is available
+1. Run `agentsmith verify` (or the installed-project shim `.agentsmith/agentsmith verify` on
+   macOS/Linux and `.agentsmith\\agentsmith.cmd verify` on Windows). It runs every phase in
+   `.harness/verify.conf` and stops at the first
    failure). `--list` shows the phases; `--only <tag>` iterates just one.
 2. On a failure: read the label + command it printed, explain in plain language what broke, and
    point at that phase's line in `.harness/verify.conf` to fix or refine.
@@ -34,6 +35,5 @@ instruction file when a rule is relevant.
    `.harness/verify.conf` — but still run the checks by hand this time.
 
 ## Report
-Start with the active platform, then state each check and its evidence: "build ok, 42 tests green,
-lint clean" — with the output, not "should pass". Anything skipped is "deferred: reason", never
-silence.
+State each check and its evidence: "build ok, 42 tests green, lint clean" — with the output, not
+"should pass". Anything skipped is "deferred: reason", never silence.

@@ -77,7 +77,7 @@ actually want is a hook.
 | A secret nearly landed in a commit | `scripts/secret-scan.sh` as a pre-commit hook (`--with-hooks`) |
 | Work committed straight to main | `hooks/git/protect-main.sh` |
 | `CLAUDE.md` creeping past the budget | `scripts/lint-leanness.sh` / `setup.sh --doctor` |
-| "Done" claimed, checks not run | `scripts/verify.sh` — the gate is a script, not a promise |
+| "Done" claimed, checks not run | `agentsmith verify` — the gate is executable, not a promise |
 | Anything project-specific that must never recur | a phase you add to `.harness/verify.conf` |
 
 The pattern generalizes: this repo itself replaced a by-hand "keep the published tree generic"

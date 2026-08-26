@@ -78,7 +78,7 @@ memory of the action that once made it true.
 
 ## The mechanical form
 
-`scripts/verify.sh` reads `.harness/verify.conf` — one `label :: command` per line, run in
+`agentsmith verify` reads `.harness/verify.conf` — one `label :: command` per line, run in
 order, first failure stops — and is the gate for calling anything shippable. It starts as a
 placeholder that only echoes, which means **a fresh install's "verified" is vacuously true until
 you wire real phases**. Replacing that line with your build/test/checks is the highest-leverage

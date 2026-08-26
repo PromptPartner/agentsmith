@@ -1,6 +1,7 @@
 ---
 name: writing-rules
 description: Write or review anything an agent reads — a core rule, a profile gate, a SKILL.md description, an instruction-file line, a subagent prompt, a handoff note, a verify-phase label. Part of the Agentsmith harness; supplies the levers that decide whether a line changes behaviour or only costs tokens — the two loads, context pointers, the ladder, completion criteria, leading words, the no-op test. Its default move is deletion, so it earns most on a draft that already exists.
+compatibility: Requires an Agent Skills-compatible coding agent with filesystem access.
 ---
 
 # Writing rules — and anything else an agent reads
@@ -17,13 +18,10 @@ same *process* every run rather than producing the same output.
 When the document is a harness surface — a `core/` rule, a profile, a skill, a hook — read
 [`HARNESS-SURFACES.md`](HARNESS-SURFACES.md) for where it goes and what it costs.
 
-## Platform vocabulary
-Identify the active runtime from this skill's path (`.claude/skills` = Claude,
-`.agents/skills` = Codex). Independently inspect the managed rule files for install mode: only
-`CLAUDE.md` means Claude, only `AGENTS.md` means Codex, and both mean both-platform. Use that as the
-runtime fallback if the skill path is unavailable. “Instruction file” below means the matching
-file. In both mode require the generated rule blocks to remain equivalent; edit their shared
-`core/` or `profiles/` source, never one generated copy.
+## Instruction vocabulary
+`AGENTS.md` is the canonical portable instruction file. Never infer the active agent from this
+skill's install path: `.agents/skills` is shared across clients. Treat client-specific instruction
+files as generated adapters; edit their shared `core/` or `profiles/` source, never an adapter copy.
 
 ## The two loads
 

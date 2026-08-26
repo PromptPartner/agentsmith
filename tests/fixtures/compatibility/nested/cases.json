@@ -1,0 +1,14 @@
+{
+  "cases": [
+    {
+      "working_path": "root/sibling.txt",
+      "instruction_chain": ["root/AGENTS.md"],
+      "effective_sentinel": "root"
+    },
+    {
+      "working_path": "root/child/grandchild/task.txt",
+      "instruction_chain": ["root/AGENTS.md", "root/child/AGENTS.md"],
+      "effective_sentinel": "child"
+    }
+  ]
+}

@@ -1,31 +1,30 @@
 # Your first hour
 
-Setup ran, printed its next steps, and dropped a `FIRST-STEPS.md` card in your project — that
-card is the 30-minute version, and it's good. This is the hour version: what actually changed on
+Setup ran and printed its managed destinations. This is the hour version: what actually changed on
 disk, why it's shaped that way, and how your first task and first handoff should go. The gap
 between "it installed" and "I know what it did" is where most people quit; this closes it.
 
 ## Minutes 0–10: what setup actually wrote
 
-A project install (`./setup.sh --platform <claude|codex|both> --profile software-dev --target .`,
+A project install (`./setup.sh --agent <id|group> --profile software-dev --target .`,
 or the wizard) leaves these project-local surfaces. Unless you pass `--assemble-only`, it also
 updates the selected runtime's user config in `~/.claude` and/or resolved `CODEX_HOME`:
 
 ```
-CLAUDE.md and/or AGENTS.md       the selected runtime's assembled rulebook (tour below)
-FIRST-STEPS.md                   your 30-minute getting-started card
+AGENTS.md                        canonical assembled rulebook (tour below)
+CLAUDE.md                        generated copy when Claude is selected
 .harness/verify.conf             your project's definition of "shippable" (starts as a stub)
 .harness/templates/              plan, handoff, research, progress-log, quality-gate templates
 .claude/settings.local.json.example   Claude project safety example (when Claude is selected)
 .codex/config.toml                 Codex project MCP (only with --with-mcp)
-.claude/skills and/or .agents/skills   independent copies (only with --with-skills)
+.agents/skills                  canonical pack (only with --with-skills)
+.claude/skills                  required Claude adapter (when selected)
 .planning/progress-log.md        a running log the agent appends to
 docs/feedback/README.md          the post-incident convention (see below)
-scripts/                         verify.sh, handoff.sh, new-feedback.sh, secret-scan.sh …
-hooks/git/                       protect-main, conventional-commit, branch-naming (opt-in)
+.agentsmith/                     Python runtime + POSIX/Windows command shims
 ```
 
-The scripts and templates are *copied in*, so your project is self-contained — nothing at runtime
+The runtime and templates are *copied in*, so your project is self-contained — nothing at runtime
 depends on the harness checkout you cloned. Each rule file is written inside marker comments
 (`<!-- BEGIN AGENTSMITH … -->`): that block belongs to setup. To change the rules, edit `core/`
 or `profiles/` in your harness checkout and re-run setup; anything you add *outside* the markers
@@ -33,7 +32,7 @@ or `profiles/` in your harness checkout and re-run setup; anything you add *outs
 
 ## Minutes 10–25: read your native rule file — the tour
 
-Here's the reframe that makes everything else make sense: **`CLAUDE.md` / `AGENTS.md` is not a
+Here's the reframe that makes everything else make sense: **`AGENTS.md` is not a
 runtime config file.** The agent *reads* it — the whole thing, effectively re-read on every turn of
 every session — and behaves according to what it understood. It's a contract written for a very
 fast, very literal colleague. Editing it is programming the agent, in prose. That's also why
@@ -62,13 +61,13 @@ here:
 test :: npm test        # or: pytest -q · go test ./... · cargo test
 ```
 
-This five-minute edit is disproportionately important: `verify.sh` runs every phase in order and
+This five-minute edit is disproportionately important: `agentsmith verify` runs every phase in order and
 is the agent's gate for calling anything done. Until it runs *your* checks, "verified" means
 nothing (the full story: [`03-verify-means-evidence.md`](03-verify-means-evidence.md)).
 
 ## Minutes 30–50: the first task
 
-Start `claude` or `codex` in the project and ask: *"what does my harness do, and what are my rules?"* — the
+Start your selected coding agent in the project and ask: *"what does my harness do, and what are my rules?"* — the
 agent explains its own contract back to you, which is both a sanity check and the fastest tour.
 
 Then give it one small, real task — a typo-level fix, a tiny function, something you'd trust a

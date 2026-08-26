@@ -70,7 +70,7 @@ image   :: trivy image --severity HIGH,CRITICAL --exit-code 1 <your-image>
 ```
 
 They ship **commented out**, like every other preset line — uncomment what your stack actually has.
-`scripts/verify.sh` runs whatever the conf lists, so CI picks them up for free with no new
+`agentsmith verify` runs whatever the conf lists, so CI picks them up for free with no new
 machinery. An uncommented phase whose tool isn't installed fails loudly, which is the correct
 behavior: a green check that silently skipped is worse than no check.
 

@@ -1,6 +1,7 @@
 ---
 name: new-research
 description: Start a durable research / source note that captures what you read and found — fires on "start a research note", "capture these sources", "log my research". Part of the Agentsmith harness; scaffolds docs/research/<slug>.md so findings live in the repo, never in disposable memory (R9), and are never silently deleted.
+compatibility: Requires filesystem access; the fast path requires the cross-platform Agentsmith CLI.
 ---
 
 # New research note
@@ -12,11 +13,12 @@ scaffolds one note per topic.
 "start a research note" / "capture these sources" / beginning any multi-source investigation
 whose findings should outlive the session.
 
-## Fast path — if `./scripts/new-research.sh` exists
-Run `./scripts/new-research.sh "topic name"` — it slugifies the title and writes
+## Fast path — if the Agentsmith CLI is available
+Run `agentsmith new-research "topic name"` — use `.agentsmith/agentsmith` on macOS/Linux or
+`.agentsmith\\agentsmith.cmd` on Windows when the command is not on PATH. It slugifies the title and writes
 `docs/research/<slug>.md` from the template (it won't overwrite an existing file).
 
-## Fallback — no script
+## Fallback — no CLI
 1. slug = the topic lowercased, every run of non-alphanumeric characters → `-`, ends trimmed.
 2. If `docs/research/<slug>.md` already exists, STOP — append to it, never overwrite.
 3. Otherwise create it with a no-delete banner (obsolete → move to `docs/research/_archive/`, R9)

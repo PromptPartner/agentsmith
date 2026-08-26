@@ -20,7 +20,7 @@ tracker — unasked. Nothing malfunctioned; the harness did exactly what its rul
 the scary version. *Do:* treat "the connection exists" and "you may write there" as two separate
 consents — the second explicit, opt-in, and durable once given. *Don't:* let any connected tool
 (tracker, CRM, mail, chat) be writable by inference; the tracker is merely the cheap version of
-this failure. *Guard:* a consent test suite runs in `verify.sh` and fails if naming a tracker
+this failure. *Guard:* a consent test suite runs in the verification gate and fails if naming a tracker
 ever grants writes again — and upgrades fail closed to ask-first.
 
 **Reminders don't hold. Guards do.**

@@ -7,15 +7,15 @@ tokens until it's triggered). It's just a folder with a `SKILL.md`.
 
 | Location | Scope | Use for |
 |---|---|---|
-| `~/.claude/skills/<name>/` | every Claude project on this machine | personal Claude skills |
-| `<project>/.claude/skills/<name>/` | one Claude project (git-committable) | team/project Claude skills |
-| `~/.agents/skills/<name>/` | every Codex project on this machine | personal Codex skills |
-| `<project>/.agents/skills/<name>/` | one Codex project (git-committable) | team/project Codex skills |
+| `~/.agents/skills/<name>/` | shared global Agent Skills destination | portable personal skills |
+| `<project>/.agents/skills/<name>/` | shared project Agent Skills destination | portable team/project skills |
+| `~/.claude/skills/<name>/` | generated Claude adapter | clients that require a runtime copy |
+| `<project>/.claude/skills/<name>/` | generated Claude project adapter | clients that require a runtime copy |
 | bundled in a plugin | wherever the plugin is enabled | shared/distributed skills |
 
 The agent auto-discovers them and may invoke one when its description matches the task. Invoke a
-skill explicitly as `/<name>` in Claude Code or `$<name>` in Codex. With `--platform both`, setup
-installs independent copies in both native trees rather than symlinks.
+skill explicitly with the syntax supported by that client. Skill identity comes from frontmatter,
+never from whether it happened to be installed below `.claude/` or `.agents/`.
 
 ## Minimal structure
 
@@ -42,8 +42,9 @@ only when the skill needs them.
 
 ## The bundled skill pack
 
-Nine small skills ship in this repo. Procedural skills prefer a project-local `scripts/<x>.sh` when
-present and otherwise carry their fallback in the skill. **writing-rules** is pure reference;
+Nine small skills ship in this repo. The starter `example-skill` is not part of that bundled count.
+Procedural skills use the cross-platform `agentsmith` CLI.
+**writing-rules** is pure reference;
 **wayfinder** is the repository-native decision-to-spec workflow.
 
 | Skill | Fires on | What it does |
@@ -64,7 +65,7 @@ They're work-type-neutral and follow `core/` rules (verify before done, no secre
 ## Install the skills bundled here
 
 ```bash
-./setup.sh --with-skills                          # bundled pack + example (see targets below)
+./setup.sh --agent all --profile general-admin --with-skills --target .
 # or copy one by hand:
 cp -r skills/handoff <project>/.claude/skills/
 cp -r skills/handoff <project>/.agents/skills/
@@ -72,9 +73,9 @@ cp -r skills/handoff <project>/.agents/skills/
 
 `--with-skills` installs **every** skill folder in `skills/`. The **target depends on mode**:
 
-- **Project mode** → `<project>/.claude/skills/` for Claude, `<project>/.agents/skills/` for Codex,
-  or both native directories with `--platform both` (committable, travels with the repo).
-- **Global mode** → `~/.claude/skills/` for Claude, `~/.agents/skills/` for Codex, or both.
+- **Project mode** → canonical `<project>/.agents/skills/`; Claude additionally receives
+  `<project>/.claude/skills/` as a required adapter.
+- **Global mode** → canonical `~/.agents/skills/`; Claude additionally receives its global adapter.
 
 ## Best practices (R10 — keep the surface small)
 
