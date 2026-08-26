@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentsmith.dev/schemas/agents.schema.json",
+  "title": "AgentSmith agent compatibility registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "contract_version", "canonical_instructions", "dimensions", "support_tiers", "evidence_types", "groups", "exclusions", "agents"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "contract_version": { "const": 1 },
+    "canonical_instructions": { "const": "AGENTS.md" },
+    "dimensions": {
+      "type": "array",
+      "prefixItems": [
+        { "const": "instructions" },
+        { "const": "skills_tools" },
+        { "const": "native_runtime" }
+      ],
+      "items": false
+    },
+    "support_tiers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["native", "certified", "community-compatible"],
+      "properties": {
+        "native": { "type": "string", "minLength": 1 },
+        "certified": { "type": "string", "minLength": 1 },
+        "community-compatible": { "type": "string", "minLength": 1 }
+      }
+    },
+    "evidence_types": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fixture", "observed", "manual"],
+      "properties": {
+        "fixture": { "type": "string", "minLength": 1 },
+        "observed": { "type": "string", "minLength": 1 },
+        "manual": { "type": "string", "minLength": 1 }
+      }
+    },
+    "groups": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["native", "standard", "local", "all"],
+      "properties": {
+        "native": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "standard": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "local": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "all": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+      }
+    },
+    "exclusions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "reason", "covered_as"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+          "reason": { "type": "string", "minLength": 1 },
+          "covered_as": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "agents": {
+      "type": "array",
+      "minItems": 16,
+      "maxItems": 16,
+      "items": { "$ref": "#/$defs/agent" }
+    }
+  },
+  "$defs": {
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["client_support", "agentsmith_management", "notes"],
+      "properties": {
+        "client_support": { "enum": ["supported", "unsupported", "unverified"] },
+        "agentsmith_management": { "enum": ["native", "planned", "none"] },
+        "notes": { "type": "string" }
+      }
+    },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "target_tier", "adapter", "certification", "instructions", "skills_tools", "native_runtime", "operating_systems", "local_models", "evidence"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+        "name": { "type": "string", "minLength": 1 },
+        "target_tier": { "enum": ["native", "certified", "community-compatible"] },
+        "adapter": { "enum": ["native", "direct", "configured"] },
+        "certification": { "enum": ["pending", "passed", "failed", "expired"] },
+        "instructions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["discovery", "global_paths", "project_paths", "adapter_config_paths", "nesting"],
+          "properties": {
+            "discovery": { "enum": ["direct", "generated-copy", "configured"] },
+            "global_paths": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+            "project_paths": { "type": "array", "items": { "type": "string" }, "minItems": 1, "uniqueItems": true },
+            "adapter_config_paths": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+            "nesting": { "enum": ["supported", "unsupported", "configured", "unverified"] }
+          }
+        },
+        "skills_tools": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["agent_skills", "skill_directories", "mcp"],
+          "properties": {
+            "agent_skills": { "$ref": "#/$defs/capability" },
+            "skill_directories": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+            "mcp": { "$ref": "#/$defs/capability" }
+          }
+        },
+        "native_runtime": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["hooks", "doctor", "lifecycle"],
+          "properties": {
+            "hooks": { "$ref": "#/$defs/capability" },
+            "doctor": { "$ref": "#/$defs/capability" },
+            "lifecycle": { "$ref": "#/$defs/capability" }
+          }
+        },
+        "operating_systems": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["targets", "constraints"],
+          "properties": {
+            "targets": {
+              "type": "array",
+              "items": { "enum": ["macos", "linux", "windows", "cloud"] },
+              "minItems": 1,
+              "uniqueItems": true
+            },
+            "constraints": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "local_models": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["client_support", "providers", "notes"],
+          "properties": {
+            "client_support": { "enum": ["supported", "unsupported", "unverified"] },
+            "providers": { "type": "array", "items": { "enum": ["ollama", "lm-studio", "other-openai-compatible"] }, "uniqueItems": true },
+            "notes": { "type": "string" }
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type", "scope", "artifact", "client_version", "verified_at"],
+            "properties": {
+              "type": { "enum": ["fixture", "observed", "manual"] },
+              "scope": { "type": "string", "minLength": 1 },
+              "artifact": { "type": ["string", "null"] },
+              "client_version": { "type": ["string", "null"] },
+              "verified_at": { "type": ["string", "null"], "format": "date" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

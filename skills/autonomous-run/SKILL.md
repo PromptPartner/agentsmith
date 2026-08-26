@@ -1,6 +1,7 @@
 ---
 name: autonomous-run
 description: Prepare, start, inspect, resume, or stop a finite local overnight coding run after a human has accepted a Wayfinder terminal spec; coordinates a declared Claude/Codex maker and independent checker without pushing, merging, or writing to external systems.
+compatibility: Requires Python 3.11+, git, Claude Code and Codex CLIs, plus sandbox-exec on macOS or bubblewrap on Linux.
 ---
 
 # Autonomous run — bounded overnight execution
@@ -29,12 +30,7 @@ If `scripts/autonomous-run.py` exists, use it. Its installed template is
 `templates/autonomous-run.json`):
 
 ```text
-python3 scripts/autonomous-run.py prepare \
-  --run-id <short-id> \
-  --spec docs/specs/<name>.md \
-  --ticket <implementation-ticket> \
-  --maker codex --checker claude \
-  --template .harness/templates/autonomous-run.json
+python3 scripts/autonomous-run.py prepare --run-id <short-id> --spec docs/specs/<name>.md --ticket <implementation-ticket> --maker codex --checker claude --template .harness/templates/autonomous-run.json
 ```
 
 This only creates a manifest. Review its exact allowed/denied paths, verifier, models, attempt cap,

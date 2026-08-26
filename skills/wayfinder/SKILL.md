@@ -1,6 +1,7 @@
 ---
 name: wayfinder
 description: Wayfind a foggy, multi-session effort into an accepted repository spec and separate implementation-ticket drafts. Use when the destination is known but important decisions, dependencies, or scope are not yet clear enough to implement safely.
+compatibility: Requires an Agent Skills-compatible coding agent with filesystem access.
 ---
 
 # Wayfinder

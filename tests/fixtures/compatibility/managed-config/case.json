@@ -1,0 +1,16 @@
+{
+  "before": {
+    "foreign_before": "preserve byte-for-byte where practical",
+    "agentsmith": {"stale": true},
+    "foreign_after": [1, 2, 3]
+  },
+  "managed_replacement": {
+    "agentsmith": {"canonical_instructions": "AGENTS.md"}
+  },
+  "invariants": [
+    "foreign content survives install",
+    "a second install is byte-identical",
+    "uninstall removes only agentsmith-owned content",
+    "dry-run leaves the source byte-identical"
+  ]
+}

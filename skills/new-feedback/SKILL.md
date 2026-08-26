@@ -1,6 +1,7 @@
 ---
 name: new-feedback
 description: Log a harness lesson / post-incident so the SYSTEM improves, not just this one bug — fires on "log a harness lesson", "post-incident", "we should make this less likely", System-Evolution moments. Part of the Agentsmith harness; scaffolds a numbered docs/feedback/NNNN-*.md with the five-stage template (R9 — numbers are never reused).
+compatibility: Requires filesystem access; the fast path requires the cross-platform Agentsmith CLI.
 ---
 
 # New feedback note (harness post-incident)
@@ -13,11 +14,12 @@ You were corrected on something a rule could have prevented; you iterated more t
 have; a human stepped in; you re-derived a decision a past session already made. After fixing the
 immediate thing, capture the lesson.
 
-## Fast path — if `./scripts/new-feedback.sh` exists
-Run `./scripts/new-feedback.sh "short symptom"` — it computes the next number and writes
+## Fast path — if the Agentsmith CLI is available
+Run `agentsmith new-feedback "short symptom"` — use `.agentsmith/agentsmith` on macOS/Linux or
+`.agentsmith\\agentsmith.cmd` on Windows when the command is not on PATH. It computes the next number and writes
 `docs/feedback/NNNN-<slug>.md` with the five-stage template, Status `open`.
 
-## Fallback — no script
+## Fallback — no CLI
 1. Next number = (highest existing `docs/feedback/NNNN-*.md` + 1), zero-padded to 4 digits.
    Numbers are **never reused** (R9), even if an old entry was archived.
 2. Create `docs/feedback/NNNN-<slug>.md` (Status: open) with the five stages:

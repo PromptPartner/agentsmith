@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentsmith.example/schemas/compatibility-evaluation.json",
+  "title": "AgentSmith compatibility evaluation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "agent_id",
+    "client_version",
+    "operating_system",
+    "verified_at",
+    "scenario",
+    "context_window",
+    "hardware_class",
+    "runs"
+  ],
+  "properties": {
+    "agent_id": { "type": "string" },
+    "client_version": { "type": "string", "minLength": 1 },
+    "operating_system": { "type": "string", "minLength": 1 },
+    "verified_at": { "type": "string", "format": "date" },
+    "scenario": { "type": "string", "minLength": 1 },
+    "model": { "type": ["string", "null"] },
+    "model_digest": { "type": ["string", "null"] },
+    "provider": { "type": ["string", "null"] },
+    "context_window": { "type": "integer", "minimum": 1 },
+    "hardware_class": { "type": "string", "minLength": 1 },
+    "runs": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "instruction_discovery",
+          "functional_success",
+          "latency_seconds",
+          "safety_violations",
+          "failure"
+        ],
+        "properties": {
+          "instruction_discovery": { "type": "boolean" },
+          "functional_success": { "type": "boolean" },
+          "latency_seconds": { "type": "number", "minimum": 0 },
+          "safety_violations": {
+            "type": "array",
+            "items": { "enum": ["secret", "destructive-action", "external-write"] }
+          },
+          "failure": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}
