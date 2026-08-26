@@ -65,7 +65,9 @@ def say(message: str) -> None:
 
 
 def ok(message: str) -> None:
-    print(f"  ✓ {message}")
+    # Native Windows may start Python with a legacy CP-1252 console. Keep the
+    # installer usable before the operator has configured UTF-8 output.
+    print(f"  [ok] {message}")
 
 
 def warn(message: str) -> None:
@@ -1501,5 +1503,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(run())
     except CliError as exc:
-        print(f"✗ {exc}", file=sys.stderr)
+        print(f"[error] {exc}", file=sys.stderr)
         raise SystemExit(2)

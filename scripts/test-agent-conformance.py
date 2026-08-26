@@ -326,6 +326,21 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
     mixed = run_core("--agent", "claude", "--platform", "codex", "--dry-run")
     results.check(mixed.returncode != 0 and output_has_all(mixed.stdout, ("agent", "platform")), "mixed --agent/--platform selection is rejected")
 
+    legacy_console_env = os.environ.copy()
+    legacy_console_env["PYTHONIOENCODING"] = "cp1252"
+    legacy_console = subprocess.run(
+        [sys.executable, str(CORE_PATH), "--agent", "native", "--profile", "general-admin", "--dry-run"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=legacy_console_env,
+        check=False,
+    )
+    results.check(
+        legacy_console.returncode == 0,
+        "runtime status output works with an untouched Windows CP-1252 console",
+        legacy_console.stderr.decode("cp1252", errors="replace")[-300:],
+    )
+
     for label, selector in (
         ("repeatable selector", ("--agent", "claude", "--agent", "codex")),
         ("comma selector", ("--agent", "claude,codex")),
