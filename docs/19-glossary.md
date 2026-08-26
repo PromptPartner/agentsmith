@@ -11,13 +11,13 @@ an expert developer, most of the friction here is words — clear that, and the 
 - **Agent** — the model *plus* the harness, running with autonomy. Not a chatbot with tools.
 - **Context window** — the model's working memory for a session. Finite, and quality degrades as
   it fills — which is why sessions hand off early (~25–30% used), not when full.
-- **Static context** — what's loaded *every turn* and paid for every turn: the assembled
-  native rule file (`CLAUDE.md` or `AGENTS.md`). Rationed hard (600 lines / ~10k tokens here). → [`04-why-your-agent-ignored-the-rule.md`](04-why-your-agent-ignored-the-rule.md)
+- **Static context** — what's loaded *every turn* and paid for every turn: canonical `AGENTS.md`
+  (or Claude's generated copy). Rationed hard (600 lines / ~10k tokens here). → [`04-why-your-agent-ignored-the-rule.md`](04-why-your-agent-ignored-the-rule.md)
 - **Dynamic context** — loaded only on demand: skills, docs, memory, tool results. Free until used.
-- **`CLAUDE.md` / `AGENTS.md`** — the native Claude/Codex filenames for the assembled rulebook.
-  A contract the agent understands, distinct from runtime JSON/TOML config. → [`02-your-first-hour.md`](02-your-first-hour.md)
-- **Platform** — the installation target selected by `--platform claude|codex|both`. Default:
-  Claude. `both` means independent native copies, not links. → [`13-platforms-and-tools.md`](13-platforms-and-tools.md)
+- **`AGENTS.md` / `CLAUDE.md`** — canonical portable rulebook and Claude's generated adapter copy;
+  both are distinct from runtime JSON/TOML config. → [`02-your-first-hour.md`](02-your-first-hour.md)
+- **Agent target** — an ID selected by repeatable `--agent`, or by the `native`, `standard`,
+  `local`, or `all` groups. `--platform` is a migration alias. → [`13-platforms-and-tools.md`](13-platforms-and-tools.md)
 - **`CODEX_HOME`** — Codex's selected user directory; defaults to `~/.codex`. Agentsmith resolves
   this one path and does not search other Orca account homes.
 - **Managed block** — the marked region of a rule file or Codex TOML that setup owns and
@@ -81,7 +81,7 @@ an expert developer, most of the friction here is words — clear that, and the 
   fails mechanically when a rule is broken. "Guardrails hold what prose forgets."
 - **Hook** — code that runs at a lifecycle point (pre-commit, pre-tool-call) and can block the
   action. The strongest kind of guard. Codex user hooks require review/trust through `/hooks`.
-- **`verify.sh` / `verify.conf`** — the project's "is this shippable?" gate and its definition:
+- **`agentsmith verify` / `verify.conf`** — the project's "is this shippable?" gate and its definition:
   `label :: command` phases, run in order, first failure stops.
 
 ## Loops (unattended work)

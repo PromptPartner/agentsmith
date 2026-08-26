@@ -165,7 +165,7 @@ scripts in `hooks/git/`. It backs up any foreign hook it would overwrite and is 
 | **protect-main** | pre-commit | recommended | Refuse commits on `main`/`master` — branch first. (The very first commit, before the branch is born, is allowed.) Override `PROTECTED_BRANCHES`. |
 | **conventional-commit** | commit-msg | recommended | Subject must be `type(scope): why`. Merge/revert/fixup pass. Override `CC_TYPES`. |
 | **branch-naming** | pre-push | opt-in | Branch must match `BRANCH_PATTERN` (default `you/ai-123-slug`) so PRs auto-link. Base branches exempt. |
-| **tests-green** | pre-push | opt-in | Runs `scripts/verify.sh` before push; blocks if red. |
+| **tests-green** | pre-push | legacy opt-in | Runs the legacy `scripts/verify.sh`; new installs should call `agentsmith verify`. |
 
 Every guardrail is bypassable for a single commit/push with `--no-verify` (use sparingly), and each
 fails safe. They're plain scripts — test one directly, e.g. `hooks/git/conventional-commit.sh msg.txt`.

@@ -23,7 +23,7 @@ is a harness" to "make it your team's own," with the glossary as the appendix:
 | [`10-best-practices.md`](10-best-practices.md) | Dos & don'ts, each traceable to a real incident. |
 | [`11-designing-uis.md`](11-designing-uis.md) | Product UI is `software-dev`: the `DESIGN.md` design-system workflow and how the harness holds UI to it. |
 | [`12-whats-built-in.md`](12-whats-built-in.md) | The catalog of conveniences setup can install — the machinery. |
-| [`13-platforms-and-tools.md`](13-platforms-and-tools.md) | Native Claude/Codex destinations, capabilities, and web/other surfaces. |
+| [`13-platforms-and-tools.md`](13-platforms-and-tools.md) | The 16-agent matrix, three capability layers, and native destinations. |
 | [`14-project-tracker-guide.md`](14-project-tracker-guide.md) | Tool-agnostic tracker conventions (and the write-consent rule). |
 | [`15-safety-model.md`](15-safety-model.md) | What the harness can do to your machine, and how to bound it. |
 | [`16-securing-what-you-build.md`](16-securing-what-you-build.md) | The *other* security question: making the code the agent writes safe — gates, the `security-audit` profile, the skills pack. |
@@ -32,6 +32,7 @@ is a harness" to "make it your team's own," with the glossary as the appendix:
 | [`19-glossary.md`](19-glossary.md) | Every harness term, one line each, with pointers. The appendix. |
 | [`20-wayfinding-spec-flow.md`](20-wayfinding-spec-flow.md) | Turn a foggy effort into an accepted terminal spec without collapsing decision and implementation tickets. |
 | [`21-autonomous-runs.md`](21-autonomous-runs.md) | Run one accepted coding ticket overnight through a local maker/checker controller. |
+| [`22-compatibility-contract.md`](22-compatibility-contract.md) | Support tiers, evidence vocabulary, canonical instructions, and certification rules. |
 | [`feedback/README.md`](feedback/README.md) | The post-incident log: how lessons become system changes. |
 | [`research/`](research/) | Source research the docs above were distilled from. |
 
@@ -41,8 +42,8 @@ is a harness" to "make it your team's own," with the glossary as the appendix:
 new bit. Read [`01`](01-harness-philosophy.md), skim [the glossary](19-glossary.md) once, then
 [`04`](04-why-your-agent-ignored-the-rule.md) — the doc to read *before* a rule fails on you.
 
-**"I just installed it."** Setup left a `FIRST-STEPS.md` card in your project — that's your first
-30 minutes. Then [`02`](02-your-first-hour.md), [`03`](03-verify-means-evidence.md), and
+**"I just installed it."** Start with [`02`](02-your-first-hour.md),
+[`03`](03-verify-means-evidence.md), and
 [`05`](05-operating-modes.md) — and [`06`](06-your-first-loop.md) when you want to run something
 unattended.
 

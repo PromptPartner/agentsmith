@@ -27,7 +27,7 @@ way). **So invest in the harness.** That's what this template is.
 | **Instructions / rule files** | Who the agent is, what it must/mustn't do | `core/` + the chosen `profiles/` → assembled into `CLAUDE.md` |
 | **Tools** | APIs/scripts/MCP servers it can call | `config/mcp.example.json`, `config/plugins.md`, `scripts/` |
 | **Memory** | State across sessions; the project's long-term knowledge | claude-mem + `docs/`, `templates/handoff-memory.md`, progress log |
-| **Guardrails / hooks** | Deterministic code at lifecycle points (e.g. block a commit with a secret) | hooks you add per project; `scripts/verify.sh` as the gate |
+| **Guardrails / hooks** | Deterministic code at lifecycle points (e.g. block a commit with a secret) | hooks you add per project; `agentsmith verify` as the gate |
 | **Orchestration** | Sub-agent dispatch, routing, hand-offs | `core/40-subagents-and-tools.md` |
 | **Observability / eval** | How you know it's doing well — review, judges, verification | `code-review` + `codex` gate; `core` Rule 2/5; quality gates |
 

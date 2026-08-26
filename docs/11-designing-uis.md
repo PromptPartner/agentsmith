@@ -85,7 +85,7 @@ Four layers, each matched to what it can actually enforce:
 - **What it deliberately does *not* do.** It does **not** try to machine-verify adherence.
   "Does this screen match the design system?" is a judgment call, not a grep — and a green check that
   lies is worse than no check ([verify means evidence](03-verify-means-evidence.md)). So the
-  [`verify.sh`](12-whats-built-in.md) preset for `software-dev` is unchanged; adherence is held by the
+  [`agentsmith verify`](12-whats-built-in.md) preset for `software-dev` is unchanged; adherence is held by the
   rule, the gate, the STOP row, and the nudge, with a human or an agent making the call.
 
 ## The workflow in practice
@@ -104,4 +104,4 @@ for the mechanical part — so there's nothing new to learn beyond "product UI e
 **See it worked out.** [`examples/ui-component-library/`](../examples/ui-component-library/README.md)
 is this whole loop as a finished project — *Facet UI*, a React component library that adopts the
 Linear system from the catalog (`--design-system catalog:linear.app`) and holds every component to
-it, with a bundled `design-review` skill for the judgment pass `verify.sh` can't do.
+it, with a bundled `design-review` skill for the judgment pass deterministic verification can't do.
