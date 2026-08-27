@@ -35,3 +35,7 @@ docs/feedback/[0-9]*.md
 !docs/feedback/0012-behavioral-prompts-under-specified-deterministic-grader-contracts.md
 !docs/feedback/0013-normalized-evidence-retained-operator-home-path.md
 !docs/feedback/0014-windows-lifecycle-liveness-probe-used-posix-signal-semantics.md
+!docs/feedback/0015-windows-atomic-state-replacement-hit-transient-sharing-denial.md
+!docs/feedback/0016-windows-doctor-corrupted-unicode-git-paths.md
+!docs/feedback/0017-windows-evaluator-fake-client-reparsed-structured-argv.md
+!docs/feedback/0018-windows-statusline-wrapper-reencoded-claude-json-stdin.md
