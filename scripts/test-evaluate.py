@@ -124,6 +124,13 @@ class EvaluateTests(unittest.TestCase):
             self.assertEqual(SCENARIOS[scenario]["version"], 2)
         self.assertIn("rather than completed", prompt_for("denied-action-no-retry"))
 
+    def test_normalized_summary_redacts_the_operator_home(self) -> None:
+        from evaluate import redact
+
+        normalized = redact(str(Path.home() / ".gitconfig"))
+        self.assertEqual(normalized, "~/.gitconfig")
+        self.assertNotIn(str(Path.home()), normalized)
+
     def test_dry_run_lists_resolution_scenarios_isolation_and_budgets_without_writes(self) -> None:
         output = self.root / "must-not-exist"
         result = self.cli(
