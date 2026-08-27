@@ -579,11 +579,14 @@ class UpdateCheckTests(unittest.TestCase):
 
         self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
         self.assertIn("RELEASE_PROBE_0_2_1", (codex_home / "AGENTS.md").read_text(encoding="utf-8"))
-        self.assertIn(
-            str(home.resolve() / ".agentsmith" / "agentsmith.py"),
-            (codex_home / "hooks.json").read_text(encoding="utf-8"),
-        )
-        self.assertNotIn("agentsmith-apply-", (codex_home / "hooks.json").read_text(encoding="utf-8"))
+        hooks = json.loads((codex_home / "hooks.json").read_text(encoding="utf-8"))
+        commands = [
+            hook["command"]
+            for entry in hooks["hooks"]["UserPromptSubmit"]
+            for hook in entry["hooks"]
+        ]
+        self.assertTrue(any(str(home.resolve() / ".agentsmith" / "agentsmith.py") in command for command in commands))
+        self.assertFalse(any("agentsmith-apply-" in command for command in commands))
         receipt_line = next(line for line in applied.stdout.splitlines() if "rollback receipt:" in line)
         receipt_path = Path(receipt_line.split("rollback receipt:", 1)[1].strip())
         rolled_back = self.run_core("update", "rollback", "--receipt", str(receipt_path), env=environment)
@@ -836,9 +839,14 @@ class UpdateCheckTests(unittest.TestCase):
         applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
 
         self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
-        hooks = (Path(environment["CODEX_HOME"]) / "hooks.json").read_text(encoding="utf-8")
-        self.assertIn(str(target / ".agentsmith" / "agentsmith.py"), hooks)
-        self.assertNotIn("agentsmith-apply-", hooks)
+        hooks = json.loads((Path(environment["CODEX_HOME"]) / "hooks.json").read_text(encoding="utf-8"))
+        commands = [
+            hook["command"]
+            for entry in hooks["hooks"]["UserPromptSubmit"]
+            for hook in entry["hooks"]
+        ]
+        self.assertTrue(any(str(target.resolve() / ".agentsmith" / "agentsmith.py") in command for command in commands))
+        self.assertFalse(any("agentsmith-apply-" in command for command in commands))
 
     def test_plain_installer_rerun_does_not_forget_still_managed_capabilities(self) -> None:
         target = self.root / "capability rerun"
