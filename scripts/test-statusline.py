@@ -132,6 +132,9 @@ class StatusLineTests(unittest.TestCase):
                 helper: helper.read_bytes(),
                 codex_path: codex_path.read_bytes(),
             }
+            if os.name == "nt":
+                wrapper = helper.with_suffix(".ps1")
+                before[wrapper] = wrapper.read_bytes()
             second = self.install(root)
             self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
             self.assertEqual(before, {path: path.read_bytes() for path in before})
@@ -141,6 +144,8 @@ class StatusLineTests(unittest.TestCase):
             remaining = json.loads(settings_path.read_text(encoding="utf-8")) if settings_path.exists() else {}
             self.assertNotIn("statusLine", remaining)
             self.assertFalse(helper.exists())
+            if os.name == "nt":
+                self.assertFalse(wrapper.exists())
 
     def test_explicit_claude_and_codex_statusline_choices_are_preserved(self) -> None:
         for explicit in (
@@ -198,14 +203,24 @@ class StatusLineTests(unittest.TestCase):
             self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
             settings = json.loads((foreign.parent / "settings.json").read_text(encoding="utf-8"))
             self.assertEqual(foreign.read_text(encoding="utf-8"), "# foreign helper\n")
-            self.assertIn("agentsmith-statusline-1.py", settings["statusLine"]["command"])
             managed = foreign.with_name("agentsmith-statusline-1.py")
             self.assertTrue(managed.is_file())
+            state = json.loads((root / "home" / ".agentsmith" / "state.json").read_text(encoding="utf-8"))
+            owned_files = state["native_statuslines"]["claude"]["files"]
+            self.assertIn(str(managed), owned_files)
+            if os.name == "nt":
+                wrapper = foreign.with_name("agentsmith-statusline.ps1")
+                self.assertIn(str(wrapper), owned_files)
+                self.assertIn(wrapper.as_posix(), settings["statusLine"]["command"])
+            else:
+                self.assertIn(managed.as_posix(), settings["statusLine"]["command"])
 
             removed = self.install(root, "--uninstall")
             self.assertEqual(removed.returncode, 0, removed.stdout + removed.stderr)
             self.assertTrue(foreign.is_file())
             self.assertFalse(managed.exists())
+            if os.name == "nt":
+                self.assertFalse(wrapper.exists())
 
     def test_dry_run_is_write_free_and_uninstall_keeps_other_project_owner(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith shared statusline ") as raw:
