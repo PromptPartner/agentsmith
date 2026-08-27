@@ -34,3 +34,4 @@ docs/feedback/[0-9]*.md
 !docs/feedback/0011-evaluation-prompts-assumed-python-command-availability.md
 !docs/feedback/0012-behavioral-prompts-under-specified-deterministic-grader-contracts.md
 !docs/feedback/0013-normalized-evidence-retained-operator-home-path.md
+!docs/feedback/0014-windows-lifecycle-liveness-probe-used-posix-signal-semantics.md

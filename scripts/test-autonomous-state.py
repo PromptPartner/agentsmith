@@ -6,6 +6,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import threading
@@ -21,6 +22,14 @@ SPEC.loader.exec_module(CONTROLLER)
 
 
 class AutonomousStateTests(unittest.TestCase):
+    def test_process_liveness_recognizes_current_and_missing_processes(self) -> None:
+        self.assertTrue(CONTROLLER.process_is_live(os.getpid()))
+        stale_pid = next(
+            pid for pid in range(99_999_999, 99_999_900, -1)
+            if not CONTROLLER.process_is_live(pid)
+        )
+        self.assertFalse(CONTROLLER.process_is_live(stale_pid))
+
     def test_concurrent_atomic_writers_never_expose_invalid_json(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith state ü ") as temporary:
             path = Path(temporary) / "run with spaces" / "state.json"
