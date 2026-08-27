@@ -27,7 +27,7 @@ import urllib.error
 import urllib.request
 
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 ROOT = Path(__file__).resolve().parent
 REGISTRY_PATH = ROOT / "config" / "agents.json"
 BEGIN = "<!-- BEGIN AGENTSMITH — universal agent harness (managed by agentsmith — edit core/profiles, not here) -->"
