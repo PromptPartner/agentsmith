@@ -112,9 +112,22 @@ def write_json(path: Path, value: dict[str, Any]) -> None:
             handle.write(json.dumps(value, indent=2, sort_keys=True) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temp, path)
+        replace_file(temp, path)
     finally:
         temp.unlink(missing_ok=True)
+
+
+def replace_file(source: Path, destination: Path) -> None:
+    """Atomically replace a file, tolerating bounded Windows sharing races."""
+    for attempt in range(100):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError as exc:
+            transient_windows_error = os.name == "nt" and getattr(exc, "winerror", None) in {5, 32}
+            if not transient_windows_error or attempt == 99:
+                raise
+            time.sleep(0.01)
 
 
 def process_is_live(pid: Any) -> bool:

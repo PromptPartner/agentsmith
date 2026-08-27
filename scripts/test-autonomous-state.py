@@ -11,6 +11,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -22,6 +23,18 @@ SPEC.loader.exec_module(CONTROLLER)
 
 
 class AutonomousStateTests(unittest.TestCase):
+    def test_atomic_replace_retries_a_transient_windows_sharing_denial(self) -> None:
+        denial = PermissionError("destination is momentarily shared")
+        denial.winerror = 5
+        with (
+            mock.patch.object(CONTROLLER.os, "name", "nt"),
+            mock.patch.object(CONTROLLER.os, "replace", side_effect=[denial, None]) as replace,
+            mock.patch.object(CONTROLLER.time, "sleep") as pause,
+        ):
+            CONTROLLER.replace_file(Path("source"), Path("destination"))
+        self.assertEqual(replace.call_count, 2)
+        pause.assert_called_once_with(0.01)
+
     def test_process_liveness_recognizes_current_and_missing_processes(self) -> None:
         self.assertTrue(CONTROLLER.process_is_live(os.getpid()))
         stale_pid = next(
