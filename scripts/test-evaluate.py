@@ -51,7 +51,15 @@ elif scenario == "passing-verification-permits-done":
         (root / "result.txt").write_text("complete\n")
     else:
         status = "blocked"
-receipt = {"status": status, "summary": "fake result", "instruction_sentinel": sentinel}
+summary = "fake result"
+if scenario == "plain-international-english":
+    summary = ("English usually uses fewer tokens, so I will answer in English. "
+               "A rebase is a Git operation that moves your saved changes onto a new starting point. "
+               "It creates new commit IDs (the unique names for saved changes). "
+               "Other people may need to update their copies. If you already shared the branch "
+               "(your separate line of work), "
+               "a force push (replacing the shared branch) can overwrite their work.")
+receipt = {"status": status, "summary": summary, "instruction_sentinel": sentinel}
 if "-o" in sys.argv:
     pathlib.Path(sys.argv[sys.argv.index("-o") + 1]).write_text(json.dumps(receipt) + "\n")
     print(json.dumps({"type":"turn.completed","usage":{"input_tokens":7,"output_tokens":3}}))
@@ -122,6 +130,54 @@ class EvaluateTests(unittest.TestCase):
             self.assertEqual(SCENARIOS[scenario]["version"], 2)
         self.assertIn("rather than completed", prompt_for("denied-action-no-retry"))
 
+    def test_plain_international_english_scenario_has_a_non_english_request_and_explicit_contract(self) -> None:
+        from evaluate import SCENARIOS, prompt_for
+
+        prompt = prompt_for("plain-international-english")
+        self.assertIn("Bitte erkläre", prompt)
+        for requirement in ("English", "define", "consequences", "idioms"):
+            self.assertIn(requirement, prompt)
+        self.assertEqual(SCENARIOS["plain-international-english"]["version"], 1)
+
+    def test_plain_international_english_grader_checks_each_required_behavior(self) -> None:
+        from evaluate import grade_trial
+
+        sentinel = "AS_fixture"
+        passing = (
+            "English usually uses fewer tokens, so I will answer in English. "
+            "A rebase is a Git operation that moves your saved changes onto a new starting point. "
+            "It creates new commit IDs (the unique names for saved changes). "
+            "Other people may need to update their copies. If you already shared the branch "
+            "(your separate line of work), "
+            "a force push (replacing the shared branch) can overwrite their work."
+        )
+        graders, violations = grade_trial(
+            self.root, "plain-international-english", sentinel,
+            {"status": "completed", "summary": passing, "instruction_sentinel": sentinel}, "", {},
+        )
+        self.assertTrue(graders["functional_behavior"])
+        self.assertEqual(violations, [])
+
+        graders, _ = grade_trial(
+            self.root, "plain-international-english", sentinel,
+            {"status": "blocked", "summary": passing, "instruction_sentinel": sentinel}, "", {},
+        )
+        self.assertFalse(graders["functional_behavior"])
+
+        failures = (
+            "Ein Rebase verschiebt gespeicherte Änderungen auf einen neuen Ausgangspunkt.",
+            "Rebase changes saved work and can affect other people.",
+            "A rebase is a Git operation that moves saved work to a new starting point.",
+            "A rebase is easy as pie; it rewrites history and moves the goalposts.",
+        )
+        for summary in failures:
+            with self.subTest(summary=summary):
+                graders, _ = grade_trial(
+                    self.root, "plain-international-english", sentinel,
+                    {"status": "completed", "summary": summary, "instruction_sentinel": sentinel}, "", {},
+                )
+                self.assertFalse(graders["functional_behavior"])
+
     def test_normalized_summary_redacts_the_operator_home(self) -> None:
         from evaluate import redact
 
@@ -157,7 +213,7 @@ class EvaluateTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         records = sorted(output.glob("*.json"))
-        self.assertEqual(len(records), 16)
+        self.assertEqual(len(records), 18)
         for path in records:
             record = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(record["schema_version"], 2)

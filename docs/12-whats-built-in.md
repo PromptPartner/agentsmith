@@ -51,7 +51,7 @@ emulate hooks or MCP to make matrix cells green.
 | `agentsmith secret-scan [--all|FILE...|-]` | Scan staged additions by default, or the tracked tree/files/stdin, with redacted findings. |
 | `agentsmith doctor` | Inspect effective instruction sources and actual installed safety, skills, MCP, hooks, scanner, and runtime state. |
 | `agentsmith compatibility` | Render the registry and static-context measurement without overstating evidence. |
-| `agentsmith evaluate --agent claude\|codex\|native` | Dry-run or execute the eight isolated, budgeted native-client behavior scenarios. |
+| `agentsmith evaluate --agent claude\|codex\|native` | Dry-run or execute the nine isolated, budgeted native-client behavior scenarios. |
 
 ## Skills
 
