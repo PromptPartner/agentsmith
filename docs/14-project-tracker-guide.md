@@ -7,7 +7,7 @@ historical record. This guide makes that concrete without assuming a specific to
 > tracks work is a pointer, not permission. Whether the agent may create issues and post comments
 > **by itself** is a separate, explicit choice — `--tracker-writes` (below). This split exists
 > because the harness once inferred one from the other and filed issues in a live workspace that
-> nobody had authorized it to touch. `scripts/test-tracker-consent.sh` is the guard that keeps
+> nobody had authorized it to touch. `scripts/test-tracker-consent.py` is the guard that keeps
 > that fixed.
 
 ## Principles (tool-agnostic)

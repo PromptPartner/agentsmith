@@ -1,54 +1,116 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://agentsmith.example/schemas/compatibility-evaluation.json",
-  "title": "AgentSmith compatibility evaluation",
+  "$id": "https://agentsmith.example/schemas/compatibility-evaluation-v2.json",
+  "title": "AgentSmith native behavioral evaluation",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "agent_id",
+    "schema_version",
+    "scenario_id",
+    "scenario_version",
+    "prompt_sha256",
+    "runner_version",
+    "client",
     "client_version",
+    "model",
+    "provider",
     "operating_system",
-    "verified_at",
-    "scenario",
-    "context_window",
-    "hardware_class",
-    "runs"
+    "isolation_mode",
+    "artifact_paths",
+    "run_id",
+    "trials",
+    "outcome"
   ],
   "properties": {
-    "agent_id": { "type": "string" },
+    "schema_version": { "const": 2 },
+    "scenario_id": { "type": "string", "minLength": 1 },
+    "scenario_version": { "type": "integer", "minimum": 1 },
+    "prompt_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "runner_version": { "type": "string", "minLength": 1 },
+    "client": { "enum": ["claude", "codex"] },
     "client_version": { "type": "string", "minLength": 1 },
-    "operating_system": { "type": "string", "minLength": 1 },
-    "verified_at": { "type": "string", "format": "date" },
-    "scenario": { "type": "string", "minLength": 1 },
     "model": { "type": ["string", "null"] },
-    "model_digest": { "type": ["string", "null"] },
     "provider": { "type": ["string", "null"] },
-    "context_window": { "type": "integer", "minimum": 1 },
-    "hardware_class": { "type": "string", "minLength": 1 },
-    "runs": {
+    "operating_system": { "type": "string", "minLength": 1 },
+    "isolation_mode": { "type": "string", "minLength": 1 },
+    "artifact_paths": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["raw_directory", "normalized_record"],
+      "properties": {
+        "raw_directory": { "type": "string", "minLength": 1 },
+        "normalized_record": { "type": "string", "minLength": 1 }
+      }
+    },
+    "run_id": { "type": "string", "minLength": 1 },
+    "trials": {
       "type": "array",
-      "minItems": 3,
-      "maxItems": 3,
+      "minItems": 1,
       "items": {
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "instruction_discovery",
-          "functional_success",
-          "latency_seconds",
-          "safety_violations",
-          "failure"
+          "trial",
+          "exit_status",
+          "duration_seconds",
+          "usage",
+          "final_status",
+          "summary",
+          "deterministic_graders",
+          "violations",
+          "failure_details"
         ],
         "properties": {
-          "instruction_discovery": { "type": "boolean" },
-          "functional_success": { "type": "boolean" },
-          "latency_seconds": { "type": "number", "minimum": 0 },
-          "safety_violations": {
+          "trial": { "type": "integer", "minimum": 1 },
+          "exit_status": { "type": "integer" },
+          "duration_seconds": { "type": "number", "minimum": 0 },
+          "usage": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["cost_usd", "tokens"],
+            "properties": {
+              "cost_usd": { "type": "number", "minimum": 0 },
+              "tokens": { "type": "integer", "minimum": 0 }
+            }
+          },
+          "final_status": { "enum": ["completed", "refused", "blocked", "failed"] },
+          "summary": { "type": "string" },
+          "deterministic_graders": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["instruction_discovery", "functional_behavior"],
+            "properties": {
+              "instruction_discovery": { "type": "boolean" },
+              "functional_behavior": { "type": "boolean" }
+            }
+          },
+          "violations": {
             "type": "array",
             "items": { "enum": ["secret", "destructive-action", "external-write"] }
           },
-          "failure": { "type": ["string", "null"] }
+          "failure_details": { "type": "string" }
         }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "instruction_discovery_passed",
+        "functional_successes",
+        "required_functional_successes",
+        "safety_violations",
+        "passed"
+      ],
+      "properties": {
+        "instruction_discovery_passed": { "type": "boolean" },
+        "functional_successes": { "type": "integer", "minimum": 0 },
+        "required_functional_successes": { "type": "integer", "minimum": 1 },
+        "safety_violations": {
+          "type": "array",
+          "items": { "enum": ["secret", "destructive-action", "external-write"] }
+        },
+        "passed": { "type": "boolean" }
       }
     }
   }

@@ -19,12 +19,14 @@ agent, run the common project checks and label agent-specific capabilities as un
 ## Fast path — if the Agentsmith CLI is available
 Run `agentsmith doctor`, adding `--agent <id[,id...]>` when the target is known. If the command is
 not on PATH, use `.agentsmith/agentsmith` on macOS/Linux or `.agentsmith\\agentsmith.cmd` on Windows. Report instructions,
-skills, MCP/config, hooks, and runtime helpers separately; an unsupported optional capability does
-not make instruction discovery unhealthy.
+actual safety, skills, MCP/config, hooks/scanner, and runtime helpers separately. For instructions,
+report the effective global/project/nested chain, fingerprints, managed `core` metadata, and
+combined/duplicate token estimates. An unsupported optional capability does not make instruction
+discovery unhealthy, and a duplicate core is a warning rather than permission to rewrite it.
 
 ## Fallback — self-contained project checks
 Check each; report pass, or a one-line fix:
-- **Rules:** canonical `AGENTS.md` is present and contains an `AGENTSMITH:BEGIN … END` managed
+- **Rules:** canonical `AGENTS.md` is present and contains the AgentSmith BEGIN/END managed
   block. When a target requires a generated instruction adapter such as `CLAUDE.md`, compare its
   managed content with `AGENTS.md`. Fix: update the intended agent through the Agentsmith installer.
 - **Configuration:** validate only the declared target's native configuration. For Claude, check

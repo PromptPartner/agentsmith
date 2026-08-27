@@ -1,4 +1,6 @@
 #!/bin/bash
+# Legacy manual Bash renderer. Current installs use config/statusline.py so Windows and POSIX
+# share a dependency-free implementation; this file remains for existing manual configurations.
 # Claude Code status line — user@host:/cwd  [model]  ctx:NN%
 # The ctx:NN% gauge shows context USED. Hand off + /clear EARLY — when used REACHES ~25-30%,
 # not when it's nearly full: model quality degrades as the window fills (Opus 4.8 sweet spot is

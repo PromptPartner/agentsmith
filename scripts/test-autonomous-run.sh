@@ -12,8 +12,10 @@ assert() { local label="$1"; shift; if "$@"; then ok "$label"; else bad "$label"
 
 make_fake() {
   local path="$1"
-  mkdir -p "$path/bin"
+  mkdir -p "$path/bin" "$path/codex-home"
+  printf '%s\n' '{"auth_mode":"chatgpt","tokens":{}}' > "$path/codex-home/auth.json"
   cp "$ROOT/scripts/autonomous-run.py" "$path/controller.py"
+  cp "$ROOT/native_launcher.py" "$path/native_launcher.py"
   chmod +x "$path/controller.py"
   cp "$ROOT/templates/autonomous-run.json" "$path/template.json"
   printf '%s\n' \
@@ -21,6 +23,8 @@ make_fake() {
     'set -euo pipefail' \
     'prompt="${!#}"' \
     'receipt=""' \
+    'fake_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"' \
+    'mode="$(cat "$fake_root/mode" 2>/dev/null || printf accept)"' \
     'args=("$@")' \
     'for ((i=0; i<${#args[@]}; i++)); do' \
     '  if [ "${args[$i]}" = "-o" ]; then receipt="${args[$((i+1))]}"; fi' \
@@ -30,34 +34,34 @@ make_fake() {
     '  if [ -n "$receipt" ]; then printf "%s\n" "$payload" > "$receipt"' \
     '  else printf "{\"type\":\"result\",\"total_cost_usd\":0.25,\"structured_output\":%s}\n" "$payload"; fi' \
     '}' \
-    'if [ "${FAKE_MODE:-accept}" = malformed ]; then emit "{}"; exit 0; fi' \
+    'if [ "$mode" = malformed ]; then emit "{}"; exit 0; fi' \
     'if [[ "$prompt" == *"independent checker"* ]]; then' \
-    '  if [ "${FAKE_MODE:-accept}" = mutate-checker ]; then printf bad > src/checker.txt; fi' \
-    '  if [ "${FAKE_MODE:-accept}" = checker-ref ]; then git branch checker-escape; fi' \
-    '  count_file="${FAKE_COUNTER:-/tmp/agentsmith-fake-counter}"' \
+    '  if [ "$mode" = mutate-checker ]; then printf bad > src/checker.txt; fi' \
+    '  if [ "$mode" = checker-ref ]; then git branch checker-escape; fi' \
+    '  count_file="$fake_root/counter"' \
     '  count=0; [ -f "$count_file" ] && count="$(<"$count_file")"' \
     '  count=$((count+1)); printf "%s" "$count" > "$count_file"' \
     '  status=accepted' \
-    '  if [ "${FAKE_MODE:-accept}" = reject-once ] && [ "$count" -eq 1 ]; then status=rejected; fi' \
-    '  if [ "${FAKE_MODE:-accept}" = always-reject ]; then status=rejected; fi' \
+    '  if [ "$mode" = reject-once ] && [ "$count" -eq 1 ]; then status=rejected; fi' \
+    '  if [ "$mode" = always-reject ]; then status=rejected; fi' \
     '  emit "{\"status\":\"$status\",\"summary\":\"checker $status\",\"commit\":\"$(git rev-parse HEAD)\",\"changed_paths\":[\"src/change.txt\"],\"evidence\":[\"fake check\"],\"unresolved\":[],\"next_state\":\"$status\"}"' \
     'else' \
-    '  if [ "${FAKE_MODE:-accept}" = slow ]; then sleep 20; fi' \
+    '  if [ "$mode" = slow ]; then sleep 20; fi' \
     '  mkdir -p src' \
     '  n=0; [ -f src/change.txt ] && n="$(<src/change.txt)"' \
     '  printf "%s\n" "$((n+1))" > src/change.txt' \
     '  changed="src/change.txt"' \
-    '  if [ "${FAKE_MODE:-accept}" = out-of-scope ]; then printf x > forbidden.txt; changed="forbidden.txt"; fi' \
-    '  if [ "${FAKE_MODE:-accept}" = ignored-outside ]; then printf x > ignored.tmp; fi' \
+    '  if [ "$mode" = out-of-scope ]; then printf x > forbidden.txt; changed="forbidden.txt"; fi' \
+    '  if [ "$mode" = ignored-outside ]; then printf x > ignored.tmp; fi' \
     '  git add src/change.txt forbidden.txt 2>/dev/null || git add src/change.txt' \
-    '  if [ "${FAKE_MODE:-accept}" = amend-history ]; then git commit --amend --no-edit >/dev/null' \
+    '  if [ "$mode" = amend-history ]; then git commit --amend --no-edit >/dev/null' \
     '  else git commit -m "test(run): fake maker checkpoint" >/dev/null; fi' \
-    '  if [ "${FAKE_MODE:-accept}" = extra-ref ]; then git branch escaped-ref; fi' \
-    '  if [ "${FAKE_MODE:-accept}" = config-mutation ]; then git config --local agentsmith.escape true; fi' \
-    '  if [ "${FAKE_MODE:-accept}" = hook-mutation ]; then mkdir -p "$(git rev-parse --git-common-dir)/hooks"; printf bad > "$(git rev-parse --git-common-dir)/hooks/escaped"; fi' \
-    '  if [ "${FAKE_MODE:-accept}" = object-mutation ]; then object="$(git rev-parse HEAD^)"; object_path="$(git rev-parse --git-common-dir)/objects/${object:0:2}/${object:2}"; chmod u+w "$object_path"; printf bad > "$object_path"; fi' \
-    '  if [ "${FAKE_MODE:-accept}" = object-admin ]; then mkdir -p "$(git rev-parse --git-common-dir)/objects/info"; printf /tmp/escape > "$(git rev-parse --git-common-dir)/objects/info/alternates"; fi' \
-    '  if [ "${FAKE_MODE:-accept}" = other-index ]; then printf bad >> "$(git rev-parse --git-common-dir)/index"; fi' \
+    '  if [ "$mode" = extra-ref ]; then git branch escaped-ref; fi' \
+    '  if [ "$mode" = config-mutation ]; then git config --local agentsmith.escape true; fi' \
+    '  if [ "$mode" = hook-mutation ]; then mkdir -p "$(git rev-parse --git-common-dir)/hooks"; printf bad > "$(git rev-parse --git-common-dir)/hooks/escaped"; fi' \
+    '  if [ "$mode" = object-mutation ]; then object="$(git rev-parse HEAD^)"; object_path="$(git rev-parse --git-common-dir)/objects/${object:0:2}/${object:2}"; chmod u+w "$object_path"; printf bad > "$object_path"; fi' \
+    '  if [ "$mode" = object-admin ]; then mkdir -p "$(git rev-parse --git-common-dir)/objects/info"; printf /tmp/escape > "$(git rev-parse --git-common-dir)/objects/info/alternates"; fi' \
+    '  if [ "$mode" = other-index ]; then printf bad >> "$(git rev-parse --git-common-dir)/index"; fi' \
     '  emit "{\"status\":\"completed\",\"summary\":\"fake maker\",\"commit\":\"$(git rev-parse HEAD)\",\"changed_paths\":[\"$changed\"],\"evidence\":[\"fake maker evidence\"],\"unresolved\":[],\"next_state\":\"checking\"}"' \
     'fi' \
     'if [ -n "$receipt" ]; then printf "%s\n" "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":7,\"output_tokens\":3}}"; fi' > "$path/bin/fake-agent"
@@ -107,9 +111,10 @@ PY
 
 invoke() {
   local repo="$1" mode="$2"; shift 2
-  FAKE_MODE="$mode" FAKE_COUNTER="$repo/../counter" \
-    AGENTSMITH_CODEX_BIN="$repo/../fake/bin/fake-agent" \
+  printf '%s\n' "$mode" > "$repo/../fake/mode"
+  AGENTSMITH_CODEX_BIN="$repo/../fake/bin/fake-agent" \
     AGENTSMITH_CLAUDE_BIN="$repo/../fake/bin/fake-agent" \
+    CODEX_HOME="$repo/../fake/codex-home" \
     python3 "$repo/../fake/controller.py" "$@"
 }
 
@@ -310,15 +315,119 @@ for _ in {1..50}; do
   sleep 0.1
   if (cd "$repo" && python3 "$repo/../fake/controller.py" status stopped 2>/dev/null | grep -Eq '"active_pid": [1-9]'); then break; fi
 done
+assert 'live controller owns the run lifecycle lock' test -f "$repo/.git/agentsmith-runs/stopped/controller.lock"
+(while kill -0 "$runner" 2>/dev/null; do
+  python3 -c 'import json,sys; json.load(open(sys.argv[1]))' \
+    "$repo/.git/agentsmith-runs/stopped/state.json" || exit 1
+done) & observer=$!
 (cd "$repo" && python3 "$repo/../fake/controller.py" stop stopped >/dev/null 2>&1)
 wait "$runner" 2>/dev/null || true
+if wait "$observer"; then ok 'state remains parseable throughout start/stop collision'
+else bad 'state became unparseable during start/stop collision'; fi
 assert 'stop leaves durable interrupted state' bash -c "cd '$repo' && python3 '$repo/../fake/controller.py' status stopped | grep -q '\"status\": \"interrupted\"'"
+assert 'controller records exactly one interruption transition' python3 - "$repo/.git/agentsmith-runs/stopped/events.jsonl" <<'PY'
+import json, sys
+events = [json.loads(line) for line in open(sys.argv[1])]
+raise SystemExit(0 if sum(event['event'] == 'run_interrupted' for event in events) == 1 else 1)
+PY
 deadline_before="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["deadline_epoch"])' "$repo/.git/agentsmith-runs/stopped/state.json")"
+printf 'dirty\n' > "$repo-stopped/dirty.tmp"
+if (cd "$repo" && invoke "$repo" accept resume stopped >../dirty-out 2>../dirty-err); then
+  bad 'dirty run worktree resumed'
+elif grep -q 'cannot resume a dirty worktree' "$repo/../dirty-err"; then
+  ok 'resume refuses a dirty run worktree'
+else bad 'dirty-worktree refusal was not explicit'; fi
+assert 'failed dirty resume preserves the stop request' test -f "$repo/.git/agentsmith-runs/stopped/STOP"
+rm "$repo-stopped/dirty.tmp"
+python3 - "$repo/.git/agentsmith-runs/stopped/state.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1]); state = json.loads(path.read_text())
+state['claude_cost_usd'] = 1.5
+state['codex_tokens_used'] = 50
+path.write_text(json.dumps(state, indent=2, sort_keys=True) + '\n')
+PY
 if (cd "$repo" && invoke "$repo" accept resume stopped >../resume-out 2>../resume-err); then
   ok 'interrupted clean run resumes from durable state'
 else bad 'interrupted run did not resume'; fi
 deadline_after="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["deadline_epoch"])' "$repo/.git/agentsmith-runs/stopped/state.json")"
 assert 'resume preserves the original wall-clock deadline' test "$deadline_before" = "$deadline_after"
+assert 'resume accumulates rather than resets run-wide usage budgets' python3 - "$repo/.git/agentsmith-runs/stopped/state.json" <<'PY'
+import json, sys
+state = json.load(open(sys.argv[1]))
+assert state['claude_cost_usd'] == 1.75
+assert state['codex_tokens_used'] == 60
+PY
+assert 'completed controller releases the lifecycle lock' test ! -e "$repo/.git/agentsmith-runs/stopped/controller.lock"
+
+echo 'autonomous-run — dead controller, live refusal, and stale recovery'
+repo="$(new_repo dead-controller)"; make_fake "$repo/../fake"; manifest "$repo" dead-controller
+(
+  cd "$repo" || exit 1
+  invoke "$repo" slow start .harness/runs/dead-controller.json >../out 2>../err
+) & runner=$!
+for _ in {1..50}; do
+  sleep 0.1
+  state_file="$repo/.git/agentsmith-runs/dead-controller/state.json"
+  if [ -f "$state_file" ] && python3 -c 'import json,sys; raise SystemExit(0 if json.load(open(sys.argv[1])).get("active_pid") else 1)' "$state_file"; then break; fi
+done
+child_pid="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["active_pid"])' "$state_file")"
+controller_pid="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid"])' "$repo/.git/agentsmith-runs/dead-controller/controller.lock")"
+kill -KILL "$controller_pid" 2>/dev/null || true
+kill -KILL "$child_pid" 2>/dev/null || true
+kill -KILL "$runner" 2>/dev/null || true
+wait "$runner" 2>/dev/null || true
+status_before="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$state_file")"
+(cd "$repo" && python3 "$repo/../fake/controller.py" stop dead-controller >../stop-out 2>../stop-err)
+status_after="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$state_file")"
+assert 'dead-controller stop remains request-only' test "$status_before" = "$status_after"
+assert 'dead-controller stop leaves the request for resume reconciliation' test -f "$repo/.git/agentsmith-runs/dead-controller/STOP"
+assert 'dead-controller stop explains reconciliation' grep -q 'resume will reconcile' "$repo/../stop-out"
+python3 - "$repo/.git/agentsmith-runs/dead-controller/controller.lock" <<'PY'
+import json, os, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+lock_key = 'to' + 'ken'
+path.write_text(json.dumps({'pid': os.getppid(), lock_key: 'live-test'}) + '\n')
+PY
+if (cd "$repo" && invoke "$repo" accept resume dead-controller >../live-out 2>../live-err); then
+  bad 'resume ignored a live controller lock'
+elif grep -q 'live controller' "$repo/../live-err"; then
+  ok 'resume refuses a second live controller'
+else bad 'live controller refusal was not explicit'; fi
+python3 - "$repo/.git/agentsmith-runs/dead-controller/controller.lock" <<'PY'
+import json, pathlib, sys
+lock_key = 'to' + 'ken'
+pathlib.Path(sys.argv[1]).write_text(json.dumps({'pid': 99999999, lock_key: 'stale-test'}) + '\n')
+PY
+if (cd "$repo" && invoke "$repo" accept resume dead-controller >../stale-out 2>../stale-err); then
+  ok 'resume reclaims a demonstrably stale lifecycle lock'
+else bad 'resume did not reclaim a stale lifecycle lock'; fi
+assert 'resume reconciles and removes a stale stop request' test ! -e "$repo/.git/agentsmith-runs/dead-controller/STOP"
+
+echo 'autonomous-run — repeated start/stop race'
+race_fail=0
+for iteration in 1 2 3 4 5; do
+  repo="$(new_repo "race-$iteration")"; make_fake "$repo/../fake"; manifest "$repo" "race-$iteration"
+  (
+    cd "$repo" || exit 1
+    invoke "$repo" slow start ".harness/runs/race-$iteration.json" >../out 2>../err
+  ) & runner=$!
+  state_file="$repo/.git/agentsmith-runs/race-$iteration/state.json"
+  for _ in {1..50}; do
+    sleep 0.05
+    if [ -f "$state_file" ] && python3 -c 'import json,sys; raise SystemExit(0 if json.load(open(sys.argv[1])).get("active_pid") else 1)' "$state_file"; then break; fi
+  done
+  (cd "$repo" && python3 "$repo/../fake/controller.py" stop "race-$iteration" >/dev/null 2>&1) || race_fail=1
+  wait "$runner" 2>/dev/null || true
+  python3 - "$state_file" "$repo/.git/agentsmith-runs/race-$iteration/events.jsonl" <<'PY' || race_fail=1
+import json, sys
+state = json.load(open(sys.argv[1]))
+events = [json.loads(line) for line in open(sys.argv[2])]
+assert state['status'] == 'interrupted'
+assert sum(event['event'] == 'run_interrupted' for event in events) == 1
+PY
+done
+if [ "$race_fail" -eq 0 ]; then ok 'repeated stop collisions stay parseable with one interruption each'
+else bad 'repeated stop collision invariant failed'; fi
 
 repo="$(new_repo same-ticket)"; make_fake "$repo/../fake"; manifest "$repo" same-ticket
 python3 - "$repo/.harness/runs/same-ticket.json" <<'PY'

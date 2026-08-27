@@ -61,8 +61,16 @@ also capture the model digest, context window, hardware class, and latency in th
 artifact.
 
 Real-client and local-model records live under [`compatibility/evaluations/`](../compatibility/evaluations/)
-and validate against its schema. No dated records are bundled until an observed/manual run has
-actually occurred.
+and validate against schema v2. `agentsmith evaluate --agent claude|codex|native` supplies the eight
+foundation scenarios. Its default dry run resolves clients, commands, scenarios, isolation, and
+budgets without invoking a model. Live runs require `--live` and explicit positive budgets; raw
+logs remain outside tracked files. No dated records are bundled until an observed/manual run has
+actually occurred and its failures have been inspected.
+
+Native evaluation isolation includes client configuration, not just the temporary project. Codex
+runs from an ephemeral client home with a single-file bridge to validated ChatGPT authentication;
+OAuth refresh state remains shared, while inherited global instructions, settings, hooks, plugins,
+apps, MCP servers, and API-key authentication are excluded.
 
 Unsupported and unverified are deliberately different. **Unsupported** is an explicit boundary;
 AgentSmith will not emulate it to make a matrix cell green. **Unverified** means no claim is made

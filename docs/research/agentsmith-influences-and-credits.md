@@ -23,6 +23,12 @@
   → maps to: context window = a scarce memory budget you must manage; hand-off-before-the-window-fills. *Confidence: high* on the talk's existence and themes; *med* on exact wording (cite the talk, not a paraphrase).
 - **"Vibe coding."** Coined Feb 2025; the Google whitepaper (source #3, p.11) quotes him directly: *"fully give in to the vibes, embrace exponentials, and forget that the code even exists."* By early 2026 he introduced **"agentic engineering"** for the disciplined end of the spectrum (whitepaper p.12).
   → maps to: Agentsmith sits at the *disciplined* end — profiles add structure/verification, not vibes.
+- **Agentic engineering, understanding, and verifiability (2026).** In his Sequoia AI Ascent
+  conversation with Stephanie Zhan, Karpathy distinguishes the professional discipline from casual
+  vibe coding and emphasizes that agent leverage does not remove the operator's need for
+  understanding, taste, judgment, and verifiable tasks.
+  <https://www.youtube.com/watch?v=96jN2OCOfLs>
+  → maps to: behavioral evaluation and evidence gates, not output volume. *Confidence: high.*
 
 ## 2. Addy Osmani — AI-assisted engineering discipline + the 70% problem
 **Who:** Director, Google Cloud AI Developer Experience (14+ years at Google, ex-Head of Chrome Developer Experience). Author, *Beyond Vibe Coding* (O'Reilly, 2025) and Substack of the same name.
@@ -60,8 +66,35 @@ Direct quotes/figures from the PDF:
   → maps to: **keep the always-loaded file LEAN; hand off before the window fills.** *Confidence: high.*
 - **Claude Code best practices** (incl. the CLAUDE.md / "keep it tight" guidance): <https://code.claude.com/docs/en/best-practices>.
   → maps to: the operating-agreement file format itself (CLAUDE.md).
+- **Long-running harness design** (Mar 2026): planner/generator/evaluator separation, structured
+  artifacts across sessions, and explicit criteria for subjective and deterministic evaluation.
+  <https://www.anthropic.com/engineering/harness-design-long-running-apps>.
+  → maps to: durable handoffs and independent evaluation. *Confidence: high.*
+- **Observed Claude Code practice** (Jun 2026): success is measured with verifiable evidence, while
+  human domain expertise and planning judgment continue to matter.
+  <https://www.anthropic.com/research/claude-code-expertise>.
+  → maps to: proof before completion and operator-owned direction. *Confidence: high.*
 
 ## 6. Genuine additional influences (checked — only the ones that map)
+- **OpenAI — Codex harness engineering (Feb 2026).** Repository-local knowledge is treated as the
+  system of record, `AGENTS.md` as a compact index, plans as versioned artifacts, and architectural
+  dependency directions as mechanically enforced invariants.
+  <https://openai.com/index/harness-engineering/>. The Agents SDK later adds sandboxed execution and
+  checkpoint rehydration for long-running work: <https://openai.com/index/the-next-evolution-of-the-agents-sdk/>.
+  → maps to: progressive disclosure, effective-state doctor, durable lifecycle, and architecture
+  checks. *Confidence: high.*
+- **Armin Ronacher — *The Tower Keeps Rising* (Jul 2026).** The primary source for the shared
+  architectural-language observation: common concepts, boundaries, invariants, ownership, and
+  rationale let humans coordinate changes. Agents can keep construction moving after that common
+  model has fragmented. <https://lucumr.pocoo.org/2026/7/13/the-tower-keeps-rising/>.
+  → maps to: whole-chain verification, architecture legibility, and preserving rationale.
+  *Confidence: high.* OpenAI supplies a complementary implementation example, not primary credit
+  for this observation.
+- **Addy Osmani — harness ratchets and agentic quality (2026).** Agent failures should become
+  bounded harness improvements; deterministic constraints increasingly carry quality at agent
+  output volume. <https://addyosmani.com/blog/agent-harness-engineering/> ·
+  <https://addyosmani.com/blog/agentic-code-quality/>.
+  → maps to: system evolution and release-blocking evaluations. *Confidence: high.*
 - **Simon Willison** — coined **"prompt injection"** (Sept 2022) and sharpened the **vibe coding vs "vibe engineering"** distinction (the latter = staying *"proudly and confidently accountable for the software you produce"*). <https://simonwillison.net/tags/prompt-injection/> · <https://simonw.substack.com/p/vibe-engineering>. → no-secrets/security posture + the "accountable, not vibes" stance. *Confidence: high.*
 - **"12-Factor Agents" — Dex Horthy / HumanLayer** — *"own your context window,"* *"own your prompts,"* deterministic code + targeted LLM decisions; the **"dumb zone"** (recall degrades past ~40% context fill). <https://github.com/humanlayer/12-factor-agents> (Factor 3: <https://github.com/humanlayer/12-factor-agents/blob/main/content/factor-03-own-your-context-window.md>). → static/dynamic context economics; lean window. *Confidence: high.*
 - **Chip Huyen — *AI Engineering* (O'Reilly, 2025)** — systematizes context construction, evaluation, and **LLM-as-judge** for foundation-model apps. <https://www.oreilly.com/library/view/ai-engineering/9781098166298/>. → evidence/eval discipline (prove-it). *Confidence: high* on the book; *med* that the harness draws *directly* on it vs. converges with it — credit as a convergent/grounding text, not a claimed lineage.
@@ -134,6 +167,7 @@ surrounding prose in the harness voice with R-number cross-references.
 | No-secrets discipline (enforced by hooks) | Google whitepaper p.30 hook example (#3); Willison prompt-injection (#6) |
 | Writing rules: no-op test, single source of truth, leading words | Matt Pocock, *writing-for-agents* (#7) |
 | Context pointers: a skill description == a CLAUDE.md line naming a doc | Matt Pocock (#7) |
+| Shared architectural language and the risk of locally-correct drift | Armin Ronacher, *The Tower Keeps Rising* (#6); OpenAI Codex harness as complementary implementation evidence |
 
 ## All source URLs (flat list)
 - https://x.com/karpathy/status/1937902205765607626
@@ -161,3 +195,11 @@ surrounding prose in the harness voice with R-number cross-references.
 - https://github.com/mattpocock/skills/blob/5b15a47f2d7150f545fbcacbfe381787fc0230dc/skills/productivity/writing-for-agents/SKILL-MECHANICS.md
 - https://github.com/mattpocock/skills/blob/5b15a47f2d7150f545fbcacbfe381787fc0230dc/docs/productivity/writing-for-agents.md
 - https://github.com/mattpocock/skills/blob/5b15a47f2d7150f545fbcacbfe381787fc0230dc/LICENSE
+- https://openai.com/index/harness-engineering/
+- https://openai.com/index/the-next-evolution-of-the-agents-sdk/
+- https://www.anthropic.com/engineering/harness-design-long-running-apps
+- https://www.anthropic.com/research/claude-code-expertise
+- https://addyosmani.com/blog/agent-harness-engineering/
+- https://addyosmani.com/blog/agentic-code-quality/
+- https://www.youtube.com/watch?v=96jN2OCOfLs
+- https://lucumr.pocoo.org/2026/7/13/the-tower-keeps-rising/
