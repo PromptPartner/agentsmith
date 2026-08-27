@@ -57,20 +57,53 @@ Every project run writes one managed `AGENTS.md`. Claude's `CLAUDE.md` is genera
 assembled bytes. AgentSmith creates no instruction symlinks, proprietary Markdown imports, or
 second independently editable core.
 
+## Permissions and dangerous mode
+
+Omitting `--safety` is the cautious path for fresh installs and ordinary updates. The wizard asks
+`Safety [cautious/trusted] [cautious]:`; pressing Enter chooses cautious.
+
+| Mode | Claude Code | Codex | Use when |
+|---|---|---|---|
+| `cautious` (default) | `permissions.defaultMode = acceptEdits` | `approval_policy = "on-request"`, `sandbox_mode = "workspace-write"` | Normal development, shared/client machines, or any environment still earning trust |
+| `trusted` (explicit opt-in) | `permissions.defaultMode = bypassPermissions` | `approval_policy = "never"`, `sandbox_mode = "danger-full-access"` | A machine and repository you fully own, with the larger blast radius understood |
+
+Choose trusted only by passing `--safety trusted`. To move back, rerun with `--safety cautious` or
+omit the flag. When an older AgentSmith-managed trusted configuration is encountered, `--dry-run`
+shows the trusted-to-cautious migration; the real run warns and backs up the existing JSON/TOML
+before changing only AgentSmith's safety keys. Unrelated Claude JSON and Codex TOML content stays
+in place.
+
 ## Inspect and maintain an install
 
 ```bash
 python3 agentsmith.py agents list
 python3 agentsmith.py compatibility
 python3 agentsmith.py doctor --agent all --target /path/to/project
+python3 agentsmith.py evaluate --agent native --dry-run --claude-max-usd 10 --codex-max-tokens 100000
 
 ./setup.sh --agent all --profile auto --dry-run --target /path/to/project
 ./setup.sh --agent all --uninstall --target /path/to/project
 ```
 
 When installed as a command, the public forms are `agentsmith agents list`, `agentsmith
-compatibility`, and `agentsmith doctor ...`. Doctor reports instructions, skills, MCP, hooks, and
-runtime separately. Fixture evidence is never presented as a live-client claim.
+compatibility`, and `agentsmith doctor ...`. Doctor resolves the selected client's effective
+global, project, and nested instruction chain, including fingerprints, generator metadata, and
+combined/duplicate token estimates. It separately inspects actual safety, skills, MCP, hooks,
+scanner commands, and installed runtime ownership. Duplicate full cores are warnings, not automatic
+rewrites; use the reported `--profile-only` recommendation only when a self-contained project copy
+is not required. Fixture evidence is never presented as a live-client claim.
+
+`agentsmith evaluate` runs eight behavioral scenarios for installed Claude Code and Codex clients.
+The default is a write-free dry run that resolves clients, commands, isolation, scenarios, and
+budgets. Real execution requires `--live` plus a positive budget for each selected client; every
+trial uses a fresh temporary Git repository with native tool networking disabled. Raw logs stay
+under `~/.agentsmith/evaluations/raw/`; only reviewed, normalized schema-v2 records belong in
+`compatibility/evaluations/`.
+
+Codex trials additionally use a temporary `CODEX_HOME` with a single-file bridge to validated
+ChatGPT subscription authentication. User instructions, settings, hooks, plugins, apps, and MCP
+servers do not enter the trial, OAuth refreshes remain consistent with the source login, and
+API-key-authenticated Codex sessions fail closed.
 
 ## Skills, MCP, and hooks
 
@@ -96,11 +129,20 @@ agentsmith handoff ITEM-123
 agentsmith new-research "topic"
 agentsmith new-feedback "observed failure"
 agentsmith secret-scan
+agentsmith secret-scan --all
+agentsmith secret-scan FILE...
+printf '%s\n' "text to inspect" | agentsmith secret-scan -
 ```
 
 An installed project carries the Python runtime and command shims under `.agentsmith/`, so hooks
 and skills resolve the same CLI on macOS, Linux, and Windows. Verification phases are
 project-owned and run with the native OS shell.
+
+The default secret scan examines only added lines in the staged Git diff, which is the pre-commit
+contract. `--all` scans the tracked working tree; file arguments and `-` select explicit files or
+stdin. The scanner reports path, line, and pattern name with the matched value redacted. Put one
+Python regular expression per line in `.harness/secret-scan.allow` only for inert fixtures that
+cannot be reshaped; never use it to waive a live credential.
 
 ## Profiles and operating model
 

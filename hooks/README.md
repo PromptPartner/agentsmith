@@ -21,10 +21,10 @@ Install the native hook set for the selected platform with:
 ./setup.sh --platform both   --with-handoff-hooks
 ```
 
-Claude stores the scripts under `~/.claude/hooks/` and hook definitions in `settings.json`. Codex
-stores them under `$CODEX_HOME/hooks/` and definitions in `$CODEX_HOME/hooks.json`. Both merges are
+Both clients receive absolute commands pointing at the installed Python runtime. Claude stores hook
+definitions in `settings.json`; Codex stores them in `$CODEX_HOME/hooks.json`. Both merges are
 idempotent and preserve unrelated hooks. Codex requires a one-time trust review after installation:
-open `/hooks`, inspect the definitions, and approve them. Needs `jq`.
+open `/hooks`, inspect the definitions, and approve them.
 
 ## What you get
 
@@ -53,7 +53,7 @@ When a valid threshold signal exists, the Stop response is an enforced cue: it b
 returns the handoff reason to the agent. It still does not execute or verify the handoff itself.
 
 > **Honest caveat.** No Claude Code hook receives the live context-% — only the **statusline**
-> does. So this hook reads the % that `statusline-command.sh` writes to a temp file
+> does. So this hook reads the % that AgentSmith's installed `agentsmith-statusline.py` writes to a temp file
 > (`$TMPDIR/claude-ctx-<session>.pct`). That makes it inherently fragile: the file can be stale
 > (the statusline hasn't re-rendered since the last turn) or missing (statusline not installed).
 > Files older than 300 seconds are ignored; `HANDOFF_SIGNAL_MAX_AGE_SECONDS` can set a 1–3600
@@ -146,18 +146,29 @@ Codex add/update/delete/multi-file patches.
 
 ## Git guardrails (`hooks/git/`)
 
-Per-repo git hooks that enforce the harness's git discipline. Install with:
+The supported installer path is deliberately narrow:
 
 ```bash
-./scripts/install-git-hooks.sh            # recommended set: secret-scan + protect-main + conventional
-./scripts/install-git-hooks.sh --all      # + branch-naming + tests-green
-./scripts/install-git-hooks.sh --branch-naming --tests-green   # add the opt-in ones
-./scripts/install-git-hooks.sh --minimal  # secret-scan only (legacy)
-# or, during setup:  setup.sh --profile X --with-hooks   (installs the recommended set)
+./setup.sh --agent native --profile software-dev --with-hooks --target .
 ```
 
-The installer writes thin `.git/hooks/{pre-commit,commit-msg,pre-push}` dispatchers that call the
-scripts in `hooks/git/`. It backs up any foreign hook it would overwrite and is re-runnable.
+It installs only a thin pre-commit dispatcher to the Python `agentsmith secret-scan` command. If a
+foreign pre-commit hook exists, setup preserves it and prints the command to integrate manually;
+it never overwrites foreign hook logic.
+
+The older shell hook bundle remains available as an explicit manual tool. It is not installed by
+`--with-hooks`:
+
+```bash
+./scripts/install-git-hooks.sh --minimal                    # secret scan only
+./scripts/install-git-hooks.sh --protect-main --conventional
+./scripts/install-git-hooks.sh --branch-naming --tests-green
+./scripts/install-git-hooks.sh --all
+```
+
+That manual installer manages `.git/hooks/{pre-commit,commit-msg,pre-push}` and recognizes its own
+legacy markers. Review those scripts before opting in; protect-main, conventional commits,
+branch-naming, and tests-green are not part of the current Python install contract.
 
 | Guardrail | Git hook | Default | What it does |
 |-----------|----------|---------|--------------|

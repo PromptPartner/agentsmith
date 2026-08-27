@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import tomllib
 from typing import Any, Iterable
 import urllib.error
 import urllib.request
@@ -54,6 +56,23 @@ GROUPS = {
     "all": AGENT_IDS,
 }
 CODE_PROFILES = {"software-dev", "devops-setup"}
+SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("PEM private key", re.compile(r"BEGIN [A-Z ]*PRIVATE KEY")),
+    ("AWS access key id", re.compile(r"AKIA[0-9A-Z]{16}")),
+    ("AWS temporary access key id", re.compile(r"ASIA[0-9A-Z]{16}")),
+    ("GitHub token", re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}")),
+    ("Slack token", re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}")),
+    ("OpenAI-style key", re.compile(r"sk-[A-Za-z0-9]{20,}")),
+    ("Anthropic-style key", re.compile(r"sk-ant-[A-Za-z0-9_-]{20,}")),
+    ("Google API key", re.compile(r"AIza[0-9A-Za-z_-]{35}")),
+    (
+        "assigned secret literal",
+        re.compile(
+            r"\b(password|passwd|pwd|secret|token|api[_-]?key)[\"' ]*[:=]\s*[\"'][^\"' \t]{8,}",
+            re.IGNORECASE,
+        ),
+    ),
+)
 
 
 class CliError(RuntimeError):
@@ -299,6 +318,191 @@ def merge_json(path: Path, mutation: Any, *, dry_run: bool) -> None:
     ok(f"reconciled {path}")
 
 
+def file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def available_statusline_path(base: Path, prior_files: dict[str, Any]) -> Path:
+    prior = next((Path(raw) for raw in prior_files if Path(raw).suffix == base.suffix), None)
+    if prior is not None:
+        return prior
+    if not base.exists():
+        return base
+    counter = 1
+    while True:
+        candidate = base.with_name(f"{base.stem}-{counter}{base.suffix}")
+        if not candidate.exists():
+            return candidate
+        counter += 1
+
+
+def statusline_owner(target: Path, global_mode: bool) -> str:
+    return "global" if global_mode else f"project:{target.resolve()}"
+
+
+def claude_statusline_installation(prior: dict[str, Any] | None) -> tuple[dict[str, str], list[tuple[Path, str]]]:
+    source = ROOT / "config" / "statusline.py"
+    prior_files = prior.get("files", {}) if isinstance(prior, dict) else {}
+    if not isinstance(prior_files, dict):
+        prior_files = {}
+    destination = available_statusline_path(
+        home_dir() / ".claude" / "agentsmith-statusline.py", prior_files
+    )
+    files = [(destination, source.read_text(encoding="utf-8"))]
+    if os.name == "nt":
+        wrapper = available_statusline_path(
+            home_dir() / ".claude" / "agentsmith-statusline.ps1", prior_files
+        )
+        python_literal = str(Path(sys.executable).resolve()).replace("'", "''")
+        script_literal = str(destination).replace("'", "''")
+        files.append(
+            (
+                wrapper,
+                "$payload = [Console]::In.ReadToEnd()\n"
+                f"$payload | & '{python_literal}' '{script_literal}'\n"
+                "exit $LASTEXITCODE\n",
+            )
+        )
+        command = f'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{wrapper.as_posix()}"'
+    else:
+        command = native_command(str(Path(sys.executable).resolve()), str(destination))
+    return {"type": "command", "command": command}, files
+
+
+def install_default_statuslines(
+    agents: list[str], target: Path, global_mode: bool, *, dry_run: bool
+) -> None:
+    """Activate defaults only where a client has no active built-in or explicit choice."""
+    if "claude" not in agents:
+        return
+    settings_path = home_dir() / ".claude" / "settings.json"
+    original = settings_path.read_text(encoding="utf-8") if settings_path.exists() else ""
+    try:
+        data = json.loads(original) if original.strip() else {}
+    except json.JSONDecodeError as exc:
+        raise CliError(f"Refusing to modify invalid JSON {settings_path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise CliError(f"Refusing to replace non-object Claude settings in {settings_path}")
+
+    state = load_state(home_dir())
+    ownership = state.get("native_statuslines", {})
+    if not isinstance(ownership, dict):
+        ownership = {}
+    prior = ownership.get("claude")
+    prior_value = prior.get("value") if isinstance(prior, dict) else None
+    current_is_owned = isinstance(prior, dict) and data.get("statusLine") == prior_value
+    if "statusLine" in data and not current_is_owned:
+        if "claude" in ownership and not dry_run:
+            ownership.pop("claude", None)
+            record_state(home_dir(), "native_statuslines", ownership, dry_run=False)
+        return
+
+    value, assets = claude_statusline_installation(prior if isinstance(prior, dict) else None)
+    if dry_run:
+        say(f"DRY RUN — would activate the default Claude status line in {settings_path}")
+        return
+
+    prior_files = prior.get("files", {}) if isinstance(prior, dict) else {}
+    if not isinstance(prior_files, dict):
+        prior_files = {}
+    installed_files: dict[str, str] = {}
+    for path, content in assets:
+        rendered = content.replace("\r\n", "\n")
+        if path.exists() and path.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n") != rendered:
+            expected_hash = prior_files.get(str(path))
+            if expected_hash and file_sha256(path) != expected_hash:
+                warn(f"modified AgentSmith status-line helper preserved: {path}")
+                installed_files[str(path)] = expected_hash
+                continue
+            backup(path)
+        if not path.exists() or path.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n") != rendered:
+            atomic_write(path, rendered)
+        installed_files[str(path)] = file_sha256(path)
+
+    def activate(current: dict[str, Any]) -> None:
+        current["statusLine"] = value
+
+    merge_json(settings_path, activate, dry_run=False)
+    owners = prior.get("owners", []) if isinstance(prior, dict) else []
+    if not isinstance(owners, list):
+        owners = []
+    owner = statusline_owner(target, global_mode)
+    owners = list(dict.fromkeys([*owners, owner]))
+    ownership["claude"] = {"value": value, "files": installed_files, "owners": owners}
+    record_state(home_dir(), "native_statuslines", ownership, dry_run=False)
+    if data.get("disableAllHooks") is True:
+        warn("Claude's explicit disableAllHooks=true also disables its configured status line")
+
+
+def remove_default_statuslines(
+    agents: list[str], target: Path, global_mode: bool, *, dry_run: bool
+) -> None:
+    if "claude" not in agents:
+        return
+    state = load_state(home_dir())
+    ownership = state.get("native_statuslines", {})
+    if not isinstance(ownership, dict) or not isinstance(ownership.get("claude"), dict):
+        return
+    prior = ownership["claude"]
+    settings_path = home_dir() / ".claude" / "settings.json"
+    data: dict[str, Any] = {}
+    if settings_path.exists():
+        try:
+            loaded = json.loads(settings_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise CliError(f"Refusing to modify invalid JSON {settings_path}: {exc}") from exc
+        if not isinstance(loaded, dict):
+            raise CliError(f"Refusing to replace non-object Claude settings in {settings_path}")
+        data = loaded
+    owned_value_active = data.get("statusLine") == prior.get("value")
+    if "statusLine" in data and not owned_value_active:
+        if not dry_run:
+            ownership.pop("claude", None)
+            record_state(home_dir(), "native_statuslines", ownership, dry_run=False)
+        return
+
+    owners = prior.get("owners", [])
+    if not isinstance(owners, list):
+        owners = []
+    owner = statusline_owner(target, global_mode)
+    if owners and owner not in owners:
+        return
+    remaining_owners = [value for value in owners if value != owner]
+    if remaining_owners:
+        if not dry_run:
+            prior["owners"] = remaining_owners
+            ownership["claude"] = prior
+            record_state(home_dir(), "native_statuslines", ownership, dry_run=False)
+        return
+    if owned_value_active:
+        if dry_run:
+            say(f"DRY RUN — would remove AgentSmith's default Claude status line from {settings_path}")
+        else:
+            data.pop("statusLine", None)
+            backup(settings_path)
+            if data:
+                atomic_write(settings_path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+            else:
+                settings_path.unlink()
+
+    files = prior.get("files", {})
+    if isinstance(files, dict) and (owned_value_active or "statusLine" not in data):
+        for raw_path, expected_hash in files.items():
+            path = Path(raw_path)
+            if not path.is_file():
+                continue
+            if not isinstance(expected_hash, str) or file_sha256(path) != expected_hash:
+                warn(f"modified AgentSmith status-line helper preserved: {path}")
+                continue
+            if dry_run:
+                say(f"DRY RUN — would remove AgentSmith's status-line helper {path}")
+            else:
+                path.unlink()
+    if not dry_run:
+        ownership.pop("claude", None)
+        record_state(home_dir(), "native_statuslines", ownership, dry_run=False)
+
+
 def state_path(target: Path) -> Path:
     return target / ".agentsmith" / "state.json"
 
@@ -504,6 +708,10 @@ def copy_runtime(target: Path, *, dry_run: bool) -> Path:
         registry_destination = destination.parent / "config" / "agents.json"
         registry_destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(REGISTRY_PATH, registry_destination)
+        for helper_name in ("native_launcher.py", "evaluate.py"):
+            helper_source = ROOT / helper_name
+            if helper_source.exists():
+                shutil.copy2(helper_source, destination.parent / helper_name)
         posix_launcher = destination.parent / "agentsmith"
         windows_launcher = destination.parent / "agentsmith.cmd"
         atomic_write(posix_launcher, textwrap.dedent("""\
@@ -538,12 +746,43 @@ def copy_runtime(target: Path, *, dry_run: bool) -> Path:
 
 def install_native_config(target: Path, agents: list[str], args: argparse.Namespace) -> None:
     selected_mcp = mcp_source(csv(args.with_mcp))
+    prior_safety = getattr(args, "prior_managed_safety", {})
+    for agent_id in agents:
+        if prior_safety.get(agent_id) == "trusted" and args.safety == "cautious":
+            destination = (
+                home_dir() / ".claude" / "settings.json"
+                if agent_id == "claude"
+                else codex_home() / "config.toml"
+            )
+            if args.dry_run:
+                say(
+                    f"DRY RUN — would migrate AgentSmith-managed {agent_id} safety "
+                    f"from trusted to cautious in {destination}"
+                )
+            else:
+                warn(
+                    f"WARNING: migrating AgentSmith-managed {agent_id} safety from trusted to "
+                    f"cautious; the existing config will be backed up: {destination}"
+                )
     if "claude" in agents and not args.assemble_only:
         def claude_settings(data: dict[str, Any]) -> None:
-            data["permissions"] = {"defaultMode": "acceptEdits" if args.safety == "cautious" else "bypassPermissions"}
+            permissions = data.setdefault("permissions", {})
+            if not isinstance(permissions, dict):
+                raise CliError("Refusing to replace non-object Claude permissions configuration")
+            permissions["defaultMode"] = "acceptEdits" if args.safety == "cautious" else "bypassPermissions"
         merge_json(home_dir() / ".claude" / "settings.json", claude_settings, dry_run=args.dry_run)
     if "codex" in agents and not args.assemble_only:
         reconcile_codex_toml(codex_home() / "config.toml", args.safety, {}, dry_run=args.dry_run)
+    if not args.assemble_only:
+        install_default_statuslines(agents, target, args.global_mode, dry_run=args.dry_run)
+    if not args.assemble_only and not args.dry_run:
+        state = load_state(home_dir())
+        native_safety = state.get("native_safety", {})
+        if not isinstance(native_safety, dict):
+            native_safety = {}
+        for agent_id in agents:
+            native_safety[agent_id] = args.safety
+        record_state(home_dir(), "native_safety", native_safety, dry_run=False)
     if selected_mcp and not args.global_mode:
         if "claude" in agents:
             mcp_path = target / ".mcp.json"
@@ -803,26 +1042,28 @@ def append_unique_hook(data: dict[str, Any], event: str, command: str, matcher: 
     hooks.append(entry)
 
 
+def native_command(*arguments: str) -> str:
+    return subprocess.list2cmdline(list(arguments)) if os.name == "nt" else shlex.join(arguments)
+
+
 def install_hooks(target: Path, agents: list[str], args: argparse.Namespace) -> None:
     if not (args.with_handoff_hooks or args.with_ui_design_hook or args.with_hooks):
         return
     runtime = copy_runtime(home_dir() if args.global_mode else target, dry_run=args.dry_run)
-    py = json.dumps(sys.executable)
-    cli = json.dumps(str(runtime))
     if args.with_handoff_hooks and "claude" in agents:
         def claude(data: dict[str, Any]) -> None:
-            append_unique_hook(data, "UserPromptSubmit", f"{py} {cli} hook handoff-on-keyword")
-            append_unique_hook(data, "Stop", f"{py} {cli} hook context-budget-nudge")
+            append_unique_hook(data, "UserPromptSubmit", native_command(sys.executable, str(runtime), "hook", "handoff-on-keyword"))
+            append_unique_hook(data, "Stop", native_command(sys.executable, str(runtime), "hook", "context-budget-nudge"))
         merge_json(home_dir() / ".claude" / "settings.json", claude, dry_run=args.dry_run)
     if args.with_handoff_hooks and "codex" in agents:
         def codex(data: dict[str, Any]) -> None:
-            append_unique_hook(data, "UserPromptSubmit", f"{py} {cli} hook handoff-on-keyword")
+            append_unique_hook(data, "UserPromptSubmit", native_command(sys.executable, str(runtime), "hook", "handoff-on-keyword"))
         merge_json(codex_home() / "hooks.json", codex, dry_run=args.dry_run)
     if args.with_ui_design_hook:
         for agent, path in (("claude", home_dir() / ".claude" / "settings.json"), ("codex", codex_home() / "hooks.json")):
             if agent in agents:
                 def ui(data: dict[str, Any]) -> None:
-                    append_unique_hook(data, "PreToolUse", f"{py} {cli} hook ui-design-reminder", "^(Edit|Write|apply_patch)$")
+                    append_unique_hook(data, "PreToolUse", native_command(sys.executable, str(runtime), "hook", "ui-design-reminder"), "^(Edit|Write|apply_patch)$")
                 merge_json(path, ui, dry_run=args.dry_run)
     if args.with_hooks and not args.global_mode:
         install_git_hooks(target, runtime, dry_run=args.dry_run)
@@ -973,6 +1214,7 @@ def remove_owned_skills(target: Path, agents: list[str], *, dry_run: bool) -> No
 
 def uninstall(args: argparse.Namespace, agents: list[str], target: Path) -> int:
     ownership = load_state(home_dir() if args.global_mode else target)
+    remove_default_statuslines(agents, target, args.global_mode, dry_run=args.dry_run)
     canonical, generated = instruction_paths(target, agents, args.global_mode)
     for path in [*canonical, *generated]:
         remove_managed_markdown(path, dry_run=args.dry_run)
@@ -1031,8 +1273,11 @@ def uninstall(args: argparse.Namespace, agents: list[str], target: Path) -> int:
             settings = home_dir() / ".claude" / "settings.json"
             if settings.exists():
                 data = json.loads(settings.read_text(encoding="utf-8"))
-                if data.get("permissions", {}).get("defaultMode") in {"acceptEdits", "bypassPermissions"}:
-                    data.pop("permissions", None)
+                permissions = data.get("permissions", {})
+                if isinstance(permissions, dict) and permissions.get("defaultMode") in {"acceptEdits", "bypassPermissions"}:
+                    permissions.pop("defaultMode", None)
+                    if not permissions:
+                        data.pop("permissions", None)
                     if not args.dry_run:
                         backup(settings)
                         if data: atomic_write(settings, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
@@ -1082,6 +1327,36 @@ def cmd_install(args: argparse.Namespace) -> int:
     if not profiles and not args.global_mode:
         raise CliError("Pick a profile with --profile <name[,name]> or use --global")
     canonical, generated = instruction_paths(target, agents, args.global_mode)
+    ownership_safety = load_state(home_dir()).get("native_safety", {})
+    if not isinstance(ownership_safety, dict):
+        ownership_safety = {}
+    prior_managed_safety: dict[str, str] = {
+        agent_id: value
+        for agent_id, value in ownership_safety.items()
+        if agent_id in agents and value in {"cautious", "trusted"}
+    }
+    had_managed_instructions = any(
+        path.exists() and managed_markers(path.read_text(encoding="utf-8", errors="replace"))
+        for path in (*canonical, *generated)
+    )
+    if had_managed_instructions and "claude" in agents and "claude" not in prior_managed_safety:
+        claude_path = home_dir() / ".claude" / "settings.json"
+        try:
+            claude_data = json.loads(claude_path.read_text(encoding="utf-8")) if claude_path.exists() else {}
+        except json.JSONDecodeError:
+            claude_data = {}
+        if claude_data.get("permissions", {}).get("defaultMode") == "bypassPermissions":
+            prior_managed_safety["claude"] = "trusted"
+    if "codex" in agents and "codex" not in prior_managed_safety:
+        codex_path = codex_home() / "config.toml"
+        codex_text = codex_path.read_text(encoding="utf-8", errors="replace") if codex_path.exists() else ""
+        managed = re.search(
+            rf"(?ms)^{re.escape(TEXT_BEGIN)}\n(.*?)^{re.escape(TEXT_END)}",
+            codex_text,
+        )
+        if managed and 'approval_policy = "never"' in managed.group(1) and 'sandbox_mode = "danger-full-access"' in managed.group(1):
+            prior_managed_safety["codex"] = "trusted"
+    args.prior_managed_safety = prior_managed_safety
     recovery = recover_identity([*canonical, *generated])
     block = build_instructions(args, profiles, not args.profile_only, recovery)
     if args.export_instructions:
@@ -1170,20 +1445,431 @@ def estimate_instruction_tokens() -> int:
     return 8950
 
 
-def doctor_capability(agent: dict[str, Any], capability: str, target: Path) -> dict[str, str]:
-    declarations: dict[str, Any] = {
-        "instructions": agent.get("instructions", {}).get("discovery", "unverified"),
-        "skills": agent.get("skills_tools", {}).get("agent_skills", {}).get("client_support", "unverified"),
-        "mcp": agent.get("skills_tools", {}).get("mcp", {}).get("client_support", "unverified"),
-        "hooks": agent.get("native_runtime", {}).get("hooks", {}).get("client_support", "unverified"),
-        "runtime": agent.get("native_runtime", {}).get("lifecycle", {}).get("agentsmith_management", "unverified"),
+def doctor_warning(code: str, message: str, recommendation: str = "") -> dict[str, str]:
+    return {"code": code, "message": message, "recommendation": recommendation}
+
+
+def doctor_project_root(target: Path) -> Path:
+    discovered = subprocess.run(
+        ["git", "-C", str(target), "rev-parse", "--show-toplevel"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if discovered.returncode == 0 and discovered.stdout.strip():
+        return Path(discovered.stdout.strip()).resolve()
+    return target.resolve()
+
+
+def resolve_doctor_path(value: str, base: Path | None = None) -> Path:
+    rendered = value.replace("$CODEX_HOME", str(codex_home())).replace("${CODEX_HOME}", str(codex_home()))
+    path = Path(rendered).expanduser()
+    return path.resolve() if path.is_absolute() else ((base or Path.cwd()) / path).resolve()
+
+
+def managed_block(text: str) -> str:
+    markers = managed_markers(text)
+    if not markers:
+        return ""
+    begin, end = markers
+    start = text.find(begin)
+    finish = text.find(end, start + len(begin))
+    return "" if finish < 0 else text[start:finish + len(end)]
+
+
+def instruction_source(path: Path, scope: str) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "scope": scope,
+        "path": str(path),
+        "exists": path.is_file(),
+        "managed": False,
+        "managed_status": "missing",
+        "generated_core": None,
+        "profiles": [],
+        "sha256": "",
+        "fingerprint_sha256": "",
+        "tokens": 0,
+        "core_tokens": 0,
     }
-    declared = declarations[capability]
-    if capability == "instructions":
+    if not path.is_file():
+        return record
+    payload = path.read_bytes()
+    text = payload.decode("utf-8", errors="replace")
+    block = managed_block(text)
+    has_begin = any(begin in text for begin, _ in ((BEGIN, END), (LEGACY_BEGIN, END), (OLDER_BEGIN, OLDER_END)))
+    record.update(
+        {
+            "managed": bool(block),
+            "managed_status": "managed" if block else ("malformed" if has_begin else "unmanaged"),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "fingerprint_sha256": hashlib.sha256(payload).hexdigest(),
+            "tokens": max(1, len(text) // 4),
+        }
+    )
+    if not block:
+        return record
+    metadata = re.search(r"Generated\. Profiles: ([^.]+)\. core=(true|false)\.", block)
+    if not metadata:
+        record["managed_status"] = "malformed"
+        return record
+    record["profiles"] = [] if metadata.group(1) == "none" else metadata.group(1).split(",")
+    record["generated_core"] = metadata.group(2) == "true"
+    if record["generated_core"]:
+        core = re.split(r"\n---\n\n# Work-Type Profile\(s\):", block, maxsplit=1)[0]
+        record["core_tokens"] = max(1, len(core) // 4)
+    return record
+
+
+def instruction_chain(agent: dict[str, Any], target: Path) -> tuple[list[dict[str, Any]], Path]:
+    discovery = agent.get("instructions", {})
+    project_root = doctor_project_root(target)
+    sources: list[dict[str, Any]] = []
+    for raw in discovery.get("global_paths", []):
+        sources.append(instruction_source(resolve_doctor_path(str(raw)), "global"))
+    try:
+        relative = target.resolve().relative_to(project_root)
+        directories = [project_root]
+        current = project_root
+        for part in relative.parts:
+            current /= part
+            directories.append(current)
+    except ValueError:
+        directories = [target.resolve()]
+        project_root = target.resolve()
+    names = [str(value) for value in discovery.get("project_paths", ["AGENTS.md"])] or ["AGENTS.md"]
+    for index, directory in enumerate(directories):
+        candidates = [resolve_doctor_path(name, directory) for name in names]
+        selected = next((candidate for candidate in candidates if candidate.is_file()), None)
+        if selected:
+            sources.append(instruction_source(selected, "project" if index == 0 else "nested"))
+        elif index == 0:
+            sources.append(instruction_source(candidates[0], "project"))
+    return sources, project_root
+
+
+def inspect_instructions(agent_id: str, agent: dict[str, Any], target: Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    sources, project_root = instruction_chain(agent, target)
+    warnings: list[dict[str, str]] = []
+    existing = [source for source in sources if source["exists"]]
+    malformed = [source for source in existing if source["managed_status"] == "malformed"]
+    for source in malformed:
+        warnings.append(
+            doctor_warning(
+                "malformed-instruction-metadata",
+                f"Managed instruction metadata is malformed in {source['path']}",
+                "Re-run install for this target after preserving any foreign content.",
+            )
+        )
+    full_cores = [source for source in existing if source["generated_core"] is True]
+    duplicate_tokens = max(0, sum(source["core_tokens"] for source in full_cores) - max(
+        (source["core_tokens"] for source in full_cores), default=0
+    ))
+    if len(full_cores) > 1:
+        warnings.append(
+            doctor_warning(
+                "duplicate-managed-core",
+                "Global and project instruction sources both contain the full managed core.",
+                "If collaborators can rely on the global layer, reinstall the project with --profile-only; keep the full project copy when self-containment is intentional.",
+            )
+        )
+    canonical = project_root / "AGENTS.md"
+    if agent_id == "claude" and canonical.is_file() and managed_block(canonical.read_text(encoding="utf-8", errors="replace")):
+        generated = project_root / "CLAUDE.md"
+        if not generated.is_file():
+            warnings.append(
+                doctor_warning(
+                    "missing-generated-copy",
+                    f"Claude generated copy is missing: {generated}",
+                    "Re-run install with --agent claude for this project.",
+                )
+            )
+        else:
+            canonical_record = instruction_source(canonical, "project")
+            generated_record = instruction_source(generated, "project")
+            canonical_meta = (canonical_record["generated_core"], canonical_record["profiles"])
+            generated_meta = (generated_record["generated_core"], generated_record["profiles"])
+            if canonical_meta != generated_meta or managed_block(canonical.read_text(encoding="utf-8")) != managed_block(generated.read_text(encoding="utf-8")):
+                warnings.append(
+                    doctor_warning(
+                        "conflicting-generator-metadata",
+                        "Canonical AGENTS.md and Claude's generated copy disagree.",
+                        "Re-run install so CLAUDE.md is regenerated from canonical AGENTS.md.",
+                    )
+                )
+    path = next((source["path"] for source in reversed(existing)), str(project_root / "AGENTS.md"))
+    state = "malformed" if malformed else ("healthy" if existing else "missing")
+    return {
+        "declared": str(agent.get("instructions", {}).get("discovery", "unverified")),
+        "state": state,
+        "path": path,
+        "sources": sources,
+        "combined_tokens": sum(source["tokens"] for source in existing),
+        "duplicate_tokens": duplicate_tokens,
+    }, warnings
+
+
+def directory_snapshot(path: Path) -> dict[Path, bytes]:
+    return {item.relative_to(path): item.read_bytes() for item in path.rglob("*") if item.is_file()} if path.is_dir() else {}
+
+
+def inspect_skills(agent_id: str, agent: dict[str, Any], target: Path) -> dict[str, Any]:
+    roots = [target / ".agents" / "skills"]
+    if agent_id == "claude":
+        roots.append(target / ".claude" / "skills")
+    bundled = {path.name: directory_snapshot(path) for path in (ROOT / "skills").iterdir() if path.is_dir()}
+    managed_names: set[str] = set()
+    stale_names: set[str] = set()
+    foreign_names: set[str] = set()
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for installed in root.iterdir():
+            if not installed.is_dir():
+                continue
+            if installed.name not in bundled:
+                foreign_names.add(installed.name)
+            elif directory_snapshot(installed) == bundled[installed.name]:
+                managed_names.add(installed.name)
+            else:
+                stale_names.add(installed.name)
+    state = "stale" if stale_names else ("managed" if managed_names else ("foreign" if foreign_names else "missing"))
+    return {
+        "declared": str(agent.get("skills_tools", {}).get("agent_skills", {}).get("client_support", "unverified")),
+        "state": state,
+        "path": str(roots[0]),
+        "paths": [str(path) for path in roots],
+        "managed_names": sorted(managed_names),
+        "stale_names": sorted(stale_names),
+        "foreign_names": sorted(foreign_names),
+    }
+
+
+def inspect_mcp(agent_id: str, agent: dict[str, Any], target: Path) -> dict[str, Any]:
+    declared = str(agent.get("skills_tools", {}).get("mcp", {}).get("client_support", "unverified"))
+    managed_names: list[str] = []
+    foreign_names: list[str] = []
+    if agent_id == "claude":
+        path = target / ".mcp.json"
+        try:
+            servers = json.loads(path.read_text(encoding="utf-8")).get("mcpServers", {}) if path.exists() else {}
+        except json.JSONDecodeError:
+            return {"declared": declared, "state": "malformed", "path": str(path), "managed_names": [], "foreign_names": []}
+        owned = load_state(target).get("claude_mcp_added", [])
+        owned = owned if isinstance(owned, list) else []
+        managed_names = sorted(name for name in owned if name in servers)
+        foreign_names = sorted(name for name in servers if name not in owned)
+    elif agent_id == "codex":
+        path = target / ".codex" / "config.toml"
+        text = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+        try:
+            servers = tomllib.loads(text).get("mcp_servers", {}) if text else {}
+        except tomllib.TOMLDecodeError:
+            return {"declared": declared, "state": "malformed", "path": str(path), "managed_names": [], "foreign_names": []}
+        block = re.search(rf"(?ms)^{re.escape(TEXT_BEGIN)}\n(.*?)^{re.escape(TEXT_END)}", text)
+        managed_names = sorted(set(re.findall(r"^\[mcp_servers\.([^]]+)\]", block.group(1), re.MULTILINE))) if block else []
+        foreign_names = sorted(name for name in servers if name not in managed_names)
+    else:
         path = target / "AGENTS.md"
-        state = "healthy" if path.exists() and managed_markers(path.read_text(encoding="utf-8")) else "missing"
-        return {"declared": str(declared), "state": state, "path": str(path)}
-    return {"declared": str(declared), "state": "declared", "path": ""}
+        servers = {}
+    state = "managed" if managed_names else ("foreign" if foreign_names else "missing")
+    return {
+        "declared": declared,
+        "state": state,
+        "path": str(path),
+        "managed_names": managed_names,
+        "foreign_names": foreign_names,
+    }
+
+
+def hook_commands(path: Path) -> tuple[list[str], str]:
+    if not path.exists():
+        return [], "missing"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return [], "malformed"
+    commands: list[str] = []
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            if isinstance(value.get("command"), str):
+                commands.append(value["command"])
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+    walk(data.get("hooks", {}))
+    return commands, "parsed"
+
+
+def inspect_hooks(agent_id: str, agent: dict[str, Any], target: Path) -> dict[str, Any]:
+    config = home_dir() / ".claude" / "settings.json" if agent_id == "claude" else codex_home() / "hooks.json"
+    commands, parse_state = hook_commands(config) if agent_id in {"claude", "codex"} else ([], "missing")
+    runtime = (target / ".agentsmith" / "agentsmith.py").resolve()
+    managed_commands = [command for command in commands if "agentsmith.py" in command and " hook " in command]
+    legacy_commands = [
+        command for command in commands
+        if any(name in command for name in ("handoff-on-keyword.sh", "context-budget-nudge.sh", "ui-design-reminder.sh"))
+    ]
+    stale_commands = [command for command in managed_commands if str(runtime) not in command] + legacy_commands
+    git_hook = ""
+    scanner_current = False
+    git_root = doctor_project_root(target)
+    hook_dir = subprocess.run(
+        ["git", "-C", str(git_root), "rev-parse", "--git-path", "hooks"], text=True, capture_output=True, check=False
+    )
+    if hook_dir.returncode == 0:
+        resolved = Path(hook_dir.stdout.strip())
+        if not resolved.is_absolute():
+            resolved = git_root / resolved
+        git_hook_path = resolved / "pre-commit"
+        git_hook = str(git_hook_path)
+        if git_hook_path.exists():
+            hook_text = git_hook_path.read_text(encoding="utf-8", errors="replace")
+            scanner_current = str(runtime) in hook_text and "hook git-pre-commit" in hook_text
+            if "agentsmith" in hook_text.casefold() and not scanner_current:
+                stale_commands.append(hook_text.strip())
+    current_runtime = bool(managed_commands) and not stale_commands
+    state = "malformed" if parse_state == "malformed" else (
+        "stale" if stale_commands else ("managed" if managed_commands or scanner_current else ("foreign" if commands else "missing"))
+    )
+    return {
+        "declared": str(agent.get("native_runtime", {}).get("hooks", {}).get("client_support", "unverified")),
+        "state": state,
+        "path": str(config),
+        "commands": commands,
+        "managed_commands": managed_commands,
+        "stale_commands": stale_commands,
+        "current_runtime": current_runtime,
+        "scanner_path": git_hook,
+        "scanner_current": scanner_current,
+    }
+
+
+def inspect_statusline(agent_id: str) -> dict[str, Any]:
+    if agent_id == "claude":
+        path = home_dir() / ".claude" / "settings.json"
+        if not path.exists():
+            return {"declared": "supported", "state": "missing", "active": False, "path": str(path)}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {"declared": "supported", "state": "malformed", "active": False, "path": str(path)}
+        if not isinstance(data, dict):
+            return {"declared": "supported", "state": "malformed", "active": False, "path": str(path)}
+        value = data.get("statusLine")
+        ownership = load_state(home_dir()).get("native_statuslines", {})
+        owned = ownership.get("claude", {}) if isinstance(ownership, dict) else {}
+        if "statusLine" not in data:
+            state = "missing"
+        elif not value or data.get("disableAllHooks") is True:
+            state = "disabled"
+        elif isinstance(owned, dict) and value == owned.get("value"):
+            files = owned.get("files", {})
+            current = isinstance(files, dict) and bool(files) and all(
+                Path(raw).is_file()
+                and isinstance(expected_hash, str)
+                and file_sha256(Path(raw)) == expected_hash
+                for raw, expected_hash in files.items()
+            )
+            state = "managed" if current else "stale"
+        else:
+            state = "configured"
+        return {
+            "declared": "supported",
+            "state": state,
+            "active": state in {"managed", "configured"} or (
+                state == "stale"
+                and isinstance(owned, dict)
+                and isinstance(owned.get("files"), dict)
+                and bool(owned["files"])
+                and all(Path(raw).is_file() for raw in owned["files"])
+            ),
+            "path": str(path),
+        }
+    if agent_id == "codex":
+        path = codex_home() / "config.toml"
+        if not path.exists():
+            return {"declared": "supported", "state": "builtin", "active": True, "path": str(path)}
+        try:
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+        except tomllib.TOMLDecodeError:
+            return {"declared": "supported", "state": "malformed", "active": False, "path": str(path)}
+        tui = data.get("tui", {})
+        if not isinstance(tui, dict):
+            state = "malformed"
+        elif "status_line" not in tui:
+            state = "builtin"
+        elif not isinstance(tui.get("status_line"), list) or not all(
+            isinstance(value, str) for value in tui["status_line"]
+        ):
+            state = "malformed"
+        elif tui["status_line"] == []:
+            state = "disabled"
+        else:
+            state = "configured"
+        return {
+            "declared": "supported",
+            "state": state,
+            "active": state in {"builtin", "configured"},
+            "path": str(path),
+        }
+    return {"declared": "unsupported", "state": "unsupported", "active": False, "path": ""}
+
+
+def inspect_runtime(agent: dict[str, Any], target: Path) -> dict[str, Any]:
+    path = target / ".agentsmith" / "agentsmith.py"
+    expected = Path(__file__).resolve()
+    if not path.exists():
+        state = "missing"
+    elif hashlib.sha256(path.read_bytes()).digest() == hashlib.sha256(expected.read_bytes()).digest():
+        state = "current"
+    else:
+        state = "stale"
+    autonomous = target / ".agentsmith" / "autonomous-run.py"
+    expected_autonomous = ROOT / "scripts" / "autonomous-run.py"
+    autonomous_state = "missing"
+    if autonomous.exists():
+        autonomous_state = "current" if expected_autonomous.exists() and autonomous.read_bytes() == expected_autonomous.read_bytes() else "stale"
+    return {
+        "declared": str(agent.get("native_runtime", {}).get("lifecycle", {}).get("agentsmith_management", "unverified")),
+        "state": state,
+        "path": str(path),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else "",
+        "autonomous_path": str(autonomous),
+        "autonomous_state": autonomous_state,
+        "ownership_state_path": str(target / ".agentsmith" / "state.json"),
+        "ownership_state_present": (target / ".agentsmith" / "state.json").is_file(),
+    }
+
+
+def inspect_safety(agent_id: str) -> dict[str, Any]:
+    if agent_id == "claude":
+        path = home_dir() / ".claude" / "settings.json"
+        if not path.exists():
+            return {"state": "missing", "path": str(path), "values": {}}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {"state": "malformed", "path": str(path), "values": {}}
+        mode = data.get("permissions", {}).get("defaultMode") if isinstance(data.get("permissions", {}), dict) else None
+        state = {"acceptEdits": "cautious", "bypassPermissions": "trusted"}.get(mode, "foreign")
+        return {"state": state, "path": str(path), "values": {"defaultMode": mode}}
+    if agent_id == "codex":
+        path = codex_home() / "config.toml"
+        if not path.exists():
+            return {"state": "missing", "path": str(path), "values": {}}
+        try:
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+        except tomllib.TOMLDecodeError:
+            return {"state": "malformed", "path": str(path), "values": {}}
+        values = {"approval_policy": data.get("approval_policy"), "sandbox_mode": data.get("sandbox_mode")}
+        mapping = {
+            ("on-request", "workspace-write"): "cautious",
+            ("never", "danger-full-access"): "trusted",
+        }
+        return {"state": mapping.get((values["approval_policy"], values["sandbox_mode"]), "foreign"), "path": str(path), "values": values}
+    return {"state": "unsupported", "path": "", "values": {}}
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -1193,17 +1879,74 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     result: dict[str, Any] = {}
     unhealthy = False
     for agent_id in selected:
-        result[agent_id] = {}
-        for capability in ("instructions", "skills", "mcp", "hooks", "runtime"):
-            result[agent_id][capability] = doctor_capability(rows[agent_id], capability, target)
-        unhealthy |= result[agent_id]["instructions"]["state"] == "missing"
+        agent = rows[agent_id]
+        instructions, warnings = inspect_instructions(agent_id, agent, target)
+        skills = inspect_skills(agent_id, agent, target)
+        mcp = inspect_mcp(agent_id, agent, target)
+        hooks = inspect_hooks(agent_id, agent, target)
+        statusline = inspect_statusline(agent_id)
+        runtime = inspect_runtime(agent, target)
+        safety = inspect_safety(agent_id)
+        capabilities = {
+            "instructions": instructions,
+            "skills": skills,
+            "mcp": mcp,
+            "hooks": hooks,
+            "statusline": statusline,
+            "runtime": runtime,
+        }
+        for name in ("skills", "mcp", "hooks", "statusline", "runtime"):
+            capability = capabilities[name]
+            if capability["declared"] in {"supported", "native"} and capability["state"] == "missing":
+                warnings.append(
+                    doctor_warning(
+                        "declared-capability-missing",
+                        f"{name} is declared available for {agent_id}, but no matching installed state was found.",
+                        f"Re-run install with the intended {name} option if this project needs it.",
+                    )
+                )
+        if hooks["state"] == "stale":
+            warnings.append(
+                doctor_warning(
+                    "stale-managed-command",
+                    "A managed hook or scanner command points at a stale/foreign AgentSmith runtime.",
+                    "Re-run install with the relevant hook flags; foreign commands will be preserved.",
+                )
+            )
+        expanded = any(capabilities[name]["state"] == "managed" for name in ("skills", "mcp", "hooks"))
+        if safety["state"] == "trusted" and expanded:
+            warnings.append(
+                doctor_warning(
+                    "trusted-expanded-surface",
+                    "Trusted safety is combined with managed MCP, skills, or hooks.",
+                    "Use cautious safety unless this expanded tool surface is deliberately trusted.",
+                )
+            )
+        result[agent_id] = {**capabilities, "safety": safety, "warnings": warnings}
+        unhealthy |= instructions["state"] in {"missing", "malformed"}
     if args.json:
-        print(json.dumps(result, indent=2))
+        print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
         for agent_id, capabilities in result.items():
             print(agent_id)
-            for name, state in capabilities.items():
+            for name in ("instructions", "skills", "mcp", "hooks", "statusline", "runtime"):
+                state = capabilities[name]
                 print(f"  {name:<12} {state['state']:<9} declared={state['declared']}{' path=' + state['path'] if state['path'] else ''}")
+            print(f"  {'safety':<12} {capabilities['safety']['state']:<9} path={capabilities['safety']['path']}")
+            instruction_state = capabilities["instructions"]
+            print(
+                f"  instruction tokens combined={instruction_state['combined_tokens']} "
+                f"duplicate={instruction_state['duplicate_tokens']}"
+            )
+            for source in instruction_state["sources"]:
+                fingerprint = source["sha256"][:12] if source["sha256"] else "-"
+                print(
+                    f"    {source['scope']:<7} {source['managed_status']:<9} core={source['generated_core']} "
+                    f"tokens={source['tokens']} sha256={fingerprint} path={source['path']}"
+                )
+            for warning in capabilities["warnings"]:
+                suffix = f" Fix: {warning['recommendation']}" if warning["recommendation"] else ""
+                print(f"  WARNING [{warning['code']}] {warning['message']}{suffix}")
     return 1 if unhealthy and args.strict else 0
 
 
@@ -1334,34 +2077,157 @@ def cmd_scaffold(kind: str, args: argparse.Namespace) -> int:
     return 0
 
 
-def scan_secrets(root: Path) -> list[str]:
-    patterns = [
-        re.compile(r"AKIA[0-9A-Z]{16}"),
-        re.compile(r"gh[pousr]_[A-Za-z0-9]{30,}"),
-        re.compile(r"sk-[A-Za-z0-9_-]{20,}"),
-        re.compile(r"(?i)(api[_-]?key|secret|token|password)\s*[:=]\s*['\"]?[A-Za-z0-9_./+=-]{16,}"),
-    ]
-    result = subprocess.run(["git", "-C", str(root), "ls-files", "-co", "--exclude-standard"], capture_output=True, text=True)
-    paths = result.stdout.splitlines() if result.returncode == 0 else []
-    findings: list[str] = []
-    for rel in paths:
-        path = root / rel
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError):
+def secret_scan_root(target: str | None) -> Path:
+    candidate = Path(target or os.getcwd()).expanduser().resolve()
+    result = subprocess.run(
+        ["git", "-C", str(candidate), "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return Path(result.stdout.strip()).resolve() if result.returncode == 0 else candidate
+
+
+def secret_allow_rules(root: Path) -> list[re.Pattern[str]]:
+    path = root / ".harness" / "secret-scan.allow"
+    if not path.exists():
+        return []
+    rules: list[re.Pattern[str]] = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise CliError(f"Cannot read secret-scan allow rules {path}: {exc}") from exc
+    for number, raw in enumerate(lines, 1):
+        if not raw.strip() or raw.lstrip().startswith("#"):
             continue
-        for number, line in enumerate(text.splitlines(), 1):
-            if any(pattern.search(line) for pattern in patterns):
-                findings.append(f"{rel}:{number}: possible live secret")
+        try:
+            rules.append(re.compile(raw))
+        except re.error as exc:
+            raise CliError(f"Invalid secret-scan allow regex at {path}:{number}: {exc}") from exc
+    return rules
+
+
+def scan_secret_records(
+    records: Iterable[tuple[str, int, str]], allow_rules: list[re.Pattern[str]]
+) -> list[tuple[str, int, str]]:
+    findings: list[tuple[str, int, str]] = []
+    for display_path, number, line in records:
+        if not line.strip() or any(rule.search(line) for rule in allow_rules):
+            continue
+        for pattern_name, pattern in SECRET_PATTERNS:
+            if pattern.search(line):
+                findings.append((display_path, number, pattern_name))
+                break
     return findings
 
 
+def file_secret_records(path: Path, display_path: str) -> Iterable[tuple[str, int, str]]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeError:
+        return
+    except OSError as exc:
+        raise CliError(f"Cannot read secret-scan input {path}: {exc}") from exc
+    for number, line in enumerate(text.splitlines(), 1):
+        yield display_path, number, line
+
+
+def tracked_secret_records(root: Path) -> Iterable[tuple[str, int, str]]:
+    result = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "-z"], capture_output=True, check=False
+    )
+    if result.returncode:
+        raise CliError(f"secret-scan --all needs a Git repository: {root}")
+    for raw in result.stdout.split(b"\0"):
+        if not raw:
+            continue
+        relative = os.fsdecode(raw)
+        path = root / relative
+        if path.is_file():
+            yield from file_secret_records(path, relative)
+
+
+def staged_secret_records(root: Path) -> Iterable[tuple[str, int, str]]:
+    result = subprocess.run(
+        [
+            "git", "-C", str(root), "-c", "core.quotepath=false", "diff", "--cached",
+            "--no-color", "--no-ext-diff", "--unified=0", "--diff-filter=ACMR",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if result.returncode:
+        raise CliError(f"secret-scan needs a Git repository with a readable staged diff: {root}")
+    display_path = ""
+    line_number = 0
+    in_hunk = False
+    for raw in result.stdout.splitlines():
+        if raw.startswith("+++ "):
+            # Git appends a tab separator to some new-file headers. It is metadata, not part of
+            # the path (core.quotepath=false keeps Unicode readable).
+            display_path = raw[4:].split("\t", 1)[0]
+            if display_path.startswith("b/"):
+                display_path = display_path[2:]
+            in_hunk = False
+            continue
+        if raw.startswith("@@ "):
+            match = re.search(r"\+(\d+)(?:,\d+)?", raw)
+            if not match:
+                in_hunk = False
+                continue
+            line_number = int(match.group(1))
+            in_hunk = True
+            continue
+        if not in_hunk:
+            continue
+        if raw.startswith("+"):
+            yield display_path, line_number, raw[1:]
+            line_number += 1
+        elif raw.startswith("-"):
+            continue
+        elif raw.startswith("\\ No newline"):
+            continue
+        else:
+            line_number += 1
+
+
 def cmd_secret_scan(args: argparse.Namespace) -> int:
-    findings = scan_secrets(Path(args.target or os.getcwd()).resolve())
+    root = secret_scan_root(getattr(args, "target", None))
+    paths = list(getattr(args, "paths", []) or [])
+    scan_all = bool(getattr(args, "all", False))
+    if scan_all and paths:
+        raise CliError("secret-scan --all cannot be combined with file or stdin arguments")
+    allow_rules = secret_allow_rules(root)
+    if scan_all:
+        records = tracked_secret_records(root)
+    elif paths:
+        def selected_records() -> Iterable[tuple[str, int, str]]:
+            for value in paths:
+                if value == "-":
+                    for number, line in enumerate(sys.stdin.read().splitlines(), 1):
+                        yield "<stdin>", number, line
+                    continue
+                path = Path(value).expanduser()
+                if not path.is_absolute():
+                    path = Path.cwd() / path
+                yield from file_secret_records(path, value)
+        records = selected_records()
+    else:
+        records = staged_secret_records(root)
+    findings = scan_secret_records(records, allow_rules)
     if findings:
-        print("\n".join(findings), file=sys.stderr)
+        for path, number, pattern_name in findings:
+            print(f"{path}:{number}: {pattern_name}: [REDACTED]", file=sys.stderr)
+        print(
+            "secret-scan: BLOCKED — move the value to an environment variable or secret manager; "
+            "allow only a genuine inert fixture via .harness/secret-scan.allow",
+            file=sys.stderr,
+        )
         return 1
-    ok("no likely live secrets found")
+    ok("secret-scan: clean")
     return 0
 
 
@@ -1378,6 +2244,14 @@ def cmd_hook(args: argparse.Namespace) -> int:
     return 0  # hooks fail open by design
 
 
+def cmd_evaluate(args: argparse.Namespace) -> int:
+    try:
+        from evaluate import run_evaluation
+        return int(run_evaluation(args, core_path=Path(__file__).resolve()))
+    except (ValueError, RuntimeError) as exc:
+        raise CliError(str(exc)) from exc
+
+
 def add_common_install_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--agent", action="append", help="agent ID/group; repeatable or comma-separated")
     parser.add_argument("--platform", choices=("claude", "codex", "both"), help="deprecated alias for --agent")
@@ -1391,7 +2265,12 @@ def add_common_install_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--operator-bio")
     parser.add_argument("--tracker")
     parser.add_argument("--tracker-writes", choices=("ask", "allowed"))
-    parser.add_argument("--safety", choices=("cautious", "trusted"), default="trusted")
+    parser.add_argument(
+        "--safety",
+        choices=("cautious", "trusted"),
+        default="cautious",
+        help="native-client permission mode (default: cautious; trusted requires explicit opt-in)",
+    )
     parser.add_argument("--with-skills", action="store_true")
     parser.add_argument("--with-mcp", action="append")
     parser.add_argument("--with-hooks", action="store_true")
@@ -1420,7 +2299,11 @@ def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(
         prog="agentsmith",
         description="Cross-platform universal coding-agent harness",
-        epilog="Install selection: --agent <id|native|standard|local|all> (repeatable); legacy alias: --platform claude|codex|both.",
+        epilog=(
+            "Run 'agentsmith install --help' for profiles, targets, safety, and capability flags. "
+            "Install selection uses --agent <id|native|standard|local|all> (repeatable); "
+            "legacy alias: --platform claude|codex|both."
+        ),
     )
     root.add_argument("--version", action="version", version=f"agentsmith {VERSION}")
     sub = root.add_subparsers(dest="command")
@@ -1449,21 +2332,49 @@ def parser() -> argparse.ArgumentParser:
         scaffold.add_argument("--target")
         scaffold.add_argument("--dry-run", action="store_true")
     secret = sub.add_parser("secret-scan")
-    secret.add_argument("--target")
+    secret.add_argument("--all", action="store_true", help="scan the tracked working tree")
+    secret.add_argument("--target", help="Git/project root for staged, tracked-tree, and allow rules")
+    secret.add_argument("paths", nargs="*", metavar="FILE", help="files to scan, or '-' for stdin")
     hook = sub.add_parser("hook")
     hook.add_argument("hook_name", choices=("handoff-on-keyword", "context-budget-nudge", "ui-design-reminder", "git-pre-commit"))
+    evaluate = sub.add_parser("evaluate", help="run isolated native-client behavioral evaluations")
+    evaluate.add_argument("--agent", required=True, choices=("claude", "codex", "native"),
+                          help="native client to exercise; 'native' runs Claude and Codex")
+    evaluate.add_argument("--scenario", action="append", help="scenario ID; repeatable (default: all eight)")
+    evaluate.add_argument("--trials", type=int, default=3, help="fresh-repository trials per scenario (default: 3)")
+    mode = evaluate.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true", help="resolve the run without calling a model (default)")
+    mode.add_argument("--live", action="store_true", help="call native clients; explicit positive budgets required")
+    evaluate.add_argument("--claude-max-usd", type=float, default=0.0, help="run-wide Claude USD ceiling")
+    evaluate.add_argument("--codex-max-tokens", type=int, default=0, help="run-wide Codex reported-token ceiling")
+    evaluate.add_argument("--output", help="normalized record directory (raw logs always stay under ~/.agentsmith)")
+    evaluate.add_argument("--timeout-seconds", type=int, default=600, help=argparse.SUPPRESS)
     return root
 
 
 def normalize_legacy_argv(argv: list[str]) -> list[str]:
     if not argv:
         return ["install", "--wizard"]
-    commands = {"install", "agents", "doctor", "compatibility", "verify", "handoff", "new-feedback", "new-research", "secret-scan", "hook"}
+    commands = {"install", "agents", "doctor", "compatibility", "verify", "handoff", "new-feedback", "new-research", "secret-scan", "hook", "evaluate"}
     if argv[0] in commands or argv[0] in {"-h", "--help", "--version"}:
         return argv
     if "--doctor" in argv:
         return ["doctor", *[value for value in argv if value != "--doctor"]]
     return ["install", *argv]
+
+
+def apply_wizard_answers(args: argparse.Namespace, input_fn: Any = input) -> None:
+    chosen = input_fn("Agent ID/group [claude]: ").strip() or "claude"
+    profile = input_fn("Profile [general-admin]: ").strip() or "general-admin"
+    while True:
+        safety = input_fn("Safety [cautious/trusted] [cautious]: ").strip() or "cautious"
+        if safety in {"cautious", "trusted"}:
+            break
+        warn("Safety must be 'cautious' or 'trusted'; trusted is an explicit opt-in")
+    args.agent = [chosen]
+    args.profile = [profile]
+    args.safety = safety
+    args.wizard = False
 
 
 def run(argv: list[str] | None = None) -> int:
@@ -1475,9 +2386,7 @@ def run(argv: list[str] | None = None) -> int:
             print("Which assistant should receive native rules? [claude]")
             if not sys.stdin.isatty():
                 return 0
-            chosen = input("Agent ID/group [claude]: ").strip() or "claude"
-            profile = input("Profile [general-admin]: ").strip() or "general-admin"
-            args.agent = [chosen]; args.profile = [profile]; args.wizard = False
+            apply_wizard_answers(args)
         return cmd_install(args)
     if args.command == "agents":
         return cmd_agents_list(args)
@@ -1495,6 +2404,8 @@ def run(argv: list[str] | None = None) -> int:
         return cmd_secret_scan(args)
     if args.command == "hook":
         return cmd_hook(args)
+    if args.command == "evaluate":
+        return cmd_evaluate(args)
     parser().print_help()
     return 0
 

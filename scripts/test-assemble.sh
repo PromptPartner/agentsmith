@@ -31,11 +31,16 @@ bad() { printf '  \033[31m✗\033[0m %s\n' "$1"; fail=$((fail+1)); }
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-# --help must render: it is the only discovery surface for the flags.
-if bash "$SETUP" --help 2>/dev/null | grep -q -- '--profile'; then
-  ok "--help renders and documents --profile"
+# Root help must make the subcommand boundary discoverable, and install help owns the flags.
+if bash "$SETUP" --help 2>/dev/null | grep -q -- 'install --help'; then
+  ok "root help points to install --help"
 else
-  bad "--help does not render (nobody can discover the flags)"
+  bad "root help does not point to install --help"
+fi
+if bash "$SETUP" install --help 2>/dev/null | grep -q -- '--profile'; then
+  ok "install help renders and documents --profile"
+else
+  bad "install help does not expose the profile flags"
 fi
 
 # Every profile on disk must assemble. Globbing the directory rather than hardcoding a list means
