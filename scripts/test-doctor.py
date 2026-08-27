@@ -26,6 +26,9 @@ class DoctorTests(unittest.TestCase):
                 "HOME": str(self.root / "home with spaces"),
                 "USERPROFILE": str(self.root / "home with spaces"),
                 "CODEX_HOME": str(self.root / "custom codex ü"),
+                # Keep Windows on its locale decoder so Unicode Git paths exercise
+                # doctor's explicit UTF-8 subprocess contract.
+                "PYTHONUTF8": "0",
             }
         )
 
@@ -134,7 +137,9 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(Path(by_scope["global"]["path"]), (Path(self.env["CODEX_HOME"]) / "AGENTS.md").resolve())
         self.assertTrue(by_scope["project"]["exists"])
         self.assertFalse(by_scope["project"]["managed"])
+        self.assertEqual(Path(by_scope["project"]["path"]), (project / "AGENTS.md").resolve())
         self.assertEqual(by_scope["nested"]["generated_core"], False)
+        self.assertEqual(Path(by_scope["nested"]["path"]), (nested / "AGENTS.md").resolve())
         self.assertTrue(by_scope["nested"]["sha256"])
         self.assertGreater(by_scope["nested"]["tokens"], 0)
 
