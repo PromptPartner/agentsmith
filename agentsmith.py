@@ -1802,7 +1802,13 @@ def translate_shadow_paths(
     replacements: set[tuple[str, str]] = set()
     for root_name, shadow_root in shadow_roots.items():
         actual = actual_roots[root_name]
-        for old, new in ((str(shadow_root), actual), (shadow_root.as_posix(), Path(actual).as_posix())):
+        resolved_shadow = shadow_root.resolve()
+        for old, new in (
+            (str(shadow_root), actual),
+            (str(resolved_shadow), actual),
+            (shadow_root.as_posix(), Path(actual).as_posix()),
+            (resolved_shadow.as_posix(), Path(actual).as_posix()),
+        ):
             replacements.add((old, new))
             replacements.add((json.dumps(old, ensure_ascii=False)[1:-1], json.dumps(new, ensure_ascii=False)[1:-1]))
     for old, new in sorted(replacements, key=lambda item: len(item[0]), reverse=True):

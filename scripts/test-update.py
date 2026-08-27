@@ -579,7 +579,10 @@ class UpdateCheckTests(unittest.TestCase):
 
         self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
         self.assertIn("RELEASE_PROBE_0_2_1", (codex_home / "AGENTS.md").read_text(encoding="utf-8"))
-        self.assertIn(str(home / ".agentsmith" / "agentsmith.py"), (codex_home / "hooks.json").read_text(encoding="utf-8"))
+        self.assertIn(
+            str(home.resolve() / ".agentsmith" / "agentsmith.py"),
+            (codex_home / "hooks.json").read_text(encoding="utf-8"),
+        )
         self.assertNotIn("agentsmith-apply-", (codex_home / "hooks.json").read_text(encoding="utf-8"))
         receipt_line = next(line for line in applied.stdout.splitlines() if "rollback receipt:" in line)
         receipt_path = Path(receipt_line.split("rollback receipt:", 1)[1].strip())
@@ -786,6 +789,20 @@ class UpdateCheckTests(unittest.TestCase):
             runtime.replace_with_retry(source, destination)
         self.assertEqual(replaced.call_count, 3)
         self.assertEqual([call.args[0] for call in slept.call_args_list], [0.05, 0.1])
+
+    def test_shadow_path_translation_rewrites_canonical_aliases(self) -> None:
+        shadow = self.root / "alias" / ".." / "shadow"
+        canonical_shadow = shadow.resolve()
+        actual = self.root / "actual"
+        content = str(canonical_shadow / ".agentsmith" / "agentsmith.py").encode("utf-8")
+
+        translated = runtime.translate_shadow_paths(
+            content,
+            {"target": shadow},
+            {"target": str(actual)},
+        ).decode("utf-8")
+
+        self.assertEqual(translated, str(actual / ".agentsmith" / "agentsmith.py"))
 
     def test_native_hook_update_points_to_real_runtime_not_discarded_shadow(self) -> None:
         self.commit_and_tag("0.2.0")
