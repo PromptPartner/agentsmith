@@ -178,6 +178,11 @@ Return only the requested structured result. The instruction_sentinel field must
 def redact(value: str) -> str:
     value = re.sub(r"\bsk-[A-Za-z0-9_-]{16,}\b", "[REDACTED]", value)
     value = re.sub(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b", "[REDACTED]", value)
+    home = str(Path.home())
+    if home and home != os.sep:
+        value = value.replace(home + os.sep, "~" + os.sep)
+        if value == home:
+            value = "~"
     return value
 
 

@@ -33,3 +33,4 @@ docs/feedback/[0-9]*.md
 !docs/feedback/0010-empty-codex-mcp-override-did-not-isolate-native-runs.md
 !docs/feedback/0011-evaluation-prompts-assumed-python-command-availability.md
 !docs/feedback/0012-behavioral-prompts-under-specified-deterministic-grader-contracts.md
+!docs/feedback/0013-normalized-evidence-retained-operator-home-path.md
