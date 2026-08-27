@@ -358,8 +358,8 @@ def claude_statusline_installation(prior: dict[str, Any] | None) -> tuple[dict[s
         files.append(
             (
                 wrapper,
-                "$payload = [Console]::In.ReadToEnd()\n"
-                f"$payload | & '{python_literal}' '{script_literal}'\n"
+                # Preserve Claude's JSON bytes; Windows PowerShell pipelines re-encode native stdin.
+                f"& '{python_literal}' '{script_literal}'\n"
                 "exit $LASTEXITCODE\n",
             )
         )
