@@ -24,6 +24,7 @@ of it.
 | **Fix the system, not the symptom** — regression-gate every rule change | *Self-Harness* (Shanghai AI Lab, 2026); Google whitepaper's "quality flywheel" / "factory model" |
 | **No secrets, ever** — enforced by a deterministic hook | Google whitepaper (the canonical commit-blocking hook example); Simon Willison (prompt injection) |
 | **Write rules the way you'd write code** — the no-op test, single source of truth, leading words | Matt Pocock, *writing-for-agents* |
+| **Preserve a shared architectural language** — concepts, boundaries, invariants, ownership, rationale | Armin Ronacher, *The Tower Keeps Rising*; OpenAI's Codex harness is complementary implementation evidence |
 
 ## The people and the work
 
@@ -53,6 +54,11 @@ code"), and the canonical **no-secrets hook** ("blocking a commit if the agent t
 hard-coded password").
 → [whitepaper](https://www.kaggle.com/whitepaper-the-new-SDLC-with-vibe-coding) · [author's companion post](https://addyosmani.com/blog/new-sdlc-vibe-coding/)
 
+Osmani's later **Agent Harness Engineering** and **Agentic Code Quality** essays sharpen the
+operational consequence: a failure should become a bounded harness improvement, and quality must be
+measured through deterministic constraints around the agent rather than code-reading volume alone.
+→ [Agent Harness Engineering](https://addyosmani.com/blog/agent-harness-engineering/) · [Agentic Code Quality](https://addyosmani.com/blog/agentic-code-quality/)
+
 **Anthropic** (makers of Claude / Claude Code) — the operating-discipline backbone. *Building
 Effective Agents* argues for **the simplest pattern that works** (don't over-scaffold). *Effective
 context engineering* names **"context rot"** (recall degrades as the window fills) and prescribes
@@ -60,6 +66,30 @@ context engineering* names **"context rot"** (recall degrades as the window fill
 lean and handing off early. The CLAUDE.md format and "keep it tight" guidance come from Claude Code
 best practices.
 → [Building Effective Agents](https://www.anthropic.com/engineering/building-effective-agents) · [Effective context engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents) · [Claude Code best practices](https://code.claude.com/docs/en/best-practices)
+
+Its 2026 long-running-app harness work adds a concrete planner → generator → evaluator architecture,
+structured cross-session artifacts, and criteria-based grading; its observed Claude Code research
+still defines success through verifiable evidence and retained human judgment.
+→ [Harness design for long-running application development](https://www.anthropic.com/engineering/harness-design-long-running-apps) · [Agentic coding and persistent returns to expertise](https://www.anthropic.com/research/claude-code-expertise)
+
+**OpenAI — Codex harness engineering** — demonstrates repository-local knowledge as the system of
+record, a short `AGENTS.md` as a progressively disclosed index, and mechanical enforcement of
+architectural dependency directions and invariants. Its Agents SDK work adds sandboxed execution
+and checkpoint rehydration for durable long-horizon runs.
+→ [Harness engineering: leveraging Codex in an agent-first world](https://openai.com/index/harness-engineering/) · [The next evolution of the Agents SDK](https://openai.com/index/the-next-evolution-of-the-agents-sdk/)
+
+**Armin Ronacher — *The Tower Keeps Rising*** — the primary source for the **shared architectural
+language** observation: software coordination depends on a common understanding of concepts,
+boundaries, invariants, ownership, and why the system has its shape. Agents can keep landing locally
+reasonable changes after that common model has collapsed, so passing tests alone do not preserve
+architectural legibility. OpenAI's Codex article above is an implementation response to this class
+of problem; Ronacher gets primary credit for the observation itself.
+→ [The Tower Keeps Rising](https://lucumr.pocoo.org/2026/7/13/the-tower-keeps-rising/)
+
+Karpathy's 2026 **From Vibe Coding to Agentic Engineering** conversation completes the shift from
+the 2025 term to the disciplined practice: higher agent leverage does not outsource understanding,
+taste, judgment, or the need for verifiable work.
+→ [Sequoia AI Ascent conversation](https://www.youtube.com/watch?v=96jN2OCOfLs)
 
 **Dex Horthy — 12-Factor Agents** — *"own your context window," "own your prompts,"* deterministic
 code with targeted LLM decisions, and **"the dumb zone"** (recall falls off past roughly 40% context
