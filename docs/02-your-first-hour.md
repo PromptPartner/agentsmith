@@ -1,17 +1,17 @@
 # Your first hour
 
-Setup ran and printed its managed destinations. This is the hour version: what actually changed on
-disk, why it's shaped that way, and how your first task and first handoff should go. The gap
-between "it installed" and "I know what it did" is where most people quit; this closes it.
+Setup printed the files and settings it manages. This guide explains what changed, why each part
+exists, and how to complete your first task and handoff. You do not need to learn AgentSmith's
+special terms before you start.
 
 ## Minutes 0–10: what setup actually wrote
 
 A project install (`./setup.sh --agent <id|group> --profile software-dev --target .`,
-or the wizard) leaves these project-local surfaces. Unless you pass `--assemble-only`, it also
-updates the selected runtime's user config in `~/.claude` and/or resolved `CODEX_HOME`:
+or the guided setup) creates these files in the project. Unless you pass `--assemble-only`, it also
+updates the selected coding agent's user settings in `~/.claude` or `CODEX_HOME`:
 
 ```
-AGENTS.md                        canonical assembled rulebook (tour below)
+AGENTS.md                        main generated instruction file (tour below)
 CLAUDE.md                        generated copy when Claude is selected
 .harness/verify.conf             your project's definition of "shippable" (starts as a stub)
 .harness/templates/              plan, handoff, research, progress-log, quality-gate templates
@@ -24,21 +24,20 @@ docs/feedback/README.md          the post-incident convention (see below)
 .agentsmith/                     Python runtime + POSIX/Windows command shims
 ```
 
-The runtime and templates are *copied in*, so your project is self-contained — nothing at runtime
-depends on the harness checkout you cloned. Each rule file is written inside marker comments
+The Python program and templates are copied into the project, so installed commands do not depend
+on the AgentSmith folder you cloned. Each rule file is written inside marker comments
 (`<!-- BEGIN AGENTSMITH … -->`): that block belongs to setup. To change the rules, edit `core/`
 or `profiles/` in your harness checkout and re-run setup; anything you add *outside* the markers
 (project specifics) is yours and survives every re-run.
 
-## Minutes 10–25: read your native rule file — the tour
+## Minutes 10–25: read your instruction file — the tour
 
-Here's the reframe that makes everything else make sense: **`AGENTS.md` is not a
-runtime config file.** The agent *reads* it — the whole thing, effectively re-read on every turn of
-every session — and behaves according to what it understood. It's a contract written for a very
-fast, very literal colleague. Editing it is programming the agent, in prose. That's also why
-every line is rationed (see [`04-why-your-agent-ignored-the-rule.md`](04-why-your-agent-ignored-the-rule.md)).
+**`AGENTS.md` is a set of written instructions, not an application settings file.** The agent reads
+it and follows the agreement during the session. Changing it changes how the agent works. Every
+line must earn its place because the full file uses part of the agent's limited working memory
+(see [`04-why-your-agent-ignored-the-rule.md`](04-why-your-agent-ignored-the-rule.md)).
 
-Yours is ~490 lines for one profile. In order:
+The software-development version is about 540 lines. In order:
 
 | Section | What it does | What to look for on first read |
 |---|---|---|
@@ -70,6 +69,12 @@ nothing (the full story: [`03-verify-means-evidence.md`](03-verify-means-evidenc
 Start your selected coding agent in the project and ask: *"what does my harness do, and what are my rules?"* — the
 agent explains its own contract back to you, which is both a sanity check and the fastest tour.
 
+The agent uses plain international English by default. It explains technical terms in common words
+and tells you what a command will change before showing it. If you want another language, ask for
+it directly, for example: *"Answer in German."* Use `--operator-bio` during setup to tell the agent
+which topics you know well and which topics need more explanation. Copy-ready examples are in
+[INSTALL.md](../INSTALL.md#3-set-responsibility-background-and-external-write-consent).
+
 Then give it one small, real task — a typo-level fix, a tiny function, something you'd trust a
 new hire with on day one. Watch the shape of what happens: it reads before it edits, it states
 what it's about to do, it does the work, it runs the checks, and it reports the outcome *with the
@@ -77,10 +82,10 @@ evidence* — not "done!" but "here's the test that failed before and passes now
 
 What it won't do is ask permission between steps. It pauses only for the three things it can't
 decide (credentials, external-service surprises, the first write to a system outside the repo).
-If that autonomy is more than you signed up for, the **cautious** safety mode — the wizard
+If that autonomy is more than you want, the **cautious** safety mode — the guided setup
 default — keeps higher-risk actions behind a prompt and Codex writes inside its workspace sandbox
 while you build trust; see
-README → "Permissions & dangerous mode."
+README → "Permissions and trusted mode."
 
 ## Minutes 50–60: the first handoff
 

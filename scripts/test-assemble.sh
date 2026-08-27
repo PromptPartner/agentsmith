@@ -37,10 +37,23 @@ if bash "$SETUP" --help 2>/dev/null | grep -q -- 'install --help'; then
 else
   bad "root help does not point to install --help"
 fi
-if bash "$SETUP" install --help 2>/dev/null | grep -q -- '--profile'; then
+install_help="$(bash "$SETUP" install --help 2>/dev/null)"
+install_help_flat="$(printf '%s' "$install_help" | tr '\n' ' ' | tr -s ' ')"
+if printf '%s' "$install_help" | grep -q -- '--profile'; then
   ok "install help renders and documents --profile"
 else
   bad "install help does not expose the profile flags"
+fi
+if printf '%s' "$install_help_flat" | grep -q -- '--operator-role.*responsibility' \
+   && printf '%s' "$install_help_flat" | grep -q -- '--operator-bio.*background'; then
+  ok "install help keeps role and bio as the explanation-calibration controls"
+else
+  bad "install help does not explain operator role and bio"
+fi
+if printf '%s' "$install_help" | grep -q -- '--explanation-level'; then
+  bad "install help exposes the rejected --explanation-level control"
+else
+  ok "install help does not add a separate explanation-level control"
 fi
 
 # Every profile on disk must assemble. Globbing the directory rather than hardcoding a list means
@@ -86,6 +99,24 @@ for p in "${profiles[@]}"; do
     bad "$name: assembled with leaks —$errs"
   else
     ok "$name: assembles clean (no unrendered tokens, no TODO blanks)"
+  fi
+
+  plain_english_missing=""
+  plain_english_text="$(tr '\n' ' ' < "$f" | tr -s ' ')"
+  for clause in \
+    "plain international English by default" \
+    "short sentences, common words, and one idea per sentence" \
+    "Avoid idioms, slang, cultural references, and unexplained abbreviations" \
+    "correct technical term" \
+    "what state will change" \
+    "English is usually more token-efficient" \
+    "explicitly asks for another language"; do
+    printf '%s' "$plain_english_text" | grep -qF "$clause" || plain_english_missing="$plain_english_missing [$clause]"
+  done
+  if [ -z "$plain_english_missing" ]; then
+    ok "$name: plain international English rule assembles completely"
+  else
+    bad "$name: plain international English rule is incomplete —$plain_english_missing"
   fi
 
   # Budget gate. Prose in core/60 asked for lean static context and got drift instead; this is the

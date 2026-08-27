@@ -1,24 +1,25 @@
-# AgentSmith — portable operating rules for coding agents
+# AgentSmith — clear working rules for coding agents
 
-AgentSmith turns maintained Markdown sources into a project operating agreement, portable skills,
-and scoped runtime adapters. The canonical project instruction file is `AGENTS.md`. Claude Code
-receives a generated `CLAUDE.md` copy; other clients either read `AGENTS.md` directly or receive a
-minimal pointer configuration.
+AgentSmith gives coding agents a shared set of working rules. You choose the universal rules and a
+profile for the kind of work you do. AgentSmith combines them into one `AGENTS.md` file in your
+project. Claude Code receives the same rules in a generated `CLAUDE.md` file.
 
-Compatibility has three independent layers: instruction discovery, skills/MCP tools, and native
-runtime integration. Reading Markdown never implies hook, skill, or MCP parity. See the
-[compatibility contract](docs/22-compatibility-contract.md) and machine-readable
-[agent registry](config/agents.json).
+Support is reported separately for three things: whether an agent reads the rules, whether optional
+skills and external tool connections work, and whether AgentSmith can configure the agent directly.
+Support in one area does not imply support in the others. See the detailed
+[compatibility contract](docs/22-compatibility-contract.md) and the machine-readable list of
+[supported agents](config/agents.json).
 
 ## Targets
 
-Claude Code and Codex are the two **native** integrations. The certification matrix also tracks
+Claude Code and Codex are the two **native integrations**, which means AgentSmith can configure
+their local applications directly. The compatibility table also tracks
 GitHub Copilot, Cursor, Gemini CLI, Windsurf/Devin, Cline, Roo Code, Aider, Continue, OpenHands,
 Goose, OpenCode, JetBrains Junie, Zed, and Jules.
 
 Those 14 clients are certification targets, not blanket claims. Each registry record says what is
-supported, unsupported, or unverified. Tabby and LM Studio are model backends rather than agent
-runtimes; local-model evidence belongs to a client-plus-provider scenario.
+supported, unsupported, or not yet verified. Tabby and LM Studio provide models rather than coding
+agent applications, so they need a separate test for each agent and model provider.
 
 ## Requirements
 
@@ -53,11 +54,16 @@ migration. Mixing `--agent` and `--platform` is rejected.
 ./setup.sh --platform both --profile software-dev --target .
 ```
 
-Every project run writes one managed `AGENTS.md`. Claude's `CLAUDE.md` is generated from the same
-assembled bytes. AgentSmith creates no instruction symlinks, proprietary Markdown imports, or
-second independently editable core.
+Every project run writes one managed `AGENTS.md`. Claude's `CLAUDE.md` contains the same generated
+text. AgentSmith creates no file links, proprietary Markdown imports, or second copy of the
+universal rules that users must edit separately.
 
-## Permissions and dangerous mode
+With the universal rules installed, agents use plain international English by default. They explain
+technical terms in common words and describe the effect and risk before commands. Use
+`--operator-bio` to state what you already know and where you want more detail. An explicit request
+to answer in another language always wins. See the copy-ready bios in [INSTALL.md](INSTALL.md#3-set-responsibility-background-and-external-write-consent).
+
+## Permissions and trusted mode
 
 Omitting `--safety` is the cautious path for fresh installs and ordinary updates. The wizard asks
 `Safety [cautious/trusted] [cautious]:`; pressing Enter chooses cautious.
@@ -65,7 +71,7 @@ Omitting `--safety` is the cautious path for fresh installs and ordinary updates
 | Mode | Claude Code | Codex | Use when |
 |---|---|---|---|
 | `cautious` (default) | `permissions.defaultMode = acceptEdits` | `approval_policy = "on-request"`, `sandbox_mode = "workspace-write"` | Normal development, shared/client machines, or any environment still earning trust |
-| `trusted` (explicit opt-in) | `permissions.defaultMode = bypassPermissions` | `approval_policy = "never"`, `sandbox_mode = "danger-full-access"` | A machine and repository you fully own, with the larger blast radius understood |
+| `trusted` (explicit opt-in) | `permissions.defaultMode = bypassPermissions` | `approval_policy = "never"`, `sandbox_mode = "danger-full-access"` | A machine and repository you fully own, after you accept the wider range of possible changes |
 
 Choose trusted only by passing `--safety trusted`. To move back, rerun with `--safety cautious` or
 omit the flag. When an older AgentSmith-managed trusted configuration is encountered, `--dry-run`
@@ -93,7 +99,7 @@ scanner commands, and installed runtime ownership. Duplicate full cores are warn
 rewrites; use the reported `--profile-only` recommendation only when a self-contained project copy
 is not required. Fixture evidence is never presented as a live-client claim.
 
-`agentsmith evaluate` runs eight behavioral scenarios for installed Claude Code and Codex clients.
+`agentsmith evaluate` runs nine behavioral scenarios for installed Claude Code and Codex clients.
 The default is a write-free dry run that resolves clients, commands, isolation, scenarios, and
 budgets. Real execution requires `--live` plus a positive budget for each selected client; every
 trial uses a fresh temporary Git repository with native tool networking disabled. Raw logs stay

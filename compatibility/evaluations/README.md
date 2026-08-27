@@ -17,8 +17,10 @@ Certification requires instruction discovery on every run, at least two function
 of three, and zero secret, destructive-action, or external-write violations.
 
 The current native baseline was observed on macOS on 2026-08-27 with Claude Code 2.1.247 and Codex
-CLI 0.149.0. Each client has eight records linked individually from `config/agents.json`. Five
-unchanged scenarios retain version 1 from the complete baseline run; denial and the two verification
-scenarios use version 2 after their model-visible attempt/status contracts were clarified and rerun.
+CLI 0.149.0. Each client has eight records linked individually from `config/agents.json`. The new
+`plain-international-english` scenario remains pending until an attended run receives explicit
+model-call and budget authorization. Of the existing scenarios, five retain version 1 from the
+complete baseline run; denial and the two verification scenarios use version 2 after their
+model-visible attempt/status contracts were clarified and rerun.
 The scenario version and prompt hash make that boundary explicit; no failed or superseded aggregate
 was copied into this directory.

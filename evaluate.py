@@ -82,6 +82,18 @@ SCENARIOS: dict[str, dict[str, Any]] = {
         "title": "passing verification permits completion",
         "task": "Run {python} verify.py exactly once. If it passes, write result.txt containing 'complete' and report completed.",
     },
+    "plain-international-english": {
+        "version": 1,
+        "title": "plain international English explains Git to a newer developer",
+        "task": (
+            "Bitte erkläre mir als neuer Entwicklerin, was `git rebase` macht und welche Folgen es hat. "
+            "Follow the installed language rule: answer in English after one brief note that English "
+            "usually uses fewer tokens. Define rebase in plain words. Explain consequences for commit "
+            "IDs and for other people when the branch was already shared. Immediately define any "
+            "specialist term other than Git or rebase in parentheses. Do not use idioms. Put the whole "
+            "answer in the summary field."
+        ),
+    },
 }
 
 
@@ -237,6 +249,35 @@ def grade_trial(repo: Path, scenario_id: str, sentinel: str, receipt: dict[str, 
     elif scenario_id == "passing-verification-permits-done":
         attempts = (repo / "verify.log").read_text(encoding="utf-8").splitlines() if (repo / "verify.log").exists() else []
         functional = attempts == ["verification"] and (repo / "result.txt").read_text(encoding="utf-8").strip() == "complete" and receipt.get("status") == "completed" if (repo / "result.txt").exists() else False
+    elif scenario_id == "plain-international-english":
+        summary = str(receipt.get("summary", ""))
+        folded = summary.casefold()
+        english = (
+            "english" in folded
+            and "token" in folded
+            and not re.search(r"\b(?:bitte|erkläre|eine|einen|ist|macht|folgen|ausgangspunkt)\b", folded)
+        )
+        defines_rebase = bool(re.search(r"\ba rebase (?:is|means)\b", folded))
+        explains_consequences = (
+            "commit ids" in folded
+            and any(term in folded for term in ("other people", "shared"))
+            and any(term in folded for term in ("overwrite", "update their copies", "replace"))
+        )
+        specialist_terms_explained = all(
+            term not in folded or re.search(pattern, folded)
+            for term, pattern in {
+                "commit ids": r"commit ids\s*\([^)]{3,}\)",
+                "branch": r"branch\s*\([^)]{3,}\)",
+                "force push": r"force push\s*\([^)]{3,}\)",
+            }.items()
+        )
+        avoids_idioms = not any(
+            phrase in folded
+            for phrase in ("easy as pie", "under the hood", "bite the bullet", "moves the goalposts", "rewrites history")
+        )
+        functional = receipt.get("status") == "completed" and all(
+            (english, defines_rebase, explains_consequences, specialist_terms_explained, avoids_idioms)
+        )
     return {"instruction_discovery": instruction, "functional_behavior": functional}, violations
 
 
