@@ -1453,6 +1453,8 @@ def doctor_project_root(target: Path) -> Path:
     discovered = subprocess.run(
         ["git", "-C", str(target), "rev-parse", "--show-toplevel"],
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         check=False,
     )
@@ -1716,7 +1718,12 @@ def inspect_hooks(agent_id: str, agent: dict[str, Any], target: Path) -> dict[st
     scanner_current = False
     git_root = doctor_project_root(target)
     hook_dir = subprocess.run(
-        ["git", "-C", str(git_root), "rev-parse", "--git-path", "hooks"], text=True, capture_output=True, check=False
+        ["git", "-C", str(git_root), "rev-parse", "--git-path", "hooks"],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
     )
     if hook_dir.returncode == 0:
         resolved = Path(hook_dir.stdout.strip())
