@@ -9,18 +9,23 @@ file, so macOS, Linux, and native Windows exercise the same implementation.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import hashlib
+import hmac
+import io
 import json
 import os
 from pathlib import Path
 import re
+import secrets
 import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import tomllib
 from typing import Any, Iterable
 import urllib.error
@@ -28,6 +33,7 @@ import urllib.request
 
 
 VERSION = "0.2.0"
+OFFICIAL_REMOTE = "https://github.com/PromptPartner/agentsmith.git"
 ROOT = Path(__file__).resolve().parent
 REGISTRY_PATH = ROOT / "config" / "agents.json"
 BEGIN = "<!-- BEGIN AGENTSMITH — universal agent harness (managed by agentsmith — edit core/profiles, not here) -->"
@@ -56,6 +62,14 @@ GROUPS = {
     "all": AGENT_IDS,
 }
 CODE_PROFILES = {"software-dev", "devops-setup"}
+RUNTIME_FILES = (
+    ".agentsmith/agentsmith.py",
+    ".agentsmith/agentsmith",
+    ".agentsmith/agentsmith.cmd",
+    ".agentsmith/config/agents.json",
+    ".agentsmith/evaluate.py",
+    ".agentsmith/native_launcher.py",
+)
 SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("PEM private key", re.compile(r"BEGIN [A-Z ]*PRIVATE KEY")),
     ("AWS access key id", re.compile(r"AKIA[0-9A-Z]{16}")),
@@ -164,7 +178,39 @@ def atomic_write(path: Path, content: str) -> None:
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", newline="", dir=path.parent, delete=False) as handle:
         handle.write(content)
         temp = Path(handle.name)
-    temp.replace(path)
+    try:
+        replace_with_retry(temp, path)
+    except Exception:
+        temp.unlink(missing_ok=True)
+        raise
+
+
+def replace_with_retry(source: Path, destination: Path) -> None:
+    delays = (0.05, 0.1, 0.2)
+    for attempt in range(len(delays) + 1):
+        try:
+            source.replace(destination)
+            return
+        except PermissionError:
+            if attempt == len(delays):
+                raise
+            time.sleep(delays[attempt])
+
+
+def atomic_write_bytes(path: Path, content: bytes, mode: int | None = None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("wb", dir=path.parent, delete=False) as handle:
+        handle.write(content)
+        handle.flush()
+        os.fsync(handle.fileno())
+        temp = Path(handle.name)
+    if mode is not None:
+        temp.chmod(mode)
+    try:
+        replace_with_retry(temp, path)
+    except Exception:
+        temp.unlink(missing_ok=True)
+        raise
 
 
 def managed_markers(text: str) -> tuple[str, str] | None:
@@ -518,12 +564,148 @@ def load_state(target: Path) -> dict[str, Any]:
         return {}
 
 
+def load_update_state(target: Path) -> dict[str, Any]:
+    path = state_path(target)
+    if not path.exists():
+        return {}
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CliError(f"Cannot use malformed update state {path}: {exc}") from exc
+    if not isinstance(state, dict):
+        raise CliError(f"Cannot use non-object update state {path}")
+    return state
+
+
 def record_state(target: Path, key: str, value: Any, *, dry_run: bool) -> None:
     if dry_run:
         return
     state = load_state(target)
     state[key] = value
     path = state_path(target)
+    rendered = json.dumps(state, indent=2, ensure_ascii=False) + "\n"
+    if not path.exists() or path.read_text(encoding="utf-8") != rendered:
+        atomic_write(path, rendered)
+
+
+def source_release_identity() -> dict[str, str | None]:
+    """Describe this runtime without mistaking an installed project for the source checkout."""
+    identity: dict[str, str | None] = {"release": None, "commit": None}
+    if not shutil.which("git"):
+        return identity
+    probe = subprocess.run(
+        ["git", "-C", str(ROOT), "rev-parse", "--show-toplevel", "HEAD"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    lines = probe.stdout.splitlines()
+    if probe.returncode or len(lines) != 2:
+        return identity
+    try:
+        source_root = Path(lines[0]).resolve()
+    except OSError:
+        return identity
+    if source_root != ROOT.resolve():
+        return identity
+    unstaged = subprocess.run(["git", "-C", str(ROOT), "diff", "--quiet"], check=False)
+    staged = subprocess.run(["git", "-C", str(ROOT), "diff", "--cached", "--quiet"], check=False)
+    if unstaged.returncode or staged.returncode:
+        return identity
+    identity["commit"] = lines[1]
+    tag = subprocess.run(
+        ["git", "-C", str(ROOT), "describe", "--tags", "--exact-match", "--match", "v[0-9]*"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    candidate = tag.stdout.strip()
+    if tag.returncode == 0 and candidate == f"v{VERSION}":
+        identity["release"] = candidate
+    return identity
+
+
+def record_installation_manifest(
+    target: Path,
+    agents: list[str],
+    profiles: list[str],
+    args: argparse.Namespace,
+    recovery: dict[str, str],
+) -> None:
+    if args.dry_run:
+        return
+    manifest_root = home_dir() if args.global_mode else target
+    state = load_state(manifest_root)
+    prior_installation = state.get("installation", {})
+    source = source_release_identity()
+    if not source.get("commit") and isinstance(prior_installation, dict):
+        prior_source = prior_installation.get("source")
+        if isinstance(prior_source, dict):
+            source = {
+                "release": prior_source.get("release") if isinstance(prior_source.get("release"), str) else None,
+                "commit": prior_source.get("commit") if isinstance(prior_source.get("commit"), str) else None,
+            }
+    requested_mcp = csv(args.with_mcp)
+    available_mcp = json.loads((ROOT / "config" / "mcp.example.json").read_text(encoding="utf-8"))["mcpServers"]
+    prior_capabilities = prior_installation.get("capabilities", {}) if isinstance(prior_installation, dict) else {}
+    if not isinstance(prior_capabilities, dict):
+        prior_capabilities = {}
+    prior_mcp = prior_capabilities.get("mcp", [])
+    if not isinstance(prior_mcp, list):
+        prior_mcp = []
+    mcp_names = list(dict.fromkeys(
+        name for name in [*prior_mcp, *requested_mcp]
+        if isinstance(name, str) and name in available_mcp
+    ))
+    safety = {
+        agent_id: args.safety
+        for agent_id in agents
+        if agent_id in {"claude", "codex"}
+    }
+    state["schema_version"] = 1
+    managed_files: list[dict[str, str]] = []
+    managed_root = home_dir() if args.global_mode else target
+    for relative_root in (Path(".agents") / "skills", Path(".claude") / "skills"):
+        skill_root = managed_root / relative_root
+        if not skill_root.is_dir():
+            continue
+        for path in sorted(skill_root.rglob("*")):
+            if path.is_file():
+                managed_files.append({
+                    "root": "home" if args.global_mode else "target",
+                    "path": path.relative_to(managed_root).as_posix(),
+                    "sha256": file_sha256(path),
+                })
+    state["installation"] = {
+        "installed_version": VERSION,
+        "source": source,
+        "scope": "global" if args.global_mode else "project",
+        "agents": agents,
+        "profiles": profiles,
+        "include_core": not args.profile_only,
+        "safety": safety,
+        "operator": {
+            "name": args.operator_name or recovery.get("operator_name") or "the project lead",
+            "role": args.operator_role or recovery.get("operator_role") or "owner / decision-maker",
+            "bio": args.operator_bio or recovery.get("operator_bio") or (
+                "They decide direction and accept the risk; you are the technical co-pilot — proactive, "
+                "evidence-driven, and honest about trade-offs."
+            ),
+        },
+        "tracker": {
+            "name": args.tracker or recovery.get("tracker") or "your project's tracker (or a KNOWN-ISSUES.md at the repo root)",
+            "writes": args.tracker_writes or recovery.get("tracker_writes") or "ask",
+        },
+        "capabilities": {
+            "handoff_hooks": bool(args.with_handoff_hooks or prior_capabilities.get("handoff_hooks")),
+            "hooks": bool(args.with_hooks or prior_capabilities.get("hooks")),
+            "mcp": mcp_names,
+            "skills": bool(args.with_skills or prior_capabilities.get("skills")),
+            "ui_design_hook": bool(args.with_ui_design_hook or prior_capabilities.get("ui_design_hook")),
+        },
+        "managed_files": managed_files,
+    }
+    path = state_path(manifest_root)
     rendered = json.dumps(state, indent=2, ensure_ascii=False) + "\n"
     if not path.exists() or path.read_text(encoding="utf-8") != rendered:
         atomic_write(path, rendered)
@@ -704,7 +886,7 @@ def copy_runtime(target: Path, *, dry_run: bool) -> Path:
     destination = target / ".agentsmith" / "agentsmith.py"
     if not dry_run:
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(Path(__file__).resolve(), destination)
+        shutil.copy2(ROOT / "agentsmith.py", destination)
         registry_destination = destination.parent / "config" / "agents.json"
         registry_destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(REGISTRY_PATH, registry_destination)
@@ -847,6 +1029,7 @@ def install_claude_plugin_packs(agents: list[str], requested: str | None, *, dry
 
 
 def self_update(args: argparse.Namespace) -> int:
+    warn("install --self-update is deprecated and updates only a clean Git checkout; use 'agentsmith update' for installed scopes")
     if not shutil.which("git"):
         raise CliError("Self-update needs git on PATH")
     if subprocess.run(["git", "-C", str(ROOT), "diff", "--quiet"]).returncode or subprocess.run(
@@ -889,6 +1072,1190 @@ def self_update(args: argparse.Namespace) -> int:
     if not args.no_reassemble:
         reassemble_managed_targets(args)
     return 0
+
+
+def stable_release_tags(remote: str, *, timeout_seconds: int = 10) -> list[tuple[tuple[int, int, int], str]]:
+    """Return stable semantic-version tags advertised by a Git remote."""
+    if not shutil.which("git"):
+        raise CliError("Update checks need git on PATH")
+    git_env = {
+        **os.environ,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_ASKPASS": "/usr/bin/false" if os.name != "nt" else "",
+    }
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--tags", "--refs", "--", remote],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=timeout_seconds,
+            env=git_env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise CliError(f"Update check timed out after {timeout_seconds} seconds; no installation changes were made") from exc
+    except OSError as exc:
+        raise CliError(f"Update check could not start git: {exc}") from exc
+    if result.returncode:
+        detail = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "remote unavailable"
+        raise CliError(f"Update check failed ({detail}); no installation changes were made")
+    releases: list[tuple[tuple[int, int, int], str]] = []
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) != 2:
+            continue
+        match = re.fullmatch(r"refs/tags/(v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*))", fields[1])
+        if match:
+            releases.append(((int(match.group(2)), int(match.group(3)), int(match.group(4))), match.group(1)))
+    return sorted(set(releases))
+
+
+def cmd_update_check(args: argparse.Namespace) -> int:
+    remote = args.update_from or OFFICIAL_REMOTE
+    releases = stable_release_tags(remote)
+    if not releases:
+        raise CliError(f"No stable semantic-version tags were found at {remote}")
+    latest_version, tag = releases[-1]
+    current_match = re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", VERSION)
+    if not current_match:
+        raise CliError(f"Installed version {VERSION!r} is not a stable semantic version")
+    current_version = tuple(int(current_match.group(index)) for index in range(1, 4))
+    payload = {
+        "current_version": VERSION,
+        "latest_version": ".".join(str(part) for part in latest_version),
+        "tag": tag,
+        "update_available": latest_version > current_version,
+        "remote": remote,
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    elif payload["update_available"]:
+        say(f"Agentsmith {payload['latest_version']} is available ({tag}); run 'agentsmith update plan' to inspect it")
+    else:
+        ok(f"Agentsmith {VERSION} is the latest stable release")
+    return 0
+
+
+def resolve_stable_release(remote: str, requested_tag: str | None) -> dict[str, str]:
+    releases = stable_release_tags(remote)
+    if not releases:
+        raise CliError(f"No stable semantic-version tags were found at {remote}")
+    release_by_tag = {tag: version for version, tag in releases}
+    tag = requested_tag or releases[-1][1]
+    if tag not in release_by_tag:
+        raise CliError(f"Release {tag!r} is not an advertised stable semantic-version tag at {remote}")
+    version_tuple = release_by_tag[tag]
+    version = ".".join(str(part) for part in version_tuple)
+    git_env = {
+        **os.environ,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_ASKPASS": "/usr/bin/false" if os.name != "nt" else "",
+    }
+    with tempfile.TemporaryDirectory(prefix="agentsmith-release-") as temporary:
+        checkout = Path(temporary) / "checkout"
+        try:
+            cloned = subprocess.run(
+                ["git", "clone", "--quiet", "--no-checkout", "--single-branch", "--branch", tag, "--", remote, str(checkout)],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=30,
+                env=git_env,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise CliError("Release checkout timed out; no installation changes were made") from exc
+        if cloned.returncode:
+            detail = cloned.stderr.strip().splitlines()[-1] if cloned.stderr.strip() else "clone failed"
+            raise CliError(f"Could not stage release {tag} ({detail}); no installation changes were made")
+        commit_result = subprocess.run(
+            ["git", "-C", str(checkout), "rev-parse", f"refs/tags/{tag}^{{commit}}"],
+            text=True,
+            capture_output=True,
+            check=False,
+            env=git_env,
+        )
+        commit = commit_result.stdout.strip()
+        if commit_result.returncode or not re.fullmatch(r"[0-9a-f]{40,64}", commit):
+            raise CliError(f"Release tag {tag} does not resolve to a valid Git commit")
+        tree = subprocess.run(
+            ["git", "-C", str(checkout), "ls-tree", "-r", commit],
+            text=True,
+            capture_output=True,
+            check=False,
+            env=git_env,
+        )
+        unsafe_entry = next(
+            (line for line in tree.stdout.splitlines() if line.startswith(("120000 ", "160000 "))),
+            None,
+        )
+        if tree.returncode or unsafe_entry:
+            raise CliError(f"Release {tag} contains an unsupported symbolic link or submodule")
+        checked_out = subprocess.run(
+            ["git", "-C", str(checkout), "checkout", "--quiet", "--detach", commit],
+            text=True,
+            capture_output=True,
+            check=False,
+            env=git_env,
+        )
+        if checked_out.returncode:
+            raise CliError(f"Release commit {commit[:12]} could not be checked out")
+        for candidate in checkout.rglob("*"):
+            if candidate.is_symlink():
+                raise CliError(f"Release {tag} contains a symbolic link, which staged updates do not accept: {candidate.relative_to(checkout)}")
+        runtime = checkout / "agentsmith.py"
+        try:
+            runtime_text = runtime.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise CliError(f"Release {tag} has no readable agentsmith.py runtime") from exc
+        declared = re.search(r'^VERSION = "([^"]+)"$', runtime_text, re.MULTILINE)
+        if not declared or declared.group(1) != version:
+            actual = declared.group(1) if declared else "missing"
+            raise CliError(f"Release {tag} declares version {actual!r}, expected {version!r}")
+    return {"tag": tag, "version": version, "commit": commit}
+
+
+def checkout_planned_release(remote: str, release: dict[str, str], destination: Path) -> Path:
+    resolved = resolve_stable_release(remote, release["tag"])
+    if resolved != release:
+        raise CliError("The selected release tag moved or changed after planning; create a new plan")
+    git_env = {
+        **os.environ,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_ASKPASS": "/usr/bin/false" if os.name != "nt" else "",
+    }
+    result = subprocess.run(
+        [
+            "git", "clone", "--quiet", "--no-checkout", "--single-branch", "--branch", release["tag"],
+            "--", remote, str(destination),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+        env=git_env,
+    )
+    if result.returncode:
+        detail = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "clone failed"
+        raise CliError(f"Could not restage release {release['tag']} ({detail})")
+    checked_out = subprocess.run(
+        ["git", "-C", str(destination), "checkout", "--quiet", "--detach", release["commit"]],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=git_env,
+    )
+    if checked_out.returncode:
+        raise CliError(f"Could not check out planned commit {release['commit'][:12]}")
+    return destination
+
+
+def validate_installation_manifest(state: dict[str, Any]) -> dict[str, Any]:
+    allowed_state = {
+        "schema_version", "installation", "gemini_context_added", "native_statuslines",
+        "native_safety", "claude_mcp_added", "skills_installed", "update_policy",
+    }
+    unknown_state = sorted(set(state) - allowed_state)
+    if unknown_state:
+        raise CliError(f"Installation state has unknown field(s): {', '.join(unknown_state)}")
+    if state.get("schema_version") != 1:
+        raise CliError("Installation state has no supported schema; rerun install with explicit choices before planning an update")
+    installation = state.get("installation")
+    if not isinstance(installation, dict):
+        raise CliError("Installation state has no manifest; rerun install with explicit choices before planning an update")
+    allowed_installation = {
+        "installed_version", "source", "scope", "agents", "profiles", "include_core",
+        "safety", "operator", "tracker", "capabilities", "managed_files",
+    }
+    unknown_installation = sorted(set(installation) - allowed_installation)
+    if unknown_installation:
+        raise CliError(f"Installation manifest has unknown field(s): {', '.join(unknown_installation)}")
+    required = allowed_installation
+    missing = sorted(required - set(installation))
+    if missing:
+        raise CliError(f"Installation manifest is missing field(s): {', '.join(missing)}")
+    return installation
+
+
+def reconstruct_pre_manifest_installation(target: Path, scope: str, state: dict[str, Any]) -> dict[str, Any]:
+    instruction_candidates = (
+        [home_dir() / ".claude" / "CLAUDE.md", codex_home() / "AGENTS.md"]
+        if scope == "global"
+        else [target / "AGENTS.md", target / "CLAUDE.md"]
+    )
+    managed_instructions = [
+        path for path in instruction_candidates
+        if path.is_file() and managed_markers(path.read_text(encoding="utf-8", errors="replace"))
+    ]
+    if not managed_instructions:
+        raise CliError("Pre-manifest install has no managed instruction markers; rerun install with explicit choices")
+    metadata_values: set[tuple[tuple[str, ...], bool]] = set()
+    for path in managed_instructions:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        metadata = re.search(r"Generated\. Profiles: ([^.]+)\. core=(true|false)\.", text)
+        if not metadata:
+            raise CliError(f"Cannot infer profiles and core choice from {path}; rerun install explicitly")
+        profiles = () if metadata.group(1) == "none" else tuple(metadata.group(1).split(","))
+        metadata_values.add((profiles, metadata.group(2) == "true"))
+    if len(metadata_values) != 1:
+        raise CliError("Managed instruction copies disagree about profiles or core choice; rerun install explicitly")
+    profiles, include_core = next(iter(metadata_values))
+    home_state = load_state(home_dir().resolve())
+    native_safety = home_state.get("native_safety", {})
+    native_safety = native_safety if isinstance(native_safety, dict) else {}
+    agents: list[str] = []
+    if scope == "global":
+        if (home_dir() / ".claude" / "CLAUDE.md") in managed_instructions:
+            agents.append("claude")
+        if (codex_home() / "AGENTS.md") in managed_instructions:
+            agents.append("codex")
+    else:
+        claude_copy = target / "CLAUDE.md"
+        if claude_copy in managed_instructions:
+            agents.append("claude")
+        native_candidates = {key for key in native_safety if key in {"claude", "codex"}}
+        if native_candidates == {"codex"}:
+            agents.append("codex")
+        elif native_candidates - set(agents):
+            raise CliError("Pre-manifest native agent ownership is ambiguous; rerun install with explicit --agent choices")
+        adapters = {
+            "gemini-cli": target / ".gemini" / "settings.json",
+            "aider": target / ".aider.conf.yml",
+            "continue": target / ".continue" / "rules" / "agentsmith.md",
+            "goose": target / ".goosehints",
+        }
+        for agent_id, path in adapters.items():
+            if path.is_file():
+                agents.append(agent_id)
+    agents = list(dict.fromkeys(agents))
+    if not agents:
+        raise CliError("Pre-manifest agent selection cannot be inferred; rerun install with explicit --agent choices")
+    safety: dict[str, str] = {}
+    for agent_id in agents:
+        if agent_id not in {"claude", "codex"}:
+            continue
+        value = native_safety.get(agent_id)
+        if value not in {"cautious", "trusted"}:
+            raise CliError(f"Pre-manifest safety for {agent_id} cannot be inferred; rerun install with explicit --safety")
+        safety[agent_id] = value
+    recovery = recover_identity(managed_instructions)
+    runtime = target / ".agentsmith" / "agentsmith.py" if scope == "project" else Path(__file__).resolve()
+    installed_version = VERSION
+    if runtime.is_file():
+        declared = re.search(r'^VERSION = "([^"]+)"$', runtime.read_text(encoding="utf-8", errors="replace"), re.MULTILINE)
+        if declared:
+            installed_version = declared.group(1)
+    config_texts = []
+    for path in (home_dir() / ".claude" / "settings.json", codex_home() / "config.toml"):
+        if path.is_file():
+            config_texts.append(path.read_text(encoding="utf-8", errors="replace"))
+    combined_config = "\n".join(config_texts)
+    mcp_names = sorted(set(re.findall(r"(?m)^\[mcp_servers\.([A-Za-z0-9_-]+)\]\s*$", combined_config)))
+    skill_root = home_dir() if scope == "global" else target
+    skills = (skill_root / ".agents" / "skills").is_dir()
+    return {
+        "installed_version": installed_version,
+        "source": {"release": None, "commit": None},
+        "scope": scope,
+        "agents": agents,
+        "profiles": list(profiles),
+        "include_core": include_core,
+        "safety": safety,
+        "operator": {
+            "name": recovery.get("operator_name", "the project lead"),
+            "role": recovery.get("operator_role", "owner / decision-maker"),
+            "bio": recovery.get("operator_bio", (
+                "They decide direction and accept the risk; you are the technical co-pilot — proactive, "
+                "evidence-driven, and honest about trade-offs."
+            )),
+        },
+        "tracker": {
+            "name": recovery.get("tracker", "your project's tracker (or a KNOWN-ISSUES.md at the repo root)"),
+            "writes": recovery.get("tracker_writes", "ask"),
+        },
+        "capabilities": {
+            "handoff_hooks": "handoff-on-keyword" in combined_config,
+            "hooks": False,
+            "mcp": mcp_names,
+            "skills": skills,
+            "ui_design_hook": "ui-design-reminder" in combined_config,
+        },
+        "managed_files": [],
+    }
+
+
+def fingerprint_entry(root_name: str, root: Path, path: Path) -> dict[str, Any]:
+    relative = path.relative_to(root).as_posix()
+    return {
+        "root": root_name,
+        "path": relative,
+        "sha256": file_sha256(path) if path.is_file() else None,
+        "mode": path.stat().st_mode & 0o777 if path.is_file() else None,
+    }
+
+
+def safe_update_path(root: Path, relative: str | Path) -> Path:
+    """Return a contained updater path after rejecting every symbolic-link component."""
+    root = root.resolve()
+    relative_path = Path(relative)
+    if relative_path.is_absolute() or ".." in relative_path.parts or not relative_path.parts:
+        raise CliError(f"Update path escapes its declared root: {relative}")
+    candidate = root.joinpath(relative_path)
+    current = root
+    for part in relative_path.parts:
+        current = current / part
+        if current.is_symlink():
+            raise CliError(f"Update refused to follow symbolic link {current}")
+    try:
+        candidate.resolve(strict=False).relative_to(root)
+    except (OSError, ValueError) as exc:
+        raise CliError(f"Update path escapes its declared root: {candidate}") from exc
+    return candidate
+
+
+def installation_fingerprints(target: Path, installation: dict[str, Any]) -> tuple[dict[str, str], list[dict[str, Any]]]:
+    roots = {
+        "target": target,
+        "home": home_dir().resolve(),
+        "codex_home": codex_home().resolve(),
+    }
+    candidates: set[tuple[str, Path]] = set()
+
+    def add(root_name: str, relative: str) -> None:
+        root = roots[root_name]
+        path = safe_update_path(root, relative)
+        if path.is_dir():
+            for child in path.rglob("*"):
+                checked = safe_update_path(root, child.relative_to(root))
+                if checked.is_file():
+                    candidates.add((root_name, checked))
+        else:
+            candidates.add((root_name, path))
+
+    if installation["scope"] == "project":
+        for relative in (
+            "AGENTS.md", "CLAUDE.md", *RUNTIME_FILES, ".agentsmith/autonomous-run.py", ".agentsmith/state.json",
+            ".harness/templates", ".harness/verify.conf",
+        ):
+            add("target", relative)
+        adapters = {
+            "gemini-cli": ".gemini/settings.json",
+            "aider": ".aider.conf.yml",
+            "continue": ".continue/rules/agentsmith.md",
+            "goose": ".goosehints",
+        }
+        for agent_id in installation["agents"]:
+            if agent_id in adapters:
+                add("target", adapters[agent_id])
+        if installation["capabilities"].get("skills"):
+            add("target", ".agents/skills")
+            if "claude" in installation["agents"]:
+                add("target", ".claude/skills")
+    else:
+        if "claude" in installation["agents"]:
+            add("home", ".claude/CLAUDE.md")
+        if "codex" in installation["agents"]:
+            add("codex_home", "AGENTS.md")
+        if installation["capabilities"].get("skills"):
+            add("home", ".agents/skills")
+            if "claude" in installation["agents"]:
+                add("home", ".claude/skills")
+        if installation["capabilities"].get("handoff_hooks") or installation["capabilities"].get("ui_design_hook"):
+            for relative in RUNTIME_FILES:
+                add("home", relative)
+    add("home", ".agentsmith/state.json")
+    home_state = load_update_state(roots["home"])
+    native_statuslines = home_state.get("native_statuslines", {})
+    claude_statusline = native_statuslines.get("claude", {}) if isinstance(native_statuslines, dict) else {}
+    statusline_files = claude_statusline.get("files", {}) if isinstance(claude_statusline, dict) else {}
+    if isinstance(statusline_files, dict):
+        for raw_path in statusline_files:
+            if not isinstance(raw_path, str):
+                continue
+            try:
+                relative = Path(raw_path).relative_to(roots["home"]).as_posix()
+            except ValueError:
+                continue
+            if re.fullmatch(r"\.claude/agentsmith-statusline(?:-\d+)?\.(?:py|ps1)", relative):
+                add("home", relative)
+    if "claude" in installation["agents"]:
+        add("home", ".claude/settings.json")
+    if "codex" in installation["agents"]:
+        add("codex_home", "config.toml")
+        add("codex_home", "hooks.json")
+    entries = [fingerprint_entry(root_name, roots[root_name], path) for root_name, path in candidates]
+    entries.sort(key=lambda item: (item["root"], item["path"]))
+    return {name: str(path) for name, path in roots.items()}, entries
+
+
+def update_integrity_key(*, create: bool) -> bytes:
+    key_path = safe_update_path(home_dir().resolve(), ".agentsmith/update-integrity.key")
+    if key_path.exists():
+        if not key_path.is_file():
+            raise CliError(f"Update integrity key is not a regular file: {key_path}")
+        try:
+            key = key_path.read_bytes()
+        except OSError as exc:
+            raise CliError(f"Cannot read update integrity key {key_path}: {exc}") from exc
+        if len(key) != 32:
+            raise CliError(f"Update integrity key has an invalid length: {key_path}")
+        return key
+    if not create:
+        raise CliError(f"Update integrity key is missing: {key_path}; create a new plan on this machine")
+    key = secrets.token_bytes(32)
+    atomic_write_bytes(key_path, key, 0o600)
+    try:
+        key_path.chmod(0o600)
+    except OSError as exc:
+        raise CliError(f"Cannot secure update integrity key {key_path}: {exc}") from exc
+    return key
+
+
+def plan_integrity(payload: dict[str, Any], key: bytes) -> str:
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return "hmac-sha256:" + hmac.new(key, canonical, hashlib.sha256).hexdigest()
+
+
+def cmd_update_plan(args: argparse.Namespace) -> int:
+    if args.global_mode == bool(args.target):
+        raise CliError("Update planning requires exactly one of --global or --target PATH")
+    target = home_dir().resolve() if args.global_mode else Path(args.target).expanduser().resolve()
+    safe_update_path(target, ".agentsmith/state.json")
+    state = load_update_state(target)
+    expected_scope = "global" if args.global_mode else "project"
+    migration_warnings: list[str] = []
+    if state.get("schema_version") == 1 and isinstance(state.get("installation"), dict):
+        installation = validate_installation_manifest(state)
+    else:
+        installation = reconstruct_pre_manifest_installation(target, expected_scope, state)
+        migration_warnings.append(
+            "Pre-manifest installation choices were reconstructed from managed markers and ownership state; "
+            "apply will persist schema version 1."
+        )
+    if installation["scope"] != expected_scope:
+        raise CliError(f"Installation manifest scope is {installation['scope']!r}, not {expected_scope!r}")
+    remote = args.update_from or OFFICIAL_REMOTE
+    release = resolve_stable_release(remote, args.version)
+    roots, fingerprints = installation_fingerprints(target, installation)
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "scope": expected_scope,
+        "target": str(target),
+        "roots": roots,
+        "remote": remote,
+        "release": release,
+        "installation": installation,
+        "fingerprints": fingerprints,
+        "proposed_changes": [],
+        "preserved_foreign_content": [
+            "Content outside AgentSmith-managed markers and owned configuration remains in place.",
+            "Modified helpers, research, source material, and unowned configuration are not deletion targets.",
+        ],
+        "migration_warnings": migration_warnings,
+        "verification": [
+            "repeat the staged release installer with the recorded manifest choices",
+            "require the exact create/replace paths, hashes, and modes recorded in proposed_changes",
+            "run agentsmith doctor --strict for the selected install",
+            "compare post-update state and write a rollback receipt",
+        ],
+    }
+    with tempfile.TemporaryDirectory(prefix="agentsmith-plan-") as temporary:
+        _, proposed = stage_planned_update(payload, Path(temporary), execute_candidate=False)
+        payload["proposed_changes"] = proposed_change_manifest(payload, proposed)
+    payload["integrity"] = plan_integrity(payload, update_integrity_key(create=True))
+    rendered = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+    if args.save:
+        destination = Path(args.save).expanduser().resolve()
+        atomic_write(destination, rendered)
+        ok(f"saved read-only installation plan for {release['tag']} to {destination}")
+    else:
+        print(rendered, end="")
+    return 0
+
+
+def load_update_document(path: Path, kind: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CliError(f"Cannot read {kind} {path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise CliError(f"{kind.capitalize()} must be a JSON object")
+    integrity = payload.get("integrity")
+    unsigned = {key: value for key, value in payload.items() if key != "integrity"}
+    expected_integrity = plan_integrity(unsigned, update_integrity_key(create=False))
+    if not isinstance(integrity, str) or not hmac.compare_digest(integrity, expected_integrity):
+        raise CliError(f"{kind.capitalize()} integrity check failed; do not apply an edited or partial file")
+    return payload
+
+
+def validated_plan(path: Path) -> dict[str, Any]:
+    plan = load_update_document(path, "plan")
+    allowed = {
+        "schema_version", "created_at", "scope", "target", "roots", "remote", "release",
+        "installation", "fingerprints", "proposed_changes", "preserved_foreign_content",
+        "migration_warnings", "verification", "integrity",
+    }
+    unknown = sorted(set(plan) - allowed)
+    missing = sorted(allowed - set(plan))
+    if unknown or missing:
+        detail = f"unknown: {', '.join(unknown)}" if unknown else f"missing: {', '.join(missing)}"
+        raise CliError(f"Plan fields are not supported ({detail})")
+    if plan["schema_version"] != 1 or plan["scope"] not in {"project", "global"}:
+        raise CliError("Plan schema or scope is not supported")
+    if not isinstance(plan["target"], str) or not isinstance(plan["remote"], str) or not plan["remote"]:
+        raise CliError("Plan target and remote must be non-empty strings")
+    expected_target = home_dir().resolve() if plan["scope"] == "global" else Path(plan["target"]).resolve()
+    expected_roots = {
+        "target": str(expected_target),
+        "home": str(home_dir().resolve()),
+        "codex_home": str(codex_home().resolve()),
+    }
+    if plan["roots"] != expected_roots or Path(plan["target"]).resolve() != expected_target:
+        raise CliError("Plan roots do not match the current target, HOME, and CODEX_HOME")
+    release = plan["release"]
+    if not isinstance(release, dict) or set(release) != {"tag", "version", "commit"}:
+        raise CliError("Plan release identity is malformed")
+    if not re.fullmatch(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", release.get("tag", "")):
+        raise CliError("Plan release tag is not a stable semantic version")
+    if release["tag"] != f"v{release.get('version')}" or not re.fullmatch(r"[0-9a-f]{40,64}", release.get("commit", "")):
+        raise CliError("Plan release version or commit is malformed")
+    installation = validate_installation_manifest({"schema_version": 1, "installation": plan["installation"]})
+    if installation["scope"] != plan["scope"]:
+        raise CliError("Plan scope and installation manifest disagree")
+    if not isinstance(plan["fingerprints"], list):
+        raise CliError("Plan fingerprints must be a list")
+    for item in plan["fingerprints"]:
+        if not isinstance(item, dict) or set(item) != {"root", "path", "sha256", "mode"}:
+            raise CliError("Plan contains a malformed fingerprint")
+        if item["root"] not in expected_roots or not isinstance(item["path"], str):
+            raise CliError("Plan fingerprint has an unknown root or path")
+        relative = Path(item["path"])
+        if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+            raise CliError("Plan fingerprint path escapes its declared root")
+        safe_update_path(Path(expected_roots[item["root"]]), relative)
+        if item["sha256"] is not None and not re.fullmatch(r"[0-9a-f]{64}", item["sha256"]):
+            raise CliError("Plan fingerprint hash is malformed")
+        if item["mode"] is not None and (not isinstance(item["mode"], int) or not 0 <= item["mode"] <= 0o777):
+            raise CliError("Plan fingerprint mode is malformed")
+    if not isinstance(plan["proposed_changes"], list):
+        raise CliError("Plan proposed changes must be a list")
+    proposed_paths: set[tuple[str, str]] = set()
+    for item in plan["proposed_changes"]:
+        if not isinstance(item, dict) or set(item) != {
+            "root", "path", "operation", "before_sha256", "before_mode", "after_sha256", "after_mode"
+        }:
+            raise CliError("Plan contains a malformed proposed change")
+        if item["root"] not in expected_roots or item["operation"] not in {"create", "replace"}:
+            raise CliError("Plan proposed change has an unknown root or operation")
+        if not isinstance(item["path"], str) or not allowed_update_path(item["root"], item["path"], installation):
+            raise CliError("Plan proposed change is outside managed update surfaces")
+        safe_update_path(Path(expected_roots[item["root"]]), item["path"])
+        for name in ("before_sha256", "after_sha256"):
+            if item[name] is not None and not re.fullmatch(r"[0-9a-f]{64}", item[name]):
+                raise CliError("Plan proposed change hash is malformed")
+        for name in ("before_mode", "after_mode"):
+            if item[name] is not None and (not isinstance(item[name], int) or not 0 <= item[name] <= 0o777):
+                raise CliError("Plan proposed change mode is malformed")
+        if item["after_sha256"] is None or item["after_mode"] is None:
+            raise CliError("Plan proposed change has no staged result")
+        if item["operation"] == "create" and (item["before_sha256"] is not None or item["before_mode"] is not None):
+            raise CliError("Plan create operation has an existing-file baseline")
+        if item["operation"] == "replace" and (item["before_sha256"] is None or item["before_mode"] is None):
+            raise CliError("Plan replace operation has no existing-file baseline")
+        identity = (item["root"], item["path"])
+        if identity in proposed_paths:
+            raise CliError("Plan contains a duplicate proposed change")
+        proposed_paths.add(identity)
+    return plan
+
+
+def recheck_plan_fingerprints(plan: dict[str, Any]) -> None:
+    for item in plan["fingerprints"]:
+        path = safe_update_path(Path(plan["roots"][item["root"]]), item["path"])
+        actual = file_sha256(path) if path.is_file() else None
+        actual_mode = path.stat().st_mode & 0o777 if path.is_file() else None
+        if actual != item["sha256"] or actual_mode != item["mode"]:
+            raise CliError(f"Update refused: {item['root']}:{item['path']} changed after planning")
+
+
+def copy_plan_inputs_to_shadow(plan: dict[str, Any], shadow_roots: dict[str, Path]) -> None:
+    for item in plan["fingerprints"]:
+        if item["sha256"] is None:
+            continue
+        source = safe_update_path(Path(plan["roots"][item["root"]]), item["path"])
+        destination = safe_update_path(shadow_roots[item["root"]], item["path"])
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+
+
+def prepare_owned_skills(plan: dict[str, Any], shadow_roots: dict[str, Path]) -> set[tuple[str, str]]:
+    inventory = plan["installation"].get("managed_files", [])
+    grouped: dict[tuple[str, str], list[dict[str, str]]] = {}
+    for item in inventory:
+        if not isinstance(item, dict) or set(item) != {"root", "path", "sha256"}:
+            raise CliError("Installation managed-file inventory is malformed")
+        parts = Path(item["path"]).parts
+        if len(parts) < 4 or (parts[0], parts[1]) not in {(".agents", "skills"), (".claude", "skills")}:
+            continue
+        prefix = Path(*parts[:3]).as_posix()
+        grouped.setdefault((item["root"], prefix), []).append(item)
+    preserved: set[tuple[str, str]] = set()
+    for (root_name, prefix), items in grouped.items():
+        source_root = Path(plan["roots"][root_name])
+        actual_root = safe_update_path(source_root, prefix)
+        recorded = {item["path"]: item["sha256"] for item in items}
+        current: dict[str, str] = {}
+        if actual_root.is_dir():
+            for path in actual_root.rglob("*"):
+                relative = path.relative_to(source_root)
+                checked = safe_update_path(source_root, relative)
+                if checked.is_file():
+                    current[relative.as_posix()] = file_sha256(checked)
+        shadow_skill = safe_update_path(shadow_roots[root_name], prefix)
+        if current == recorded:
+            if shadow_skill.exists():
+                shutil.rmtree(shadow_skill)
+        else:
+            preserved.add((root_name, prefix))
+    return preserved
+
+
+def retain_customized_skill_baselines(
+    plan: dict[str, Any], shadow_roots: dict[str, Path], preserved: set[tuple[str, str]]
+) -> None:
+    if not preserved:
+        return
+    state_root = shadow_roots["home"] if plan["scope"] == "global" else shadow_roots["target"]
+    state = load_state(state_root)
+    installation = state.get("installation")
+    if not isinstance(installation, dict):
+        raise CliError("Staged installer did not write an installation manifest")
+    new_inventory = installation.get("managed_files", [])
+    kept_new = [
+        item for item in new_inventory
+        if not any(item.get("root") == root_name and item.get("path", "").startswith(prefix + "/") for root_name, prefix in preserved)
+    ]
+    prior = plan["installation"].get("managed_files", [])
+    kept_prior = [
+        item for item in prior
+        if any(item.get("root") == root_name and item.get("path", "").startswith(prefix + "/") for root_name, prefix in preserved)
+    ]
+    installation["managed_files"] = [*kept_new, *kept_prior]
+    atomic_write(state_path(state_root), json.dumps(state, indent=2, ensure_ascii=False) + "\n")
+
+
+def install_arguments_from_manifest(plan: dict[str, Any], shadow_target: Path) -> list[str]:
+    installation = plan["installation"]
+    arguments = ["install", "--agent", ",".join(installation["agents"])]
+    if plan["scope"] == "global":
+        arguments.append("--global")
+    else:
+        arguments += ["--target", str(shadow_target)]
+    for profile in installation["profiles"]:
+        arguments += ["--profile", profile]
+    if not installation["include_core"]:
+        arguments.append("--profile-only")
+    safety_values = set(installation["safety"].values())
+    if len(safety_values) > 1:
+        raise CliError("Update cannot reproduce mixed native safety settings; reinstall each scope explicitly")
+    if safety_values:
+        arguments += ["--safety", next(iter(safety_values))]
+    operator = installation["operator"]
+    arguments += ["--operator-name", operator["name"], "--operator-role", operator["role"], "--operator-bio", operator["bio"]]
+    tracker = installation["tracker"]
+    arguments += ["--tracker", tracker["name"], "--tracker-writes", tracker["writes"]]
+    capabilities = installation["capabilities"]
+    if capabilities.get("skills"):
+        arguments.append("--with-skills")
+    for name in capabilities.get("mcp", []):
+        arguments += ["--with-mcp", name]
+    if capabilities.get("handoff_hooks"):
+        arguments.append("--with-handoff-hooks")
+    if capabilities.get("ui_design_hook"):
+        arguments.append("--with-ui-design-hook")
+    if capabilities.get("hooks"):
+        arguments.append("--with-hooks")
+    return arguments
+
+
+def shadow_files(root: Path) -> dict[str, tuple[bytes, int]]:
+    result: dict[str, tuple[bytes, int]] = {}
+    for path in root.rglob("*"):
+        relative = path.relative_to(root)
+        checked = safe_update_path(root, relative)
+        if (
+            checked.is_file()
+            and ".git" not in relative.parts
+            and not re.search(r"\.bak\.\d{8}-\d{6}(?:\.\d+)?$", checked.name)
+        ):
+            result[relative.as_posix()] = (checked.read_bytes(), checked.stat().st_mode & 0o777)
+    return result
+
+
+def translate_shadow_paths(
+    content: bytes, shadow_roots: dict[str, Path], actual_roots: dict[str, str]
+) -> bytes:
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        return content
+    replacements: set[tuple[str, str]] = set()
+    for root_name, shadow_root in shadow_roots.items():
+        actual = actual_roots[root_name]
+        for old, new in ((str(shadow_root), actual), (shadow_root.as_posix(), Path(actual).as_posix())):
+            replacements.add((old, new))
+            replacements.add((json.dumps(old, ensure_ascii=False)[1:-1], json.dumps(new, ensure_ascii=False)[1:-1]))
+    for old, new in sorted(replacements, key=lambda item: len(item[0]), reverse=True):
+        text = text.replace(old, new)
+    return text.encode("utf-8")
+
+
+def allowed_update_path(root_name: str, relative: str, installation: dict[str, Any]) -> bool:
+    path = Path(relative)
+    if ".." in path.parts or path.is_absolute():
+        return False
+    if root_name == "target":
+        exact = {
+            "AGENTS.md", "CLAUDE.md", ".harness/verify.conf", ".aider.conf.yml", ".goosehints",
+            ".gemini/settings.json", ".continue/rules/agentsmith.md",
+            *RUNTIME_FILES, ".agentsmith/autonomous-run.py", ".agentsmith/state.json",
+        }
+        prefixes = (".harness/templates/", ".agents/skills/", ".claude/skills/")
+        return relative in exact or relative.startswith(prefixes)
+    if root_name == "home":
+        return (
+            relative in {".agentsmith/state.json", *RUNTIME_FILES}
+            or relative in {".claude/CLAUDE.md", ".claude/settings.json"}
+            or bool(re.fullmatch(r"\.claude/agentsmith-statusline(?:-\d+)?\.(?:py|ps1)", relative))
+            or relative.startswith((".agents/skills/", ".claude/skills/"))
+        )
+    if root_name == "codex_home":
+        return relative in {"AGENTS.md", "config.toml", "hooks.json"}
+    return False
+
+
+def trusted_stage_install(
+    checkout: Path,
+    release_version: str,
+    arguments: list[str],
+    shadow_env: dict[str, str],
+) -> None:
+    """Run today's trusted installer logic against data files from a candidate release."""
+    global ROOT, REGISTRY_PATH, VERSION
+    prior_root, prior_registry, prior_version = ROOT, REGISTRY_PATH, VERSION
+    prior_environment = {name: os.environ.get(name) for name in shadow_env}
+    output, errors = io.StringIO(), io.StringIO()
+    try:
+        ROOT = checkout
+        REGISTRY_PATH = checkout / "config" / "agents.json"
+        VERSION = release_version
+        os.environ.update(shadow_env)
+        parsed = parser().parse_args(arguments)
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            result = cmd_install(parsed)
+        if result:
+            raise CliError(f"Trusted staged installer returned {result}")
+    except Exception as exc:
+        detail = (output.getvalue() + errors.getvalue()).strip()[-1000:]
+        suffix = f"\n{detail}" if detail else ""
+        raise CliError(f"Trusted planning install failed before real files changed: {exc}{suffix}") from exc
+    finally:
+        ROOT, REGISTRY_PATH, VERSION = prior_root, prior_registry, prior_version
+        for name, value in prior_environment.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def stage_planned_update(
+    plan: dict[str, Any], temporary_root: Path, *, execute_candidate: bool
+) -> tuple[Path, list[tuple[str, str, bytes, int]]]:
+    checkout = checkout_planned_release(plan["remote"], plan["release"], temporary_root / "release")
+    shadow_roots = {
+        "target": temporary_root / "target",
+        "home": temporary_root / "home",
+        "codex_home": temporary_root / "codex-home",
+    }
+    for root in shadow_roots.values():
+        root.mkdir(parents=True, exist_ok=True)
+    copy_plan_inputs_to_shadow(plan, shadow_roots)
+    preserved_skills = prepare_owned_skills(plan, shadow_roots)
+    shadow_env = {
+        "HOME": str(shadow_roots["home"]),
+        "USERPROFILE": str(shadow_roots["home"]),
+        "CODEX_HOME": str(shadow_roots["codex_home"]),
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+    install_arguments = install_arguments_from_manifest(plan, shadow_roots["target"])
+    if execute_candidate:
+        candidate_env = {
+            name: os.environ[name]
+            for name in (
+                "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP", "TMPDIR",
+                "LANG", "LC_ALL", "PYTHONIOENCODING",
+            )
+            if name in os.environ
+        }
+        install = subprocess.run(
+            [sys.executable, str(checkout / "agentsmith.py"), *install_arguments],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=120,
+            env={**candidate_env, **shadow_env},
+        )
+        if install.returncode:
+            detail = (install.stdout + install.stderr).strip()[-1000:]
+            raise CliError(f"Staged release install failed before real files changed:\n{detail}")
+    else:
+        trusted_stage_install(checkout, plan["release"]["version"], install_arguments, shadow_env)
+    retain_customized_skill_baselines(plan, shadow_roots, preserved_skills)
+    proposed: list[tuple[str, str, bytes, int]] = []
+    for root_name, shadow_root in shadow_roots.items():
+        for relative, (content, mode) in shadow_files(shadow_root).items():
+            if not allowed_update_path(root_name, relative, plan["installation"]):
+                raise CliError(f"Release attempted an update outside the managed surface: {root_name}:{relative}")
+            content = translate_shadow_paths(content, shadow_roots, plan["roots"])
+            actual = safe_update_path(Path(plan["roots"][root_name]), relative)
+            if actual.exists() and not actual.is_file():
+                raise CliError(f"Update refused to replace non-file path {actual}")
+            current = actual.read_bytes() if actual.is_file() else None
+            current_mode = actual.stat().st_mode & 0o777 if actual.is_file() else None
+            if current != content or current_mode != mode:
+                proposed.append((root_name, relative, content, mode))
+    proposed.sort(key=lambda item: (item[0], item[1]))
+    return checkout, proposed
+
+
+def proposed_change_manifest(
+    plan: dict[str, Any], proposed: list[tuple[str, str, bytes, int]]
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for root_name, relative, content, mode in proposed:
+        actual = safe_update_path(Path(plan["roots"][root_name]), relative)
+        existed = actual.is_file()
+        before = actual.read_bytes() if existed else None
+        result.append({
+            "root": root_name,
+            "path": relative,
+            "operation": "replace" if existed else "create",
+            "before_sha256": hashlib.sha256(before).hexdigest() if before is not None else None,
+            "before_mode": actual.stat().st_mode & 0o777 if existed else None,
+            "after_sha256": hashlib.sha256(content).hexdigest(),
+            "after_mode": mode,
+        })
+    return result
+
+
+def validate_post_update_health(plan: dict[str, Any]) -> None:
+    installation = plan["installation"]
+    state_root = Path(plan["roots"]["home"] if plan["scope"] == "global" else plan["roots"]["target"])
+    installed = validate_installation_manifest(load_update_state(state_root))
+    for field in ("scope", "agents", "profiles", "include_core", "safety", "operator", "tracker", "capabilities"):
+        if installed.get(field) != installation.get(field):
+            raise CliError(f"Post-update health check failed: installation manifest changed {field}")
+    if installed.get("installed_version") != plan["release"]["version"]:
+        raise CliError("Post-update health check failed: installed runtime version does not match the release")
+    if installed.get("source") != {
+        "release": plan["release"]["tag"],
+        "commit": plan["release"]["commit"],
+    }:
+        raise CliError("Post-update health check failed: installed source identity does not match the release")
+
+    for item in plan["proposed_changes"]:
+        path = safe_update_path(Path(plan["roots"][item["root"]]), item["path"])
+        actual_hash = file_sha256(path) if path.is_file() else None
+        actual_mode = path.stat().st_mode & 0o777 if path.is_file() else None
+        if actual_hash != item["after_sha256"] or actual_mode != item["after_mode"]:
+            raise CliError(f"Post-update health check failed: {item['root']}:{item['path']} does not match the plan")
+
+    target = Path(plan["roots"]["target"])
+    instruction_paths: list[Path] = []
+    if plan["scope"] == "global":
+        if "claude" in installation["agents"]:
+            instruction_paths.append(Path(plan["roots"]["home"]) / ".claude" / "CLAUDE.md")
+        if "codex" in installation["agents"]:
+            instruction_paths.append(Path(plan["roots"]["codex_home"]) / "AGENTS.md")
+    else:
+        instruction_paths.append(target / "AGENTS.md")
+        if "claude" in installation["agents"]:
+            instruction_paths.append(target / "CLAUDE.md")
+    for path in instruction_paths:
+        if not path.is_file() or not managed_markers(path.read_text(encoding="utf-8", errors="replace")):
+            raise CliError(f"Post-update health check failed: managed instructions are missing or malformed in {path}")
+
+    capabilities = installation["capabilities"]
+    runtime_root = Path(plan["roots"]["home"]) if plan["scope"] == "global" else target
+    needs_runtime = plan["scope"] == "project" or capabilities.get("handoff_hooks") or capabilities.get("ui_design_hook")
+    runtime = runtime_root / ".agentsmith" / "agentsmith.py"
+    if needs_runtime:
+        for relative in RUNTIME_FILES:
+            if not safe_update_path(runtime_root, relative).is_file():
+                raise CliError(f"Post-update health check failed: managed runtime file is missing: {relative}")
+        declared = re.search(
+            r'^VERSION = "([^"]+)"$', runtime.read_text(encoding="utf-8", errors="replace"), re.MULTILINE
+        )
+        if not declared or declared.group(1) != plan["release"]["version"]:
+            raise CliError("Post-update health check failed: managed runtime did not reach the planned version")
+
+    if capabilities.get("skills"):
+        skill_root = Path(plan["roots"]["home"]) if plan["scope"] == "global" else target
+        required_roots = [skill_root / ".agents" / "skills"]
+        if "claude" in installation["agents"]:
+            required_roots.append(skill_root / ".claude" / "skills")
+        if any(not root.is_dir() or not any(root.rglob("SKILL.md")) for root in required_roots):
+            raise CliError("Post-update health check failed: a managed skill root is missing or empty")
+        inventory = installed.get("managed_files", [])
+        if not inventory or any(
+            not safe_update_path(Path(plan["roots"][item["root"]]), item["path"]).is_file()
+            for item in inventory
+        ):
+            raise CliError("Post-update health check failed: managed skill inventory is missing a file")
+
+    requested_mcp = set(capabilities.get("mcp", []))
+    if requested_mcp and plan["scope"] == "global":
+        raise CliError("Post-update health check failed: global MCP ownership is not supported")
+    if requested_mcp:
+        rows = {row["id"]: row for row in compatibility_rows(installation["agents"])}
+        for agent_id in installation["agents"]:
+            if agent_id not in {"claude", "codex"}:
+                continue
+            mcp = inspect_mcp(agent_id, rows[agent_id], target)
+            if not requested_mcp.issubset(set(mcp["managed_names"])):
+                raise CliError(f"Post-update health check failed: managed MCP is incomplete for {agent_id}")
+
+    if capabilities.get("handoff_hooks") or capabilities.get("ui_design_hook"):
+        for agent_id in set(installation["agents"]) & {"claude", "codex"}:
+            config = Path(plan["roots"]["home"]) / ".claude" / "settings.json" if agent_id == "claude" else Path(plan["roots"]["codex_home"]) / "hooks.json"
+            commands, parse_state = hook_commands(config)
+            if parse_state != "parsed":
+                raise CliError(f"Post-update health check failed: hook configuration is {parse_state} for {agent_id}")
+            if capabilities.get("handoff_hooks") and not any(
+                str(runtime) in command and "hook handoff-on-keyword" in command for command in commands
+            ):
+                raise CliError(f"Post-update health check failed: handoff hook is missing for {agent_id}")
+            if capabilities.get("ui_design_hook") and not any(
+                str(runtime) in command and "hook ui-design-reminder" in command for command in commands
+            ):
+                raise CliError(f"Post-update health check failed: UI design hook is missing for {agent_id}")
+
+    if capabilities.get("hooks"):
+        hook_dir = subprocess.run(
+            ["git", "-C", str(target), "rev-parse", "--git-path", "hooks"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if hook_dir.returncode:
+            raise CliError("Post-update health check failed: managed Git hook target is not a repository")
+        resolved = Path(hook_dir.stdout.strip())
+        if not resolved.is_absolute():
+            resolved = target / resolved
+        pre_commit = resolved / "pre-commit"
+        text = pre_commit.read_text(encoding="utf-8", errors="replace") if pre_commit.is_file() else ""
+        if str(runtime) not in text or "hook git-pre-commit" not in text:
+            raise CliError("Post-update health check failed: managed Git pre-commit hook is missing or stale")
+
+    for agent_id, expected_safety in installation["safety"].items():
+        if inspect_safety(agent_id)["state"] != expected_safety:
+            raise CliError(f"Post-update health check failed: native safety does not match the manifest for {agent_id}")
+
+
+def restore_changes(changes: list[dict[str, Any]], roots: dict[str, str], backup_root: Path) -> None:
+    for change in reversed(changes):
+        path = safe_update_path(Path(roots[change["root"]]), change["path"])
+        if change["existed"]:
+            backup_path = safe_update_path(backup_root, Path(change["root"]) / change["path"])
+            content = backup_path.read_bytes()
+            if hashlib.sha256(content).hexdigest() != change["before_sha256"]:
+                raise CliError(f"Rollback backup hash mismatch for {change['root']}:{change['path']}")
+            atomic_write_bytes(path, content, change["before_mode"])
+        elif path.exists():
+            if path.is_dir():
+                raise CliError(f"Rollback refused to remove unexpected directory {path}")
+            path.unlink()
+
+
+def cmd_update_apply(args: argparse.Namespace) -> int:
+    plan_path = Path(args.plan).expanduser().resolve()
+    plan = validated_plan(plan_path)
+    recheck_plan_fingerprints(plan)
+    update_home = home_dir().resolve()
+    receipt_root = safe_update_path(update_home, ".agentsmith/update-receipts")
+    update_id = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ-") + plan["integrity"][-12:]
+    backup_root = safe_update_path(update_home, Path(".agentsmith/update-backups") / update_id)
+    changes: list[dict[str, Any]] = []
+    with tempfile.TemporaryDirectory(prefix="agentsmith-apply-") as temporary:
+        temporary_root = Path(temporary)
+        checkout, proposed = stage_planned_update(plan, temporary_root, execute_candidate=True)
+        actual_proposal = proposed_change_manifest(plan, proposed)
+        if actual_proposal != plan["proposed_changes"]:
+            raise CliError("Update refused: staged managed changes do not match the authenticated plan")
+        try:
+            for root_name, relative, content, mode in proposed:
+                actual = safe_update_path(Path(plan["roots"][root_name]), relative)
+                existed = actual.is_file()
+                before_content = actual.read_bytes() if existed else b""
+                before_mode = actual.stat().st_mode & 0o777 if existed else None
+                if existed:
+                    backup_path = safe_update_path(backup_root, Path(root_name) / relative)
+                    backup_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(actual, backup_path)
+                atomic_write_bytes(actual, content, mode)
+                changes.append({
+                    "root": root_name,
+                    "path": relative,
+                    "existed": existed,
+                    "before_sha256": hashlib.sha256(before_content).hexdigest() if existed else None,
+                    "before_mode": before_mode,
+                    "after_sha256": hashlib.sha256(content).hexdigest(),
+                    "after_mode": mode,
+                })
+            validate_post_update_health(plan)
+            doctor_arguments = ["doctor", "--agent", ",".join(plan["installation"]["agents"]), "--strict"]
+            doctor_arguments += ["--target", plan["target"]]
+            doctor = subprocess.run(
+                [sys.executable, str(checkout / "agentsmith.py"), *doctor_arguments],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=120,
+                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            )
+            if doctor.returncode:
+                raise CliError(f"Post-update doctor failed:\n{(doctor.stdout + doctor.stderr).strip()[-1000:]}")
+        except Exception:
+            restore_changes(changes, plan["roots"], backup_root)
+            raise
+    receipt: dict[str, Any] = {
+        "schema_version": 1,
+        "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "scope": plan["scope"],
+        "plan_integrity": plan["integrity"],
+        "release": plan["release"],
+        "roots": plan["roots"],
+        "backup_root": str(backup_root),
+        "changes": changes,
+    }
+    receipt["integrity"] = plan_integrity(receipt, update_integrity_key(create=False))
+    receipt_path = receipt_root / f"{update_id}.json"
+    try:
+        receipt_root.mkdir(parents=True, exist_ok=True)
+        backup_root.mkdir(parents=True, exist_ok=True)
+        receipt_root.chmod(0o700)
+        backup_root.chmod(0o700)
+        atomic_write(receipt_path, json.dumps(receipt, indent=2, ensure_ascii=False) + "\n")
+    except Exception:
+        restore_changes(changes, plan["roots"], backup_root)
+        raise
+    ok(f"applied {plan['release']['tag']} after fingerprint and health checks")
+    say(f"rollback receipt: {receipt_path}")
+    return 0
+
+
+def cmd_update_rollback(args: argparse.Namespace) -> int:
+    receipt_path = Path(args.receipt).expanduser().resolve()
+    receipt = load_update_document(receipt_path, "receipt")
+    allowed = {
+        "schema_version", "created_at", "scope", "plan_integrity", "release", "roots",
+        "backup_root", "changes", "integrity",
+    }
+    if set(receipt) != allowed or receipt["schema_version"] != 1:
+        raise CliError("Rollback receipt has unsupported fields or schema")
+    update_home = home_dir().resolve()
+    expected_backup_parent = safe_update_path(update_home, ".agentsmith/update-backups")
+    raw_backup_root = Path(receipt["backup_root"])
+    try:
+        backup_relative = raw_backup_root.relative_to(update_home)
+    except ValueError as exc:
+        raise CliError("Rollback receipt points outside the local update-backup directory") from exc
+    backup_root = safe_update_path(update_home, backup_relative)
+    if backup_root.parent != expected_backup_parent:
+        raise CliError("Rollback receipt points outside the local update-backup directory")
+    if receipt["scope"] not in {"project", "global"}:
+        raise CliError("Rollback receipt scope is invalid")
+    expected_home = str(home_dir().resolve())
+    expected_codex = str(codex_home().resolve())
+    if receipt["roots"].get("home") != expected_home or receipt["roots"].get("codex_home") != expected_codex:
+        raise CliError("Rollback receipt does not match the current HOME and CODEX_HOME")
+    if receipt["scope"] == "global" and receipt["roots"].get("target") != expected_home:
+        raise CliError("Global rollback receipt target does not match HOME")
+    for change in receipt["changes"]:
+        if not isinstance(change, dict) or set(change) != {
+            "root", "path", "existed", "before_sha256", "before_mode", "after_sha256", "after_mode"
+        }:
+            raise CliError("Rollback receipt contains a malformed change")
+        if not isinstance(change["after_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", change["after_sha256"]):
+            raise CliError("Rollback receipt contains a malformed post-update hash")
+        if not isinstance(change["after_mode"], int) or not 0 <= change["after_mode"] <= 0o777:
+            raise CliError("Rollback receipt contains a malformed post-update mode")
+        if not isinstance(change["existed"], bool):
+            raise CliError("Rollback receipt contains a malformed existence flag")
+        if change["existed"] and (
+            not isinstance(change["before_sha256"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", change["before_sha256"])
+            or not isinstance(change["before_mode"], int)
+            or not 0 <= change["before_mode"] <= 0o777
+        ):
+            raise CliError("Rollback receipt contains a malformed pre-update baseline")
+        if not change["existed"] and (change["before_sha256"] is not None or change["before_mode"] is not None):
+            raise CliError("Rollback receipt create operation has an existing-file baseline")
+        if change["root"] not in receipt["roots"] or Path(change["path"]).is_absolute() or ".." in Path(change["path"]).parts:
+            raise CliError("Rollback receipt contains an unsafe path")
+        if not allowed_update_path(change["root"], change["path"], {}):
+            raise CliError("Rollback receipt contains a path outside managed update surfaces")
+        current = safe_update_path(Path(receipt["roots"][change["root"]]), change["path"])
+        actual_hash = file_sha256(current) if current.is_file() else None
+        actual_mode = current.stat().st_mode & 0o777 if current.is_file() else None
+        if actual_hash != change["after_sha256"] or actual_mode != change["after_mode"]:
+            raise CliError(f"Rollback refused: {change['root']}:{change['path']} changed after update")
+    restore_changes(receipt["changes"], receipt["roots"], backup_root)
+    ok(f"rolled back {len(receipt['changes'])} file(s) from {receipt_path}")
+    return 0
+
+
+def cmd_update_configure(args: argparse.Namespace) -> int:
+    policy = {"auto_check": args.auto_check}
+    root = home_dir().resolve()
+    state = load_update_state(root)
+    state["update_policy"] = policy
+    atomic_write(state_path(root), json.dumps(state, indent=2, ensure_ascii=False) + "\n")
+    if args.auto_check == "weekly":
+        ok("weekly report-only update checks enabled; installation still requires 'update apply --plan'")
+    else:
+        ok("automatic update checks disabled")
+    return 0
+
+
+def maybe_report_automatic_update() -> None:
+    try:
+        state = load_state(home_dir().resolve())
+        policy = state.get("update_policy")
+        if not isinstance(policy, dict) or policy.get("auto_check") != "weekly":
+            return
+        now = dt.datetime.now(dt.timezone.utc)
+        raw_attempt = policy.get("last_attempt_at")
+        if isinstance(raw_attempt, str):
+            try:
+                last_attempt = dt.datetime.fromisoformat(raw_attempt)
+            except ValueError:
+                last_attempt = None
+            if last_attempt and last_attempt.tzinfo and now - last_attempt < dt.timedelta(days=7):
+                return
+        policy = {**policy, "last_attempt_at": now.isoformat()}
+        record_state(home_dir().resolve(), "update_policy", policy, dry_run=False)
+        releases = stable_release_tags(OFFICIAL_REMOTE, timeout_seconds=3)
+        if not releases:
+            return
+        latest, tag = releases[-1]
+        current = tuple(int(part) for part in VERSION.split(".")) if re.fullmatch(r"\d+\.\d+\.\d+", VERSION) else (0, 0, 0)
+        policy["last_checked_at"] = now.isoformat()
+        record_state(home_dir().resolve(), "update_policy", policy, dry_run=False)
+        if latest > current:
+            say(f"update available: {tag}; run 'agentsmith update plan' when you want to inspect it")
+    except (CliError, OSError) as exc:
+        warn(f"weekly update check skipped: {exc}")
 
 
 def reassemble_managed_targets(args: argparse.Namespace) -> None:
@@ -1308,6 +2675,8 @@ def cmd_install(args: argparse.Namespace) -> int:
     validate_design_system_source(args.design_system)
     if args.global_mode and args.target:
         raise CliError("--target cannot be combined with --global; global destinations are fixed by each runtime")
+    if args.global_mode and csv(args.with_mcp):
+        raise CliError("--with-mcp is project-scoped; global MCP ownership is not supported")
     if args.global_mode and args.assemble_only and not args.dry_run:
         warn("--assemble-only skips runtime config but still WRITES global instruction files; use --dry-run to write nothing")
     if args.tracker_writes and args.tracker_writes not in {"ask", "allowed"}:
@@ -1378,6 +2747,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         install_skills(skill_root, agents, force=args.force, dry_run=args.dry_run)
         record_state(skill_root, "skills_installed", True, dry_run=args.dry_run)
     install_hooks(target, agents, args)
+    record_installation_manifest(target, agents, profiles, args, recovery)
     ok(f"installed for {', '.join(agents)}; canonical project instructions: AGENTS.md")
     return 0
 
@@ -2296,7 +3666,11 @@ def add_common_install_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--also-gemini-md", action="store_true")
     parser.add_argument("--org-policy", action="store_true")
     parser.add_argument("--update-plugins", action="store_true")
-    parser.add_argument("--self-update", action="store_true")
+    parser.add_argument(
+        "--self-update",
+        action="store_true",
+        help="deprecated: fast-forward only the clean harness checkout; does not provide staged install rollback",
+    )
     parser.add_argument("--from", dest="update_from")
     parser.add_argument("--no-reassemble", action="store_true")
     parser.add_argument("--wizard", action="store_true")
@@ -2316,6 +3690,24 @@ def parser() -> argparse.ArgumentParser:
     sub = root.add_subparsers(dest="command")
     install = sub.add_parser("install", help="install or update managed rules and adapters")
     add_common_install_flags(install)
+    update = sub.add_parser("update", help="check and apply staged stable-release updates")
+    update_sub = update.add_subparsers(dest="update_command", required=True)
+    update_check = update_sub.add_parser("check", help="report the latest stable release without changing an install")
+    update_check.add_argument("--from", dest="update_from", help="explicit Git remote or local test remote")
+    update_check.add_argument("--json", action="store_true")
+    update_plan = update_sub.add_parser("plan", help="stage and inspect a release without changing an install")
+    plan_scope = update_plan.add_mutually_exclusive_group(required=True)
+    plan_scope.add_argument("--global", dest="global_mode", action="store_true")
+    plan_scope.add_argument("--target")
+    update_plan.add_argument("--version", help="stable release tag (default: latest stable)")
+    update_plan.add_argument("--from", dest="update_from", help="explicit Git remote or local test remote")
+    update_plan.add_argument("--save", help="write the plan to this local file")
+    update_apply = update_sub.add_parser("apply", help="apply an inspected plan and write a rollback receipt")
+    update_apply.add_argument("--plan", required=True)
+    update_rollback = update_sub.add_parser("rollback", help="restore exact pre-update bytes from a receipt")
+    update_rollback.add_argument("--receipt", required=True)
+    update_configure = update_sub.add_parser("configure", help="opt into or disable report-only update checks")
+    update_configure.add_argument("--auto-check", required=True, choices=("weekly", "off"))
     agents = sub.add_parser("agents", help="inspect the supported agent registry")
     agents_sub = agents.add_subparsers(dest="agents_command", required=True)
     listing = agents_sub.add_parser("list")
@@ -2362,7 +3754,7 @@ def parser() -> argparse.ArgumentParser:
 def normalize_legacy_argv(argv: list[str]) -> list[str]:
     if not argv:
         return ["install", "--wizard"]
-    commands = {"install", "agents", "doctor", "compatibility", "verify", "handoff", "new-feedback", "new-research", "secret-scan", "hook", "evaluate"}
+    commands = {"install", "update", "agents", "doctor", "compatibility", "verify", "handoff", "new-feedback", "new-research", "secret-scan", "hook", "evaluate"}
     if argv[0] in commands or argv[0] in {"-h", "--help", "--version"}:
         return argv
     if "--doctor" in argv:
@@ -2387,6 +3779,8 @@ def apply_wizard_answers(args: argparse.Namespace, input_fn: Any = input) -> Non
 def run(argv: list[str] | None = None) -> int:
     require_python()
     args = parser().parse_args(normalize_legacy_argv(list(argv if argv is not None else sys.argv[1:])))
+    if args.command != "update":
+        maybe_report_automatic_update()
     if args.command == "install":
         if args.wizard:
             print("Agentsmith interactive wizard is intentionally minimal in non-interactive automation.")
@@ -2395,6 +3789,18 @@ def run(argv: list[str] | None = None) -> int:
                 return 0
             apply_wizard_answers(args)
         return cmd_install(args)
+    if args.command == "update":
+        if args.update_command == "check":
+            return cmd_update_check(args)
+        if args.update_command == "plan":
+            return cmd_update_plan(args)
+        if args.update_command == "apply":
+            return cmd_update_apply(args)
+        if args.update_command == "rollback":
+            return cmd_update_rollback(args)
+        if args.update_command == "configure":
+            return cmd_update_configure(args)
+        raise CliError(f"Unknown update command: {args.update_command}")
     if args.command == "agents":
         return cmd_agents_list(args)
     if args.command == "doctor":

@@ -74,7 +74,7 @@ Reruns recover omitted name, role, bio, and tracker values from existing managed
 ```
 
 - Skills are canonical under `.agents/skills`; Claude gets `.claude/skills` as an adapter.
-- MCP is managed only for supported native integrations.
+- MCP is project-scoped and managed only for supported native integrations.
 - Runtime and git hooks invoke Python directly and require no Bash or WSL.
 - Unsupported client capabilities remain unsupported; AgentSmith does not emulate them.
 
@@ -93,7 +93,7 @@ and a dependency-free helper under `~/.claude/`. Any explicit Claude status-line
 Codex needs no added setting: its built-in model/directory status line is already active when
 `tui.status_line` is absent, and an explicit Codex list (including `[]`) remains authoritative.
 
-## 5. Preview, inspect, and uninstall
+## 5. Preview, update, inspect, and uninstall
 
 ```bash
 ./setup.sh --agent all --profile software-dev --dry-run --target .
@@ -109,6 +109,46 @@ Doctor is read-only: it reports effective global/project/nested sources, managed
 fingerprints, combined and duplicate context, actual native safety, and current/stale owned
 capabilities. A duplicate-core warning recommends `--profile-only` but never rewrites a project;
 self-contained project instructions may be intentional for collaborators.
+
+Use the staged updater for an installed project:
+
+```bash
+agentsmith update check
+agentsmith update plan --target /path/to/project --save /tmp/agentsmith-update.json
+# Read the plan. Applying it is the explicit installation approval boundary.
+agentsmith update apply --plan /tmp/agentsmith-update.json
+agentsmith update rollback --receipt /path/printed/by/apply.json
+```
+
+For a global installation, replace `--target /path/to/project` with `--global`. Stable release tags
+from the official repository are the default. `--version v1.2.3` selects an exact stable tag, and
+`--from REMOTE` selects an explicit fork or local test remote. Planning checks that the tag,
+declared version, and Git commit agree. It records current fingerprints, preserved-content rules,
+migration warnings, and verification steps without changing the installation. It also stages the
+release in temporary directories and records the exact create/replace paths, hashes, and file modes.
+Planning uses the current trusted installer logic and treats candidate release files as data. The
+candidate release code does not run before `apply`.
+
+The first plan creates a local authentication key at `~/.agentsmith/update-integrity.key`; this does
+not change the installation. Plans and receipts are bound to that key and to the local account.
+`apply` refuses an edited plan, a moved tag, any file that changed after planning, or a staged result
+that differs from the authenticated proposal. It repeats the release installer against temporary copies,
+then backs up and atomically replaces only managed
+files. A failed apply or health check restores the pre-update bytes automatically. A successful
+apply writes its rollback receipt and backups under `~/.agentsmith`, outside tracked project files.
+Rollback also refuses when an updated file changed after apply, so it cannot overwrite later work.
+
+Weekly checks are opt-in and report-only:
+
+```bash
+agentsmith update configure --auto-check weekly
+agentsmith update configure --auto-check off
+```
+
+The check uses a short timeout and never blocks the requested command when offline. AgentSmith has
+no automatic apply mode. The deprecated `install --self-update` option is only for a clean harness
+Git checkout: it fast-forwards the current branch and lacks stable-release selection, staged plans,
+installation receipts, and rollback.
 
 Global native destinations are fixed, so `--global --target ...` is rejected:
 
@@ -171,6 +211,10 @@ Migration notes:
 - Shared skills live in `.agents/skills`; Claude's directory is an adapter.
 - Old shell helpers may remain in upgraded projects, but new hooks and skills use the Python CLI.
 - `--with-rtk` no longer adds proprietary instruction imports.
+- New installs record update choices and owned skill fingerprints in the existing
+  `.agentsmith/state.json`. Planning can reconstruct a pre-manifest install only when managed
+  markers and ownership state prove every required choice; otherwise it stops and asks for an
+  explicit reinstall rather than guessing safety or ownership.
 
 See [the compatibility contract](docs/22-compatibility-contract.md) and
 [the current registry](config/agents.json).
