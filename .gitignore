@@ -19,3 +19,17 @@ __pycache__/
 # lines only stop this repo from publishing its own.
 .planning/
 docs/feedback/[0-9]*.md
+
+# Product-level foundation defects contain no operator/session data and are release evidence.
+# Keep the private default above; publish only these explicitly reviewed records.
+!docs/feedback/0002-cautious-documentation-versus-trusted-runtime-default.md
+!docs/feedback/0003-split-python-and-shell-secret-scanners.md
+!docs/feedback/0004-autonomous-state-write-race.md
+!docs/feedback/0005-omitted-and-stale-migration-suites.md
+!docs/feedback/0006-effective-global-and-project-context-duplication.md
+!docs/feedback/0007-unicode-hook-command-escaping.md
+!docs/feedback/0008-secret-clean-release-fixtures.md
+!docs/feedback/0009-default-native-statusline-regressed.md
+!docs/feedback/0010-empty-codex-mcp-override-did-not-isolate-native-runs.md
+!docs/feedback/0011-evaluation-prompts-assumed-python-command-availability.md
+!docs/feedback/0012-behavioral-prompts-under-specified-deterministic-grader-contracts.md
