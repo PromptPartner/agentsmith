@@ -25,6 +25,7 @@ from native_launcher import (
     claude_sandbox_settings,
     client_version,
     minimal_environment,
+    native_command_prefix,
     native_environment,
     parse_structured_output,
     usage_metrics,
@@ -180,7 +181,7 @@ def redact(value: str) -> str:
     value = re.sub(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b", "[REDACTED]", value)
     home = str(Path.home())
     if home and home != os.sep:
-        value = value.replace(home + os.sep, "~" + os.sep)
+        value = value.replace(home + os.sep, "~/")
         if value == home:
             value = "~"
     return value
@@ -252,7 +253,7 @@ def command_preview(agent: str) -> str:
     executable = resolved_binary(agent)
     if agent == "codex":
         command = [
-            executable, "exec", "--json", "--sandbox", "workspace-write",
+            *native_command_prefix(agent, executable), "exec", "--json", "--sandbox", "workspace-write",
             "--disable", "hooks", "--disable", "plugins", "--disable", "remote_plugin",
             "--disable", "apps", "--disable", "skill_mcp_dependency_install",
             "-c", "mcp_servers={}", "-c", "sandbox_workspace_write.network_access=false",
@@ -260,7 +261,7 @@ def command_preview(agent: str) -> str:
         ]
     else:
         command = [
-            executable, "-p", "--output-format", "json", "--permission-mode", "dontAsk",
+            *native_command_prefix(agent, executable), "-p", "--output-format", "json", "--permission-mode", "dontAsk",
             "--setting-sources", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
             "--settings", "<SETTINGS>", "--json-schema", "<SCHEMA>", "<PROMPT>",
         ]
@@ -300,7 +301,7 @@ def run_evaluation(args: Any, *, core_path: Path) -> int:
     total_tokens = 0
     overall_pass = True
     for client in clients:
-        version = client_version(resolved_binary(client))
+        version = client_version(native_command_prefix(client, resolved_binary(client)))
         for scenario_id in scenario_ids:
             prompt = prompt_for(scenario_id)
             prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()
