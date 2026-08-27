@@ -66,14 +66,8 @@ class EvaluateTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.fake_source = self.root / "fake native ü.py"
         self.fake_source.write_text(textwrap.dedent(FAKE_CLIENT), encoding="utf-8")
-        if os.name == "nt":
-            self.bin = self.root / "fake client ü.cmd"
-            self.bin.write_text(
-                f'@"{sys.executable}" "%~dp0{self.fake_source.name}" %*\r\n',
-                encoding="utf-8",
-            )
-        else:
-            self.bin = self.fake_source
+        self.bin = self.fake_source
+        if os.name != "nt":
             self.bin.chmod(0o755)
         self.env = os.environ.copy()
         self.env.update(
@@ -102,7 +96,11 @@ class EvaluateTests(unittest.TestCase):
     def test_python_scenarios_name_the_runner_interpreter(self) -> None:
         from evaluate import prompt_for
 
-        executable = shlex.quote(sys.executable)
+        executable = (
+            subprocess.list2cmdline([sys.executable])
+            if os.name == "nt"
+            else shlex.quote(sys.executable)
+        )
         for scenario in (
             "denied-action-no-retry",
             "failing-verification-blocks-done",

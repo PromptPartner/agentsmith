@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 from typing import Any, Iterable, Iterator
 
@@ -19,6 +20,19 @@ ALLOWED_ENVIRONMENT_KEYS = (
     "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "SSL_CERT_FILE", "SSL_CERT_DIR",
     "CODEX_HOME", "CLAUDE_CONFIG_DIR",
 )
+
+
+def native_command_prefix(agent: str, executable: str | None = None) -> list[str]:
+    """Return an argv prefix for a configured native client without a shell hop."""
+    if agent not in {"claude", "codex"}:
+        raise ValueError(f"unsupported native client: {agent}")
+    configured = executable or os.environ.get(
+        "AGENTSMITH_CLAUDE_BIN" if agent == "claude" else "AGENTSMITH_CODEX_BIN",
+        agent,
+    )
+    if Path(configured).suffix.casefold() == ".py":
+        return [sys.executable, configured]
+    return [configured]
 
 
 def minimal_environment(source: dict[str, str] | None = None) -> dict[str, str]:
@@ -206,8 +220,7 @@ def build_native_command(
     claude_max_usd: float = 0.0,
 ) -> list[str]:
     if agent == "codex":
-        executable = os.environ.get("AGENTSMITH_CODEX_BIN", "codex")
-        command = [executable, "exec", "--json", "--sandbox", "workspace-write"]
+        command = [*native_command_prefix(agent), "exec", "--json", "--sandbox", "workspace-write"]
         for directory in extra_write_dirs:
             command += ["--add-dir", str(directory)]
         command += [
@@ -226,9 +239,8 @@ def build_native_command(
         raise ValueError(f"unsupported native client: {agent}")
     if settings_path is None:
         raise ValueError("Claude launches require an isolated settings path")
-    executable = os.environ.get("AGENTSMITH_CLAUDE_BIN", "claude")
     command = [
-        executable, "-p", "--output-format", "json", "--permission-mode", "dontAsk",
+        *native_command_prefix(agent), "-p", "--output-format", "json", "--permission-mode", "dontAsk",
         "--setting-sources", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
         "--settings", str(settings_path), "--json-schema", schema_path.read_text(encoding="utf-8"),
     ]
@@ -241,9 +253,10 @@ def build_native_command(
     return [*command, prompt]
 
 
-def client_version(executable: str) -> str:
+def client_version(executable: str | Iterable[str]) -> str:
+    command = [executable] if isinstance(executable, str) else list(executable)
     result = subprocess.run(
-        [executable, "--version"], text=True, capture_output=True, check=False, timeout=10,
+        [*command, "--version"], text=True, capture_output=True, check=False, timeout=10,
         env=minimal_environment(),
     )
     return (result.stdout or result.stderr).strip().splitlines()[0] if result.returncode == 0 and (result.stdout or result.stderr).strip() else "unknown"
