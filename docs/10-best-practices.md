@@ -55,7 +55,7 @@ permissions. The docs said cautious while the ordinary CLI path still defaulted 
 same product told newcomers two incompatible safety stories. `0.2.0` resolved the defect by making
 **cautious** the runtime default (edits auto-apply; shell and network prompt). *Do:* update every doc a change makes wrong *in the
 same unit of work* (R6) — stale docs don't just lag, they actively misinform the people with the
-least context. The accurate permissions story lives in README → "Permissions & dangerous mode."
+least context. The accurate permissions story lives in README → "Permissions and trusted mode."
 
 **The standing habits behind the stories** — context is the scarce resource (hand off at ~25–30%
 used; keep static rules lean and push knowledge into skills/docs — see

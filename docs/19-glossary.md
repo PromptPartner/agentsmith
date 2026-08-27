@@ -36,6 +36,9 @@ an expert developer, most of the friction here is words — clear that, and the 
 - **STOP table** — a list of *rationalizing thoughts* ("I'll verify later", "too small to
   check") paired with the failure each precedes. The anti-rationalization layer.
 - **Operator** — you: the human who picks the work, owns direction, and accepts the risk.
+- **Plain international English** — English written for readers from different countries: short
+  sentences, common words, one idea per sentence, and technical terms explained when introduced.
+  An explicit request for another language overrides this default.
 
 ## Operating
 

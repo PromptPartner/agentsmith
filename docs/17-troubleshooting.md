@@ -9,7 +9,7 @@ working. Find the symptom, understand the cause, apply the fix.
 **cautious** safety mode (the omitted-flag and wizard default). Claude uses `acceptEdits`; Codex uses
 `approval_policy = "on-request"` with `sandbox_mode = "workspace-write"`. If that's more
 friction than you want *on a machine you own*, switch to trusted; if it's a shared or client box,
-keep it. How to change it: README → "Permissions & dangerous mode", or [`15-safety-model.md`](15-safety-model.md).
+keep it. How to change it: README → "Permissions and trusted mode", or [`15-safety-model.md`](15-safety-model.md).
 
 **"It ran a command I didn't want it to."** The inverse — you're in **trusted**
 (`bypassPermissions` in Claude; `approval_policy = "never"` and
@@ -37,6 +37,15 @@ isn't persisting in the state file ([`06-your-first-loop.md`](06-your-first-loop
 fresh install ships a deliberately failing `unwired` phase, so `agentsmith verify` stays red until
 you wire real checks. Replace that line with your build/test commands — that's what makes "done"
 mean something ([`03-verify-means-evidence.md`](03-verify-means-evidence.md)).
+
+**"The explanation is too technical."** `--operator-role` tells the agent what you are responsible
+for; it does not describe what you know. Put that detail in `--operator-bio`, because experience can
+be different for Git, infrastructure, security, and application code. Re-running setup replaces the
+marked AgentSmith rule block but preserves content outside it. Use one of the copy-ready bios in
+[INSTALL.md](../INSTALL.md#3-set-responsibility-background-and-external-write-consent), or ask for a
+specific level in the current session, such as *"Explain this for a newer developer and define each
+Git term."* There is no `--explanation-level` option. An explicit request to answer in another
+language also overrides the English default.
 
 **"There is no status line."** AgentSmith adds Claude's default only when `statusLine` is absent;
 an explicit empty/disabled/custom value is user-owned and survives re-runs. `disableAllHooks=true`

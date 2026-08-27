@@ -30,8 +30,8 @@ this one; neither substitutes for the other.
 How much the agent does without asking is a single setting, and it's the control you'll actually
 use. **Cautious** (the wizard, fresh-install, and ordinary-update default) auto-applies file edits
 but prompts before shell commands and network calls. **Trusted** (`bypassPermissions`) runs most tool calls without asking. The full
-table, the exact JSON keys, and how to change it later are in the README's **"Permissions &
-dangerous mode"** section — read it before you flip anything.
+table, the exact JSON keys, and how to change it later are in the README's **"Permissions and
+trusted mode"** section — read it before you change anything.
 
 The honest risk statement: trusted mode means a wrong or manipulated step can delete files,
 exfiltrate data (a stray `curl`), or push to a remote **without a prompt**. It's acceptable only

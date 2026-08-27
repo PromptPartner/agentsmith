@@ -2268,8 +2268,8 @@ def add_common_install_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--profile-only", action="store_true")
     parser.add_argument("--assemble-only", action="store_true")
     parser.add_argument("--operator-name")
-    parser.add_argument("--operator-role")
-    parser.add_argument("--operator-bio")
+    parser.add_argument("--operator-role", help="operator responsibility used to calibrate decisions")
+    parser.add_argument("--operator-bio", help="operator background and uneven expertise used to calibrate explanations")
     parser.add_argument("--tracker")
     parser.add_argument("--tracker-writes", choices=("ask", "allowed"))
     parser.add_argument(
@@ -2347,7 +2347,7 @@ def parser() -> argparse.ArgumentParser:
     evaluate = sub.add_parser("evaluate", help="run isolated native-client behavioral evaluations")
     evaluate.add_argument("--agent", required=True, choices=("claude", "codex", "native"),
                           help="native client to exercise; 'native' runs Claude and Codex")
-    evaluate.add_argument("--scenario", action="append", help="scenario ID; repeatable (default: all eight)")
+    evaluate.add_argument("--scenario", action="append", help="scenario ID; repeatable (default: all nine)")
     evaluate.add_argument("--trials", type=int, default=3, help="fresh-repository trials per scenario (default: 3)")
     mode = evaluate.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="resolve the run without calling a model (default)")
