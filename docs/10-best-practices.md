@@ -51,9 +51,9 @@ allow-list findings to make a gate pass — fixing the gate's input is the fix.
 
 **Docs drift is a defect, not a chore.**
 An earlier version of *this very file* claimed the shipped settings enable full-bypass
-permissions. That had been true once; by the time it was caught, the wizard default had long been
-**cautious** (edits auto-apply; shell and network prompt) — so the doc was telling newcomers the
-harness ships more dangerous than it does. *Do:* update every doc a change makes wrong *in the
+permissions. The docs said cautious while the ordinary CLI path still defaulted to trusted, so the
+same product told newcomers two incompatible safety stories. `0.2.0` resolved the defect by making
+**cautious** the runtime default (edits auto-apply; shell and network prompt). *Do:* update every doc a change makes wrong *in the
 same unit of work* (R6) — stale docs don't just lag, they actively misinform the people with the
 least context. The accurate permissions story lives in README → "Permissions & dangerous mode."
 

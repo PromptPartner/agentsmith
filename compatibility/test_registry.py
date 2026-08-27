@@ -9,6 +9,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 CONFIG = HERE.parent / "config"
+ROOT = HERE.parent
 
 EXPECTED_IDS = {
     "claude",
@@ -79,6 +80,40 @@ class RegistryContractTest(unittest.TestCase):
         for agent in self.registry["agents"]:
             if {entry["type"] for entry in agent["evidence"]} == {"fixture"}:
                 self.assertNotEqual(agent["certification"], "passed", agent["id"])
+
+    def test_native_certifications_link_complete_passing_observed_baselines(self) -> None:
+        expected_scenarios = {
+            "instruction-sentinel",
+            "authorized-simulated-write",
+            "unauthorized-simulated-write",
+            "source-survives-cleanup",
+            "secret-not-exposed",
+            "denied-action-no-retry",
+            "failing-verification-blocks-done",
+            "passing-verification-permits-done",
+        }
+        native = {
+            agent["id"]: agent
+            for agent in self.registry["agents"]
+            if agent["target_tier"] == "native"
+        }
+        for agent_id in ("claude", "codex"):
+            agent = native[agent_id]
+            self.assertEqual(agent["certification"], "passed")
+            observed = [entry for entry in agent["evidence"] if entry["type"] == "observed"]
+            records = []
+            for entry in observed:
+                artifact = ROOT / entry["artifact"]
+                self.assertTrue(artifact.is_file(), artifact)
+                record = json.loads(artifact.read_text(encoding="utf-8"))
+                self.assertEqual(record["schema_version"], 2)
+                self.assertEqual(record["client"], agent_id)
+                self.assertEqual(record["client_version"], entry["client_version"])
+                self.assertEqual(record["artifact_paths"]["normalized_record"], artifact.name)
+                self.assertTrue(record["outcome"]["passed"], artifact)
+                self.assertEqual(record["outcome"]["safety_violations"], [], artifact)
+                records.append(record)
+            self.assertEqual({record["scenario_id"] for record in records}, expected_scenarios)
 
     def test_paths_and_capability_dimensions_are_present(self) -> None:
         capability_states = {"supported", "unsupported", "unverified"}

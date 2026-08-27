@@ -44,6 +44,7 @@ backends; local providers are evaluated only behind a client supplying tools and
 | Shared project skills | `.agents/skills` | `.agents/skills` |
 | Runtime skill adapter | `.claude/skills` | none |
 | User config | `~/.claude/settings.json` | `$CODEX_HOME/config.toml` |
+| Status line when unset | AgentSmith model/directory/context gauge | Codex built-in model/directory gauge |
 | Project MCP | `.mcp.json` | `.codex/config.toml` |
 | Managed hooks | Python command in Claude settings | Python command in Codex hooks config |
 

@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 from typing import Any, Iterable
 
 
@@ -268,6 +269,10 @@ def output_has_all(output: str, words: Iterable[str]) -> bool:
     return all(word.casefold() in folded for word in words)
 
 
+def adjacent_backups(path: Path) -> list[Path]:
+    return sorted(path.parent.glob(f"{path.name}.bak.*"))
+
+
 def validate_runtime(results: Results, contract: dict[str, Any], agents: list[dict[str, Any]]) -> None:
     print("production runtime")
     if not CORE_PATH.is_file():
@@ -303,6 +308,13 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
     help_run = run_core("--help")
     results.check(help_run.returncode == 0, "agentsmith --help succeeds", help_run.stdout[-300:])
     results.check(output_has_all(help_run.stdout, ("--agent", "--platform")), "help documents new selector and legacy alias")
+    results.check("install --help" in help_run.stdout, "root help points to install --help")
+    install_help = run_core("install", "--help")
+    results.check(
+        install_help.returncode == 0 and output_has_all(install_help.stdout, ("--profile", "--profile-only")),
+        "install help exposes profile flags",
+        install_help.stdout[-300:],
+    )
 
     list_run = run_core("agents", "list")
     expected_ids = [agent["id"] for agent in contract["agents"]]
@@ -488,6 +500,167 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
         dry = run_core("--agent", "all", "--profile", "general-admin", "--dry-run", "--target", str(dry_project), env=env)
         results.check(dry.returncode == 0 and not any(dry_project.iterdir()), "all-agent dry-run performs no project writes")
 
+        # Safety is an end-to-end native-config contract. Each fixture has isolated home/config
+        # roots so an install can neither inherit nor mutate the operator's real runtime state.
+        safety_fresh_root = sandbox / "safety fresh"
+        safety_fresh_project = safety_fresh_root / "project"
+        safety_fresh_project.mkdir(parents=True)
+        safety_fresh_env = env.copy()
+        safety_fresh_env.update({
+            "HOME": str(safety_fresh_root / "home"),
+            "USERPROFILE": str(safety_fresh_root / "home"),
+            "CODEX_HOME": str(safety_fresh_root / "codex home"),
+        })
+        fresh_claude = Path(safety_fresh_env["HOME"]) / ".claude" / "settings.json"
+        fresh_claude.parent.mkdir(parents=True)
+        fresh_claude.write_text(
+            json.dumps({"permissions": {"foreign": "keep"}, "other": 7}) + "\n",
+            encoding="utf-8",
+        )
+        safety_fresh = run_core(
+            "install", "--agent", "native", "--profile", "general-admin",
+            "--target", str(safety_fresh_project), env=safety_fresh_env,
+        )
+        fresh_claude_data = load_json(fresh_claude) if fresh_claude.exists() else {}
+        fresh_codex = Path(safety_fresh_env["CODEX_HOME"]) / "config.toml"
+        try:
+            fresh_codex_data = tomllib.loads(fresh_codex.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError):
+            fresh_codex_data = {}
+        results.check(
+            safety_fresh.returncode == 0
+            and fresh_claude_data.get("permissions", {}).get("defaultMode") == "acceptEdits"
+            and fresh_claude_data.get("permissions", {}).get("foreign") == "keep"
+            and fresh_claude_data.get("other") == 7
+            and fresh_codex_data.get("approval_policy") == "on-request"
+            and fresh_codex_data.get("sandbox_mode") == "workspace-write",
+            "omitted safety produces cautious Claude and Codex config while preserving foreign JSON",
+            safety_fresh.stdout[-500:],
+        )
+
+        safety_trusted_root = sandbox / "safety trusted"
+        safety_trusted_project = safety_trusted_root / "project"
+        safety_trusted_project.mkdir(parents=True)
+        safety_trusted_env = env.copy()
+        safety_trusted_env.update({
+            "HOME": str(safety_trusted_root / "home"),
+            "USERPROFILE": str(safety_trusted_root / "home"),
+            "CODEX_HOME": str(safety_trusted_root / "codex home"),
+        })
+        safety_trusted = run_core(
+            "install", "--agent", "native", "--profile", "general-admin", "--safety", "trusted",
+            "--target", str(safety_trusted_project), env=safety_trusted_env,
+        )
+        trusted_claude = Path(safety_trusted_env["HOME"]) / ".claude" / "settings.json"
+        trusted_codex = Path(safety_trusted_env["CODEX_HOME"]) / "config.toml"
+        trusted_claude_data = load_json(trusted_claude) if trusted_claude.exists() else {}
+        try:
+            trusted_codex_data = tomllib.loads(trusted_codex.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError):
+            trusted_codex_data = {}
+        results.check(
+            safety_trusted.returncode == 0
+            and trusted_claude_data.get("permissions", {}).get("defaultMode") == "bypassPermissions"
+            and trusted_codex_data.get("approval_policy") == "never"
+            and trusted_codex_data.get("sandbox_mode") == "danger-full-access",
+            "explicit trusted safety remains available for both native clients",
+            safety_trusted.stdout[-500:],
+        )
+
+        trusted_state = Path(safety_trusted_env["HOME"]) / ".agentsmith" / "state.json"
+        before_dry_bytes = {
+            path: path.read_bytes() for path in (trusted_claude, trusted_codex, trusted_state) if path.exists()
+        }
+        before_dry_backups = {
+            path: adjacent_backups(path) for path in (trusted_claude, trusted_codex)
+        }
+        safety_dry_migration = run_core(
+            "install", "--agent", "native", "--profile", "general-admin", "--dry-run",
+            "--target", str(safety_trusted_project), env=safety_trusted_env,
+        )
+        results.check(
+            safety_dry_migration.returncode == 0
+            and output_has_all(safety_dry_migration.stdout, ("dry run", "trusted", "cautious", "migrat"))
+            and all(path.read_bytes() == content for path, content in before_dry_bytes.items())
+            and all(adjacent_backups(path) == backups for path, backups in before_dry_backups.items()),
+            "dry-run reports managed trusted-to-cautious migration without changing files or backups",
+            safety_dry_migration.stdout[-700:],
+        )
+        safety_migration = run_core(
+            "install", "--agent", "native", "--profile", "general-admin",
+            "--target", str(safety_trusted_project), env=safety_trusted_env,
+        )
+        migrated_claude_data = load_json(trusted_claude) if trusted_claude.exists() else {}
+        try:
+            migrated_codex_data = tomllib.loads(trusted_codex.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError):
+            migrated_codex_data = {}
+        migrated_snapshot = {
+            path: path.read_bytes() for path in (trusted_claude, trusted_codex, trusted_state) if path.exists()
+        }
+        migrated_backups = {path: adjacent_backups(path) for path in (trusted_claude, trusted_codex)}
+        safety_rerun = run_core(
+            "install", "--agent", "native", "--profile", "general-admin",
+            "--target", str(safety_trusted_project), env=safety_trusted_env,
+        )
+        results.check(
+            safety_migration.returncode == 0
+            and output_has_all(safety_migration.stdout, ("warning", "trusted", "cautious"))
+            and migrated_claude_data.get("permissions", {}).get("defaultMode") == "acceptEdits"
+            and migrated_codex_data.get("approval_policy") == "on-request"
+            and migrated_codex_data.get("sandbox_mode") == "workspace-write"
+            and all(len(migrated_backups[path]) > len(before_dry_backups[path]) for path in migrated_backups)
+            and safety_rerun.returncode == 0
+            and all(path.exists() and path.read_bytes() == content for path, content in migrated_snapshot.items())
+            and all(adjacent_backups(path) == backups for path, backups in migrated_backups.items()),
+            "managed trusted update warns, backs up, migrates to cautious, and is idempotent",
+            (safety_migration.stdout + safety_rerun.stdout)[-900:],
+        )
+
+        invalid_safety_project = sandbox / "invalid safety"
+        invalid_safety_project.mkdir()
+        invalid_safety = run_core(
+            "install", "--agent", "native", "--profile", "general-admin", "--safety", "reckless",
+            "--target", str(invalid_safety_project), env=env,
+        )
+        results.check(
+            invalid_safety.returncode != 0 and not any(invalid_safety_project.iterdir()),
+            "malformed safety choice is rejected before project writes",
+        )
+
+        wizard_probe = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import importlib.util,json;"
+                    f"s=importlib.util.spec_from_file_location('agentsmith_core',{str(CORE_PATH)!r});"
+                    "m=importlib.util.module_from_spec(s);s.loader.exec_module(m);"
+                    "a=m.parser().parse_args(['install','--wizard']);"
+                    "answers=iter(['claude','general-admin','invalid','']);prompts=[];"
+                    "m.apply_wizard_answers(a,lambda p:(prompts.append(p),next(answers))[1]);"
+                    "print(json.dumps({'agent':a.agent,'profile':a.profile,'safety':a.safety,'prompts':prompts}))"
+                ),
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        try:
+            wizard_data = json.loads(wizard_probe.stdout)
+        except json.JSONDecodeError:
+            wizard_data = {}
+        results.check(
+            wizard_probe.returncode == 0
+            and wizard_data.get("safety") == "cautious"
+            and wizard_data.get("agent") == ["claude"]
+            and wizard_data.get("profile") == ["general-admin"]
+            and sum("Safety [cautious/trusted] [cautious]:" in prompt for prompt in wizard_data.get("prompts", [])) == 2,
+            "wizard defaults safety to cautious and reprompts malformed choices",
+            (wizard_probe.stdout + wizard_probe.stderr)[-700:],
+        )
+
         design_project = sandbox / "generated design system"
         design_project.mkdir()
         design = run_core(
@@ -655,6 +828,227 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
             output_has_all(git_hook_text, ("agentsmith.py", "hook git-pre-commit"))
             and "bash" not in git_hook_text.casefold(),
             "Git hook uses Git's launcher only to delegate to Python",
+        )
+
+        # Retained native installer invariants formerly split across the shell and PowerShell
+        # platform suites. This one fixture runs unchanged on every CI operating system.
+        native_root = sandbox / "native install ünicode"
+        native_project = native_root / "project with spaces"
+        native_project.mkdir(parents=True)
+        subprocess.run(["git", "-C", str(native_project), "init", "-q"], check=False)
+        native_env = env.copy()
+        native_env.update(
+            {
+                "HOME": str(native_root / "home with spaces"),
+                "USERPROFILE": str(native_root / "home with spaces"),
+                "CODEX_HOME": str(native_root / "codex ü account"),
+            }
+        )
+        claude_settings = Path(native_env["HOME"]) / ".claude" / "settings.json"
+        codex_settings = Path(native_env["CODEX_HOME"]) / "config.toml"
+        claude_settings.parent.mkdir(parents=True)
+        codex_settings.parent.mkdir(parents=True)
+        claude_settings.write_text(
+            json.dumps(
+                {
+                    "foreign": {"keep": True},
+                    "hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": "foreign-hook"}]}]},
+                }
+            ) + "\n",
+            encoding="utf-8",
+        )
+        codex_settings.write_text('# foreign comment\nmodel = "foreign-model"\n\n[foreign]\nkeep = true\n', encoding="utf-8")
+        (native_project / ".agents" / "skills" / "existing").mkdir(parents=True)
+        (native_project / ".agents" / "skills" / "existing" / "SKILL.md").write_text("foreign skill\n", encoding="utf-8")
+        (native_project / ".claude" / "skills" / "existing").mkdir(parents=True)
+        (native_project / ".claude" / "skills" / "existing" / "SKILL.md").write_text("foreign skill\n", encoding="utf-8")
+        (native_project / ".mcp.json").write_text(
+            json.dumps({"mcpServers": {"foreign": {"command": "manual"}}}) + "\n", encoding="utf-8"
+        )
+        (native_project / ".codex").mkdir()
+        (native_project / ".codex" / "config.toml").write_text(
+            '# foreign project\n[mcp_servers.foreign]\ncommand = "manual"\n', encoding="utf-8"
+        )
+        native_install = run_core(
+            "install", "--agent", "native", "--profile", "software-dev", "--target", str(native_project),
+            "--with-skills", "--with-mcp", "playwright,context7", "--with-hooks",
+            "--with-handoff-hooks", "--with-ui-design-hook", env=native_env,
+        )
+        native_claude = load_json(claude_settings) if claude_settings.exists() else {}
+        native_codex_text = codex_settings.read_text(encoding="utf-8") if codex_settings.exists() else ""
+        try:
+            native_codex = tomllib.loads(native_codex_text)
+            native_project_codex = tomllib.loads((native_project / ".codex" / "config.toml").read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError):
+            native_codex = {}
+            native_project_codex = {}
+        native_claude_mcp = load_json(native_project / ".mcp.json") if (native_project / ".mcp.json").exists() else {}
+        installed_skills = (
+            (native_project / ".agents" / "skills" / "handoff" / "SKILL.md").is_file()
+            and (native_project / ".claude" / "skills" / "handoff" / "SKILL.md").is_file()
+            and (native_project / ".agents" / "skills" / "existing" / "SKILL.md").is_file()
+            and (native_project / ".claude" / "skills" / "existing" / "SKILL.md").is_file()
+        )
+        results.check(
+            native_install.returncode == 0
+            and (native_project / "AGENTS.md").is_file()
+            and (native_project / "CLAUDE.md").is_file()
+            and (native_project / "AGENTS.md").read_bytes() == (native_project / "CLAUDE.md").read_bytes(),
+            "native install generates canonical and equivalent instruction files",
+            native_install.stdout[-500:],
+        )
+        results.check(installed_skills, "native skill install preserves foreign skills and installs managed skills")
+        results.check(
+            set(native_claude_mcp.get("mcpServers", {})) >= {"foreign", "playwright", "context7"}
+            and set(native_project_codex.get("mcp_servers", {})) >= {"foreign", "playwright", "context7"},
+            "native MCP install preserves foreign servers and adds selected servers",
+        )
+        results.check(
+            native_claude.get("foreign") == {"keep": True}
+            and native_claude.get("permissions", {}).get("defaultMode") == "acceptEdits"
+            and native_codex.get("foreign", {}).get("keep") is True
+            and native_codex.get("model") == "foreign-model"
+            and native_codex.get("approval_policy") == "on-request"
+            and native_codex.get("sandbox_mode") == "workspace-write",
+            "native config remains parseable and preserves foreign content",
+        )
+        hook_lines = json.dumps(native_claude.get("hooks", {})) + (
+            (Path(native_env["CODEX_HOME"]) / "hooks.json").read_text(encoding="utf-8")
+            if (Path(native_env["CODEX_HOME"]) / "hooks.json").exists() else ""
+        )
+        installed_hook_commands = [
+            handler.get("command", "")
+            for group in native_claude.get("hooks", {}).get("UserPromptSubmit", [])
+            for handler in group.get("hooks", [])
+            if "agentsmith.py" in handler.get("command", "")
+        ]
+        invoked_hook = subprocess.run(
+            installed_hook_commands[0], shell=True, text=True, input='{"prompt":"wrap up"}',
+            capture_output=True, env=native_env, check=False,
+        ) if installed_hook_commands else None
+        results.check(
+            "foreign-hook" in hook_lines and "agentsmith.py" in hook_lines and " hook " in hook_lines
+            and ".sh" not in hook_lines and " bash " not in hook_lines,
+            "native hooks preserve foreign commands and invoke the current Python runtime",
+        )
+        results.check(
+            bool(invoked_hook and invoked_hook.returncode == 0 and "additionalContext" in invoked_hook.stdout)
+            and "ü" in installed_hook_commands[0] and "\\u00fc" not in installed_hook_commands[0],
+            "managed hook command executes from a Unicode path without JSON escape corruption",
+            (invoked_hook.stdout + invoked_hook.stderr)[-500:] if invoked_hook else "no managed hook command",
+        )
+        results.check(
+            (native_project / ".agentsmith" / "autonomous-run.py").is_file()
+            and (native_project / ".agentsmith" / "agentsmith.py").is_file()
+            and (native_project / ".agentsmith" / "native_launcher.py").is_file()
+            and (native_project / ".agentsmith" / "evaluate.py").is_file()
+            and (native_project / ".harness" / "verify.conf").is_file(),
+            "software project scaffolds the autonomous controller and cross-platform runtime",
+        )
+        installed_evaluation = subprocess.run(
+            [
+                sys.executable,
+                str(native_project / ".agentsmith" / "agentsmith.py"),
+                "evaluate",
+                "--agent",
+                "native",
+                "--dry-run",
+                "--claude-max-usd",
+                "1",
+                "--codex-max-tokens",
+                "100",
+            ],
+            cwd=native_project,
+            env=native_env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        results.check(
+            installed_evaluation.returncode == 0
+            and "command claude:" in installed_evaluation.stdout
+            and "command codex:" in installed_evaluation.stdout
+            and "network=disabled" in installed_evaluation.stdout,
+            "installed evaluation command resolves both native clients without calling a model",
+            (installed_evaluation.stdout + installed_evaluation.stderr)[-500:],
+        )
+        native_before = sorted(
+            (path.relative_to(native_root), path.read_bytes())
+            for path in native_root.rglob("*") if path.is_file() and ".git" not in path.parts
+        )
+        native_rerun = run_core(
+            "install", "--agent", "native", "--profile", "software-dev", "--target", str(native_project),
+            "--with-skills", "--with-mcp", "playwright,context7", "--with-hooks",
+            "--with-handoff-hooks", "--with-ui-design-hook", env=native_env,
+        )
+        native_after = sorted(
+            (path.relative_to(native_root), path.read_bytes())
+            for path in native_root.rglob("*") if path.is_file() and ".git" not in path.parts
+        )
+        results.check(
+            native_rerun.returncode == 0 and native_before == native_after,
+            "native install is byte-idempotent across rules, MCP, skills, hooks, and runtime",
+            native_rerun.stdout[-500:],
+        )
+        native_uninstall = run_core(
+            "install", "--agent", "native", "--uninstall", "--target", str(native_project), env=native_env
+        )
+        claude_after_uninstall = load_json(claude_settings) if claude_settings.exists() else {}
+        codex_hooks_path = Path(native_env["CODEX_HOME"]) / "hooks.json"
+        codex_hooks_after = load_json(codex_hooks_path) if codex_hooks_path.exists() else {}
+        mcp_after = load_json(native_project / ".mcp.json")
+        codex_project_after = tomllib.loads((native_project / ".codex" / "config.toml").read_text(encoding="utf-8"))
+        results.check(
+            native_uninstall.returncode == 0
+            and not (native_project / "AGENTS.md").exists()
+            and not (native_project / "CLAUDE.md").exists()
+            and set(mcp_after.get("mcpServers", {})) == {"foreign"}
+            and set(codex_project_after.get("mcp_servers", {})) == {"foreign"}
+            and "foreign-hook" in json.dumps(claude_after_uninstall.get("hooks", {}))
+            and "agentsmith.py" not in json.dumps(claude_after_uninstall.get("hooks", {}))
+            and "agentsmith.py" not in json.dumps(codex_hooks_after.get("hooks", {}))
+            and (native_project / ".agents" / "skills" / "existing" / "SKILL.md").is_file()
+            and not (native_project / ".agents" / "skills" / "handoff").exists()
+            and (native_project / ".agentsmith" / "autonomous-run.py").is_file(),
+            "native uninstall removes owned surfaces, preserves foreign content, and retains scaffolding",
+            native_uninstall.stdout[-500:],
+        )
+
+        identity_root = sandbox / "global identity"
+        identity_env = env.copy()
+        identity_env.update(
+            {
+                "HOME": str(identity_root / "home"),
+                "USERPROFILE": str(identity_root / "home"),
+                "CODEX_HOME": str(identity_root / "codex"),
+            }
+        )
+        first_identity = run_core(
+            "install", "--agent", "claude", "--global", "--assemble-only",
+            "--operator-name", "Ada Lovelace", "--operator-role", "Chief Engineer", "--tracker", "Jira",
+            env=identity_env,
+        )
+        second_identity = run_core(
+            "install", "--agent", "claude", "--global", "--assemble-only", env=identity_env
+        )
+        identity_path = Path(identity_env["HOME"]) / ".claude" / "CLAUDE.md"
+        identity_text = identity_path.read_text(encoding="utf-8") if identity_path.exists() else ""
+        changed_identity = run_core(
+            "install", "--agent", "claude", "--global", "--assemble-only",
+            "--operator-name", "Grace Hopper", env=identity_env,
+        )
+        changed_text = identity_path.read_text(encoding="utf-8") if identity_path.exists() else ""
+        results.check(
+            first_identity.returncode == 0 and second_identity.returncode == 0
+            and "**Ada Lovelace** is the lead. Role: **Chief Engineer**" in identity_text
+            and "The team's record is **Jira**" in identity_text,
+            "global re-run preserves operator identity and tracker on every Python platform",
+        )
+        results.check(
+            changed_identity.returncode == 0
+            and "**Grace Hopper** is the lead. Role: **Chief Engineer**" in changed_text
+            and "The team's record is **Jira**" in changed_text,
+            "explicit identity fields override recovered values without resetting siblings",
         )
 
     skill_files = sorted((ROOT / "skills").glob("*/SKILL.md"))
