@@ -22,6 +22,12 @@ an expert developer, most of the friction here is words — clear that, and the 
   this one path and does not search other Orca account homes.
 - **Managed block** — the marked region of a rule file or Codex TOML that setup owns and
   rewrites. Anything outside it is yours and survives re-runs.
+- **Update plan** — an authenticated description of one exact stable release and one installation
+  scope. It records current fingerprints and proposed managed changes; `apply --plan` is the
+  explicit approval boundary. Planning does not change the installation.
+- **Rollback receipt** — the local record written after a successful staged update. It points to
+  exact pre-update backups under `~/.agentsmith`; rollback restores changed files and removes only
+  files that update created.
 
 ## The rulebook's parts
 

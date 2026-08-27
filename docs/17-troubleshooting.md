@@ -26,6 +26,28 @@ the file and changes only its safety setting. Run the same command with `--dry-r
 paths without writing. Use `--safety trusted` only if preserving the larger blast radius is the
 intended choice.
 
+**"`update apply` says a file changed after planning."** The saved plan contains fingerprints of
+every existing managed file it may touch. A person, tool, or background process changed one after
+the plan was created, so applying the old plan could overwrite newer work. Do not force it. Inspect
+the named file, keep the intended edit, and create a new plan. Planning and an offline `update
+check` make no installation changes.
+
+**"An update says its integrity key is missing."** Plans and rollback receipts are authenticated
+with `~/.agentsmith/update-integrity.key`. They work only for the local account that created them.
+Do not copy a plan from another machine or edit it. Create a new plan on this machine. Keep the key
+with its receipts and backups while a rollback may still be needed.
+
+**"Rollback refuses because a file changed after the update."** Rollback restores exact saved
+bytes, so it checks the post-update hash before overwriting anything. Preserve or commit the newer
+edit first, then decide whether to recreate it after rollback. Do not edit the receipt: its local
+authentication, paths, and backup hashes are part of the safety boundary. Receipts and backups live under
+`~/.agentsmith`, outside tracked project files.
+
+**"The weekly update check reports that it is offline."** The requested command still runs. Weekly
+checks are short, opportunistic, and report-only; they never install a release. Run `agentsmith
+update check --from REMOTE` later to diagnose the remote, or disable the opt-in with `agentsmith
+update configure --auto-check off`.
+
 **"It keeps trying the same fix and won't stop."** The stop-rule in `core/40` says two identical
 failures means re-diagnose, not retry — but a loop or a long run can slip it. The cause is usually
 a wrong root-cause diagnosis (R1) or a flake treated as a regression. Interrupt it, and make it
