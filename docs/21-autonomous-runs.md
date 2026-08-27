@@ -58,17 +58,32 @@ and no writes outside the disposable worktree. Read-only Git metadata remains vi
 checks work. macOS uses the built-in sandbox; Linux requires `bubblewrap`. On any other host—or
 Linux without `bwrap`—verification exits closed instead of silently running unrestricted.
 Both roles start fresh; their receipts, not conversational memory, are the handoff.
+The autonomous controller and `agentsmith evaluate` share the same immutable native-launch helper
+for command construction, structured-output parsing, usage extraction, sandbox settings, and the
+subprocess environment allowlist; neither runner imports the other's mutable state machine. Codex
+invocations use a temporary client home containing a same-filesystem authentication bridge to the
+validated ChatGPT login plus minimal no-telemetry configuration. The bridge preserves one OAuth
+refresh state and is removed after the process exits; global instructions, user settings, hooks,
+plugins, apps, and MCP servers never enter the role environment, and non-ChatGPT authentication
+fails closed.
 
 ## Operations and recovery
 
 The controller and manifest template are scaffolded only for `software-dev` projects in v1; the
 Wayfinder spec flow remains available to every work type.
 
-`status <id>` reads controller state from the repository's git-common directory. `stop <id>` sends
-the active child a termination signal and retains the branch/worktree. `resume <id>` works only
-when the manifest and accepted spec hashes still match and the worktree is clean. A changed
-contract requires a new run ID rather than silently moving the goalposts. Paused time still counts
-against the original deadline.
+`status <id>` reads controller state from the repository's git-common directory. `start` and
+`resume` hold one per-run lifecycle lock, so a second live controller is refused; a dead owner's
+lock is reclaimed only after its PID is demonstrably gone. `stop <id>` atomically writes a stop
+request, signals the active controller and child, then waits up to five seconds for the controller
+to persist `interrupted`. It never writes `state.json` itself. If the controller has already died,
+the request remains in place and `resume` reconciles the interruption after acquiring the stale
+lock.
+
+`resume <id>` works only when the committed manifest, accepted spec, base commit, recorded branch,
+and worktree still match and the worktree is clean. A changed contract requires a new run ID rather
+than silently moving the goalposts. The original deadline and accumulated Claude/Codex usage remain
+authoritative across every resume; pausing does not reset either budget.
 
 An accepted run prints the branch, commit, worktree, and evidence for human review. An escalated
 run prints the exact boundary that stopped it. Nothing leaves the machine until the operator

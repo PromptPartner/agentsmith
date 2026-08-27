@@ -65,7 +65,7 @@ should be a guard, not a reminder:
 ```
 # .harness/verify.conf — offered in the software-dev and devops-setup presets
 deps    :: npm audit --audit-level=high    # or: pip-audit | govulncheck ./... | cargo audit
-secrets :: ./scripts/secret-scan.sh --all  # R8, whole tracked tree
+secrets :: agentsmith secret-scan --all  # R8, whole tracked tree
 image   :: trivy image --severity HIGH,CRITICAL --exit-code 1 <your-image>
 ```
 

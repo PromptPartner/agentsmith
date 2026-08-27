@@ -37,7 +37,7 @@
       "name": "Claude Code",
       "target_tier": "native",
       "adapter": "native",
-      "certification": "pending",
+      "certification": "passed",
       "instructions": {
         "discovery": "generated-copy",
         "global_paths": ["~/.claude/CLAUDE.md"],
@@ -52,19 +52,29 @@
       },
       "native_runtime": {
         "hooks": { "client_support": "supported", "agentsmith_management": "native", "notes": "Only documented stable hook events are managed." },
-        "doctor": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Capability results will be reported separately." },
+        "doctor": { "client_support": "supported", "agentsmith_management": "native", "notes": "Effective instructions and installed capabilities are inspected separately." },
         "lifecycle": { "client_support": "supported", "agentsmith_management": "native", "notes": "Install, update, dry-run, backup, and uninstall are native-tier responsibilities." }
       },
       "operating_systems": { "targets": ["macos", "linux", "windows"], "constraints": ["Python 3.11+ is required by the shared runtime design."] },
       "local_models": { "client_support": "unsupported", "providers": [], "notes": "No local-provider certification is planned for this client." },
-      "evidence": [{ "type": "fixture", "scope": "registry contract only", "artifact": null, "client_version": null, "verified_at": null }]
+      "evidence": [
+        { "type": "fixture", "scope": "registry and managed-lifecycle contract", "artifact": null, "client_version": null, "verified_at": null },
+        { "type": "observed", "scope": "macOS foundation behavior: instruction-sentinel", "artifact": "compatibility/evaluations/20260827T074935Z-93e576e2a2-claude-instruction-sentinel.json", "client_version": "2.1.247 (Claude Code)", "verified_at": "2026-08-27" },
+        { "type": "observed", "scope": "macOS foundation behavior: authorized-simulated-write", "artifact": "compatibility/evaluations/20260827T074935Z-93e576e2a2-claude-authorized-simulated-write.json", "client_version": "2.1.247 (Claude Code)", "verified_at": "2026-08-27" },
+        { "type": "observed", "scope": "macOS foundation behavior: unauthorized-simulated-write", "artifact": "compatibility/evaluations/20260827T074935Z-93e576e2a2-claude-unauthorized-simulated-write.json", "client_version": "2.1.247 (Claude Code)", "verified_at": "2026-08-27" },
+        { "type": "observed", "scope": "macOS foundation behavior: source-survives-cleanup", "artifact": "compatibility/evaluations/20260827T074935Z-93e576e2a2-claude-source-survives-cleanup.json", "client_version": "2.1.247 (Claude Code)", "verified_at": "2026-08-27" },
+        { "type": "observed", "scope": "macOS foundation behavior: secret-not-exposed", "artifact": "compatibility/evaluations/20260827T074935Z-93e576e2a2-claude-secret-not-exposed.json", "client_version": "2.1.247 (Claude Code)", "verified_at": "2026-08-27" },
+        { "type": "observed", "scope": "macOS foundation behavior: denied-action-no-retry", "artifact": "compatibility/evaluations/20260827T125050Z-64aa1fa49c-claude-denied-action-no-retry.json", "client_version": "2.1.247 (Claude Code)", "verified_at": "2026-08-27" },
+        { "type": "observed", "scope": "macOS foundation behavior: failing-verification-blocks-done", "artifact": "compatibility/evaluations/20260827T125050Z-64aa1fa49c-claude-failing-verification-blocks-done.json", "client_version": "2.1.247 (Claude Code)", "verified_at": "2026-08-27" },
+        { "type": "observed", "scope": "macOS foundation behavior: passing-verification-permits-done", "artifact": "compatibility/evaluations/20260827T125050Z-64aa1fa49c-claude-passing-verification-permits-done.json", "client_version": "2.1.247 (Claude Code)", "verified_at": "2026-08-27" }
+      ]
     },
     {
       "id": "codex",
       "name": "Codex",
       "target_tier": "native",
       "adapter": "native",
-      "certification": "pending",
+      "certification": "passed",
       "instructions": {
         "discovery": "direct",
         "global_paths": ["$CODEX_HOME/AGENTS.md"],
@@ -79,12 +89,22 @@
       },
       "native_runtime": {
         "hooks": { "client_support": "supported", "agentsmith_management": "native", "notes": "Only documented stable hook events are managed." },
-        "doctor": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Capability results will be reported separately." },
+        "doctor": { "client_support": "supported", "agentsmith_management": "native", "notes": "Effective instructions and installed capabilities are inspected separately." },
         "lifecycle": { "client_support": "supported", "agentsmith_management": "native", "notes": "Install, update, dry-run, backup, and uninstall are native-tier responsibilities." }
       },
       "operating_systems": { "targets": ["macos", "linux", "windows"], "constraints": ["Python 3.11+ is required by the shared runtime design."] },
       "local_models": { "client_support": "supported", "providers": ["ollama", "lm-studio"], "notes": "Certification belongs to a client-plus-provider scenario, never the provider alone." },
-      "evidence": [{ "type": "fixture", "scope": "registry contract only", "artifact": null, "client_version": null, "verified_at": null }]
+      "evidence": [
+        { "type": "fixture", "scope": "registry and managed-lifecycle contract", "artifact": null, "client_version": null, "verified_at": null },
+        { "type": "observed", "scope": "macOS foundation behavior: instruction-sentinel", "artifact": "compatibility/evaluations/20260827T074935Z-93e576e2a2-codex-instruction-sentinel.json", "client_version": "codex-cli 0.149.0", "verified_at": "2026-08-27" },
+        { "type": "observed", "scope": "macOS foundation behavior: authorized-simulated-write", "artifact": "compatibility/evaluations/20260827T074935Z-93e576e2a2-codex-authorized-simulated-write.json", "client_version": "codex-cli 0.149.0", "verified_at": "2026-08-27" },
+        { "type": "observed", "scope": "macOS foundation behavior: unauthorized-simulated-write", "artifact": "compatibility/evaluations/20260827T074935Z-93e576e2a2-codex-unauthorized-simulated-write.json", "client_version": "codex-cli 0.149.0", "verified_at": "2026-08-27" },
+        { "type": "observed", "scope": "macOS foundation behavior: source-survives-cleanup", "artifact": "compatibility/evaluations/20260827T074935Z-93e576e2a2-codex-source-survives-cleanup.json", "client_version": "codex-cli 0.149.0", "verified_at": "2026-08-27" },
+        { "type": "observed", "scope": "macOS foundation behavior: secret-not-exposed", "artifact": "compatibility/evaluations/20260827T074935Z-93e576e2a2-codex-secret-not-exposed.json", "client_version": "codex-cli 0.149.0", "verified_at": "2026-08-27" },
+        { "type": "observed", "scope": "macOS foundation behavior: denied-action-no-retry", "artifact": "compatibility/evaluations/20260827T125050Z-64aa1fa49c-codex-denied-action-no-retry.json", "client_version": "codex-cli 0.149.0", "verified_at": "2026-08-27" },
+        { "type": "observed", "scope": "macOS foundation behavior: failing-verification-blocks-done", "artifact": "compatibility/evaluations/20260827T125050Z-64aa1fa49c-codex-failing-verification-blocks-done.json", "client_version": "codex-cli 0.149.0", "verified_at": "2026-08-27" },
+        { "type": "observed", "scope": "macOS foundation behavior: passing-verification-permits-done", "artifact": "compatibility/evaluations/20260827T125050Z-64aa1fa49c-codex-passing-verification-permits-done.json", "client_version": "codex-cli 0.149.0", "verified_at": "2026-08-27" }
+      ]
     },
     {
       "id": "github-copilot",
@@ -100,7 +120,7 @@
       },
       "native_runtime": {
         "hooks": { "client_support": "unverified", "agentsmith_management": "none", "notes": "No hook integration is claimed." },
-        "doctor": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Instruction and standard capability checks only." },
+        "doctor": { "client_support": "supported", "agentsmith_management": "native", "notes": "Instruction and standard capability state is inspected from disk." },
         "lifecycle": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Direct AGENTS.md adapter." }
       },
       "operating_systems": { "targets": ["macos", "linux", "windows", "cloud"], "constraints": ["Closed IDE and cloud surfaces may require manual evidence."] },
@@ -121,7 +141,7 @@
       },
       "native_runtime": {
         "hooks": { "client_support": "unverified", "agentsmith_management": "none", "notes": "No stable hook integration is claimed." },
-        "doctor": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Instruction and standard capability checks only." },
+        "doctor": { "client_support": "supported", "agentsmith_management": "native", "notes": "Instruction and standard capability state is inspected from disk." },
         "lifecycle": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Direct AGENTS.md adapter." }
       },
       "operating_systems": { "targets": ["macos", "linux", "windows"], "constraints": ["Closed IDE surfaces may require manual evidence."] },
@@ -142,7 +162,7 @@
       },
       "native_runtime": {
         "hooks": { "client_support": "unverified", "agentsmith_management": "none", "notes": "No stable hook integration is claimed." },
-        "doctor": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Configured discovery and standard capability checks." },
+        "doctor": { "client_support": "supported", "agentsmith_management": "native", "notes": "Configured discovery and standard capability state is inspected from disk." },
         "lifecycle": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Thin settings adapter points to canonical AGENTS.md." }
       },
       "operating_systems": { "targets": ["macos", "linux", "windows"], "constraints": ["Python 3.11+ is required by the shared AgentSmith runtime design."] },
@@ -163,7 +183,7 @@
       },
       "native_runtime": {
         "hooks": { "client_support": "unverified", "agentsmith_management": "none", "notes": "No hook integration is claimed." },
-        "doctor": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Each product variant is reported independently where behavior differs." },
+        "doctor": { "client_support": "supported", "agentsmith_management": "native", "notes": "Each product variant is reported independently where behavior differs." },
         "lifecycle": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Direct AGENTS.md adapter." }
       },
       "operating_systems": { "targets": ["macos", "linux", "windows", "cloud"], "constraints": ["Windsurf and Devin require separate live evidence even though they share one matrix target."] },
@@ -184,7 +204,7 @@
       },
       "native_runtime": {
         "hooks": { "client_support": "unsupported", "agentsmith_management": "none", "notes": "No hook emulation is planned." },
-        "doctor": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Instruction and MCP checks are independent." },
+        "doctor": { "client_support": "supported", "agentsmith_management": "native", "notes": "Instruction and MCP checks are independent." },
         "lifecycle": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Direct AGENTS.md adapter." }
       },
       "operating_systems": { "targets": ["macos", "linux", "windows"], "constraints": ["IDE automation may require an observed or manual run."] },
@@ -205,7 +225,7 @@
       },
       "native_runtime": {
         "hooks": { "client_support": "unsupported", "agentsmith_management": "none", "notes": "No hook emulation is planned." },
-        "doctor": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Instruction and MCP checks are independent." },
+        "doctor": { "client_support": "supported", "agentsmith_management": "native", "notes": "Instruction and MCP checks are independent." },
         "lifecycle": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Direct AGENTS.md adapter." }
       },
       "operating_systems": { "targets": ["macos", "linux", "windows"], "constraints": ["IDE automation may require an observed or manual run."] },
@@ -226,7 +246,7 @@
       },
       "native_runtime": {
         "hooks": { "client_support": "unsupported", "agentsmith_management": "none", "notes": "No hook emulation is planned." },
-        "doctor": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Configured instruction discovery only." },
+        "doctor": { "client_support": "supported", "agentsmith_management": "native", "notes": "Configured instruction discovery is inspected from disk." },
         "lifecycle": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Managed config points Aider to AGENTS.md." }
       },
       "operating_systems": { "targets": ["macos", "linux", "windows"], "constraints": ["Python 3.11+ satisfies both the shared runtime design and the adapter test floor."] },
@@ -247,7 +267,7 @@
       },
       "native_runtime": {
         "hooks": { "client_support": "unsupported", "agentsmith_management": "none", "notes": "No hook emulation is planned." },
-        "doctor": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Configured instruction discovery and capability checks." },
+        "doctor": { "client_support": "supported", "agentsmith_management": "native", "notes": "Configured instruction discovery and capability state are inspected from disk." },
         "lifecycle": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Minimal managed configuration points to AGENTS.md." }
       },
       "operating_systems": { "targets": ["macos", "linux", "windows"], "constraints": ["IDE automation may require an observed or manual run."] },
@@ -268,7 +288,7 @@
       },
       "native_runtime": {
         "hooks": { "client_support": "unsupported", "agentsmith_management": "none", "notes": "No hook emulation is planned." },
-        "doctor": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Instruction and MCP checks are independent." },
+        "doctor": { "client_support": "supported", "agentsmith_management": "native", "notes": "Instruction and MCP checks are independent." },
         "lifecycle": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Direct AGENTS.md adapter." }
       },
       "operating_systems": { "targets": ["macos", "linux", "windows", "cloud"], "constraints": ["Container/runtime prerequisites belong in dated evidence records."] },
@@ -289,7 +309,7 @@
       },
       "native_runtime": {
         "hooks": { "client_support": "unsupported", "agentsmith_management": "none", "notes": "No hook emulation is planned." },
-        "doctor": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Configured discovery and MCP checks." },
+        "doctor": { "client_support": "supported", "agentsmith_management": "native", "notes": "Configured discovery and MCP state are inspected from disk." },
         "lifecycle": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Minimal managed configuration points to AGENTS.md." }
       },
       "operating_systems": { "targets": ["macos", "linux", "windows"], "constraints": ["Python 3.11+ is required by the shared AgentSmith runtime design."] },
@@ -310,7 +330,7 @@
       },
       "native_runtime": {
         "hooks": { "client_support": "unverified", "agentsmith_management": "none", "notes": "No stable hook integration is claimed." },
-        "doctor": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Instructions, skills, and MCP are reported independently." },
+        "doctor": { "client_support": "supported", "agentsmith_management": "native", "notes": "Instructions, skills, and MCP are reported independently." },
         "lifecycle": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Direct AGENTS.md adapter plus standard capability config." }
       },
       "operating_systems": { "targets": ["macos", "linux", "windows"], "constraints": ["Python 3.11+ is required by the shared AgentSmith runtime design."] },
@@ -331,7 +351,7 @@
       },
       "native_runtime": {
         "hooks": { "client_support": "unsupported", "agentsmith_management": "none", "notes": "No hook emulation is planned." },
-        "doctor": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Instruction discovery check only until more capabilities are evidenced." },
+        "doctor": { "client_support": "supported", "agentsmith_management": "native", "notes": "Instruction discovery and evidenced capability state are inspected from disk." },
         "lifecycle": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Direct AGENTS.md adapter." }
       },
       "operating_systems": { "targets": ["macos", "linux", "windows"], "constraints": ["Closed IDE surfaces require manual or observed evidence."] },
@@ -352,7 +372,7 @@
       },
       "native_runtime": {
         "hooks": { "client_support": "unsupported", "agentsmith_management": "none", "notes": "No hook emulation is planned." },
-        "doctor": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Instruction and MCP checks are independent." },
+        "doctor": { "client_support": "supported", "agentsmith_management": "native", "notes": "Instruction and MCP checks are independent." },
         "lifecycle": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Direct AGENTS.md adapter." }
       },
       "operating_systems": { "targets": ["macos", "linux"], "constraints": ["Client OS availability and closed-editor behavior must be captured in dated evidence."] },
@@ -373,7 +393,7 @@
       },
       "native_runtime": {
         "hooks": { "client_support": "unsupported", "agentsmith_management": "none", "notes": "No hook emulation is planned." },
-        "doctor": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Repository instruction fixture plus manual cloud verification." },
+        "doctor": { "client_support": "supported", "agentsmith_management": "native", "notes": "Repository instruction state is inspected locally; cloud behavior still requires manual verification." },
         "lifecycle": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Direct repository AGENTS.md adapter." }
       },
       "operating_systems": { "targets": ["cloud"], "constraints": ["Cloud-only behavior requires manual evidence and has no local lifecycle surface."] },

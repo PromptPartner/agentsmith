@@ -28,11 +28,19 @@ jobs:
         with:
           python-version: '3.13'
       - name: Python core compiles
-        run: python -m py_compile agentsmith.py scripts/test-agent-conformance.py compatibility/test_registry.py
+        run: python -m py_compile agentsmith.py native_launcher.py evaluate.py config/statusline.py scripts/autonomous-run.py scripts/test-agent-conformance.py scripts/test-autonomous-state.py scripts/test-doctor.py scripts/test-evaluate.py scripts/test-secret-scan.py scripts/test-statusline.py scripts/test-tracker-consent.py compatibility/test_registry.py
       - name: Registry schema and contract
         run: python compatibility/test_registry.py
       - name: Strict cross-platform conformance
         run: python scripts/test-agent-conformance.py --strict
+      - name: Cross-platform scanner, consent, state ownership, doctor, and evaluation fixtures
+        run: |
+          python scripts/test-secret-scan.py
+          python scripts/test-tracker-consent.py
+          python scripts/test-autonomous-state.py
+          python scripts/test-doctor.py
+          python scripts/test-evaluate.py
+          python scripts/test-statusline.py
       - name: PowerShell launcher parses and delegates
         if: runner.os == 'Windows'
         shell: pwsh
@@ -56,6 +64,8 @@ jobs:
         shell: bash
         run: |
           bash scripts/test-secret-scan.sh
+          bash scripts/test-assemble.sh
+          bash scripts/test-operator-identity.sh
           bash scripts/test-leak-gate.sh
           bash scripts/test-wayfinder-spec.sh
           bash scripts/test-ui-design-reminder.sh

@@ -8,6 +8,7 @@ authority ends at a local worktree and local commits; a human decides what leave
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fnmatch
 import hashlib
 import json
@@ -17,10 +18,30 @@ import signal
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+try:
+    from native_launcher import (
+        build_native_command,
+        claude_sandbox_settings,
+        minimal_environment,
+        native_environment,
+        usage_metrics as shared_usage_metrics,
+    )
+except ModuleNotFoundError:  # source-tree execution from scripts/
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from native_launcher import (
+        build_native_command,
+        claude_sandbox_settings,
+        minimal_environment,
+        native_environment,
+        usage_metrics as shared_usage_metrics,
+    )
 
 
 SCHEMA_VERSION = 1
@@ -84,9 +105,112 @@ def load_json(path: Path) -> dict[str, Any]:
 
 def write_json(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(path.suffix + ".tmp")
-    temp.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
-    temp.replace(path)
+    descriptor, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temp = Path(temp_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(value, indent=2, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def process_is_live(pid: Any) -> bool:
+    try:
+        number = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if number <= 0:
+        return False
+    try:
+        os.kill(number, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def lock_path(run_dir: Path) -> Path:
+    return run_dir / "controller.lock"
+
+
+def read_lock(run_dir: Path) -> dict[str, Any] | None:
+    path = lock_path(run_dir)
+    if not path.exists():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RunError(f"cannot verify lifecycle lock {path}: {exc}") from exc
+    if not isinstance(value, dict) or not isinstance(value.get("pid"), int):
+        raise RunError(f"cannot verify lifecycle lock {path}: malformed owner metadata")
+    return value
+
+
+def acquire_lifecycle_lock(run_dir: Path, run_id: str) -> str:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    path = lock_path(run_dir)
+    token = uuid.uuid4().hex
+    record = {"pid": os.getpid(), "run_id": run_id, "started_at": now(), "token": token}
+    encoded = (json.dumps(record, sort_keys=True) + "\n").encode()
+    for _ in range(3):
+        try:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            existing = read_lock(run_dir)
+            if existing is None:
+                continue
+            if process_is_live(existing["pid"]):
+                raise RunError(
+                    f"run {run_id} already has a live controller (pid {existing['pid']})"
+                )
+            try:
+                before = path.read_bytes()
+                if path.read_bytes() == before:
+                    path.unlink(missing_ok=True)
+            except FileNotFoundError:
+                pass
+            continue
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        return token
+    raise RunError(f"could not acquire lifecycle lock for run {run_id}")
+
+
+def release_lifecycle_lock(run_dir: Path, token: str) -> None:
+    path = lock_path(run_dir)
+    try:
+        record = read_lock(run_dir)
+    except RunError:
+        return
+    if record and record.get("token") == token:
+        path.unlink(missing_ok=True)
+
+
+@contextlib.contextmanager
+def lifecycle_lock(run_dir: Path, run_id: str):
+    token = acquire_lifecycle_lock(run_dir, run_id)
+    try:
+        yield
+    finally:
+        release_lifecycle_lock(run_dir, token)
+
+
+def create_stop_request(run_dir: Path) -> None:
+    path = run_dir / "STOP"
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(f"requested_at={now()}\n")
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 def state_root(repo: Path) -> Path:
@@ -413,20 +537,6 @@ def parse_receipt(path: Path, stdout: str) -> dict[str, Any]:
     raise RunError("runtime emitted no schema-valid receipt")
 
 
-def runtime_env() -> dict[str, str]:
-    env = os.environ.copy()
-    for key in list(env):
-        upper = key.upper()
-        if any(token in upper for token in
-               ("TOKEN", "SECRET", "PASSWORD", "PASSWD", "API_KEY", "PRIVATE_KEY",
-                "CREDENTIAL", "AUTH", "COOKIE", "SESSION", "LINEAR_", "SLACK_")):
-            env.pop(key, None)
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    env["GIT_ASKPASS"] = "/usr/bin/false"
-    env.pop("SSH_AUTH_SOCK", None)
-    return env
-
-
 def verifier_env() -> dict[str, str]:
     allowed = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "SHELL")
     env = {key: os.environ[key] for key in allowed if key in os.environ}
@@ -437,37 +547,7 @@ def verifier_env() -> dict[str, str]:
 
 def usage_metrics(stdout: str) -> tuple[float, int]:
     """Extract conservative per-invocation usage totals from Claude/Codex JSON output."""
-    values: list[Any] = []
-    try:
-        values.append(json.loads(stdout))
-    except json.JSONDecodeError:
-        for line in stdout.splitlines():
-            try:
-                values.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    costs: list[float] = []
-    token_blocks: list[int] = []
-
-    def walk(value: Any) -> None:
-        if isinstance(value, dict):
-            cost = value.get("total_cost_usd")
-            if isinstance(cost, (int, float)):
-                costs.append(float(cost))
-            tokens = sum(int(value.get(key, 0)) for key in
-                         ("input_tokens", "output_tokens", "cached_input_tokens", "reasoning_tokens")
-                         if isinstance(value.get(key, 0), (int, float)))
-            if tokens:
-                token_blocks.append(tokens)
-            for child in value.values():
-                walk(child)
-        elif isinstance(value, list):
-            for child in value:
-                walk(child)
-
-    for value in values:
-        walk(value)
-    return (max(costs, default=0.0), max(token_blocks, default=0))
+    return shared_usage_metrics(stdout)
 
 
 def launch_role(state: dict[str, Any], manifest: dict[str, Any], role: str, prompt: str,
@@ -485,86 +565,62 @@ def launch_role(state: dict[str, Any], manifest: dict[str, Any], role: str, prom
     timeout = remaining_seconds(state, manifest)
     if timeout <= 0:
         raise RunError("wall-clock budget exhausted")
-    env = runtime_env()
-    common_git = str(state_root(Path(state["repo"])).parent)
+    common_git = state_root(Path(state["repo"])).parent
     if runtime == "codex":
         token_budget = int(manifest["limits"].get("codex_goal_tokens", 0))
         if token_budget and int(state.get("codex_tokens_used", 0)) >= token_budget:
             raise RunError("Codex run-wide token budget exhausted")
-        executable = os.environ.get("AGENTSMITH_CODEX_BIN", "codex")
-        cmd = [executable, "exec", "--json", "--sandbox", "workspace-write"]
-        if role == "maker":
-            cmd += ["--add-dir", common_git]
-        cmd += ["--disable", "hooks", "-c", "mcp_servers={}",
-               "-c", "sandbox_workspace_write.network_access=false", "-c", "approval_policy=never",
-               "--output-schema", str(schema_path), "-o", str(receipt_path)]
-        if role_cfg.get("model"):
-            cmd += ["--model", str(role_cfg["model"])]
-        if role_cfg.get("effort"):
-            cmd += ["-c", f'model_reasoning_effort="{role_cfg["effort"]}"']
-        cmd += [prompt]
+        cmd = build_native_command(
+            "codex", prompt, worktree, schema_path, receipt_path,
+            extra_write_dirs=[common_git] if role == "maker" else [],
+            model=str(role_cfg.get("model", "")), effort=str(role_cfg.get("effort", "")),
+        )
     else:
-        executable = os.environ.get("AGENTSMITH_CLAUDE_BIN", "claude")
         settings_path = run_dir / "claude-sandbox.json"
-        settings = {
-            "sandbox": {
-                "enabled": True,
-                "failIfUnavailable": True,
-                "autoAllowBashIfSandboxed": True,
-                "allowUnsandboxedCommands": False,
-                "filesystem": {
-                    "allowWrite": [common_git] if role == "maker" else [],
-                    "denyRead": [str(Path.home())],
-                    "allowRead": [str(worktree), common_git],
-                },
-                "network": {"allowedDomains": [], "deniedDomains": ["*"]},
-            },
-            "permissions": {
-                "deny": ["WebFetch", "WebSearch", "mcp__*"]
-                + (["Edit", "Write", "NotebookEdit"] if role == "checker" else [])
-            },
-            "enableAllProjectMcpServers": False,
-        }
-        write_json(settings_path, settings)
-        cmd = [executable, "-p", "--output-format", "json", "--permission-mode", "dontAsk",
-               "--setting-sources", "",
-               "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--settings", str(settings_path),
-               "--json-schema", json.dumps(RECEIPT_SCHEMA)]
-        if role_cfg.get("model"):
-            cmd += ["--model", str(role_cfg["model"])]
-        if role_cfg.get("effort"):
-            cmd += ["--effort", str(role_cfg["effort"])]
+        write_json(
+            settings_path,
+            claude_sandbox_settings(
+                worktree, [common_git] if role == "maker" else [], read_only=role == "checker",
+            ),
+        )
         budget = float(manifest["limits"].get("claude_max_usd", 0))
         remaining_budget = budget - float(state.get("claude_cost_usd", 0.0))
         if budget and remaining_budget <= 0:
             raise RunError("Claude run-wide USD budget exhausted")
-        if remaining_budget > 0:
-            cmd += ["--max-budget-usd", str(remaining_budget)]
-        cmd += [prompt]
+        cmd = build_native_command(
+            "claude", prompt, worktree, schema_path, receipt_path, settings_path=settings_path,
+            extra_write_dirs=[common_git] if role == "maker" else [], read_only=role == "checker",
+            model=str(role_cfg.get("model", "")), effort=str(role_cfg.get("effort", "")),
+            claude_max_usd=max(0.0, remaining_budget),
+        )
     event(state, "role_started", role=role, runtime=runtime, attempt=state["attempt"])
-    process = subprocess.Popen(cmd, cwd=worktree, text=True, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, env=env)
-    if stop_file.exists():
-        process.terminate()
-        process.wait(timeout=10)
-        raise RunInterrupted("stopped by operator")
-    state["active_pid"] = process.pid
-    save_state(state)
-    try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        process.terminate()
-        try:
+    with native_environment(runtime) as environment:
+        process = subprocess.Popen(cmd, cwd=worktree, text=True, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, env=environment)
+        if stop_file.exists():
+            process.terminate()
             process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            process.kill()
-        raise RunError(f"{role} exceeded wall-clock budget")
-    finally:
-        persisted = load_json(Path(state["state_path"]))
-        if persisted.get("status") == "interrupted":
-            state.update(persisted)
-        state["active_pid"] = None
+            raise RunInterrupted("stopped by operator")
+        state["active_pid"] = process.pid
         save_state(state)
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+            raise RunError(f"{role} exceeded wall-clock budget")
+        finally:
+            if process.poll() is None and stop_file.exists():
+                process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+            state["active_pid"] = None
+            save_state(state)
     (run_dir / f"attempt-{state['attempt']}-{role}.stdout").write_text(stdout)
     (run_dir / f"attempt-{state['attempt']}-{role}.stderr").write_text(stderr)
     cost, tokens = usage_metrics(stdout)
@@ -727,6 +783,38 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
     return 2
 
 
+def persist_interrupted(state: dict[str, Any]) -> None:
+    if state.get("status") == "interrupted":
+        return
+    state["status"] = "interrupted"
+    state["reason"] = "stopped by operator"
+    state["active_pid"] = None
+    save_state(state, "run_interrupted", reason=state["reason"])
+
+
+def run_controller(state: dict[str, Any], manifest: dict[str, Any]) -> int:
+    previous = signal.getsignal(signal.SIGTERM)
+
+    def interrupted(_signum: int, _frame: Any) -> None:
+        raise RunInterrupted("stopped by operator")
+
+    signal.signal(signal.SIGTERM, interrupted)
+    try:
+        return execute(state, manifest)
+    except RunInterrupted:
+        persist_interrupted(state)
+        print(f"interrupted: {state['run_id']}; use resume when ready", file=sys.stderr)
+        return 130
+    except (RunError, subprocess.TimeoutExpired) as exc:
+        state["status"] = "escalated"
+        state["reason"] = str(exc)
+        save_state(state, "run_escalated", reason=str(exc))
+        print(f"escalated: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
 def start(args: argparse.Namespace) -> int:
     repo = repo_root(Path.cwd())
     manifest_path = Path(args.manifest).resolve()
@@ -745,51 +833,44 @@ def start(args: argparse.Namespace) -> int:
     path = state_path(repo, name)
     if path.exists():
         raise RunError(f"run {name} already exists; use resume or choose another run_id")
-    base_head = git(repo, "rev-parse", str(manifest["base_ref"]))
-    if not git(repo, "config", "user.name", check=False) or not git(repo, "config", "user.email", check=False):
-        raise RunError("git user.name and user.email must be configured before local commits")
-    branch = f"agentsmith/{name}"
-    default_worktree = repo.parent / f"{repo.name}-{name}"
-    worktree = Path(manifest.get("worktree_path") or default_worktree).resolve()
-    if worktree.exists() or git(repo, "show-ref", "--verify", f"refs/heads/{branch}", check=False):
-        raise RunError(f"refusing to overwrite existing branch/worktree for {name}")
-    created = run(["git", "worktree", "add", "-b", branch, str(worktree), base_head], repo)
-    if created.returncode:
-        raise RunError(created.stderr.strip() or "git worktree creation failed")
-    state = {
-        "schema_version": SCHEMA_VERSION,
-        "run_id": name,
-        "status": "prepared",
-        "attempt": 0,
-        "repo": str(repo),
-        "worktree": str(worktree),
-        "branch": branch,
-        "base_head": base_head,
-        "spec_path": spec_rel.as_posix(),
-        "spec_sha256": spec_hash,
-        "manifest_path": str(manifest_path),
-        "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
-        "started_at": now(),
-        "started_epoch": time.time(),
-        "deadline_epoch": time.time() + int(manifest["limits"]["wall_minutes"]) * 60,
-        "claude_cost_usd": 0.0,
-        "codex_tokens_used": 0,
-        "active_pid": None,
-        "state_path": str(path),
-    }
-    save_state(state, "run_started", branch=branch, worktree=str(worktree))
-    try:
-        return execute(state, manifest)
-    except RunInterrupted:
-        state.update(load_json(Path(state["state_path"])))
-        print(f"interrupted: {name}; use resume when ready", file=sys.stderr)
-        return 130
-    except (RunError, subprocess.TimeoutExpired) as exc:
-        state["status"] = "escalated"
-        state["reason"] = str(exc)
-        save_state(state, "run_escalated", reason=str(exc))
-        print(f"escalated: {exc}", file=sys.stderr)
-        return 2
+    with lifecycle_lock(path.parent, name):
+        if path.exists():
+            raise RunError(f"run {name} already exists; use resume or choose another run_id")
+        base_head = git(repo, "rev-parse", str(manifest["base_ref"]))
+        if (not git(repo, "config", "user.name", check=False)
+                or not git(repo, "config", "user.email", check=False)):
+            raise RunError("git user.name and user.email must be configured before local commits")
+        branch = f"agentsmith/{name}"
+        default_worktree = repo.parent / f"{repo.name}-{name}"
+        worktree = Path(manifest.get("worktree_path") or default_worktree).resolve()
+        if worktree.exists() or git(repo, "show-ref", "--verify", f"refs/heads/{branch}", check=False):
+            raise RunError(f"refusing to overwrite existing branch/worktree for {name}")
+        created = run(["git", "worktree", "add", "-b", branch, str(worktree), base_head], repo)
+        if created.returncode:
+            raise RunError(created.stderr.strip() or "git worktree creation failed")
+        state = {
+            "schema_version": SCHEMA_VERSION,
+            "run_id": name,
+            "status": "prepared",
+            "attempt": 0,
+            "repo": str(repo),
+            "worktree": str(worktree),
+            "branch": branch,
+            "base_head": base_head,
+            "spec_path": spec_rel.as_posix(),
+            "spec_sha256": spec_hash,
+            "manifest_path": str(manifest_path),
+            "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+            "started_at": now(),
+            "started_epoch": time.time(),
+            "deadline_epoch": time.time() + int(manifest["limits"]["wall_minutes"]) * 60,
+            "claude_cost_usd": 0.0,
+            "codex_tokens_used": 0,
+            "active_pid": None,
+            "state_path": str(path),
+        }
+        save_state(state, "run_started", branch=branch, worktree=str(worktree))
+        return run_controller(state, manifest)
 
 
 def status_cmd(args: argparse.Namespace) -> int:
@@ -805,17 +886,37 @@ def status_cmd(args: argparse.Namespace) -> int:
 def stop(args: argparse.Namespace) -> int:
     repo = repo_root(Path.cwd())
     state = load_run(repo, args.run_id)
-    (Path(state["state_path"]).parent / "STOP").touch()
-    pid = state.get("active_pid")
-    if pid:
+    run_dir = Path(state["state_path"]).parent
+    create_stop_request(run_dir)
+    active_pid = state.get("active_pid")
+    if active_pid:
         try:
-            os.kill(int(pid), signal.SIGTERM)
+            os.kill(int(active_pid), signal.SIGTERM)
         except ProcessLookupError:
             pass
-    state["status"] = "interrupted"
-    state["reason"] = "stopped by operator"
-    save_state(state, "run_interrupted", reason=state["reason"])
-    print(f"stopped {args.run_id}; local worktree retained")
+    owner = read_lock(run_dir)
+    controller_pid = owner.get("pid") if owner else None
+    if controller_pid and process_is_live(controller_pid):
+        try:
+            os.kill(int(controller_pid), signal.SIGTERM)
+        except ProcessLookupError:
+            controller_pid = None
+    deadline = time.monotonic() + 5
+    while controller_pid and time.monotonic() < deadline:
+        current = load_run(repo, args.run_id)
+        if current.get("status") == "interrupted":
+            print(f"stopped {args.run_id}; local worktree retained")
+            return 0
+        if not process_is_live(controller_pid):
+            break
+        time.sleep(0.05)
+    current = load_run(repo, args.run_id)
+    if current.get("status") == "interrupted":
+        print(f"stopped {args.run_id}; local worktree retained")
+    elif not controller_pid or not process_is_live(controller_pid):
+        print(f"stop requested for {args.run_id}; controller is gone and resume will reconcile it")
+    else:
+        print(f"stop requested for {args.run_id}; controller did not persist interruption within five seconds")
     return 0
 
 
@@ -824,31 +925,35 @@ def resume(args: argparse.Namespace) -> int:
     state = load_run(repo, args.run_id)
     if state["status"] == "accepted":
         raise RunError("accepted runs do not resume")
-    manifest_path = Path(state["manifest_path"])
-    manifest = load_json(manifest_path)
-    if hashlib.sha256(manifest_path.read_bytes()).hexdigest() != state["manifest_sha256"]:
-        raise RunError("manifest changed since start; create a new run for a changed contract")
-    spec_text = git(repo, "show", f"{state['base_head']}:{state['spec_path']}")
-    if hashlib.sha256(spec_text.encode()).hexdigest() != state["spec_sha256"]:
-        raise RunError("spec changed since start; create a new run for a changed contract")
-    if not clean(Path(state["worktree"])):
-        raise RunError("cannot resume a dirty worktree")
-    (Path(state["state_path"]).parent / "STOP").unlink(missing_ok=True)
-    state["status"] = "resuming"
-    state["reason"] = None
-    save_state(state, "run_resumed")
-    try:
-        return execute(state, manifest)
-    except RunInterrupted:
-        state.update(load_json(Path(state["state_path"])))
-        print(f"interrupted: {args.run_id}; use resume when ready", file=sys.stderr)
-        return 130
-    except RunError as exc:
-        state["status"] = "escalated"
-        state["reason"] = str(exc)
-        save_state(state, "run_escalated", reason=str(exc))
-        print(f"escalated: {exc}", file=sys.stderr)
-        return 2
+    run_dir = Path(state["state_path"]).parent
+    with lifecycle_lock(run_dir, args.run_id):
+        state = load_run(repo, args.run_id)
+        manifest_path = Path(state["manifest_path"])
+        manifest = load_json(manifest_path)
+        if hashlib.sha256(manifest_path.read_bytes()).hexdigest() != state["manifest_sha256"]:
+            raise RunError("manifest changed since start; create a new run for a changed contract")
+        spec_rel, spec_hash = validate_manifest(manifest, repo)
+        if str(manifest["run_id"]) != state["run_id"]:
+            raise RunError("manifest run_id no longer matches the durable run state")
+        if spec_rel.as_posix() != state["spec_path"] or spec_hash != state["spec_sha256"]:
+            raise RunError("spec changed since start; create a new run for a changed contract")
+        if git(repo, "rev-parse", str(manifest["base_ref"])) != state["base_head"]:
+            raise RunError("base_ref changed since start; create a new run for a changed contract")
+        worktree = Path(state["worktree"])
+        if not worktree.is_dir() or repo_root(worktree) != worktree.resolve():
+            raise RunError("run worktree is missing or no longer a Git worktree")
+        if git(worktree, "symbolic-ref", "--short", "HEAD") != state["branch"]:
+            raise RunError("run worktree is no longer on its recorded branch")
+        if not clean(worktree):
+            raise RunError("cannot resume a dirty worktree")
+        stop_file = run_dir / "STOP"
+        if stop_file.exists():
+            persist_interrupted(state)
+            stop_file.unlink()
+        state["status"] = "resuming"
+        state["reason"] = None
+        save_state(state, "run_resumed")
+        return run_controller(state, manifest)
 
 
 def parser() -> argparse.ArgumentParser:

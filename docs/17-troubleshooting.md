@@ -6,7 +6,7 @@ This is the operational FAQ: the agent is running but doing something you didn't
 working. Find the symptom, understand the cause, apply the fix.
 
 **"It asks permission for shell or higher-risk actions."** Working as intended — you're in
-**cautious** safety mode (the wizard default). Claude uses `acceptEdits`; Codex uses
+**cautious** safety mode (the omitted-flag and wizard default). Claude uses `acceptEdits`; Codex uses
 `approval_policy = "on-request"` with `sandbox_mode = "workspace-write"`. If that's more
 friction than you want *on a machine you own*, switch to trusted; if it's a shared or client box,
 keep it. How to change it: README → "Permissions & dangerous mode", or [`15-safety-model.md`](15-safety-model.md).
@@ -18,6 +18,13 @@ back to cautious the same way. If this happened on a shared/prod machine, that's
 it from above with
 `--org-policy` for Claude ([`15-safety-model.md`](15-safety-model.md)). Codex organization policy
 is out of scope; the installer rejects platform `codex` or `both` with `--org-policy`.
+
+**"An update says trusted safety will migrate to cautious."** The prior AgentSmith-managed config
+used bypass/no-approval settings and the current command did not explicitly opt back into them.
+That warning is the `0.2.0` safety correction, not loss of foreign config: the installer backs up
+the file and changes only its safety setting. Run the same command with `--dry-run` to inspect the
+paths without writing. Use `--safety trusted` only if preserving the larger blast radius is the
+intended choice.
 
 **"It keeps trying the same fix and won't stop."** The stop-rule in `core/40` says two identical
 failures means re-diagnose, not retry — but a loop or a long run can slip it. The cause is usually
@@ -31,12 +38,19 @@ fresh install ships a deliberately failing `unwired` phase, so `agentsmith verif
 you wire real checks. Replace that line with your build/test commands — that's what makes "done"
 mean something ([`03-verify-means-evidence.md`](03-verify-means-evidence.md)).
 
+**"There is no status line."** AgentSmith adds Claude's default only when `statusLine` is absent;
+an explicit empty/disabled/custom value is user-owned and survives re-runs. `disableAllHooks=true`
+also disables Claude's custom status line. Codex needs no generated setting because its built-in
+model/directory line is active when `tui.status_line` is absent; an explicit `[]` disables it.
+Run `agentsmith doctor --agent claude|codex` to see `managed`, `builtin`, `configured`, `disabled`,
+or `malformed`, then remove the explicit disable or re-run install as appropriate.
+
 **"The context-% handoff nudge didn't fire."** On Codex, expected: it is intentionally not
 installed because it depends on Claude's status line, and this release has no `PreCompact` hook.
 On Claude, it is best-effort by design. No hook can reliably read live context usage (a documented
 Claude Code gap; details in
 [`research/claude-code-hooks-and-managed-policy.md`](research/claude-code-hooks-and-managed-policy.md)),
-so the % nudge is fragile. Use the reliable path: watch the `ctx:NN%` gauge in the statusline and
+so the % nudge is fragile. Use the reliable path: watch the `ctx:NN%` gauge in the status line and
 say **"handoff"** yourself around 25–30% used. The keyword trigger is solid; the auto-nudge is a
 bonus, not the mechanism.
 
@@ -77,10 +91,19 @@ claim *after* the last destructive step, not after the one that preserved it) is
 [`10-best-practices.md`](10-best-practices.md).
 
 **"The rules don't seem to apply in my tool."** Run `agentsmith doctor --agent <id>` and inspect
-the instruction result separately from skills, MCP, and hooks. Project `AGENTS.md` is canonical;
-Claude gets a generated `CLAUDE.md`, while configured adapters must still point to the canonical
-file. Web surfaces do not gain local hooks merely by reading instructions. See
+the resolved global/project/nested source chain separately from safety, skills, MCP, hooks, and
+runtime ownership. A `duplicate-managed-core` warning means both global and project sources carry
+the universal core; `--profile-only` removes that duplication on a future install, but keep the
+full project copy when collaborators need self-contained rules. Project `AGENTS.md` is canonical;
+Claude gets a generated `CLAUDE.md`, while configured adapters must still point to it. Web surfaces
+do not gain local hooks merely by reading instructions. See
 [`13-platforms-and-tools.md`](13-platforms-and-tools.md).
+
+**"`agentsmith evaluate` refuses to call the client."** Real model calls require all three pieces:
+`--live`, a positive `--claude-max-usd` when Claude is selected, and a positive
+`--codex-max-tokens` when Codex is selected. Without `--live`, the command intentionally performs a
+write-free dry run. If a live scenario fails, inspect its raw directory printed in the normalized
+record; do not promote a favorable subset or edit the grader outcome by hand.
 
 **Still stuck?** If a genuinely new failure mode turns up — something none of the above covers —
 that's not just a nuisance to work around, it's the raw material for a system fix. Run

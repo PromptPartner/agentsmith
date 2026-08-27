@@ -96,8 +96,10 @@ kickoff and it resumes exactly where this one stopped.
 
 The optional keyword hook understands both runtimes' payloads. After a Codex hook install, run
 `/hooks` once and review/trust it. The automatic context-percentage nudge is Claude-only because it
-depends on Claude's status line; Codex gets no percentage nudge and this release adds no
-`PreCompact` hook. The written handoff protocol is the dependable mechanism on both platforms.
+depends on Claude's status line. A normal install activates AgentSmith's Claude gauge only when no
+explicit status-line choice exists; Codex already activates its built-in gauge when unset. Codex
+gets no percentage nudge and this release adds no `PreCompact` hook. The written handoff protocol
+is the dependable mechanism on both platforms.
 
 That's the loop you'll live in: one unit of work, verified with evidence, handed off clean.
 

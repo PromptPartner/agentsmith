@@ -2,7 +2,7 @@
 # Stop hook — BEST-EFFORT context-budget nudge (opt-in, experimental).
 #
 # HONEST CAVEAT: no Claude Code hook receives the live context-% (only the statusline does), so
-# this reads the % that config/statusline-command.sh persisted to a temp file. That makes it
+# this reads the % that config/statusline.py persisted to a temp file. That makes it
 # inherently fragile — the file can be stale (statusline hasn't rendered since the last turn) or
 # missing (statusline not installed / crashed). The RELIABLE handoff path is the "handoff"
 # keyword (hooks/handoff-on-keyword.sh) and the human-watched ctx:NN% gauge. Treat this as a

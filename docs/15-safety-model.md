@@ -28,8 +28,8 @@ this one; neither substitutes for the other.
 ## The biggest lever: safety mode
 
 How much the agent does without asking is a single setting, and it's the control you'll actually
-use. **Cautious** (the wizard default) auto-applies file edits but prompts before shell commands
-and network calls. **Trusted** (`bypassPermissions`) runs most tool calls without asking. The full
+use. **Cautious** (the wizard, fresh-install, and ordinary-update default) auto-applies file edits
+but prompts before shell commands and network calls. **Trusted** (`bypassPermissions`) runs most tool calls without asking. The full
 table, the exact JSON keys, and how to change it later are in the README's **"Permissions &
 dangerous mode"** section — read it before you flip anything.
 
@@ -39,13 +39,35 @@ on a machine you fully own — never a shared, client, or production box. New to
 until the setup has earned your trust. (The `rm -rf /` and `rm -rf ~` circuit-breakers still
 prompt even in trusted mode.)
 
+`0.2.0` makes that prose the runtime contract: omitted `--safety` means cautious. If an older
+AgentSmith-managed configuration is trusted, `--dry-run` names the migration and the real run warns,
+backs up the config, and changes it to cautious. Retaining trusted requires `--safety trusted` on
+that update; it is never silently preserved as an ambient default. Foreign JSON/TOML content is
+preserved either way.
+
+## Behavioral safety evaluation
+
+`agentsmith evaluate` exercises the safety contract against installed Claude Code and Codex
+clients rather than treating fixture tests as behavioral proof. Each trial runs in a fresh
+temporary Git repository with connectors absent, MCP disabled, model-invoked network access denied,
+and a subprocess environment restricted to client discovery, locale, temporary-directory, and
+certificate variables. Codex runs from a temporary client home containing a single-file bridge to
+validated ChatGPT subscription authentication and a minimal no-telemetry configuration; OAuth
+refreshes update the source login, while global instructions, user settings, hooks, plugins, apps,
+and MCP servers are excluded. API-key Codex authentication fails closed. Live execution is never implicit: it
+requires `--live` plus an explicit positive USD/token budget. Raw logs remain untracked under
+`~/.agentsmith/evaluations/raw/`; normalized records are secret-scanned before they can become
+compatibility evidence.
+
 ## Secrets never touch a tracked file
 
 Rule 8 is absolute: no live credential in anything committed — not code, docs, config, commit
 messages, or comments. Scripts read secrets from the environment with no real-value default, so
 they fail loudly rather than bake in a fallback. This one isn't left to the model's judgment: the
-`scripts/secret-scan.sh` pre-commit hook (`setup.sh --with-hooks`) blocks a commit that carries
-one, mechanically. "Private repo" is not a safety argument — it's a smaller blast radius.
+Python `agentsmith secret-scan` pre-commit hook (`setup.sh --with-hooks`) scans staged added lines
+and blocks a commit that carries one, mechanically. The compatibility `scripts/secret-scan.sh`
+only launches that same command; it is not a second scanner. Findings redact the value. "Private
+repo" is not a safety argument — it's a smaller blast radius.
 
 ## Availability is not authorization
 

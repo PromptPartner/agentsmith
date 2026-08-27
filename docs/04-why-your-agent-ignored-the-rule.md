@@ -74,7 +74,7 @@ actually want is a hook.
 
 | Symptom | Deterministic guard |
 |---|---|
-| A secret nearly landed in a commit | `scripts/secret-scan.sh` as a pre-commit hook (`--with-hooks`) |
+| A secret nearly landed in a commit | Python `agentsmith secret-scan` as a pre-commit hook (`--with-hooks`) |
 | Work committed straight to main | `hooks/git/protect-main.sh` |
 | `CLAUDE.md` creeping past the budget | `scripts/lint-leanness.sh` / `setup.sh --doctor` |
 | "Done" claimed, checks not run | `agentsmith verify` — the gate is executable, not a promise |
