@@ -376,6 +376,97 @@ class UpdateCheckTests(unittest.TestCase):
         }
         self.assertFalse(any("update-receipts" in path or "update-backups" in path for path in later_fingerprints))
 
+    def test_rollback_preflights_all_backups_and_duplicate_paths_before_writing(self) -> None:
+        self.commit_and_tag("0.2.0")
+        self.commit_and_tag("0.2.1")
+        cloned = subprocess.run(
+            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(cloned.returncode, 0, cloned.stdout + cloned.stderr)
+
+        def change_snapshot(receipt: dict[str, object]) -> dict[Path, tuple[bytes, int]]:
+            roots = receipt["roots"]
+            assert isinstance(roots, dict)
+            changes = receipt["changes"]
+            assert isinstance(changes, list)
+            return {
+                path: (path.read_bytes(), path.stat().st_mode & 0o777)
+                for change in changes
+                if isinstance(change, dict)
+                for path in [Path(str(roots[change["root"]])) / str(change["path"])]
+                if path.is_file()
+            }
+
+        for failure in ("missing", "corrupt", "duplicate"):
+            with self.subTest(failure=failure):
+                target = self.root / f"rollback-preflight-{failure}-project"
+                target.mkdir()
+                home = self.root / f"rollback-preflight-{failure}-home"
+                environment = {
+                    **os.environ,
+                    "HOME": str(home),
+                    "CODEX_HOME": str(self.root / f"rollback-preflight-{failure}-codex"),
+                }
+                installed = self.run_core(
+                    "install", "--agent", "codex", "--profile", "software-dev", "--target", str(target),
+                    env=environment,
+                )
+                self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+                plan_path = self.root / f"rollback-preflight-{failure}-plan.json"
+                planned = self.run_core(
+                    "update", "plan", "--target", str(target), "--version", "v0.2.1",
+                    "--from", str(self.remote), "--save", str(plan_path), env=environment,
+                )
+                self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+                applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
+                self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+                receipt_line = next(line for line in applied.stdout.splitlines() if "rollback receipt:" in line)
+                receipt_path = Path(receipt_line.split("rollback receipt:", 1)[1].strip())
+                original_receipt = receipt_path.read_bytes()
+                receipt = json.loads(original_receipt)
+                updated = change_snapshot(receipt)
+                self.assertGreater(len(updated), 1)
+
+                if failure == "duplicate":
+                    receipt["changes"].append(dict(receipt["changes"][0]))
+                    key = (home / ".agentsmith" / "update-integrity.key").read_bytes()
+                    receipt["integrity"] = integrity(receipt, key)
+                    receipt_path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+                else:
+                    candidate = next(
+                        change for change in receipt["changes"][:-1] if change["existed"]
+                    )
+                    backup_path = Path(receipt["backup_root"]) / candidate["root"] / candidate["path"]
+                    original_backup = backup_path.read_bytes()
+                    held_backup = backup_path.with_name(backup_path.name + ".held")
+                    if failure == "missing":
+                        backup_path.rename(held_backup)
+                    else:
+                        backup_path.write_bytes(b"corrupt rollback backup")
+
+                refused = self.run_core(
+                    "update", "rollback", "--receipt", str(receipt_path), env=environment,
+                )
+
+                self.assertNotEqual(refused.returncode, 0)
+                expected_error = "duplicate" if failure == "duplicate" else "backup"
+                self.assertIn(expected_error, refused.stderr.lower())
+                self.assertEqual(change_snapshot(json.loads(original_receipt)), updated)
+
+                if failure == "duplicate":
+                    receipt_path.write_bytes(original_receipt)
+                elif failure == "missing":
+                    held_backup.rename(backup_path)
+                else:
+                    backup_path.write_bytes(original_backup)
+                rolled_back = self.run_core(
+                    "update", "rollback", "--receipt", str(receipt_path), env=environment,
+                )
+                self.assertEqual(rolled_back.returncode, 0, rolled_back.stdout + rolled_back.stderr)
+
     def test_configure_requires_explicit_weekly_opt_in_and_can_turn_it_off(self) -> None:
         environment = {
             **os.environ,
