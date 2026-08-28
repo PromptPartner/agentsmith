@@ -4,10 +4,9 @@ This runbook is for installations created before AgentSmith included its staged 
 update is a bootstrap: run the updater from a temporary checkout of a stable release, point it at
 the existing installation, and keep planning separate from applying.
 
-## Current release and known blocker
+## Current release and v0.2.1 blocker
 
-The current stable release is `v0.2.1`, commit
-`b838a77f1647cc6589009e8269c1e610a1a796a4`.
+The current stable release is `v0.2.2`.
 
 **Do not apply `v0.2.1` to a pre-manifest, Claude-only installation when skills exist only under
 `~/.claude/skills` or its user-scope MCP configuration exists only in `~/.claude.json`.** In that legacy shape,
@@ -15,10 +14,12 @@ The current stable release is `v0.2.1`, commit
 changes, and report success. The post-update skill check is then skipped because it trusts the same
 false capability value.
 
-The defect is recorded in
+The defect is fixed in `v0.2.2` and recorded in
 [`feedback/0020-legacy-claude-reconstruction-skipped-skills-and-mcp.md`](feedback/0020-legacy-claude-reconstruction-skipped-skills-and-mcp.md).
-Wait for a fixed release before updating that installation shape. Do not compensate by manually
-editing the authenticated plan.
+The fixed planner reconstructs Claude skill evidence and refuses global MCP migration explicitly,
+because AgentSmith does not own global MCP configuration. This refusal is fail-closed: follow its
+reinstall guidance after preserving the configuration. Do not compensate by manually editing the
+authenticated plan.
 
 ## Before updating
 
@@ -44,18 +45,16 @@ installation that does not have one yet.
 ```bash
 AGENTSMITH_BOOTSTRAP_DIR="$(mktemp -d)"
 
-git clone --depth 1 --branch v0.2.1 \
+git clone --depth 1 --branch v0.2.2 \
   https://github.com/PromptPartner/agentsmith.git \
   "$AGENTSMITH_BOOTSTRAP_DIR"
 
 git -C "$AGENTSMITH_BOOTSTRAP_DIR" rev-parse HEAD
+git -C "$AGENTSMITH_BOOTSTRAP_DIR" describe --tags --exact-match
 ```
 
-For `v0.2.1`, the final command must print:
-
-```text
-b838a77f1647cc6589009e8269c1e610a1a796a4
-```
+The final command must print `v0.2.2`. This proves the bootstrap is the immutable release tag rather
+than an unreviewed branch checkout.
 
 ## Update one project installation
 
@@ -64,13 +63,13 @@ but does not modify the target.
 
 ```bash
 AGENTSMITH_TARGET="/absolute/path/to/project"
-AGENTSMITH_PLAN="/tmp/agentsmith-project-name-v0.2.1-plan.json"
+AGENTSMITH_PLAN="/tmp/agentsmith-project-name-v0.2.2-plan.json"
 
 git -C "$AGENTSMITH_TARGET" status --short
 
 python3 "$AGENTSMITH_BOOTSTRAP_DIR/agentsmith.py" update plan \
   --target "$AGENTSMITH_TARGET" \
-  --version v0.2.1 \
+  --version v0.2.2 \
   --save "$AGENTSMITH_PLAN"
 
 python3 -m json.tool "$AGENTSMITH_PLAN" | less
@@ -104,18 +103,19 @@ python3 "$AGENTSMITH_TARGET/.agentsmith/agentsmith.py" doctor \
 Global scope is separate from every project scope. Create and inspect its own plan:
 
 ```bash
-AGENTSMITH_PLAN="/tmp/agentsmith-global-v0.2.1-plan.json"
+AGENTSMITH_PLAN="/tmp/agentsmith-global-v0.2.2-plan.json"
 
 python3 "$AGENTSMITH_BOOTSTRAP_DIR/agentsmith.py" update plan \
   --global \
-  --version v0.2.1 \
+  --version v0.2.2 \
   --save "$AGENTSMITH_PLAN"
 
 python3 -m json.tool "$AGENTSMITH_PLAN" | less
 ```
 
-Do not apply this plan if the legacy Claude-only blocker above matches the installation. Otherwise,
-after approving the plan:
+For the legacy Claude-only shape described above, v0.2.2 refuses planning when user-scope MCP is
+present; it does not create an applyable plan that omits the capability. Otherwise, after approving
+the plan:
 
 ```bash
 python3 "$AGENTSMITH_BOOTSTRAP_DIR/agentsmith.py" update apply \
