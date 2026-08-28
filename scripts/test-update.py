@@ -1272,6 +1272,36 @@ class UpdateCheckTests(unittest.TestCase):
 
         self.assertEqual(translated, str(actual / ".agentsmith" / "agentsmith.py"))
 
+    def test_proposal_mismatch_summary_names_paths_and_fields_without_contents(self) -> None:
+        expected = [{
+            "root": "home",
+            "path": ".agentsmith/state.json",
+            "operation": "replace",
+            "before_sha256": "a" * 64,
+            "before_mode": 0o600,
+            "after_sha256": "b" * 64,
+            "after_mode": 0o600,
+        }]
+        actual = [{**expected[0], "after_sha256": "c" * 64, "after_mode": 0o666}, {
+            "root": "home",
+            "path": ".claude/settings.json",
+            "operation": "create",
+            "before_sha256": None,
+            "before_mode": None,
+            "after_sha256": "d" * 64,
+            "after_mode": 0o600,
+        }]
+
+        summary = runtime.proposal_mismatch_summary(expected, actual)
+
+        self.assertEqual(
+            summary,
+            "changed home:.agentsmith/state.json (after_mode, after_sha256); "
+            "unexpected home:.claude/settings.json",
+        )
+        self.assertNotIn("b" * 64, summary)
+        self.assertNotIn("c" * 64, summary)
+
     def test_statusline_update_is_staged_without_touching_live_installation(self) -> None:
         self.commit_and_tag("0.2.0")
         self.commit_and_tag("0.2.1", statusline_probe="RELEASE_STATUSLINE_PROBE_0_2_1")

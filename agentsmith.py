@@ -2025,6 +2025,28 @@ def proposed_change_manifest(
     return result
 
 
+def proposal_mismatch_summary(expected: list[dict[str, Any]], actual: list[dict[str, Any]]) -> str:
+    """Describe proposal drift without exposing staged file contents or hash values."""
+    expected_by_path = {(item["root"], item["path"]): item for item in expected}
+    actual_by_path = {(item["root"], item["path"]): item for item in actual}
+    details: list[str] = []
+    for identity in sorted(expected_by_path.keys() | actual_by_path.keys()):
+        root_name, relative = identity
+        if identity not in actual_by_path:
+            details.append(f"missing {root_name}:{relative}")
+            continue
+        if identity not in expected_by_path:
+            details.append(f"unexpected {root_name}:{relative}")
+            continue
+        changed = sorted(
+            field for field in expected_by_path[identity]
+            if expected_by_path[identity][field] != actual_by_path[identity].get(field)
+        )
+        if changed:
+            details.append(f"changed {root_name}:{relative} ({', '.join(changed)})")
+    return "; ".join(details) or "proposal ordering differs"
+
+
 def validate_post_update_health(plan: dict[str, Any]) -> None:
     installation = plan["installation"]
     state_root = Path(plan["roots"]["home"] if plan["scope"] == "global" else plan["roots"]["target"])
@@ -2197,7 +2219,10 @@ def cmd_update_apply(args: argparse.Namespace) -> int:
         checkout, proposed = stage_planned_update(plan, temporary_root, execute_candidate=True)
         actual_proposal = proposed_change_manifest(plan, proposed)
         if actual_proposal != plan["proposed_changes"]:
-            raise CliError("Update refused: staged managed changes do not match the authenticated plan")
+            detail = proposal_mismatch_summary(plan["proposed_changes"], actual_proposal)
+            raise CliError(
+                "Update refused: staged managed changes do not match the authenticated plan: " + detail
+            )
         try:
             for root_name, relative, content, mode in proposed:
                 actual = safe_update_path(Path(plan["roots"][root_name]), relative)
