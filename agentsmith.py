@@ -2143,18 +2143,43 @@ def validate_post_update_health(plan: dict[str, Any]) -> None:
                 raise CliError(f"Post-update health check failed: native safety does not match the manifest for {agent_id}")
 
 
-def restore_changes(changes: list[dict[str, Any]], roots: dict[str, str], backup_root: Path) -> None:
+def prepare_restoration(
+    changes: list[dict[str, Any]], roots: dict[str, str], backup_root: Path
+) -> list[tuple[Path, bytes | None, int | None]]:
+    seen: set[tuple[str, str]] = set()
+    prepared: list[tuple[Path, bytes | None, int | None]] = []
     for change in reversed(changes):
+        identity = (change["root"], change["path"])
+        if identity in seen:
+            raise CliError(f"Rollback receipt contains a duplicate change path: {change['root']}:{change['path']}")
+        seen.add(identity)
         path = safe_update_path(Path(roots[change["root"]]), change["path"])
         if change["existed"]:
             backup_path = safe_update_path(backup_root, Path(change["root"]) / change["path"])
-            content = backup_path.read_bytes()
+            if not backup_path.is_file():
+                raise CliError(f"Rollback backup is missing for {change['root']}:{change['path']}")
+            try:
+                content = backup_path.read_bytes()
+            except OSError as exc:
+                raise CliError(f"Cannot read rollback backup for {change['root']}:{change['path']}: {exc}") from exc
             if hashlib.sha256(content).hexdigest() != change["before_sha256"]:
                 raise CliError(f"Rollback backup hash mismatch for {change['root']}:{change['path']}")
-            atomic_write_bytes(path, content, change["before_mode"])
-        elif path.exists():
+            prepared.append((path, content, change["before_mode"]))
+        else:
             if path.is_dir():
                 raise CliError(f"Rollback refused to remove unexpected directory {path}")
+            prepared.append((path, None, None))
+    return prepared
+
+
+def restore_changes(changes: list[dict[str, Any]], roots: dict[str, str], backup_root: Path) -> None:
+    prepared = prepare_restoration(changes, roots, backup_root)
+    for path, content, mode in prepared:
+        if content is not None:
+            if mode is None:
+                raise CliError(f"Rollback restoration mode is missing for {path}")
+            atomic_write_bytes(path, content, mode)
+        elif path.exists():
             path.unlink()
 
 
