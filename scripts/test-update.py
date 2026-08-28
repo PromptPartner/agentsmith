@@ -62,6 +62,7 @@ class UpdateCheckTests(unittest.TestCase):
         broken_doctor: bool = False,
         broken_runtime_health: bool = False,
         candidate_execution_probe: Path | None = None,
+        statusline_probe: str | None = None,
     ) -> None:
         for directory in ("config", "core", "profiles", "scripts", "skills", "templates"):
             destination = self.seed / directory
@@ -94,6 +95,12 @@ class UpdateCheckTests(unittest.TestCase):
                 1,
             )
         (self.seed / "agentsmith.py").write_text(runtime, encoding="utf-8")
+        if statusline_probe is not None:
+            statusline = self.seed / "config" / "statusline.py"
+            statusline.write_text(
+                statusline.read_text(encoding="utf-8") + f"\n# {statusline_probe}\n",
+                encoding="utf-8",
+            )
         identity = (ROOT / "core" / "00-identity.md").read_text(encoding="utf-8")
         identity += f"\nRELEASE_PROBE_{version.replace('.', '_').replace('-', '_')}\n"
         (self.seed / "core" / "00-identity.md").write_text(identity, encoding="utf-8")
@@ -799,13 +806,85 @@ class UpdateCheckTests(unittest.TestCase):
         actual = self.root / "actual"
         content = str(canonical_shadow / ".agentsmith" / "agentsmith.py").encode("utf-8")
 
-        translated = runtime.translate_shadow_paths(
+        translated = runtime.translate_root_paths(
             content,
             {"target": shadow},
             {"target": str(actual)},
         ).decode("utf-8")
 
         self.assertEqual(translated, str(actual / ".agentsmith" / "agentsmith.py"))
+
+    def test_statusline_update_is_staged_without_touching_live_installation(self) -> None:
+        self.commit_and_tag("0.2.0")
+        self.commit_and_tag("0.2.1", statusline_probe="RELEASE_STATUSLINE_PROBE_0_2_1")
+        cloned = subprocess.run(
+            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(cloned.returncode, 0, cloned.stdout + cloned.stderr)
+        target = self.root / "statusline project"
+        target.mkdir()
+        home = self.root / "statusline-home"
+        environment = {
+            **os.environ,
+            "HOME": str(home),
+            "CODEX_HOME": str(self.root / "statusline-codex"),
+        }
+        installed = self.run_core(
+            "install", "--agent", "claude", "--profile", "software-dev", "--target", str(target),
+            env=environment,
+        )
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        helper = home / ".claude" / "agentsmith-statusline.py"
+        self.assertNotIn("RELEASE_STATUSLINE_PROBE_0_2_1", helper.read_text(encoding="utf-8"))
+        watched_roots = (target, home, Path(environment["CODEX_HOME"]))
+        before = {
+            path: (path.read_bytes(), path.stat().st_mode & 0o777)
+            for root in watched_roots
+            if root.exists()
+            for path in root.rglob("*")
+            if path.is_file()
+        }
+        before_backups = {
+            path
+            for root in watched_roots if root.exists()
+            for path in root.rglob("*.bak.*")
+        }
+        plan_path = self.root / "statusline-plan.json"
+
+        planned = self.run_core(
+            "update", "plan", "--target", str(target), "--version", "v0.2.1",
+            "--from", str(self.remote), "--save", str(plan_path), env=environment,
+        )
+
+        self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        after = {
+            path: (path.read_bytes(), path.stat().st_mode & 0o777)
+            for root in watched_roots
+            if root.exists()
+            for path in root.rglob("*")
+            if path.is_file() and path.name != "update-integrity.key"
+        }
+        self.assertEqual(after, before)
+        self.assertEqual({
+            path
+            for root in watched_roots if root.exists()
+            for path in root.rglob("*.bak.*")
+        }, before_backups)
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        helper_change = next(
+            item for item in plan["proposed_changes"]
+            if item["root"] == "home" and item["path"] == ".claude/agentsmith-statusline.py"
+        )
+        self.assertEqual(helper_change["operation"], "replace")
+        self.assertNotIn("RELEASE_STATUSLINE_PROBE_0_2_1", helper.read_text(encoding="utf-8"))
+
+        applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
+
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        self.assertIn("RELEASE_STATUSLINE_PROBE_0_2_1", helper.read_text(encoding="utf-8"))
 
     def test_native_hook_update_points_to_real_runtime_not_discarded_shadow(self) -> None:
         self.commit_and_tag("0.2.0")
