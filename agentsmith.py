@@ -631,6 +631,7 @@ def record_installation_manifest(
     profiles: list[str],
     args: argparse.Namespace,
     recovery: dict[str, str],
+    installed_skill_directories: list[Path],
 ) -> None:
     if args.dry_run:
         return
@@ -663,19 +664,48 @@ def record_installation_manifest(
         if agent_id in {"claude", "codex"}
     }
     state["schema_version"] = 1
-    managed_files: list[dict[str, str]] = []
     managed_root = home_dir() if args.global_mode else target
-    for relative_root in (Path(".agents") / "skills", Path(".claude") / "skills"):
-        skill_root = managed_root / relative_root
-        if not skill_root.is_dir():
+    managed_root_name = "home" if args.global_mode else "target"
+    managed_files_by_path: dict[str, dict[str, str]] = {}
+    prior_managed_files = prior_installation.get("managed_files", []) if isinstance(prior_installation, dict) else []
+    if isinstance(prior_managed_files, list):
+        for item in prior_managed_files:
+            if not isinstance(item, dict) or set(item) != {"root", "path", "sha256"}:
+                continue
+            relative = Path(item["path"]) if isinstance(item["path"], str) else Path()
+            if (
+                item["root"] == managed_root_name
+                and len(relative.parts) >= 4
+                and relative.parts[:2] in {(".agents", "skills"), (".claude", "skills")}
+                and isinstance(item["sha256"], str)
+                and re.fullmatch(r"[0-9a-f]{64}", item["sha256"])
+            ):
+                managed_files_by_path[item["path"]] = dict(item)
+    for skill_directory in installed_skill_directories:
+        try:
+            relative_directory = skill_directory.relative_to(managed_root)
+        except ValueError as exc:
+            raise CliError(f"Installed skill directory is outside its managed root: {skill_directory}") from exc
+        if (
+            len(relative_directory.parts) != 3
+            or relative_directory.parts[:2] not in {(".agents", "skills"), (".claude", "skills")}
+        ):
+            raise CliError(f"Installed skill directory is outside a managed skill surface: {skill_directory}")
+        prefix = relative_directory.as_posix() + "/"
+        managed_files_by_path = {
+            path: item for path, item in managed_files_by_path.items() if not path.startswith(prefix)
+        }
+        if not skill_directory.is_dir():
             continue
-        for path in sorted(skill_root.rglob("*")):
+        for path in sorted(skill_directory.rglob("*")):
             if path.is_file():
-                managed_files.append({
-                    "root": "home" if args.global_mode else "target",
-                    "path": path.relative_to(managed_root).as_posix(),
+                relative_path = path.relative_to(managed_root).as_posix()
+                managed_files_by_path[relative_path] = {
+                    "root": managed_root_name,
+                    "path": relative_path,
                     "sha256": file_sha256(path),
-                })
+                }
+    managed_files = [managed_files_by_path[path] for path in sorted(managed_files_by_path)]
     state["installation"] = {
         "installed_version": VERSION,
         "source": source,
@@ -809,9 +839,10 @@ def reconcile_codex_toml(path: Path, safety: str | None, mcp: dict[str, Any], *,
             tomllib.load(handle)
 
 
-def install_skills(target: Path, agents: list[str], *, force: bool, dry_run: bool) -> None:
+def install_skills(target: Path, agents: list[str], *, force: bool, dry_run: bool) -> list[Path]:
     canonical = target / ".agents" / "skills"
     destinations = [canonical]
+    installed_directories: list[Path] = []
     if "claude" in agents:
         destinations.append(target / ".claude" / "skills")
     for destination in destinations:
@@ -828,7 +859,9 @@ def install_skills(target: Path, agents: list[str], *, force: bool, dry_run: boo
             if dest.exists():
                 shutil.rmtree(dest)
             shutil.copytree(source, dest)
+            installed_directories.append(dest)
         ok(f"skills installed into {destination}")
+    return installed_directories
 
 
 def install_adapters(target: Path, agents: list[str], *, dry_run: bool) -> None:
@@ -2607,18 +2640,38 @@ def remove_owned_hooks(path: Path, *, dry_run: bool) -> None:
         path.unlink()
 
 
-def remove_owned_skills(target: Path, agents: list[str], *, dry_run: bool) -> None:
+def remove_owned_skills(
+    target: Path, agents: list[str], ownership: dict[str, Any], *, dry_run: bool
+) -> None:
     destinations = [target / ".agents" / "skills"]
     if "claude" in agents:
         destinations.append(target / ".claude" / "skills")
+    installation = ownership.get("installation", {})
+    inventory = installation.get("managed_files", []) if isinstance(installation, dict) else []
+    inventory = inventory if isinstance(inventory, list) else []
+    expected_root = "home" if isinstance(installation, dict) and installation.get("scope") == "global" else "target"
     for destination in destinations:
         for source in sorted((ROOT / "skills").iterdir()):
             installed = destination / source.name
             if not source.is_dir() or not installed.is_dir():
                 continue
-            source_files = {p.relative_to(source): p.read_bytes() for p in source.rglob("*") if p.is_file()}
-            installed_files = {p.relative_to(installed): p.read_bytes() for p in installed.rglob("*") if p.is_file()}
-            if source_files != installed_files:
+            prefix = installed.relative_to(target).as_posix() + "/"
+            recorded = {
+                item["path"][len(prefix):]: item["sha256"]
+                for item in inventory
+                if isinstance(item, dict)
+                and item.get("root") == expected_root
+                and isinstance(item.get("path"), str)
+                and item["path"].startswith(prefix)
+                and isinstance(item.get("sha256"), str)
+            }
+            if not recorded:
+                continue
+            installed_files = {
+                path.relative_to(installed).as_posix(): file_sha256(path)
+                for path in installed.rglob("*") if path.is_file()
+            }
+            if recorded != installed_files:
                 warn(f"modified skill preserved during uninstall: {installed}")
                 continue
             if dry_run:
@@ -2698,7 +2751,9 @@ def uninstall(args: argparse.Namespace, agents: list[str], target: Path) -> int:
                         if data: atomic_write(settings, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
                         else: settings.unlink()
     if ownership.get("skills_installed"):
-        remove_owned_skills(home_dir() if args.global_mode else target, agents, dry_run=args.dry_run)
+        remove_owned_skills(
+            home_dir() if args.global_mode else target, agents, ownership, dry_run=args.dry_run
+        )
     ok("uninstall removed only Agentsmith-owned instruction/config blocks; scaffolding was retained")
     return 0
 
@@ -2790,12 +2845,15 @@ def cmd_install(args: argparse.Namespace) -> int:
         scaffold_design_system(target, args.design_system, dry_run=args.dry_run)
     install_native_config(target, agents, args)
     install_claude_plugin_packs(agents, args.with_plugins, dry_run=args.dry_run)
+    installed_skill_directories: list[Path] = []
     if args.with_skills:
         skill_root = home_dir() if args.global_mode else target
-        install_skills(skill_root, agents, force=args.force, dry_run=args.dry_run)
+        installed_skill_directories = install_skills(
+            skill_root, agents, force=args.force, dry_run=args.dry_run
+        )
         record_state(skill_root, "skills_installed", True, dry_run=args.dry_run)
     install_hooks(target, agents, args)
-    record_installation_manifest(target, agents, profiles, args, recovery)
+    record_installation_manifest(target, agents, profiles, args, recovery, installed_skill_directories)
     ok(f"installed for {', '.join(agents)}; canonical project instructions: AGENTS.md")
     return 0
 

@@ -143,6 +143,8 @@ API-key-authenticated Codex sessions fail closed.
 `--with-skills` installs the canonical pack under `.agents/skills`. Claude additionally gets the
 `.claude/skills` adapter its runtime requires. Skills declare compatibility in frontmatter and do
 not infer runtime identity from their installation path.
+An existing same-name skill remains foreign and is neither overwritten nor added to AgentSmith's
+managed inventory; only an explicit `--force` replacement transfers ownership.
 
 `--with-mcp playwright,context7` manages project MCP only for clients with a supported native adapter.
 Foreign JSON/TOML content is preserved; manually owned Codex MCP names win over a managed copy.

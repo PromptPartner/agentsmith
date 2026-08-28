@@ -784,7 +784,25 @@ class UpdateCheckTests(unittest.TestCase):
         )
         self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
         customized = target / ".agents" / "skills" / "example-skill" / "SKILL.md"
+        state_path = target / ".agentsmith" / "state.json"
+        original_inventory = json.loads(state_path.read_text(encoding="utf-8"))["installation"]["managed_files"]
+        original_baseline = next(
+            item["sha256"] for item in original_inventory
+            if item["path"] == ".agents/skills/example-skill/SKILL.md"
+        )
         customized.write_text(customized.read_text(encoding="utf-8") + "\nLOCAL CUSTOMIZATION\n", encoding="utf-8")
+        rerun = self.run_core(
+            "install", "--agent", "codex", "--profile", "software-dev", "--target", str(target),
+            env=environment,
+        )
+        self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+        rerun_inventory = json.loads(state_path.read_text(encoding="utf-8"))["installation"]["managed_files"]
+        rerun_baseline = next(
+            item["sha256"] for item in rerun_inventory
+            if item["path"] == ".agents/skills/example-skill/SKILL.md"
+        )
+        self.assertEqual(rerun_baseline, original_baseline)
+        self.assertNotEqual(rerun_baseline, hashlib.sha256(customized.read_bytes()).hexdigest())
         plan_path = self.root / "skills-plan.json"
         planned = self.run_core(
             "update", "plan", "--target", str(target), "--version", "v0.2.1",
@@ -798,6 +816,98 @@ class UpdateCheckTests(unittest.TestCase):
         handoff = target / ".agents" / "skills" / "handoff" / "SKILL.md"
         self.assertIn("RELEASE_SKILL_PROBE_0_2_1", handoff.read_text(encoding="utf-8"))
         self.assertIn("LOCAL CUSTOMIZATION", customized.read_text(encoding="utf-8"))
+
+    def test_colliding_skills_remain_foreign_until_force_replaces_them(self) -> None:
+        self.commit_and_tag("0.2.0")
+        self.commit_and_tag("0.2.1")
+        cloned = subprocess.run(
+            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(cloned.returncode, 0, cloned.stdout + cloned.stderr)
+        target = self.root / "colliding-skills-project"
+        target.mkdir()
+        environment = {
+            **os.environ,
+            "HOME": str(self.root / "colliding-skills-home"),
+            "CODEX_HOME": str(self.root / "colliding-skills-codex"),
+        }
+        collisions = [
+            target / ".agents" / "skills" / "handoff" / "SKILL.md",
+            target / ".claude" / "skills" / "handoff" / "SKILL.md",
+        ]
+        for index, path in enumerate(collisions):
+            path.parent.mkdir(parents=True)
+            if index == 0:
+                path.write_bytes((ROOT / "skills" / "handoff" / "SKILL.md").read_bytes())
+            else:
+                path.write_text(f"FOREIGN COLLISION {index}\n", encoding="utf-8")
+        before = {path: path.read_bytes() for path in collisions}
+
+        installed = self.run_core(
+            "install", "--agent", "claude", "--profile", "software-dev", "--target", str(target),
+            "--with-skills", env=environment,
+        )
+
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        self.assertEqual({path: path.read_bytes() for path in collisions}, before)
+        state_path = target / ".agentsmith" / "state.json"
+        inventory_paths = {
+            item["path"]
+            for item in json.loads(state_path.read_text(encoding="utf-8"))["installation"]["managed_files"]
+        }
+        self.assertFalse(any(path.endswith("/handoff/SKILL.md") for path in inventory_paths))
+        plan_path = self.root / "colliding-skills-plan.json"
+        planned = self.run_core(
+            "update", "plan", "--target", str(target), "--version", "v0.2.1",
+            "--from", str(self.remote), "--save", str(plan_path), env=environment,
+        )
+        self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        self.assertFalse(any("/handoff/" in f"/{item['path']}/" for item in plan["proposed_changes"]))
+
+        applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
+
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        self.assertEqual({path: path.read_bytes() for path in collisions}, before)
+        updated_inventory = {
+            item["path"]
+            for item in json.loads(state_path.read_text(encoding="utf-8"))["installation"]["managed_files"]
+        }
+        self.assertFalse(any(path.endswith("/handoff/SKILL.md") for path in updated_inventory))
+        uninstalled = self.run_core(
+            "install", "--agent", "claude", "--target", str(target), "--uninstall", env=environment,
+        )
+        self.assertEqual(uninstalled.returncode, 0, uninstalled.stdout + uninstalled.stderr)
+        self.assertTrue(all(path.is_file() for path in collisions))
+        self.assertEqual({path: path.read_bytes() for path in collisions}, before)
+
+        force_target = self.root / "forced-colliding-skills-project"
+        force_target.mkdir()
+        forced_collisions = [
+            force_target / ".agents" / "skills" / "handoff" / "SKILL.md",
+            force_target / ".claude" / "skills" / "handoff" / "SKILL.md",
+        ]
+        for path in forced_collisions:
+            path.parent.mkdir(parents=True)
+            path.write_text("FOREIGN BEFORE FORCE\n", encoding="utf-8")
+        forced = self.run_core(
+            "install", "--agent", "claude", "--profile", "software-dev", "--target", str(force_target),
+            "--with-skills", "--force", env=environment,
+        )
+        self.assertEqual(forced.returncode, 0, forced.stdout + forced.stderr)
+        self.assertTrue(all(b"FOREIGN BEFORE FORCE" not in path.read_bytes() for path in forced_collisions))
+        forced_inventory = {
+            item["path"]
+            for item in json.loads(
+                (force_target / ".agentsmith" / "state.json").read_text(encoding="utf-8")
+            )["installation"]["managed_files"]
+        }
+        self.assertTrue(all(
+            path.relative_to(force_target).as_posix() in forced_inventory for path in forced_collisions
+        ))
 
     def test_project_mcp_is_authenticated_updated_and_rolled_back_with_foreign_servers(self) -> None:
         self.commit_and_tag("0.2.0")
