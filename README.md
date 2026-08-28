@@ -87,6 +87,10 @@ python3 agentsmith.py compatibility
 python3 agentsmith.py doctor --agent all --target /path/to/project
 python3 agentsmith.py evaluate --agent native --dry-run --claude-max-usd 10 --codex-max-tokens 100000
 
+agentsmith update check --json
+agentsmith update plan --target /path/to/project --save /tmp/agentsmith-update.json
+agentsmith update apply --plan /tmp/agentsmith-update.json
+
 ./setup.sh --agent all --profile auto --dry-run --target /path/to/project
 ./setup.sh --agent all --uninstall --target /path/to/project
 ```
@@ -98,6 +102,29 @@ combined/duplicate token estimates. It separately inspects actual safety, skills
 scanner commands, and installed runtime ownership. Duplicate full cores are warnings, not automatic
 rewrites; use the reported `--profile-only` recommendation only when a self-contained project copy
 is not required. Fixture evidence is never presented as a live-client claim.
+
+Updates select stable semantic-version tags from the official repository by default. `check` and
+`plan` do not change the installation. Planning stages the release in temporary directories and
+records the exact managed create/replace paths, hashes, and file modes. It uses the current trusted
+installer logic and treats candidate release files as data; candidate code does not run during
+planning. `apply --plan` is the approval boundary: it rechecks every planned fingerprint, runs the
+candidate installer in temporary directories, requires the exact staged set, writes
+managed changes atomically, runs strict health checks, and prints the path to a local rollback receipt. Use
+`agentsmith update rollback --receipt FILE` to restore the exact pre-update bytes. Pass `--global`
+instead of `--target` for the separate global scope. An explicit `--from` may select a fork or local
+test remote; a moving development branch is never selected implicitly. The first plan creates a
+machine-local authentication key at `~/.agentsmith/update-integrity.key`. Plans and receipts are
+bound to that key, so an edited or copied document cannot silently authorize different changes.
+Staged updates retain an installation's `--assemble-only` choice, so they do not introduce native
+permission settings or status-line helpers that the original install intentionally omitted.
+Selected project MCP configuration is fingerprinted and updated with the same approval and rollback
+boundary; MCP servers and settings that AgentSmith does not own remain intact.
+
+`agentsmith update configure --auto-check weekly` opts into short, opportunistic checks at command
+startup. They report availability only and never block the requested command when offline.
+Automatic installation is not supported; use `--auto-check off` to disable the checks. The old
+`install --self-update` flag remains temporarily for clean Git checkouts only. It fast-forwards the
+current checkout and cannot provide release selection, installation fingerprints, or rollback.
 
 `agentsmith evaluate` runs nine behavioral scenarios for installed Claude Code and Codex clients.
 The default is a write-free dry run that resolves clients, commands, isolation, scenarios, and
@@ -116,8 +143,10 @@ API-key-authenticated Codex sessions fail closed.
 `--with-skills` installs the canonical pack under `.agents/skills`. Claude additionally gets the
 `.claude/skills` adapter its runtime requires. Skills declare compatibility in frontmatter and do
 not infer runtime identity from their installation path.
+An existing same-name skill remains foreign and is neither overwritten nor added to AgentSmith's
+managed inventory; only an explicit `--force` replacement transfers ownership.
 
-`--with-mcp playwright,context7` manages MCP only for clients with a supported native adapter.
+`--with-mcp playwright,context7` manages project MCP only for clients with a supported native adapter.
 Foreign JSON/TOML content is preserved; manually owned Codex MCP names win over a managed copy.
 
 `--with-handoff-hooks`, `--with-ui-design-hook`, and `--with-hooks` install Python commands rather
