@@ -115,6 +115,8 @@ instead of `--target` for the separate global scope. An explicit `--from` may se
 test remote; a moving development branch is never selected implicitly. The first plan creates a
 machine-local authentication key at `~/.agentsmith/update-integrity.key`. Plans and receipts are
 bound to that key, so an edited or copied document cannot silently authorize different changes.
+Staged updates retain an installation's `--assemble-only` choice, so they do not introduce native
+permission settings or status-line helpers that the original install intentionally omitted.
 
 `agentsmith update configure --auto-check weekly` opts into short, opportunistic checks at command
 startup. They report availability only and never block the requested command when offline.

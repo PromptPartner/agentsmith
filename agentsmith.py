@@ -657,7 +657,7 @@ def record_installation_manifest(
         name for name in [*prior_mcp, *requested_mcp]
         if isinstance(name, str) and name in available_mcp
     ))
-    safety = {
+    safety = {} if args.assemble_only else {
         agent_id: args.safety
         for agent_id in agents
         if agent_id in {"claude", "codex"}
@@ -683,6 +683,7 @@ def record_installation_manifest(
         "agents": agents,
         "profiles": profiles,
         "include_core": not args.profile_only,
+        "assemble_only": bool(args.assemble_only),
         "safety": safety,
         "operator": {
             "name": args.operator_name or recovery.get("operator_name") or "the project lead",
@@ -1264,11 +1265,18 @@ def validate_installation_manifest(state: dict[str, Any]) -> dict[str, Any]:
         raise CliError("Installation state has no manifest; rerun install with explicit choices before planning an update")
     allowed_installation = {
         "installed_version", "source", "scope", "agents", "profiles", "include_core",
-        "safety", "operator", "tracker", "capabilities", "managed_files",
+        "assemble_only", "safety", "operator", "tracker", "capabilities", "managed_files",
     }
     unknown_installation = sorted(set(installation) - allowed_installation)
     if unknown_installation:
         raise CliError(f"Installation manifest has unknown field(s): {', '.join(unknown_installation)}")
+    if "assemble_only" not in installation:
+        raise CliError(
+            "Installation manifest does not record the --assemble-only choice; rerun install with "
+            "the intended choice (include --assemble-only to keep native configuration disabled)"
+        )
+    if not isinstance(installation["assemble_only"], bool):
+        raise CliError("Installation manifest assemble_only field must be true or false; rerun install explicitly")
     required = allowed_installation
     missing = sorted(required - set(installation))
     if missing:
@@ -1329,14 +1337,24 @@ def reconstruct_pre_manifest_installation(target: Path, scope: str, state: dict[
     agents = list(dict.fromkeys(agents))
     if not agents:
         raise CliError("Pre-manifest agent selection cannot be inferred; rerun install with explicit --agent choices")
-    safety: dict[str, str] = {}
-    for agent_id in agents:
-        if agent_id not in {"claude", "codex"}:
-            continue
-        value = native_safety.get(agent_id)
-        if value not in {"cautious", "trusted"}:
-            raise CliError(f"Pre-manifest safety for {agent_id} cannot be inferred; rerun install with explicit --safety")
-        safety[agent_id] = value
+    native_agents = [agent_id for agent_id in agents if agent_id in {"claude", "codex"}]
+    native_evidence = [native_safety.get(agent_id) for agent_id in native_agents]
+    if native_agents and all(agent_id not in native_safety for agent_id in native_agents):
+        assemble_only = True
+        safety: dict[str, str] = {}
+    elif native_agents and all(
+        agent_id in native_safety and value in {"cautious", "trusted"}
+        for agent_id, value in zip(native_agents, native_evidence, strict=True)
+    ):
+        assemble_only = False
+        safety = dict(zip(native_agents, native_evidence, strict=True))
+    elif native_agents:
+        raise CliError(
+            "Pre-manifest --assemble-only state is mixed or ambiguous; rerun install with explicit choices"
+        )
+    else:
+        assemble_only = False
+        safety = {}
     recovery = recover_identity(managed_instructions)
     runtime = target / ".agentsmith" / "agentsmith.py" if scope == "project" else Path(__file__).resolve()
     installed_version = VERSION
@@ -1359,6 +1377,7 @@ def reconstruct_pre_manifest_installation(target: Path, scope: str, state: dict[
         "agents": agents,
         "profiles": list(profiles),
         "include_core": include_core,
+        "assemble_only": assemble_only,
         "safety": safety,
         "operator": {
             "name": recovery.get("operator_name", "the project lead"),
@@ -1764,6 +1783,8 @@ def install_arguments_from_manifest(plan: dict[str, Any], shadow_target: Path) -
         arguments += ["--profile", profile]
     if not installation["include_core"]:
         arguments.append("--profile-only")
+    if installation["assemble_only"]:
+        arguments.append("--assemble-only")
     safety_values = set(installation["safety"].values())
     if len(safety_values) > 1:
         raise CliError("Update cannot reproduce mixed native safety settings; reinstall each scope explicitly")
@@ -1970,7 +1991,10 @@ def validate_post_update_health(plan: dict[str, Any]) -> None:
     installation = plan["installation"]
     state_root = Path(plan["roots"]["home"] if plan["scope"] == "global" else plan["roots"]["target"])
     installed = validate_installation_manifest(load_update_state(state_root))
-    for field in ("scope", "agents", "profiles", "include_core", "safety", "operator", "tracker", "capabilities"):
+    for field in (
+        "scope", "agents", "profiles", "include_core", "assemble_only", "safety", "operator", "tracker",
+        "capabilities",
+    ):
         if installed.get(field) != installation.get(field):
             raise CliError(f"Post-update health check failed: installation manifest changed {field}")
     if installed.get("installed_version") != plan["release"]["version"]:
@@ -2075,9 +2099,10 @@ def validate_post_update_health(plan: dict[str, Any]) -> None:
         if str(runtime) not in text or "hook git-pre-commit" not in text:
             raise CliError("Post-update health check failed: managed Git pre-commit hook is missing or stale")
 
-    for agent_id, expected_safety in installation["safety"].items():
-        if inspect_safety(agent_id)["state"] != expected_safety:
-            raise CliError(f"Post-update health check failed: native safety does not match the manifest for {agent_id}")
+    if not installation["assemble_only"]:
+        for agent_id, expected_safety in installation["safety"].items():
+            if inspect_safety(agent_id)["state"] != expected_safety:
+                raise CliError(f"Post-update health check failed: native safety does not match the manifest for {agent_id}")
 
 
 def restore_changes(changes: list[dict[str, Any]], roots: dict[str, str], backup_root: Path) -> None:
