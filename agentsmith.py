@@ -1292,7 +1292,7 @@ def validate_installation_manifest(state: dict[str, Any]) -> dict[str, Any]:
     if unknown_state:
         raise CliError(f"Installation state has unknown field(s): {', '.join(unknown_state)}")
     if state.get("schema_version") != 1:
-        raise CliError("Installation state has no supported schema; rerun install with explicit choices before planning an update")
+        raise CliError("Installation state has an unsupported schema; rerun install with explicit choices before planning an update")
     installation = state.get("installation")
     if not isinstance(installation, dict):
         raise CliError("Installation state has no manifest; rerun install with explicit choices before planning an update")
@@ -1580,7 +1580,7 @@ def cmd_update_plan(args: argparse.Namespace) -> int:
     state = load_update_state(target)
     expected_scope = "global" if args.global_mode else "project"
     migration_warnings: list[str] = []
-    if state.get("schema_version") == 1 and isinstance(state.get("installation"), dict):
+    if "schema_version" in state or "installation" in state:
         installation = validate_installation_manifest(state)
     else:
         installation = reconstruct_pre_manifest_installation(target, expected_scope, state)
