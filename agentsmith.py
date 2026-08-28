@@ -1887,6 +1887,47 @@ def translate_root_paths(
     return text.encode("utf-8")
 
 
+def refresh_translated_statusline_hashes(
+    plan: dict[str, Any], translated_files: dict[str, dict[str, tuple[bytes, int]]]
+) -> None:
+    """Make statusline ownership hashes describe final, path-translated file bytes."""
+    home_files = translated_files.get("home", {})
+    state_entry = home_files.get(".agentsmith/state.json")
+    if state_entry is None:
+        return
+    content, mode = state_entry
+    try:
+        state = json.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CliError("Staged home state is not valid UTF-8 JSON") from exc
+    ownership = state.get("native_statuslines", {}) if isinstance(state, dict) else {}
+    claude = ownership.get("claude", {}) if isinstance(ownership, dict) else {}
+    recorded_files = claude.get("files", {}) if isinstance(claude, dict) else {}
+    if not isinstance(recorded_files, dict):
+        return
+    home_root = Path(plan["roots"]["home"])
+    changed = False
+    for raw_path, recorded_hash in list(recorded_files.items()):
+        if not isinstance(raw_path, str) or not isinstance(recorded_hash, str):
+            continue
+        try:
+            relative = Path(raw_path).relative_to(home_root).as_posix()
+        except ValueError:
+            continue
+        translated = home_files.get(relative)
+        if translated is None:
+            continue
+        final_hash = hashlib.sha256(translated[0]).hexdigest()
+        if final_hash != recorded_hash:
+            recorded_files[raw_path] = final_hash
+            changed = True
+    if changed:
+        home_files[".agentsmith/state.json"] = (
+            (json.dumps(state, indent=2, ensure_ascii=False) + "\n").encode("utf-8"),
+            mode,
+        )
+
+
 def allowed_update_path(root_name: str, relative: str, installation: dict[str, Any]) -> bool:
     path = Path(relative)
     if ".." in path.parts or path.is_absolute():
@@ -1988,12 +2029,20 @@ def stage_planned_update(
     else:
         trusted_stage_install(checkout, plan["release"]["version"], install_arguments, shadow_env)
     retain_customized_skill_baselines(plan, shadow_roots, preserved_skills)
-    proposed: list[tuple[str, str, bytes, int]] = []
+    translated_files: dict[str, dict[str, tuple[bytes, int]]] = {}
     for root_name, shadow_root in shadow_roots.items():
+        translated_files[root_name] = {}
         for relative, (content, mode) in shadow_files(shadow_root).items():
             if not allowed_update_path(root_name, relative, plan["installation"]):
                 raise CliError(f"Release attempted an update outside the managed surface: {root_name}:{relative}")
-            content = translate_root_paths(content, shadow_roots, plan["roots"])
+            translated_files[root_name][relative] = (
+                translate_root_paths(content, shadow_roots, plan["roots"]),
+                mode,
+            )
+    refresh_translated_statusline_hashes(plan, translated_files)
+    proposed: list[tuple[str, str, bytes, int]] = []
+    for root_name, files in translated_files.items():
+        for relative, (content, mode) in files.items():
             actual = safe_update_path(Path(plan["roots"][root_name]), relative)
             if actual.exists() and not actual.is_file():
                 raise CliError(f"Update refused to replace non-file path {actual}")
