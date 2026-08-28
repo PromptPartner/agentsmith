@@ -799,6 +799,102 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertIn("RELEASE_SKILL_PROBE_0_2_1", handoff.read_text(encoding="utf-8"))
         self.assertIn("LOCAL CUSTOMIZATION", customized.read_text(encoding="utf-8"))
 
+    def test_project_mcp_is_authenticated_updated_and_rolled_back_with_foreign_servers(self) -> None:
+        self.commit_and_tag("0.2.0")
+        self.commit_and_tag("0.2.1")
+        cloned = subprocess.run(
+            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(cloned.returncode, 0, cloned.stdout + cloned.stderr)
+        for agent_id in ("claude", "codex"):
+            with self.subTest(agent=agent_id):
+                target = self.root / f"{agent_id}-mcp-project"
+                target.mkdir()
+                environment = {
+                    **os.environ,
+                    "HOME": str(self.root / f"{agent_id}-mcp-home"),
+                    "CODEX_HOME": str(self.root / f"{agent_id}-mcp-codex-home"),
+                }
+                installed = self.run_core(
+                    "install", "--agent", agent_id, "--profile", "software-dev", "--target", str(target),
+                    "--with-mcp", "context7", env=environment,
+                )
+                self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+                if agent_id == "claude":
+                    mcp_path = target / ".mcp.json"
+                    foreign = {
+                        "mcpServers": {"foreign": {"command": "foreign", "args": ["--keep"]}},
+                        "foreignTopLevel": {"keep": True},
+                    }
+                    mcp_path.write_text(json.dumps(foreign, indent=2) + "\n", encoding="utf-8")
+                else:
+                    mcp_path = target / ".codex" / "config.toml"
+                    mcp_path.write_text(
+                        'foreign_setting = "keep"\n\n[mcp_servers.foreign]\n'
+                        'command = "foreign"\nargs = ["--keep"]\n',
+                        encoding="utf-8",
+                    )
+                before = mcp_path.read_bytes()
+                plan_path = self.root / f"{agent_id}-mcp-plan.json"
+
+                planned = self.run_core(
+                    "update", "plan", "--target", str(target), "--version", "v0.2.1",
+                    "--from", str(self.remote), "--save", str(plan_path), env=environment,
+                )
+
+                self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+                plan = json.loads(plan_path.read_text(encoding="utf-8"))
+                relative = ".mcp.json" if agent_id == "claude" else ".codex/config.toml"
+                fingerprint = next(
+                    item for item in plan["fingerprints"]
+                    if item["root"] == "target" and item["path"] == relative
+                )
+                self.assertEqual(fingerprint["sha256"], hashlib.sha256(before).hexdigest())
+                self.assertTrue(any(
+                    item["root"] == "target" and item["path"] == relative
+                    for item in plan["proposed_changes"]
+                ))
+
+                applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
+
+                self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+                inspected = runtime.inspect_mcp(
+                    agent_id,
+                    {"skills_tools": {"mcp": {"client_support": "native"}}},
+                    target,
+                )
+                self.assertEqual(inspected["managed_names"], ["context7"])
+                self.assertEqual(inspected["foreign_names"], ["foreign"])
+                if agent_id == "claude":
+                    updated = json.loads(mcp_path.read_text(encoding="utf-8"))
+                    self.assertEqual(updated["foreignTopLevel"], {"keep": True})
+                    self.assertEqual(
+                        updated["mcpServers"]["foreign"],
+                        {"command": "foreign", "args": ["--keep"]},
+                    )
+                else:
+                    import tomllib
+                    updated = tomllib.loads(mcp_path.read_text(encoding="utf-8"))
+                    self.assertEqual(updated["foreign_setting"], "keep")
+                    self.assertEqual(
+                        updated["mcp_servers"]["foreign"],
+                        {"command": "foreign", "args": ["--keep"]},
+                    )
+                receipt_line = next(line for line in applied.stdout.splitlines() if "rollback receipt:" in line)
+                receipt_path = Path(receipt_line.split("rollback receipt:", 1)[1].strip())
+                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                self.assertTrue(any(item["root"] == "target" and item["path"] == relative for item in receipt["changes"]))
+
+                rolled_back = self.run_core(
+                    "update", "rollback", "--receipt", str(receipt_path), env=environment,
+                )
+
+                self.assertEqual(rolled_back.returncode, 0, rolled_back.stdout + rolled_back.stderr)
+                self.assertEqual(mcp_path.read_bytes(), before)
+
     def test_weekly_check_reports_only_and_offline_failure_does_not_block_command(self) -> None:
         home = self.root / "weekly-home"
         codex_home = self.root / "weekly-codex"

@@ -117,6 +117,8 @@ machine-local authentication key at `~/.agentsmith/update-integrity.key`. Plans 
 bound to that key, so an edited or copied document cannot silently authorize different changes.
 Staged updates retain an installation's `--assemble-only` choice, so they do not introduce native
 permission settings or status-line helpers that the original install intentionally omitted.
+Selected project MCP configuration is fingerprinted and updated with the same approval and rollback
+boundary; MCP servers and settings that AgentSmith does not own remain intact.
 
 `agentsmith update configure --auto-check weekly` opts into short, opportunistic checks at command
 startup. They report availability only and never block the requested command when offline.
