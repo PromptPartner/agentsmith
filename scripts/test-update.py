@@ -801,6 +801,34 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertNotEqual(malformed.returncode, 0)
         self.assertIn("must be true or false", malformed.stderr)
 
+    def test_plan_rejects_future_state_schema_instead_of_reconstructing_it(self) -> None:
+        target = self.root / "future-schema-project"
+        target.mkdir()
+        environment = {
+            **os.environ,
+            "HOME": str(self.root / "future-schema-home"),
+            "CODEX_HOME": str(self.root / "future-schema-codex"),
+        }
+        installed = self.run_core(
+            "install", "--agent", "codex", "--profile", "software-dev", "--target", str(target),
+            env=environment,
+        )
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        state_path = target / ".agentsmith" / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["schema_version"] = 2
+        state_path.write_text(json.dumps(state) + "\n", encoding="utf-8")
+
+        planned = self.run_core(
+            "update", "plan", "--target", str(target), "--from", str(self.root / "must-not-be-read.git"),
+            env=environment,
+        )
+
+        self.assertNotEqual(planned.returncode, 0)
+        self.assertIn("unsupported schema", planned.stderr)
+        self.assertNotIn("Update check failed", planned.stderr)
+        self.assertEqual(json.loads(state_path.read_text(encoding="utf-8"))["schema_version"], 2)
+
     def test_global_update_is_scoped_and_rolls_back_managed_home_files(self) -> None:
         self.commit_and_tag("0.2.0")
         self.commit_and_tag("0.2.1")
