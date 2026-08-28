@@ -1332,6 +1332,14 @@ class UpdateCheckTests(unittest.TestCase):
         recorded = rendered["native_statuslines"]["claude"]["files"][str(wrapper_path)]
         self.assertEqual(recorded, hashlib.sha256(after).hexdigest())
 
+    def test_doctor_tilde_paths_use_the_runtime_home_override(self) -> None:
+        isolated_home = self.root / "doctor-runtime-home"
+
+        with mock.patch.object(runtime, "home_dir", return_value=isolated_home):
+            resolved = runtime.resolve_doctor_path("~/.claude/CLAUDE.md")
+
+        self.assertEqual(resolved, (isolated_home / ".claude" / "CLAUDE.md").resolve())
+
     def test_statusline_update_is_staged_without_touching_live_installation(self) -> None:
         self.commit_and_tag("0.2.0")
         self.commit_and_tag("0.2.1", statusline_probe="RELEASE_STATUSLINE_PROBE_0_2_1")

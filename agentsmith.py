@@ -3039,8 +3039,21 @@ def doctor_project_root(target: Path) -> Path:
 
 
 def resolve_doctor_path(value: str, base: Path | None = None) -> Path:
-    rendered = value.replace("$CODEX_HOME", str(codex_home())).replace("${CODEX_HOME}", str(codex_home()))
-    path = Path(rendered).expanduser()
+    runtime_home = home_dir()
+    rendered = value
+    for marker, destination in (
+        ("${CODEX_HOME}", codex_home()),
+        ("$CODEX_HOME", codex_home()),
+        ("${HOME}", runtime_home),
+        ("$HOME", runtime_home),
+    ):
+        rendered = rendered.replace(marker, str(destination))
+    if rendered == "~":
+        path = runtime_home
+    elif rendered.startswith(("~/", "~\\")):
+        path = runtime_home / rendered[2:]
+    else:
+        path = Path(rendered).expanduser()
     return path.resolve() if path.is_absolute() else ((base or Path.cwd()) / path).resolve()
 
 
