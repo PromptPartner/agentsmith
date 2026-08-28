@@ -1302,6 +1302,36 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertNotIn("b" * 64, summary)
         self.assertNotIn("c" * 64, summary)
 
+    def test_translated_statusline_hash_tracks_the_translated_wrapper_bytes(self) -> None:
+        home = self.root / "translated-home"
+        wrapper_path = home / ".claude" / "agentsmith-statusline.ps1"
+        before = b"shadow-specific wrapper\n"
+        after = b"live-path wrapper\n"
+        state = {
+            "native_statuslines": {
+                "claude": {
+                    "files": {str(wrapper_path): hashlib.sha256(before).hexdigest()},
+                },
+            },
+        }
+        translated = {
+            "home": {
+                ".agentsmith/state.json": (
+                    (json.dumps(state, indent=2, ensure_ascii=False) + "\n").encode("utf-8"),
+                    0o600,
+                ),
+                ".claude/agentsmith-statusline.ps1": (after, 0o600),
+            },
+        }
+
+        runtime.refresh_translated_statusline_hashes(
+            {"roots": {"home": str(home)}}, translated
+        )
+
+        rendered = json.loads(translated["home"][".agentsmith/state.json"][0])
+        recorded = rendered["native_statuslines"]["claude"]["files"][str(wrapper_path)]
+        self.assertEqual(recorded, hashlib.sha256(after).hexdigest())
+
     def test_statusline_update_is_staged_without_touching_live_installation(self) -> None:
         self.commit_and_tag("0.2.0")
         self.commit_and_tag("0.2.1", statusline_probe="RELEASE_STATUSLINE_PROBE_0_2_1")
