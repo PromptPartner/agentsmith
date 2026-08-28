@@ -5,7 +5,7 @@
 > specific, and traceable to the incident. Never delete this; archive if obsolete (R9).
 
 - **Date:** 2026-08-28
-- **Status:** open   <!-- open | applied | wont-fix -->
+- **Status:** applied   <!-- open | applied | wont-fix -->
 - **Cost:** A real legacy Claude-only upgrade reported success while silently omitting installed
   skills and MCP capabilities. The operator had to compare `doctor` with the saved plan to catch
   the near-miss before relying on the updated harness.
@@ -59,9 +59,8 @@ installer and doctor:
 
 ## 5. Non-regression validation
 
-Implemented locally; status remains `open` until the cross-platform release gate runs. The new
-fixtures cover a pre-manifest Claude-only global install containing only `.claude/skills` plus a
-`~/.claude.json` `mcpServers` object and no `.agents` directory. They prove:
+The new fixtures cover a pre-manifest Claude-only global install containing only `.claude/skills`
+plus a `~/.claude.json` `mcpServers` object and no `.agents` directory. They prove:
 
 1. the unfixed implementation reconstructs `skills: false` for the reported global shape;
 2. planning after the fix detects both capabilities and refuses with the explicit global MCP
@@ -73,5 +72,6 @@ fixtures cover a pre-manifest Claude-only global install containing only `.claud
 5. post-update validation rejects authenticated reconstructed state whose false skill or empty MCP
    value would otherwise suppress its own check.
 
-The full 19-phase verification suite must then pass on every supported CI platform before this
-entry can move to `applied`.
+The full 19-phase local gate passed. PR #22 then passed the repository's cross-platform CI matrix
+on Ubuntu, macOS, and Windows, including the updater fixtures on every platform and the existing
+POSIX guardrails on Ubuntu.
