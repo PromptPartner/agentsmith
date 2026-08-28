@@ -1679,6 +1679,11 @@ def recheck_plan_fingerprints(plan: dict[str, Any]) -> None:
 
 
 def copy_plan_inputs_to_shadow(plan: dict[str, Any], shadow_roots: dict[str, Path]) -> None:
+    live_roots = {
+        "target": Path(plan["target"]),
+        "home": home_dir(),
+        "codex_home": codex_home(),
+    }
     for item in plan["fingerprints"]:
         if item["sha256"] is None:
             continue
@@ -1686,6 +1691,10 @@ def copy_plan_inputs_to_shadow(plan: dict[str, Any], shadow_roots: dict[str, Pat
         destination = safe_update_path(shadow_roots[item["root"]], item["path"])
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
+        original = destination.read_bytes()
+        translated = translate_root_paths(original, live_roots, shadow_roots)
+        if translated != original:
+            destination.write_bytes(translated)
 
 
 def prepare_owned_skills(plan: dict[str, Any], shadow_roots: dict[str, Path]) -> set[tuple[str, str]]:
@@ -1792,22 +1801,25 @@ def shadow_files(root: Path) -> dict[str, tuple[bytes, int]]:
     return result
 
 
-def translate_shadow_paths(
-    content: bytes, shadow_roots: dict[str, Path], actual_roots: dict[str, str]
+def translate_root_paths(
+    content: bytes,
+    source_roots: dict[str, str | Path],
+    destination_roots: dict[str, str | Path],
 ) -> bytes:
     try:
         text = content.decode("utf-8")
     except UnicodeDecodeError:
         return content
     replacements: set[tuple[str, str]] = set()
-    for root_name, shadow_root in shadow_roots.items():
-        actual = actual_roots[root_name]
-        resolved_shadow = shadow_root.resolve()
+    for root_name, source_root_value in source_roots.items():
+        source_root = Path(source_root_value)
+        destination_root = Path(destination_roots[root_name])
+        resolved_source = source_root.resolve()
         for old, new in (
-            (str(shadow_root), actual),
-            (str(resolved_shadow), actual),
-            (shadow_root.as_posix(), Path(actual).as_posix()),
-            (resolved_shadow.as_posix(), Path(actual).as_posix()),
+            (str(source_root), str(destination_root)),
+            (str(resolved_source), str(destination_root)),
+            (source_root.as_posix(), destination_root.as_posix()),
+            (resolved_source.as_posix(), destination_root.as_posix()),
         ):
             replacements.add((old, new))
             replacements.add((json.dumps(old, ensure_ascii=False)[1:-1], json.dumps(new, ensure_ascii=False)[1:-1]))
@@ -1922,7 +1934,7 @@ def stage_planned_update(
         for relative, (content, mode) in shadow_files(shadow_root).items():
             if not allowed_update_path(root_name, relative, plan["installation"]):
                 raise CliError(f"Release attempted an update outside the managed surface: {root_name}:{relative}")
-            content = translate_shadow_paths(content, shadow_roots, plan["roots"])
+            content = translate_root_paths(content, shadow_roots, plan["roots"])
             actual = safe_update_path(Path(plan["roots"][root_name]), relative)
             if actual.exists() and not actual.is_file():
                 raise CliError(f"Update refused to replace non-file path {actual}")
