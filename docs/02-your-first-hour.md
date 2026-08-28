@@ -22,6 +22,7 @@ CLAUDE.md                        generated copy when Claude is selected
 .planning/progress-log.md        a running log the agent appends to
 docs/feedback/README.md          the post-incident convention (see below)
 .agentsmith/                     Python runtime + POSIX/Windows command shims
+.agentsmith/state.json           local installation choices and ownership fingerprints
 ```
 
 The Python program and templates are copied into the project, so installed commands do not depend
@@ -29,6 +30,14 @@ on the AgentSmith folder you cloned. Each rule file is written inside marker com
 (`<!-- BEGIN AGENTSMITH … -->`): that block belongs to setup. To change the rules, edit `core/`
 or `profiles/` in your harness checkout and re-run setup; anything you add *outside* the markers
 (project specifics) is yours and survives every re-run.
+
+When a stable release is available, use `agentsmith update plan --target . --save FILE` before
+installing it. Planning does not change the installation. The first plan creates a local key under
+`~/.agentsmith` to authenticate plans and receipts. Read the saved plan, then run `agentsmith update
+apply --plan FILE` only when you approve those managed changes. Apply prints a rollback receipt
+outside the project; keep that path until the update is accepted. Weekly availability checks are
+off unless you explicitly enable them with `agentsmith update configure --auto-check weekly`, and
+they never install anything automatically.
 
 ## Minutes 10–25: read your instruction file — the tour
 
