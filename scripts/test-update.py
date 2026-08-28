@@ -25,6 +25,16 @@ sys.path.insert(0, str(ROOT))
 import agentsmith as runtime  # noqa: E402
 
 
+CURRENT_VERSION = runtime.VERSION
+CURRENT_PARTS = tuple(int(part) for part in CURRENT_VERSION.split("."))
+NEXT_PARTS = (CURRENT_PARTS[0], CURRENT_PARTS[1], CURRENT_PARTS[2] + 1)
+NEXT_VERSION = ".".join(str(part) for part in NEXT_PARTS)
+NEXT_TAG = f"v{NEXT_VERSION}"
+NEXT_RELEASE_PROBE = f"RELEASE_PROBE_{NEXT_VERSION.replace('.', '_')}"
+NEXT_SKILL_PROBE = f"RELEASE_SKILL_PROBE_{NEXT_VERSION.replace('.', '_')}"
+NEXT_STATUSLINE_PROBE = f"RELEASE_STATUSLINE_PROBE_{NEXT_VERSION.replace('.', '_')}"
+
+
 def integrity(payload: dict[str, object], key: bytes) -> str:
     unsigned = {key: value for key, value in payload.items() if key != "integrity"}
     canonical = json.dumps(unsigned, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
@@ -121,7 +131,13 @@ class UpdateCheckTests(unittest.TestCase):
         )
 
     def test_check_selects_highest_stable_semver_and_excludes_prereleases(self) -> None:
-        for version in ("0.2.0", "0.3.0-rc.1", "0.2.7", "1.0.0-beta.2"):
+        latest_version = f"{CURRENT_PARTS[0]}.{CURRENT_PARTS[1]}.{CURRENT_PARTS[2] + 7}"
+        for version in (
+            CURRENT_VERSION,
+            f"{CURRENT_PARTS[0]}.{CURRENT_PARTS[1] + 1}.0-rc.1",
+            latest_version,
+            f"{CURRENT_PARTS[0] + 1}.0.0-beta.2",
+        ):
             self.commit_and_tag(version)
         self.git("tag", "not-a-release")
         cloned = subprocess.run(
@@ -136,9 +152,9 @@ class UpdateCheckTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         payload = json.loads(result.stdout)
-        self.assertEqual(payload["current_version"], "0.2.0")
-        self.assertEqual(payload["latest_version"], "0.2.7")
-        self.assertEqual(payload["tag"], "v0.2.7")
+        self.assertEqual(payload["current_version"], CURRENT_VERSION)
+        self.assertEqual(payload["latest_version"], latest_version)
+        self.assertEqual(payload["tag"], f"v{latest_version}")
         self.assertTrue(payload["update_available"])
         self.assertEqual(payload["remote"], str(self.remote))
 
@@ -171,7 +187,7 @@ class UpdateCheckTests(unittest.TestCase):
         state = json.loads((target / ".agentsmith" / "state.json").read_text(encoding="utf-8"))
         self.assertEqual(state["schema_version"], 1)
         installation = state["installation"]
-        self.assertEqual(installation["installed_version"], "0.2.0")
+        self.assertEqual(installation["installed_version"], CURRENT_VERSION)
         self.assertEqual(installation["scope"], "project")
         self.assertEqual(installation["agents"], ["codex"])
         self.assertEqual(installation["profiles"], ["software-dev"])
@@ -186,8 +202,8 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertNotIn(str(target), json.dumps(state))
 
     def test_saved_plan_verifies_release_and_is_installation_write_free(self) -> None:
-        self.commit_and_tag("0.2.0")
-        self.commit_and_tag("0.2.1")
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
             ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
             text=True,
@@ -216,7 +232,7 @@ class UpdateCheckTests(unittest.TestCase):
         plan_path = self.root / "plans" / "update.json"
 
         result = self.run_core(
-            "update", "plan", "--target", str(target), "--version", "v0.2.1",
+            "update", "plan", "--target", str(target), "--version", NEXT_TAG,
             "--from", str(self.remote), "--save", str(plan_path),
             env=environment,
         )
@@ -230,7 +246,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertEqual(after, before)
         second_plan_path = self.root / "second-apply-plan.json"
         second_plan = self.run_core(
-            "update", "plan", "--target", str(target), "--version", "v0.2.1",
+            "update", "plan", "--target", str(target), "--version", NEXT_TAG,
             "--from", str(self.remote), "--save", str(second_plan_path), env=environment,
         )
         self.assertEqual(second_plan.returncode, 0, second_plan.stdout + second_plan.stderr)
@@ -243,9 +259,9 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertEqual(plan["schema_version"], 1)
         self.assertEqual(plan["scope"], "project")
         self.assertEqual(plan["target"], str(target.resolve()))
-        self.assertEqual(plan["release"]["tag"], "v0.2.1")
-        self.assertEqual(plan["release"]["version"], "0.2.1")
-        self.assertEqual(plan["release"]["commit"], self.git("rev-list", "-n", "1", "v0.2.1").stdout.strip())
+        self.assertEqual(plan["release"]["tag"], NEXT_TAG)
+        self.assertEqual(plan["release"]["version"], NEXT_VERSION)
+        self.assertEqual(plan["release"]["commit"], self.git("rev-list", "-n", "1", NEXT_TAG).stdout.strip())
         fingerprints = {item["path"]: item["sha256"] for item in plan["fingerprints"]}
         self.assertIn("AGENTS.md", fingerprints)
         self.assertIn(".agentsmith/agentsmith.py", fingerprints)
@@ -262,8 +278,8 @@ class UpdateCheckTests(unittest.TestCase):
 
     def test_planning_treats_candidate_release_code_as_data(self) -> None:
         execution_probe = self.root / "candidate-executed-outside-shadow"
-        self.commit_and_tag("0.2.0")
-        self.commit_and_tag("0.2.1", candidate_execution_probe=execution_probe)
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION, candidate_execution_probe=execution_probe)
         cloned = subprocess.run(
             ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
             text=True,
@@ -285,7 +301,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
 
         planned = self.run_core(
-            "update", "plan", "--target", str(target), "--version", "v0.2.1",
+            "update", "plan", "--target", str(target), "--version", NEXT_TAG,
             "--from", str(self.remote), "--save", str(self.root / "data-only-plan.json"), env=environment,
         )
 
@@ -293,8 +309,8 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertFalse(execution_probe.exists())
 
     def test_apply_and_rollback_preserve_foreign_content_and_restore_exact_bytes(self) -> None:
-        self.commit_and_tag("0.2.0")
-        self.commit_and_tag("0.2.1")
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
             ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
             text=True,
@@ -322,7 +338,7 @@ class UpdateCheckTests(unittest.TestCase):
         research.write_bytes(b"costly source material\n")
         plan_path = self.root / "apply-plan.json"
         planned = self.run_core(
-            "update", "plan", "--target", str(target), "--version", "v0.2.1",
+            "update", "plan", "--target", str(target), "--version", NEXT_TAG,
             "--from", str(self.remote), "--save", str(plan_path), env=environment,
         )
         self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
@@ -337,10 +353,10 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
         updated_agents = agents_path.read_text(encoding="utf-8")
         self.assertIn("# Foreign heading", updated_agents)
-        self.assertIn("RELEASE_PROBE_0_2_1", updated_agents)
+        self.assertIn(NEXT_RELEASE_PROBE, updated_agents)
         self.assertEqual(research.read_bytes(), b"costly source material\n")
         updated_runtime = (target / ".agentsmith" / "agentsmith.py").read_text(encoding="utf-8")
-        self.assertIn('VERSION = "0.2.1"', updated_runtime)
+        self.assertIn(f'VERSION = "{NEXT_VERSION}"', updated_runtime)
         receipt_line = next(line for line in applied.stdout.splitlines() if "rollback receipt:" in line)
         receipt_path = Path(receipt_line.split("rollback receipt:", 1)[1].strip())
         self.assertFalse(receipt_path.is_relative_to(target))
@@ -367,7 +383,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertEqual(after, before)
         later_plan_path = self.root / "plan-after-receipt.json"
         later_plan = self.run_core(
-            "update", "plan", "--target", str(target), "--version", "v0.2.1",
+            "update", "plan", "--target", str(target), "--version", NEXT_TAG,
             "--from", str(self.remote), "--save", str(later_plan_path), env=environment,
         )
         self.assertEqual(later_plan.returncode, 0, later_plan.stdout + later_plan.stderr)
@@ -377,8 +393,8 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertFalse(any("update-receipts" in path or "update-backups" in path for path in later_fingerprints))
 
     def test_rollback_preflights_all_backups_and_duplicate_paths_before_writing(self) -> None:
-        self.commit_and_tag("0.2.0")
-        self.commit_and_tag("0.2.1")
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
             ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
             text=True,
@@ -417,7 +433,7 @@ class UpdateCheckTests(unittest.TestCase):
                 self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
                 plan_path = self.root / f"rollback-preflight-{failure}-plan.json"
                 planned = self.run_core(
-                    "update", "plan", "--target", str(target), "--version", "v0.2.1",
+                    "update", "plan", "--target", str(target), "--version", NEXT_TAG,
                     "--from", str(self.remote), "--save", str(plan_path), env=environment,
                 )
                 self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
@@ -540,8 +556,8 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertEqual(state_path.read_text(encoding="utf-8"), "{not json\n")
 
     def test_apply_rejects_unknown_plan_fields_and_post_plan_fingerprint_drift(self) -> None:
-        self.commit_and_tag("0.2.0")
-        self.commit_and_tag("0.2.1")
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
             ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
             text=True,
@@ -563,7 +579,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
         plan_path = self.root / "guarded-plan.json"
         planned = self.run_core(
-            "update", "plan", "--target", str(target), "--version", "v0.2.1",
+            "update", "plan", "--target", str(target), "--version", NEXT_TAG,
             "--from", str(self.remote), "--save", str(plan_path), env=environment,
         )
         self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
@@ -598,11 +614,11 @@ class UpdateCheckTests(unittest.TestCase):
         drifted = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
         self.assertNotEqual(drifted.returncode, 0)
         self.assertIn("changed after planning", drifted.stderr)
-        self.assertNotIn('VERSION = "0.2.1"', (target / ".agentsmith" / "agentsmith.py").read_text(encoding="utf-8"))
+        self.assertNotIn(f'VERSION = "{NEXT_VERSION}"', (target / ".agentsmith" / "agentsmith.py").read_text(encoding="utf-8"))
 
     def test_plan_reconstructs_provable_pre_manifest_state_without_migration_write(self) -> None:
-        self.commit_and_tag("0.2.0")
-        self.commit_and_tag("0.2.1")
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
             ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
             text=True,
@@ -628,7 +644,7 @@ class UpdateCheckTests(unittest.TestCase):
         plan_path = self.root / "legacy-plan.json"
 
         planned = self.run_core(
-            "update", "plan", "--target", str(target), "--version", "v0.2.1",
+            "update", "plan", "--target", str(target), "--version", NEXT_TAG,
             "--from", str(self.remote), "--save", str(plan_path), env=environment,
         )
 
@@ -643,8 +659,8 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertEqual(plan["installation"]["operator"]["name"], "Legacy Operator")
 
     def test_assemble_only_is_preserved_for_project_and_global_updates(self) -> None:
-        self.commit_and_tag("0.2.0")
-        self.commit_and_tag("0.2.1")
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
             ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
             text=True,
@@ -682,7 +698,7 @@ class UpdateCheckTests(unittest.TestCase):
                 plan_path = self.root / f"assemble-only-{scope}-plan.json"
 
                 planned = self.run_core(
-                    "update", "plan", *scope_arguments, "--version", "v0.2.1",
+                    "update", "plan", *scope_arguments, "--version", NEXT_TAG,
                     "--from", str(self.remote), "--save", str(plan_path), env=environment,
                 )
 
@@ -701,7 +717,7 @@ class UpdateCheckTests(unittest.TestCase):
                 self.assertEqual(updated["safety"], {})
 
     def test_assemble_only_migration_requires_unambiguous_native_ownership(self) -> None:
-        self.commit_and_tag("0.2.1")
+        self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
             ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
             text=True,
@@ -726,7 +742,7 @@ class UpdateCheckTests(unittest.TestCase):
         plan_path = self.root / "legacy-assemble-only-plan.json"
 
         planned = self.run_core(
-            "update", "plan", "--target", str(project), "--version", "v0.2.1",
+            "update", "plan", "--target", str(project), "--version", NEXT_TAG,
             "--from", str(self.remote), "--save", str(plan_path), env=project_environment,
         )
 
@@ -749,7 +765,7 @@ class UpdateCheckTests(unittest.TestCase):
         global_state_path.write_text(json.dumps(global_state) + "\n", encoding="utf-8")
 
         mixed = self.run_core(
-            "update", "plan", "--global", "--version", "v0.2.1", "--from", str(self.remote),
+            "update", "plan", "--global", "--version", NEXT_TAG, "--from", str(self.remote),
             env=global_environment,
         )
 
@@ -759,7 +775,7 @@ class UpdateCheckTests(unittest.TestCase):
         global_state["native_safety"] = {"claude": None, "codex": None}
         global_state_path.write_text(json.dumps(global_state) + "\n", encoding="utf-8")
         invalid = self.run_core(
-            "update", "plan", "--global", "--version", "v0.2.1", "--from", str(self.remote),
+            "update", "plan", "--global", "--version", NEXT_TAG, "--from", str(self.remote),
             env=global_environment,
         )
         self.assertNotEqual(invalid.returncode, 0)
@@ -830,8 +846,8 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertEqual(json.loads(state_path.read_text(encoding="utf-8"))["schema_version"], 2)
 
     def test_global_update_is_scoped_and_rolls_back_managed_home_files(self) -> None:
-        self.commit_and_tag("0.2.0")
-        self.commit_and_tag("0.2.1")
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
             ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
             text=True,
@@ -857,7 +873,7 @@ class UpdateCheckTests(unittest.TestCase):
         before = {path: path.read_bytes() for path in managed_paths}
         plan_path = self.root / "global-plan.json"
         planned = self.run_core(
-            "update", "plan", "--global", "--version", "v0.2.1", "--from", str(self.remote),
+            "update", "plan", "--global", "--version", NEXT_TAG, "--from", str(self.remote),
             "--save", str(plan_path), env=environment,
         )
         self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
@@ -865,7 +881,7 @@ class UpdateCheckTests(unittest.TestCase):
         applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
 
         self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
-        self.assertIn("RELEASE_PROBE_0_2_1", (codex_home / "AGENTS.md").read_text(encoding="utf-8"))
+        self.assertIn(NEXT_RELEASE_PROBE, (codex_home / "AGENTS.md").read_text(encoding="utf-8"))
         hooks = json.loads((codex_home / "hooks.json").read_text(encoding="utf-8"))
         commands = [
             hook["command"]
@@ -881,8 +897,8 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertEqual({path: path.read_bytes() for path in managed_paths}, before)
 
     def test_update_refreshes_owned_skills_but_preserves_customized_skill(self) -> None:
-        self.commit_and_tag("0.2.0")
-        self.commit_and_tag("0.2.1")
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
             ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
             text=True,
@@ -924,7 +940,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertNotEqual(rerun_baseline, hashlib.sha256(customized.read_bytes()).hexdigest())
         plan_path = self.root / "skills-plan.json"
         planned = self.run_core(
-            "update", "plan", "--target", str(target), "--version", "v0.2.1",
+            "update", "plan", "--target", str(target), "--version", NEXT_TAG,
             "--from", str(self.remote), "--save", str(plan_path), env=environment,
         )
         self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
@@ -933,12 +949,12 @@ class UpdateCheckTests(unittest.TestCase):
 
         self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
         handoff = target / ".agents" / "skills" / "handoff" / "SKILL.md"
-        self.assertIn("RELEASE_SKILL_PROBE_0_2_1", handoff.read_text(encoding="utf-8"))
+        self.assertIn(NEXT_SKILL_PROBE, handoff.read_text(encoding="utf-8"))
         self.assertIn("LOCAL CUSTOMIZATION", customized.read_text(encoding="utf-8"))
 
     def test_colliding_skills_remain_foreign_until_force_replaces_them(self) -> None:
-        self.commit_and_tag("0.2.0")
-        self.commit_and_tag("0.2.1")
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
             ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
             text=True,
@@ -980,7 +996,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertFalse(any(path.endswith("/handoff/SKILL.md") for path in inventory_paths))
         plan_path = self.root / "colliding-skills-plan.json"
         planned = self.run_core(
-            "update", "plan", "--target", str(target), "--version", "v0.2.1",
+            "update", "plan", "--target", str(target), "--version", NEXT_TAG,
             "--from", str(self.remote), "--save", str(plan_path), env=environment,
         )
         self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
@@ -1029,8 +1045,8 @@ class UpdateCheckTests(unittest.TestCase):
         ))
 
     def test_project_mcp_is_authenticated_updated_and_rolled_back_with_foreign_servers(self) -> None:
-        self.commit_and_tag("0.2.0")
-        self.commit_and_tag("0.2.1")
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
             ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
             text=True,
@@ -1070,7 +1086,7 @@ class UpdateCheckTests(unittest.TestCase):
                 plan_path = self.root / f"{agent_id}-mcp-plan.json"
 
                 planned = self.run_core(
-                    "update", "plan", "--target", str(target), "--version", "v0.2.1",
+                    "update", "plan", "--target", str(target), "--version", NEXT_TAG,
                     "--from", str(self.remote), "--save", str(plan_path), env=environment,
                 )
 
@@ -1134,12 +1150,12 @@ class UpdateCheckTests(unittest.TestCase):
         output = io.StringIO()
         errors = io.StringIO()
         with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
-            runtime, "stable_release_tags", return_value=[((0, 2, 1), "v0.2.1")]
+            runtime, "stable_release_tags", return_value=[(NEXT_PARTS, NEXT_TAG)]
         ) as checked, redirect_stdout(output), redirect_stderr(errors):
             result = runtime.run(["agents", "list"])
         self.assertEqual(result, 0)
         checked.assert_called_once_with(runtime.OFFICIAL_REMOTE, timeout_seconds=3)
-        self.assertIn("update available: v0.2.1", output.getvalue())
+        self.assertIn(f"update available: {NEXT_TAG}", output.getvalue())
         self.assertIn("claude", output.getvalue())
 
         state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -1163,8 +1179,8 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertIn("weekly update check skipped", write_errors.getvalue())
 
     def test_failed_post_apply_health_check_restores_pre_update_bytes_automatically(self) -> None:
-        self.commit_and_tag("0.2.0")
-        self.commit_and_tag("0.2.1", broken_doctor=True)
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION, broken_doctor=True)
         cloned = subprocess.run(
             ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
             text=True,
@@ -1186,7 +1202,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
         plan_path = self.root / "failed-plan.json"
         planned = self.run_core(
-            "update", "plan", "--target", str(target), "--version", "v0.2.1",
+            "update", "plan", "--target", str(target), "--version", NEXT_TAG,
             "--from", str(self.remote), "--save", str(plan_path), env=environment,
         )
         self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
@@ -1202,8 +1218,8 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertFalse(receipt_root.exists())
 
     def test_apply_rejects_changed_candidate_installer_semantics_for_project_scope(self) -> None:
-        self.commit_and_tag("0.2.0")
-        self.commit_and_tag("0.2.1", broken_runtime_health=True)
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION, broken_runtime_health=True)
         cloned = subprocess.run(
             ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
             text=True,
@@ -1226,7 +1242,7 @@ class UpdateCheckTests(unittest.TestCase):
         before = {path.relative_to(target): path.read_bytes() for path in target.rglob("*") if path.is_file()}
         plan_path = self.root / "stale-project-plan.json"
         planned = self.run_core(
-            "update", "plan", "--target", str(target), "--version", "v0.2.1",
+            "update", "plan", "--target", str(target), "--version", NEXT_TAG,
             "--from", str(self.remote), "--save", str(plan_path), env=environment,
         )
         self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
@@ -1239,8 +1255,8 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertEqual(after, before)
 
     def test_apply_rejects_changed_candidate_installer_semantics_for_global_scope(self) -> None:
-        self.commit_and_tag("0.2.0")
-        self.commit_and_tag("0.2.1", broken_runtime_health=True)
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION, broken_runtime_health=True)
         cloned = subprocess.run(
             ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
             text=True,
@@ -1265,7 +1281,7 @@ class UpdateCheckTests(unittest.TestCase):
         before = {path: path.read_bytes() for path in observed}
         plan_path = self.root / "stale-global-plan.json"
         planned = self.run_core(
-            "update", "plan", "--global", "--version", "v0.2.1",
+            "update", "plan", "--global", "--version", NEXT_TAG,
             "--from", str(self.remote), "--save", str(plan_path), env=environment,
         )
         self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
@@ -1369,8 +1385,8 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertEqual(resolved, (isolated_home / ".claude" / "CLAUDE.md").resolve())
 
     def test_statusline_update_is_staged_without_touching_live_installation(self) -> None:
-        self.commit_and_tag("0.2.0")
-        self.commit_and_tag("0.2.1", statusline_probe="RELEASE_STATUSLINE_PROBE_0_2_1")
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION, statusline_probe=NEXT_STATUSLINE_PROBE)
         cloned = subprocess.run(
             ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
             text=True,
@@ -1392,7 +1408,7 @@ class UpdateCheckTests(unittest.TestCase):
         )
         self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
         helper = home / ".claude" / "agentsmith-statusline.py"
-        self.assertNotIn("RELEASE_STATUSLINE_PROBE_0_2_1", helper.read_text(encoding="utf-8"))
+        self.assertNotIn(NEXT_STATUSLINE_PROBE, helper.read_text(encoding="utf-8"))
         watched_roots = (target, home, Path(environment["CODEX_HOME"]))
         before = {
             path: (path.read_bytes(), path.stat().st_mode & 0o777)
@@ -1409,7 +1425,7 @@ class UpdateCheckTests(unittest.TestCase):
         plan_path = self.root / "statusline-plan.json"
 
         planned = self.run_core(
-            "update", "plan", "--target", str(target), "--version", "v0.2.1",
+            "update", "plan", "--target", str(target), "--version", NEXT_TAG,
             "--from", str(self.remote), "--save", str(plan_path), env=environment,
         )
 
@@ -1433,16 +1449,16 @@ class UpdateCheckTests(unittest.TestCase):
             if item["root"] == "home" and item["path"] == ".claude/agentsmith-statusline.py"
         )
         self.assertEqual(helper_change["operation"], "replace")
-        self.assertNotIn("RELEASE_STATUSLINE_PROBE_0_2_1", helper.read_text(encoding="utf-8"))
+        self.assertNotIn(NEXT_STATUSLINE_PROBE, helper.read_text(encoding="utf-8"))
 
         applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
 
         self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
-        self.assertIn("RELEASE_STATUSLINE_PROBE_0_2_1", helper.read_text(encoding="utf-8"))
+        self.assertIn(NEXT_STATUSLINE_PROBE, helper.read_text(encoding="utf-8"))
 
     def test_native_hook_update_points_to_real_runtime_not_discarded_shadow(self) -> None:
-        self.commit_and_tag("0.2.0")
-        self.commit_and_tag("0.2.1")
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
             ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
             text=True,
@@ -1464,7 +1480,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
         plan_path = self.root / "hook-plan.json"
         planned = self.run_core(
-            "update", "plan", "--target", str(target), "--version", "v0.2.1",
+            "update", "plan", "--target", str(target), "--version", NEXT_TAG,
             "--from", str(self.remote), "--save", str(plan_path), env=environment,
         )
         self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
@@ -1508,8 +1524,8 @@ class UpdateCheckTests(unittest.TestCase):
         )
 
     def test_cautious_rerun_cannot_make_the_next_update_restore_trusted_safety(self) -> None:
-        self.commit_and_tag("0.2.0")
-        self.commit_and_tag("0.2.1")
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
             ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
             text=True,
@@ -1538,7 +1554,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertEqual(json.loads(state_path.read_text(encoding="utf-8"))["installation"]["safety"], {"codex": "cautious"})
         plan_path = self.root / "cautious-plan.json"
         planned = self.run_core(
-            "update", "plan", "--target", str(target), "--version", "v0.2.1",
+            "update", "plan", "--target", str(target), "--version", NEXT_TAG,
             "--from", str(self.remote), "--save", str(plan_path), env=environment,
         )
         self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
@@ -1550,8 +1566,8 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertIn('sandbox_mode = "workspace-write"', config)
 
     def test_update_plan_rejects_a_symbolic_link_in_a_managed_path(self) -> None:
-        self.commit_and_tag("0.2.0")
-        self.commit_and_tag("0.2.1")
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
             ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
             text=True,
@@ -1576,7 +1592,7 @@ class UpdateCheckTests(unittest.TestCase):
         (target / ".agentsmith").symlink_to(moved_state, target_is_directory=True)
 
         planned = self.run_core(
-            "update", "plan", "--target", str(target), "--version", "v0.2.1",
+            "update", "plan", "--target", str(target), "--version", NEXT_TAG,
             "--from", str(self.remote), env=environment,
         )
 
