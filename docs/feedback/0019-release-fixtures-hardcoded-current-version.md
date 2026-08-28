@@ -35,6 +35,7 @@ stable-release updater step in the three-platform CI matrix.
 ## 5. Non-regression validation
 
 With the production runtime restored to `0.2.0`, all 34 updater tests passed using the derived
-`0.2.0 → 0.2.1` transition. The release bump will rerun the same suite as `0.2.1 → 0.2.2`; any
-remaining current-release literal will recreate the missing runtime proposal or stale-version
-assertion and fail the release gate.
+`0.2.0 → 0.2.1` transition. After the production runtime was bumped, all 34 tests passed again
+using the derived `0.2.1 → 0.2.2` transition, and the complete 19-phase release gate passed. Any
+remaining current-release literal would recreate the missing runtime proposal or stale-version
+assertion and fail that gate.
