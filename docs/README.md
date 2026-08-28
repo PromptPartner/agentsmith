@@ -33,6 +33,7 @@ is a harness" to "make it your team's own," with the glossary as the appendix:
 | [`20-wayfinding-spec-flow.md`](20-wayfinding-spec-flow.md) | Turn a foggy effort into an accepted terminal spec without collapsing decision and implementation tickets. |
 | [`21-autonomous-runs.md`](21-autonomous-runs.md) | Run one accepted coding ticket overnight through a local maker/checker controller. |
 | [`22-compatibility-contract.md`](22-compatibility-contract.md) | Support tiers, evidence vocabulary, canonical instructions, and certification rules. |
+| [`23-updating-existing-installations.md`](23-updating-existing-installations.md) | Bootstrap staged updates safely, preserve local evolution, and check known legacy blockers. |
 | [`feedback/README.md`](feedback/README.md) | The post-incident log: how lessons become system changes. |
 | [`research/`](research/) | Source research the docs above were distilled from. |
 
