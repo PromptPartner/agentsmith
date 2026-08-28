@@ -176,6 +176,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertEqual(installation["agents"], ["codex"])
         self.assertEqual(installation["profiles"], ["software-dev"])
         self.assertTrue(installation["include_core"])
+        self.assertFalse(installation["assemble_only"])
         self.assertEqual(installation["safety"], {"codex": "trusted"})
         self.assertEqual(installation["tracker"], {"name": "Linear", "writes": "ask"})
         self.assertEqual(
@@ -546,8 +547,168 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertTrue(plan["migration_warnings"])
         self.assertEqual(plan["installation"]["agents"], ["codex"])
         self.assertEqual(plan["installation"]["profiles"], ["software-dev"])
+        self.assertFalse(plan["installation"]["assemble_only"])
         self.assertEqual(plan["installation"]["safety"], {"codex": "trusted"})
         self.assertEqual(plan["installation"]["operator"]["name"], "Legacy Operator")
+
+    def test_assemble_only_is_preserved_for_project_and_global_updates(self) -> None:
+        self.commit_and_tag("0.2.0")
+        self.commit_and_tag("0.2.1")
+        cloned = subprocess.run(
+            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(cloned.returncode, 0, cloned.stdout + cloned.stderr)
+        for scope in ("project", "global"):
+            with self.subTest(scope=scope):
+                target = self.root / f"assemble-only-{scope}-project"
+                target.mkdir()
+                home = self.root / f"assemble-only-{scope}-home"
+                codex_home = self.root / f"assemble-only-{scope}-codex"
+                environment = {**os.environ, "HOME": str(home), "CODEX_HOME": str(codex_home)}
+                scope_arguments = ["--global"] if scope == "global" else ["--target", str(target)]
+                installed = self.run_core(
+                    "install", "--agent", "claude,codex", "--profile", "software-dev",
+                    "--assemble-only", *scope_arguments, env=environment,
+                )
+                self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+                state_root = home if scope == "global" else target
+                state_path = state_root / ".agentsmith" / "state.json"
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+                self.assertTrue(state["installation"]["assemble_only"])
+                self.assertEqual(state["installation"]["safety"], {})
+                home_state_path = home / ".agentsmith" / "state.json"
+                home_state = json.loads(home_state_path.read_text(encoding="utf-8")) if home_state_path.exists() else {}
+                self.assertNotIn("native_safety", home_state)
+                native_paths = [
+                    home / ".claude" / "settings.json",
+                    home / ".claude" / "agentsmith-statusline.py",
+                    codex_home / "config.toml",
+                ]
+                self.assertTrue(all(not path.exists() for path in native_paths))
+                plan_path = self.root / f"assemble-only-{scope}-plan.json"
+
+                planned = self.run_core(
+                    "update", "plan", *scope_arguments, "--version", "v0.2.1",
+                    "--from", str(self.remote), "--save", str(plan_path), env=environment,
+                )
+
+                self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+                plan = json.loads(plan_path.read_text(encoding="utf-8"))
+                self.assertTrue(plan["installation"]["assemble_only"])
+                self.assertFalse(any(
+                    item["path"] in {".claude/settings.json", ".claude/agentsmith-statusline.py", "config.toml"}
+                    for item in plan["proposed_changes"]
+                ))
+                applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
+                self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+                self.assertTrue(all(not path.exists() for path in native_paths))
+                updated = json.loads(state_path.read_text(encoding="utf-8"))["installation"]
+                self.assertTrue(updated["assemble_only"])
+                self.assertEqual(updated["safety"], {})
+
+    def test_assemble_only_migration_requires_unambiguous_native_ownership(self) -> None:
+        self.commit_and_tag("0.2.1")
+        cloned = subprocess.run(
+            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(cloned.returncode, 0, cloned.stdout + cloned.stderr)
+        project = self.root / "legacy-assemble-only-project"
+        project.mkdir()
+        project_home = self.root / "legacy-assemble-only-home"
+        project_environment = {
+            **os.environ,
+            "HOME": str(project_home),
+            "CODEX_HOME": str(self.root / "legacy-assemble-only-codex"),
+        }
+        installed = self.run_core(
+            "install", "--agent", "claude", "--profile", "software-dev", "--assemble-only",
+            "--target", str(project), env=project_environment,
+        )
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        (project / ".agentsmith" / "state.json").write_text("{}\n", encoding="utf-8")
+        plan_path = self.root / "legacy-assemble-only-plan.json"
+
+        planned = self.run_core(
+            "update", "plan", "--target", str(project), "--version", "v0.2.1",
+            "--from", str(self.remote), "--save", str(plan_path), env=project_environment,
+        )
+
+        self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        self.assertTrue(json.loads(plan_path.read_text(encoding="utf-8"))["installation"]["assemble_only"])
+
+        global_home = self.root / "legacy-mixed-home"
+        global_codex = self.root / "legacy-mixed-codex"
+        global_environment = {**os.environ, "HOME": str(global_home), "CODEX_HOME": str(global_codex)}
+        global_installed = self.run_core(
+            "install", "--agent", "claude,codex", "--global", "--profile", "software-dev",
+            env=global_environment,
+        )
+        self.assertEqual(global_installed.returncode, 0, global_installed.stdout + global_installed.stderr)
+        global_state_path = global_home / ".agentsmith" / "state.json"
+        global_state = json.loads(global_state_path.read_text(encoding="utf-8"))
+        global_state.pop("installation")
+        global_state.pop("schema_version")
+        global_state["native_safety"].pop("codex")
+        global_state_path.write_text(json.dumps(global_state) + "\n", encoding="utf-8")
+
+        mixed = self.run_core(
+            "update", "plan", "--global", "--version", "v0.2.1", "--from", str(self.remote),
+            env=global_environment,
+        )
+
+        self.assertNotEqual(mixed.returncode, 0)
+        self.assertIn("assemble-only", mixed.stderr)
+
+        global_state["native_safety"] = {"claude": None, "codex": None}
+        global_state_path.write_text(json.dumps(global_state) + "\n", encoding="utf-8")
+        invalid = self.run_core(
+            "update", "plan", "--global", "--version", "v0.2.1", "--from", str(self.remote),
+            env=global_environment,
+        )
+        self.assertNotEqual(invalid.returncode, 0)
+        self.assertIn("assemble-only", invalid.stderr)
+
+    def test_schema_one_manifest_without_assemble_only_requires_reinstall(self) -> None:
+        target = self.root / "old-schema-one"
+        target.mkdir()
+        environment = {
+            **os.environ,
+            "HOME": str(self.root / "old-schema-home"),
+            "CODEX_HOME": str(self.root / "old-schema-codex"),
+        }
+        installed = self.run_core(
+            "install", "--agent", "codex", "--profile", "software-dev", "--target", str(target),
+            env=environment,
+        )
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        state_path = target / ".agentsmith" / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["installation"].pop("assemble_only", None)
+        state_path.write_text(json.dumps(state) + "\n", encoding="utf-8")
+
+        planned = self.run_core(
+            "update", "plan", "--target", str(target), "--from", str(self.root / "unused.git"),
+            env=environment,
+        )
+
+        self.assertNotEqual(planned.returncode, 0)
+        self.assertIn("--assemble-only", planned.stderr)
+        self.assertIn("rerun install", planned.stderr)
+
+        state["installation"]["assemble_only"] = "false"
+        state_path.write_text(json.dumps(state) + "\n", encoding="utf-8")
+        malformed = self.run_core(
+            "update", "plan", "--target", str(target), "--from", str(self.root / "unused.git"),
+            env=environment,
+        )
+        self.assertNotEqual(malformed.returncode, 0)
+        self.assertIn("must be true or false", malformed.stderr)
 
     def test_global_update_is_scoped_and_rolls_back_managed_home_files(self) -> None:
         self.commit_and_tag("0.2.0")
