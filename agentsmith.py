@@ -1317,6 +1317,46 @@ def validate_installation_manifest(state: dict[str, Any]) -> dict[str, Any]:
     return installation
 
 
+def detected_skill_capability(target: Path, scope: str, agents: list[str]) -> bool:
+    skill_root = home_dir() if scope == "global" else target
+    roots = [skill_root / ".agents" / "skills"]
+    if "claude" in agents:
+        roots.append(skill_root / ".claude" / "skills")
+    return any(root.is_dir() for root in roots)
+
+
+def configured_mcp_names(target: Path, scope: str, agents: list[str]) -> set[str]:
+    names: set[str] = set()
+    if "claude" in agents:
+        path = home_dir() / ".claude.json" if scope == "global" else target / ".mcp.json"
+        if path.is_file():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise CliError(f"Cannot infer Claude MCP configuration from {path}; rerun install explicitly") from exc
+            servers = data.get("mcpServers", {}) if isinstance(data, dict) else None
+            if not isinstance(servers, dict):
+                raise CliError(f"Cannot infer Claude MCP configuration from {path}; rerun install explicitly")
+            names.update(servers)
+    if "codex" in agents:
+        path = codex_home() / "config.toml" if scope == "global" else target / ".codex" / "config.toml"
+        if path.is_file():
+            try:
+                data = tomllib.loads(path.read_text(encoding="utf-8"))
+            except (OSError, tomllib.TOMLDecodeError) as exc:
+                raise CliError(f"Cannot infer Codex MCP configuration from {path}; rerun install explicitly") from exc
+            servers = data.get("mcp_servers", {})
+            if not isinstance(servers, dict):
+                raise CliError(f"Cannot infer Codex MCP configuration from {path}; rerun install explicitly")
+            names.update(servers)
+    return names
+
+
+def supported_mcp_names() -> set[str]:
+    source = json.loads((ROOT / "config" / "mcp.example.json").read_text(encoding="utf-8"))["mcpServers"]
+    return set(source)
+
+
 def reconstruct_pre_manifest_installation(target: Path, scope: str, state: dict[str, Any]) -> dict[str, Any]:
     instruction_candidates = (
         [home_dir() / ".claude" / "CLAUDE.md", codex_home() / "AGENTS.md"]
@@ -1395,14 +1435,19 @@ def reconstruct_pre_manifest_installation(target: Path, scope: str, state: dict[
         declared = re.search(r'^VERSION = "([^"]+)"$', runtime.read_text(encoding="utf-8", errors="replace"), re.MULTILINE)
         if declared:
             installed_version = declared.group(1)
+    config_paths = []
+    if "claude" in agents:
+        config_paths.append(home_dir() / ".claude" / "settings.json")
+    if "codex" in agents:
+        config_paths.append(codex_home() / "config.toml")
     config_texts = []
-    for path in (home_dir() / ".claude" / "settings.json", codex_home() / "config.toml"):
+    for path in config_paths:
         if path.is_file():
             config_texts.append(path.read_text(encoding="utf-8", errors="replace"))
     combined_config = "\n".join(config_texts)
-    mcp_names = sorted(set(re.findall(r"(?m)^\[mcp_servers\.([A-Za-z0-9_-]+)\]\s*$", combined_config)))
-    skill_root = home_dir() if scope == "global" else target
-    skills = (skill_root / ".agents" / "skills").is_dir()
+    configured_mcp = configured_mcp_names(target, scope, agents)
+    mcp_names = sorted(configured_mcp if scope == "global" else configured_mcp & supported_mcp_names())
+    skills = detected_skill_capability(target, scope, agents)
     return {
         "installed_version": installed_version,
         "source": {"release": None, "commit": None},
@@ -1590,6 +1635,11 @@ def cmd_update_plan(args: argparse.Namespace) -> int:
         )
     if installation["scope"] != expected_scope:
         raise CliError(f"Installation manifest scope is {installation['scope']!r}, not {expected_scope!r}")
+    if expected_scope == "global" and installation["capabilities"].get("mcp"):
+        raise CliError(
+            "Update planning refused: detected global MCP configuration, but global MCP ownership is not supported; "
+            "rerun install with explicit choices after preserving that configuration"
+        )
     remote = args.update_from or OFFICIAL_REMOTE
     release = resolve_stable_release(remote, args.version)
     roots, fingerprints = installation_fingerprints(target, installation)
@@ -2137,6 +2187,18 @@ def validate_post_update_health(plan: dict[str, Any]) -> None:
             raise CliError(f"Post-update health check failed: managed instructions are missing or malformed in {path}")
 
     capabilities = installation["capabilities"]
+    reconstructed = any(
+        isinstance(warning, str) and warning.startswith("Pre-manifest installation choices were reconstructed")
+        for warning in plan["migration_warnings"]
+    )
+    if reconstructed:
+        observed_skills = detected_skill_capability(target, plan["scope"], installation["agents"])
+        if observed_skills and not capabilities.get("skills"):
+            raise CliError("Post-update health check failed: installed skill evidence was omitted from the manifest")
+        observed_mcp = configured_mcp_names(target, plan["scope"], installation["agents"])
+        managed_mcp = observed_mcp if plan["scope"] == "global" else observed_mcp & supported_mcp_names()
+        if managed_mcp - set(capabilities.get("mcp", [])):
+            raise CliError("Post-update health check failed: installed MCP evidence was omitted from the manifest")
     runtime_root = Path(plan["roots"]["home"]) if plan["scope"] == "global" else target
     needs_runtime = plan["scope"] == "project" or capabilities.get("handoff_hooks") or capabilities.get("ui_design_hook")
     runtime = runtime_root / ".agentsmith" / "agentsmith.py"
@@ -3206,7 +3268,17 @@ def inspect_skills(agent_id: str, agent: dict[str, Any], target: Path) -> dict[s
     roots = [target / ".agents" / "skills"]
     if agent_id == "claude":
         roots.append(target / ".claude" / "skills")
-    bundled = {path.name: directory_snapshot(path) for path in (ROOT / "skills").iterdir() if path.is_dir()}
+    bundled_root = ROOT / "skills"
+    bundled = (
+        {path.name: directory_snapshot(path) for path in bundled_root.iterdir() if path.is_dir()}
+        if bundled_root.is_dir()
+        else None
+    )
+    installation = load_state(target).get("installation", {})
+    installation = installation if isinstance(installation, dict) else {}
+    inventory = installation.get("managed_files", [])
+    inventory = inventory if isinstance(inventory, list) else []
+    inventory_root = "home" if installation.get("scope") == "global" else "target"
     managed_names: set[str] = set()
     stale_names: set[str] = set()
     foreign_names: set[str] = set()
@@ -3216,12 +3288,35 @@ def inspect_skills(agent_id: str, agent: dict[str, Any], target: Path) -> dict[s
         for installed in root.iterdir():
             if not installed.is_dir():
                 continue
-            if installed.name not in bundled:
-                foreign_names.add(installed.name)
-            elif directory_snapshot(installed) == bundled[installed.name]:
-                managed_names.add(installed.name)
+            if bundled is not None:
+                if installed.name not in bundled:
+                    foreign_names.add(installed.name)
+                elif directory_snapshot(installed) == bundled[installed.name]:
+                    managed_names.add(installed.name)
+                else:
+                    stale_names.add(installed.name)
             else:
-                stale_names.add(installed.name)
+                prefix = installed.relative_to(target).as_posix() + "/"
+                recorded = {
+                    item["path"]: item["sha256"]
+                    for item in inventory
+                    if isinstance(item, dict)
+                    and item.get("root") == inventory_root
+                    and isinstance(item.get("path"), str)
+                    and isinstance(item.get("sha256"), str)
+                    and item["path"].startswith(prefix)
+                }
+                current = {
+                    path.relative_to(target).as_posix(): file_sha256(path)
+                    for path in installed.rglob("*")
+                    if path.is_file()
+                }
+                if not recorded:
+                    foreign_names.add(installed.name)
+                elif current == recorded:
+                    managed_names.add(installed.name)
+                else:
+                    stale_names.add(installed.name)
     state = "stale" if stale_names else ("managed" if managed_names else ("foreign" if foreign_names else "missing"))
     return {
         "declared": str(agent.get("skills_tools", {}).get("agent_skills", {}).get("client_support", "unverified")),

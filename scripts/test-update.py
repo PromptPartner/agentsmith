@@ -658,6 +658,227 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertEqual(plan["installation"]["safety"], {"codex": "trusted"})
         self.assertEqual(plan["installation"]["operator"]["name"], "Legacy Operator")
 
+    def test_legacy_claude_only_global_reconstruction_detects_capabilities_before_failing_closed(self) -> None:
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
+        cloned = subprocess.run(
+            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(cloned.returncode, 0, cloned.stdout + cloned.stderr)
+        home = self.root / "legacy-claude-global-home"
+        codex_home = self.root / "legacy-claude-global-codex"
+        environment = {**os.environ, "HOME": str(home), "CODEX_HOME": str(codex_home)}
+        installed = self.run_core(
+            "install", "--agent", "claude", "--global", "--with-skills", env=environment,
+        )
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        state_path = home / ".agentsmith" / "state.json"
+        legacy_state = json.loads(state_path.read_text(encoding="utf-8"))
+        legacy_state.pop("schema_version")
+        legacy_state.pop("installation")
+        state_path.write_text(json.dumps(legacy_state, indent=2) + "\n", encoding="utf-8")
+        shutil.rmtree(home / ".agents")
+        self.assertTrue((home / ".claude" / "skills").is_dir())
+        self.assertFalse((home / ".agents").exists())
+        (home / ".claude.json").write_text(
+            json.dumps({"mcpServers": {"context7": {"command": "legacy-context7"}}}, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        with mock.patch.dict(os.environ, environment, clear=False):
+            reconstructed = runtime.reconstruct_pre_manifest_installation(home.resolve(), "global", legacy_state)
+
+        self.assertEqual(reconstructed["agents"], ["claude"])
+        self.assertTrue(reconstructed["capabilities"]["skills"])
+        self.assertEqual(reconstructed["capabilities"]["mcp"], ["context7"])
+        before = state_path.read_bytes()
+        plan_path = self.root / "legacy-claude-global-plan.json"
+
+        planned = self.run_core(
+            "update", "plan", "--global", "--version", NEXT_TAG,
+            "--from", str(self.remote), "--save", str(plan_path), env=environment,
+        )
+
+        self.assertNotEqual(planned.returncode, 0)
+        self.assertIn("global MCP ownership is not supported", planned.stderr)
+        self.assertFalse(plan_path.exists())
+        self.assertEqual(state_path.read_bytes(), before)
+
+    def test_legacy_claude_project_capabilities_survive_plan_apply_and_strict_health(self) -> None:
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
+        cloned = subprocess.run(
+            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(cloned.returncode, 0, cloned.stdout + cloned.stderr)
+        target = self.root / "legacy-claude-project"
+        target.mkdir()
+        environment = {
+            **os.environ,
+            "HOME": str(self.root / "legacy-claude-project-home"),
+            "CODEX_HOME": str(self.root / "legacy-claude-project-codex"),
+        }
+        installed = self.run_core(
+            "install", "--agent", "claude", "--profile", "software-dev", "--target", str(target),
+            "--with-skills", "--with-mcp", "context7", env=environment,
+        )
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        state_path = target / ".agentsmith" / "state.json"
+        legacy_state = json.loads(state_path.read_text(encoding="utf-8"))
+        legacy_state.pop("schema_version")
+        legacy_state.pop("installation")
+        state_path.write_text(json.dumps(legacy_state, indent=2) + "\n", encoding="utf-8")
+        shutil.rmtree(target / ".agents")
+        claude_skill = target / ".claude" / "skills" / "handoff" / "SKILL.md"
+        claude_skill_before = claude_skill.read_bytes()
+        mcp_path = target / ".mcp.json"
+        mcp_before = mcp_path.read_bytes()
+        plan_path = self.root / "legacy-claude-project-plan.json"
+
+        planned = self.run_core(
+            "update", "plan", "--target", str(target), "--version", NEXT_TAG,
+            "--from", str(self.remote), "--save", str(plan_path), env=environment,
+        )
+
+        self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        self.assertEqual(plan["schema_version"], 1)
+        self.assertTrue(plan["migration_warnings"])
+        self.assertEqual(
+            plan["installation"]["capabilities"],
+            {"handoff_hooks": False, "hooks": False, "mcp": ["context7"], "skills": True, "ui_design_hook": False},
+        )
+        self.assertTrue(any(item["path"].startswith(".agents/skills/") for item in plan["proposed_changes"]))
+
+        applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
+
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        canonical_skill = target / ".agents" / "skills" / "handoff" / "SKILL.md"
+        self.assertIn(NEXT_SKILL_PROBE, canonical_skill.read_text(encoding="utf-8"))
+        self.assertEqual(claude_skill.read_bytes(), claude_skill_before)
+        self.assertEqual(mcp_path.read_bytes(), mcp_before)
+        updated = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual(updated["schema_version"], 1)
+        self.assertEqual(updated["installation"]["capabilities"], plan["installation"]["capabilities"])
+        doctor = subprocess.run(
+            [
+                sys.executable, str(target / ".agentsmith" / "agentsmith.py"),
+                "doctor", "--agent", "claude", "--target", str(target), "--strict", "--json",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+            env=environment,
+        )
+        self.assertEqual(doctor.returncode, 0, doctor.stdout + doctor.stderr)
+        doctor_result = json.loads(doctor.stdout)
+        self.assertEqual(doctor_result["claude"]["skills"]["state"], "managed")
+        self.assertIn("handoff", doctor_result["claude"]["skills"]["managed_names"])
+
+        updated["installation"] = []
+        state_path.write_text(json.dumps(updated, indent=2) + "\n", encoding="utf-8")
+        malformed_state_doctor = subprocess.run(
+            [
+                sys.executable, str(target / ".agentsmith" / "agentsmith.py"),
+                "doctor", "--agent", "claude", "--target", str(target), "--strict", "--json",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+            env=environment,
+        )
+        self.assertEqual(
+            malformed_state_doctor.returncode, 0, malformed_state_doctor.stdout + malformed_state_doctor.stderr
+        )
+        malformed_result = json.loads(malformed_state_doctor.stdout)
+        self.assertEqual(malformed_result["claude"]["skills"]["state"], "foreign")
+
+    def test_pre_manifest_reconstruction_does_not_invent_unselected_or_absent_capabilities(self) -> None:
+        target = self.root / "legacy-empty-claude-project"
+        target.mkdir()
+        environment = {
+            **os.environ,
+            "HOME": str(self.root / "legacy-empty-home"),
+            "CODEX_HOME": str(self.root / "legacy-empty-codex"),
+        }
+        installed = self.run_core(
+            "install", "--agent", "claude", "--profile", "software-dev", "--target", str(target),
+            env=environment,
+        )
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        state_path = target / ".agentsmith" / "state.json"
+        legacy_state = json.loads(state_path.read_text(encoding="utf-8"))
+        legacy_state.pop("schema_version")
+        legacy_state.pop("installation")
+        state_path.write_text(json.dumps(legacy_state, indent=2) + "\n", encoding="utf-8")
+        codex_config = Path(environment["CODEX_HOME"]) / "config.toml"
+        codex_config.parent.mkdir(parents=True)
+        codex_config.write_text('[mcp_servers.context7]\ncommand = "unselected"\n', encoding="utf-8")
+
+        with mock.patch.dict(os.environ, environment, clear=False):
+            reconstructed = runtime.reconstruct_pre_manifest_installation(target.resolve(), "project", legacy_state)
+
+        self.assertEqual(reconstructed["agents"], ["claude"])
+        self.assertFalse(reconstructed["capabilities"]["skills"])
+        self.assertEqual(reconstructed["capabilities"]["mcp"], [])
+
+    def test_post_update_health_rejects_false_reconstructed_capabilities(self) -> None:
+        home = self.root / "false-reconstruction-home"
+        codex_home = self.root / "false-reconstruction-codex"
+        environment = {**os.environ, "HOME": str(home), "CODEX_HOME": str(codex_home)}
+        installed = self.run_core(
+            "install", "--agent", "claude", "--global", "--with-skills", env=environment,
+        )
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        (home / ".claude.json").write_text(
+            json.dumps({"mcpServers": {"context7": {"command": "legacy-context7"}}}, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        state_path = home / ".agentsmith" / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        installation = state["installation"]
+        installation["source"] = {"release": f"v{CURRENT_VERSION}", "commit": "a" * 40}
+        installation["capabilities"]["skills"] = False
+        state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+        plan = {
+            "scope": "global",
+            "target": str(home.resolve()),
+            "roots": {
+                "target": str(home.resolve()),
+                "home": str(home.resolve()),
+                "codex_home": str(codex_home.resolve()),
+            },
+            "release": {
+                "tag": f"v{CURRENT_VERSION}",
+                "version": CURRENT_VERSION,
+                "commit": "a" * 40,
+            },
+            "installation": installation,
+            "proposed_changes": [],
+            "migration_warnings": [
+                "Pre-manifest installation choices were reconstructed from managed markers and ownership state; "
+                "apply will persist schema version 1."
+            ],
+        }
+
+        with mock.patch.dict(os.environ, environment, clear=False), self.assertRaisesRegex(
+            runtime.CliError, "skill evidence was omitted"
+        ):
+            runtime.validate_post_update_health(plan)
+
+        installation["capabilities"]["skills"] = True
+        state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+        with mock.patch.dict(os.environ, environment, clear=False), self.assertRaisesRegex(
+            runtime.CliError, "MCP evidence was omitted"
+        ):
+            runtime.validate_post_update_health(plan)
+
     def test_assemble_only_is_preserved_for_project_and_global_updates(self) -> None:
         self.commit_and_tag(CURRENT_VERSION)
         self.commit_and_tag(NEXT_VERSION)
