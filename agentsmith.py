@@ -1465,6 +1465,11 @@ def installation_fingerprints(target: Path, installation: dict[str, Any]) -> tup
         for agent_id in installation["agents"]:
             if agent_id in adapters:
                 add("target", adapters[agent_id])
+        if installation["capabilities"].get("mcp"):
+            if "claude" in installation["agents"]:
+                add("target", ".mcp.json")
+            if "codex" in installation["agents"]:
+                add("target", ".codex/config.toml")
         if installation["capabilities"].get("skills"):
             add("target", ".agents/skills")
             if "claude" in installation["agents"]:
@@ -1856,7 +1861,7 @@ def allowed_update_path(root_name: str, relative: str, installation: dict[str, A
     if root_name == "target":
         exact = {
             "AGENTS.md", "CLAUDE.md", ".harness/verify.conf", ".aider.conf.yml", ".goosehints",
-            ".gemini/settings.json", ".continue/rules/agentsmith.md",
+            ".gemini/settings.json", ".continue/rules/agentsmith.md", ".mcp.json", ".codex/config.toml",
             *RUNTIME_FILES, ".agentsmith/autonomous-run.py", ".agentsmith/state.json",
         }
         prefixes = (".harness/templates/", ".agents/skills/", ".claude/skills/")
