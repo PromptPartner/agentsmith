@@ -1357,6 +1357,12 @@ def supported_mcp_names() -> set[str]:
     return set(source)
 
 
+def managed_mcp_names(target: Path, scope: str, agents: list[str]) -> set[str]:
+    if scope == "global":
+        return set()
+    return configured_mcp_names(target, scope, agents) & supported_mcp_names()
+
+
 def reconstruct_pre_manifest_installation(target: Path, scope: str, state: dict[str, Any]) -> dict[str, Any]:
     instruction_candidates = (
         [home_dir() / ".claude" / "CLAUDE.md", codex_home() / "AGENTS.md"]
@@ -1445,8 +1451,7 @@ def reconstruct_pre_manifest_installation(target: Path, scope: str, state: dict[
         if path.is_file():
             config_texts.append(path.read_text(encoding="utf-8", errors="replace"))
     combined_config = "\n".join(config_texts)
-    configured_mcp = configured_mcp_names(target, scope, agents)
-    mcp_names = sorted(configured_mcp if scope == "global" else configured_mcp & supported_mcp_names())
+    mcp_names = sorted(managed_mcp_names(target, scope, agents))
     skills = detected_skill_capability(target, scope, agents)
     return {
         "installed_version": installed_version,
@@ -2195,8 +2200,7 @@ def validate_post_update_health(plan: dict[str, Any]) -> None:
         observed_skills = detected_skill_capability(target, plan["scope"], installation["agents"])
         if observed_skills and not capabilities.get("skills"):
             raise CliError("Post-update health check failed: installed skill evidence was omitted from the manifest")
-        observed_mcp = configured_mcp_names(target, plan["scope"], installation["agents"])
-        managed_mcp = observed_mcp if plan["scope"] == "global" else observed_mcp & supported_mcp_names()
+        managed_mcp = managed_mcp_names(target, plan["scope"], installation["agents"])
         if managed_mcp - set(capabilities.get("mcp", [])):
             raise CliError("Post-update health check failed: installed MCP evidence was omitted from the manifest")
     runtime_root = Path(plan["roots"]["home"]) if plan["scope"] == "global" else target
