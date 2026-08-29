@@ -6,6 +6,7 @@
 
 - **Date:** 2026-08-29
 - **Status:** applied
+- **Fixed release:** `v0.2.3`
 - **Cost:** Stable `v0.2.2` blocks every global update on a machine where a selected agent has any
   user-scope MCP server. The operator found the released regression by tracing the configured and
   supported MCP sets after the release gate had passed.
@@ -21,8 +22,8 @@ The regression fixtures failed before the correction across both affected seams:
 
 - reconstruction returned `capabilities.mcp: ["gemini"]` instead of `[]`;
 - direct post-update health validation rejected foreign global MCP as omitted managed evidence;
-- malformed foreign Claude JSON and Codex TOML were parsed and rejected even though AgentSmith
-  cannot own either global MCP file.
+- malformed foreign Claude JSON and Codex TOML were parsed and rejected during capability
+  reconstruction even though AgentSmith cannot own either global MCP file.
 
 ## 2. Failure mechanism
 
@@ -57,6 +58,7 @@ fixture using a supported MCP name to prove that name alone cannot imply global 
 
 The regression fixtures fail on released `v0.2.2` at reconstruction and at the health gate. With the
 bounded edit they pass, including valid foreign-server preservation, malformed Claude and Codex
-file short-circuiting, authenticated apply, and schema-v1 persistence. All 39 updater tests pass,
-and the full 19-phase local verification gate passes, including secret and leak checks. A fresh
-independent review found no remaining ownership, test, documentation, or security issues.
+file short-circuiting during capability reconstruction, authenticated apply, and schema-v1
+persistence. All 39 updater tests pass, and the full 19-phase local verification gate passes,
+including secret and leak checks. A fresh independent review found no remaining ownership, test,
+documentation, or security issues.

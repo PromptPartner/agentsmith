@@ -4,9 +4,9 @@ This runbook is for installations created before AgentSmith included its staged 
 update is a bootstrap: run the updater from a temporary checkout of a stable release, point it at
 the existing installation, and keep planning separate from applying.
 
-## Current release blockers
+## Current release and legacy blockers
 
-The current stable release is `v0.2.2`.
+The current stable release is `v0.2.3`.
 
 **Do not apply `v0.2.1` to a pre-manifest, Claude-only installation when skills exist only under
 `~/.claude/skills` or its user-scope MCP configuration exists only in `~/.claude.json`.** In that legacy shape,
@@ -14,16 +14,17 @@ The current stable release is `v0.2.2`.
 changes, and report success. The post-update skill check is then skipped because it trusts the same
 false capability value.
 
-The silent capability-loss defect is fixed in `v0.2.2` and recorded in
+The silent capability-loss defect was fixed in `v0.2.2` and is recorded in
 [`feedback/0020-legacy-claude-reconstruction-skipped-skills-and-mcp.md`](feedback/0020-legacy-claude-reconstruction-skipped-skills-and-mcp.md).
-However, `v0.2.2` has a global-update regression: any user-scope MCP server in `~/.claude.json` or
+However, **do not use `v0.2.2` for a global update when a selected agent has any user-scope MCP
+server.** Any server in `~/.claude.json` or
 the Codex user configuration blocks `update plan --global`. AgentSmith cannot own global MCP
-servers, so those entries are foreign configuration and should be preserved and ignored. The
-correction is recorded in
+servers, so those entries are foreign configuration. The regression is fixed in `v0.2.3` and
+recorded in
 [`feedback/0022-global-update-blocked-by-foreign-mcp.md`](feedback/0022-global-update-blocked-by-foreign-mcp.md).
-Until that correction is published in a later stable release, use `v0.2.2` only for project updates
-on affected machines. Do not remove foreign MCP configuration or edit an authenticated plan as a
-workaround.
+The fixed updater does not parse global MCP to infer capability ownership and never treats a global
+server as AgentSmith-managed. Valid foreign client configuration remains preserved. Do not remove
+foreign MCP configuration or edit an authenticated plan as a workaround for either older release.
 
 ## Before updating
 
@@ -49,7 +50,7 @@ installation that does not have one yet.
 ```bash
 AGENTSMITH_BOOTSTRAP_DIR="$(mktemp -d)"
 
-git clone --depth 1 --branch v0.2.2 \
+git clone --depth 1 --branch v0.2.3 \
   https://github.com/PromptPartner/agentsmith.git \
   "$AGENTSMITH_BOOTSTRAP_DIR"
 
@@ -57,7 +58,7 @@ git -C "$AGENTSMITH_BOOTSTRAP_DIR" rev-parse HEAD
 git -C "$AGENTSMITH_BOOTSTRAP_DIR" describe --tags --exact-match
 ```
 
-The final command must print `v0.2.2`. This proves the bootstrap is the immutable release tag rather
+The final command must print `v0.2.3`. This proves the bootstrap is the immutable release tag rather
 than an unreviewed branch checkout.
 
 ## Update one project installation
@@ -67,13 +68,13 @@ but does not modify the target.
 
 ```bash
 AGENTSMITH_TARGET="/absolute/path/to/project"
-AGENTSMITH_PLAN="/tmp/agentsmith-project-name-v0.2.2-plan.json"
+AGENTSMITH_PLAN="/tmp/agentsmith-project-name-v0.2.3-plan.json"
 
 git -C "$AGENTSMITH_TARGET" status --short
 
 python3 "$AGENTSMITH_BOOTSTRAP_DIR/agentsmith.py" update plan \
   --target "$AGENTSMITH_TARGET" \
-  --version v0.2.2 \
+  --version v0.2.3 \
   --save "$AGENTSMITH_PLAN"
 
 python3 -m json.tool "$AGENTSMITH_PLAN" | less
@@ -107,19 +108,23 @@ python3 "$AGENTSMITH_TARGET/.agentsmith/agentsmith.py" doctor \
 Global scope is separate from every project scope. Create and inspect its own plan:
 
 ```bash
-AGENTSMITH_PLAN="/tmp/agentsmith-global-v0.2.2-plan.json"
+AGENTSMITH_PLAN="/tmp/agentsmith-global-v0.2.3-plan.json"
 
 python3 "$AGENTSMITH_BOOTSTRAP_DIR/agentsmith.py" update plan \
   --global \
-  --version v0.2.2 \
+  --version v0.2.3 \
   --save "$AGENTSMITH_PLAN"
 
 python3 -m json.tool "$AGENTSMITH_PLAN" | less
 ```
 
-`v0.2.2` refuses global planning when any user-scope MCP server is configured, including
-unrelated user-owned servers. Do not remove that configuration to work around the regression; wait
-for a fixed stable release. On an unaffected machine, after approving the plan:
+Global MCP is foreign by construction because AgentSmith supports MCP ownership only at project
+scope. `v0.2.3` therefore does not parse global MCP while reconstructing or validating capability
+ownership. For valid user-scope client configuration, it preserves foreign MCP entries. A malformed
+client config can still block reconciliation of other AgentSmith-managed native settings, so repair
+invalid JSON or TOML before a non-assemble-only update. For a reconstructed legacy installation,
+confirm the plan records `capabilities.mcp` as an empty list and proposes no MCP-file changes. After
+approving the plan:
 
 ```bash
 python3 "$AGENTSMITH_BOOTSTRAP_DIR/agentsmith.py" update apply \
