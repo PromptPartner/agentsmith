@@ -4,7 +4,7 @@ This runbook is for installations created before AgentSmith included its staged 
 update is a bootstrap: run the updater from a temporary checkout of a stable release, point it at
 the existing installation, and keep planning separate from applying.
 
-## Current release and v0.2.1 blocker
+## Current release blockers
 
 The current stable release is `v0.2.2`.
 
@@ -14,12 +14,16 @@ The current stable release is `v0.2.2`.
 changes, and report success. The post-update skill check is then skipped because it trusts the same
 false capability value.
 
-The defect is fixed in `v0.2.2` and recorded in
+The silent capability-loss defect is fixed in `v0.2.2` and recorded in
 [`feedback/0020-legacy-claude-reconstruction-skipped-skills-and-mcp.md`](feedback/0020-legacy-claude-reconstruction-skipped-skills-and-mcp.md).
-The fixed planner reconstructs Claude skill evidence and refuses global MCP migration explicitly,
-because AgentSmith does not own global MCP configuration. This refusal is fail-closed: follow its
-reinstall guidance after preserving the configuration. Do not compensate by manually editing the
-authenticated plan.
+However, `v0.2.2` has a global-update regression: any user-scope MCP server in `~/.claude.json` or
+the Codex user configuration blocks `update plan --global`. AgentSmith cannot own global MCP
+servers, so those entries are foreign configuration and should be preserved and ignored. The
+correction is recorded in
+[`feedback/0022-global-update-blocked-by-foreign-mcp.md`](feedback/0022-global-update-blocked-by-foreign-mcp.md).
+Until that correction is published in a later stable release, use `v0.2.2` only for project updates
+on affected machines. Do not remove foreign MCP configuration or edit an authenticated plan as a
+workaround.
 
 ## Before updating
 
@@ -113,9 +117,9 @@ python3 "$AGENTSMITH_BOOTSTRAP_DIR/agentsmith.py" update plan \
 python3 -m json.tool "$AGENTSMITH_PLAN" | less
 ```
 
-For the legacy Claude-only shape described above, v0.2.2 refuses planning when user-scope MCP is
-present; it does not create an applyable plan that omits the capability. Otherwise, after approving
-the plan:
+`v0.2.2` refuses global planning when any user-scope MCP server is configured, including
+unrelated user-owned servers. Do not remove that configuration to work around the regression; wait
+for a fixed stable release. On an unaffected machine, after approving the plan:
 
 ```bash
 python3 "$AGENTSMITH_BOOTSTRAP_DIR/agentsmith.py" update apply \
