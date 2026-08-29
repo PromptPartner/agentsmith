@@ -63,14 +63,18 @@ The new fixtures cover a pre-manifest Claude-only global install containing only
 plus a `~/.claude.json` `mcpServers` object and no `.agents` directory. They prove:
 
 1. the unfixed implementation reconstructs `skills: false` for the reported global shape;
-2. planning after the fix detects both capabilities and refuses with the explicit global MCP
-   ownership error, never a successful omission;
+2. planning after the fix detects skill capability but classifies user-scope global MCP as foreign,
+   because AgentSmith cannot own MCP configuration at global scope;
 3. a supported project apply creates the canonical skill root, keeps the Claude mirror, retains
    Claude JSON MCP, and passes both apply-time and installed-runtime strict health checks;
 4. an installation with no selected-agent skill or MCP evidence is not falsely upgraded into those
    capabilities;
-5. post-update validation rejects authenticated reconstructed state whose false skill or empty MCP
-   value would otherwise suppress its own check.
+5. post-update validation rejects authenticated reconstructed state whose false skill or managed
+   project MCP value would otherwise suppress its own check, while ignoring foreign global MCP.
+
+The original v0.2.2 fixture incorrectly treated refusal on any global MCP as the safe outcome. That
+regression and its corrected ownership invariant are recorded in
+[`feedback/0022-global-update-blocked-by-foreign-mcp.md`](0022-global-update-blocked-by-foreign-mcp.md).
 
 The full 19-phase local gate passed. PR #22 then passed the repository's cross-platform CI matrix
 on Ubuntu, macOS, and Windows, including the updater fixtures on every platform and the existing

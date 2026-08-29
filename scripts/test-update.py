@@ -658,7 +658,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertEqual(plan["installation"]["safety"], {"codex": "trusted"})
         self.assertEqual(plan["installation"]["operator"]["name"], "Legacy Operator")
 
-    def test_legacy_claude_only_global_reconstruction_detects_capabilities_before_failing_closed(self) -> None:
+    def test_legacy_claude_global_foreign_mcp_survives_plan_apply_and_health(self) -> None:
         self.commit_and_tag(CURRENT_VERSION)
         self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
@@ -684,7 +684,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertTrue((home / ".claude" / "skills").is_dir())
         self.assertFalse((home / ".agents").exists())
         (home / ".claude.json").write_text(
-            json.dumps({"mcpServers": {"context7": {"command": "legacy-context7"}}}, indent=2) + "\n",
+            json.dumps({"mcpServers": {"gemini": {"command": "user-owned-gemini"}}}, indent=2) + "\n",
             encoding="utf-8",
         )
 
@@ -693,8 +693,9 @@ class UpdateCheckTests(unittest.TestCase):
 
         self.assertEqual(reconstructed["agents"], ["claude"])
         self.assertTrue(reconstructed["capabilities"]["skills"])
-        self.assertEqual(reconstructed["capabilities"]["mcp"], ["context7"])
+        self.assertEqual(reconstructed["capabilities"]["mcp"], [])
         before = state_path.read_bytes()
+        foreign_mcp_before = (home / ".claude.json").read_bytes()
         plan_path = self.root / "legacy-claude-global-plan.json"
 
         planned = self.run_core(
@@ -702,10 +703,45 @@ class UpdateCheckTests(unittest.TestCase):
             "--from", str(self.remote), "--save", str(plan_path), env=environment,
         )
 
-        self.assertNotEqual(planned.returncode, 0)
-        self.assertIn("global MCP ownership is not supported", planned.stderr)
-        self.assertFalse(plan_path.exists())
+        self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        self.assertEqual(plan["schema_version"], 1)
+        self.assertEqual(plan["installation"]["capabilities"]["mcp"], [])
         self.assertEqual(state_path.read_bytes(), before)
+
+        applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
+
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        self.assertEqual((home / ".claude.json").read_bytes(), foreign_mcp_before)
+        updated = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual(updated["schema_version"], 1)
+        self.assertEqual(updated["installation"]["capabilities"]["mcp"], [])
+
+    def test_global_foreign_mcp_files_are_not_parsed_during_reconstruction(self) -> None:
+        for agent_id in ("claude", "codex"):
+            with self.subTest(agent_id=agent_id):
+                home = self.root / f"malformed-{agent_id}-home"
+                codex_home = self.root / f"malformed-{agent_id}-codex"
+                environment = {**os.environ, "HOME": str(home), "CODEX_HOME": str(codex_home)}
+                installed = self.run_core("install", "--agent", agent_id, "--global", env=environment)
+                self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+                state_path = home / ".agentsmith" / "state.json"
+                legacy_state = json.loads(state_path.read_text(encoding="utf-8"))
+                legacy_state.pop("schema_version")
+                legacy_state.pop("installation")
+                state_path.write_text(json.dumps(legacy_state, indent=2) + "\n", encoding="utf-8")
+                if agent_id == "claude":
+                    (home / ".claude.json").write_text("{not-json\n", encoding="utf-8")
+                else:
+                    codex_config = codex_home / "config.toml"
+                    codex_config.write_text("[mcp_servers.invalid\n", encoding="utf-8")
+
+                with mock.patch.dict(os.environ, environment, clear=False):
+                    reconstructed = runtime.reconstruct_pre_manifest_installation(
+                        home.resolve(), "global", legacy_state
+                    )
+
+                self.assertEqual(reconstructed["capabilities"]["mcp"], [])
 
     def test_legacy_claude_project_capabilities_survive_plan_apply_and_strict_health(self) -> None:
         self.commit_and_tag(CURRENT_VERSION)
@@ -828,7 +864,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertFalse(reconstructed["capabilities"]["skills"])
         self.assertEqual(reconstructed["capabilities"]["mcp"], [])
 
-    def test_post_update_health_rejects_false_reconstructed_capabilities(self) -> None:
+    def test_post_update_health_rejects_false_skills_but_ignores_global_foreign_mcp(self) -> None:
         home = self.root / "false-reconstruction-home"
         codex_home = self.root / "false-reconstruction-codex"
         environment = {**os.environ, "HOME": str(home), "CODEX_HOME": str(codex_home)}
@@ -836,10 +872,7 @@ class UpdateCheckTests(unittest.TestCase):
             "install", "--agent", "claude", "--global", "--with-skills", env=environment,
         )
         self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
-        (home / ".claude.json").write_text(
-            json.dumps({"mcpServers": {"context7": {"command": "legacy-context7"}}}, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        (home / ".claude.json").write_text("{not-json\n", encoding="utf-8")
         state_path = home / ".agentsmith" / "state.json"
         state = json.loads(state_path.read_text(encoding="utf-8"))
         installation = state["installation"]
@@ -874,9 +907,7 @@ class UpdateCheckTests(unittest.TestCase):
 
         installation["capabilities"]["skills"] = True
         state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
-        with mock.patch.dict(os.environ, environment, clear=False), self.assertRaisesRegex(
-            runtime.CliError, "MCP evidence was omitted"
-        ):
+        with mock.patch.dict(os.environ, environment, clear=False):
             runtime.validate_post_update_health(plan)
 
     def test_assemble_only_is_preserved_for_project_and_global_updates(self) -> None:
