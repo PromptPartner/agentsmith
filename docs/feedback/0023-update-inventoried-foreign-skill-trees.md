@@ -6,7 +6,7 @@
 
 - **Date:** 2026-08-30
 - **Status:** applied
-- **Fixed release:** unreleased
+- **Fixed release:** `v0.2.4`
 - **Cost:** The third stable release in the legacy global update chain still could not complete
   a plan. Once skill detection and global MCP ownership were corrected, the updater entered a
   third-party skill's Python virtual environment and rejected its normal `lib64 -> lib` link.
