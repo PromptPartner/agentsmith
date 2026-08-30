@@ -1514,24 +1514,74 @@ def safe_update_path(root: Path, relative: str | Path) -> Path:
     return candidate
 
 
-def installation_fingerprints(target: Path, installation: dict[str, Any]) -> tuple[dict[str, str], list[dict[str, Any]]]:
+def safe_inventory_path(root: Path, relative: str | Path) -> Path:
+    """Return a contained read-only path, allowing only symlinks that resolve inside root."""
+    root = root.resolve()
+    relative_path = Path(relative)
+    if relative_path.is_absolute() or ".." in relative_path.parts or not relative_path.parts:
+        raise CliError(f"Update inventory path escapes its declared root: {relative}")
+    candidate = root.joinpath(relative_path)
+    try:
+        candidate.resolve(strict=False).relative_to(root)
+    except (OSError, ValueError) as exc:
+        raise CliError(f"Update inventory path escapes its declared root: {candidate}") from exc
+    return candidate
+
+
+def has_symlink_component(root: Path, relative: str | Path) -> bool:
+    current = root.resolve()
+    for part in Path(relative).parts:
+        current = current / part
+        if current.is_symlink():
+            return True
+    return False
+
+
+def inventory_files(root: Path, directory: Path) -> list[Path]:
+    """List regular inventory files without following contained links or reading escaping links."""
+    root = root.resolve()
+    relative_directory = directory.relative_to(root)
+    checked_directory = safe_inventory_path(root, relative_directory)
+    if checked_directory.is_symlink() or not checked_directory.is_dir():
+        return []
+    result: list[Path] = []
+    for child in checked_directory.rglob("*"):
+        relative = child.relative_to(root)
+        checked = safe_inventory_path(root, relative)
+        if has_symlink_component(root, relative):
+            continue
+        if checked.is_file():
+            result.append(checked)
+    return result
+
+
+def installation_fingerprints(
+    target: Path, installation: dict[str, Any], *, infer_legacy_skill_ownership: bool
+) -> tuple[dict[str, str], list[dict[str, Any]], list[dict[str, str]]]:
     roots = {
         "target": target,
         "home": home_dir().resolve(),
         "codex_home": codex_home().resolve(),
     }
     candidates: set[tuple[str, Path]] = set()
+    foreign_skill_directories: set[tuple[str, str]] = set()
 
     def add(root_name: str, relative: str) -> None:
         root = roots[root_name]
         path = safe_update_path(root, relative)
         if path.is_dir():
-            for child in path.rglob("*"):
-                checked = safe_update_path(root, child.relative_to(root))
-                if checked.is_file():
-                    candidates.add((root_name, checked))
+            for checked in inventory_files(root, path):
+                candidates.add((root_name, checked))
         else:
             candidates.add((root_name, path))
+
+    def add_owned_skills(root_name: str, skill_root: Path, classification: dict[Path, dict[str, set[str]]]) -> None:
+        groups = classification.get(skill_root, {})
+        for name in sorted(groups.get("managed", set()) | groups.get("stale", set())):
+            add(root_name, (skill_root / name).relative_to(roots[root_name]).as_posix())
+        for name in groups.get("foreign", set()):
+            relative = (skill_root / name).relative_to(roots[root_name]).as_posix()
+            foreign_skill_directories.add((root_name, relative))
 
     if installation["scope"] == "project":
         for relative in (
@@ -1554,18 +1604,27 @@ def installation_fingerprints(target: Path, installation: dict[str, Any]) -> tup
             if "codex" in installation["agents"]:
                 add("target", ".codex/config.toml")
         if installation["capabilities"].get("skills"):
-            add("target", ".agents/skills")
-            if "claude" in installation["agents"]:
-                add("target", ".claude/skills")
+            skill_agent = "claude" if "claude" in installation["agents"] else "codex"
+            classification = classify_skill_directories(
+                skill_agent, target, installation, infer_bundled_ownership=infer_legacy_skill_ownership
+            )
+            add_owned_skills("target", target / ".agents" / "skills", classification)
+            if skill_agent == "claude":
+                add_owned_skills("target", target / ".claude" / "skills", classification)
     else:
         if "claude" in installation["agents"]:
             add("home", ".claude/CLAUDE.md")
         if "codex" in installation["agents"]:
             add("codex_home", "AGENTS.md")
         if installation["capabilities"].get("skills"):
-            add("home", ".agents/skills")
-            if "claude" in installation["agents"]:
-                add("home", ".claude/skills")
+            skill_target = roots["home"]
+            skill_agent = "claude" if "claude" in installation["agents"] else "codex"
+            classification = classify_skill_directories(
+                skill_agent, skill_target, installation, infer_bundled_ownership=infer_legacy_skill_ownership
+            )
+            add_owned_skills("home", skill_target / ".agents" / "skills", classification)
+            if skill_agent == "claude":
+                add_owned_skills("home", skill_target / ".claude" / "skills", classification)
         if installation["capabilities"].get("handoff_hooks") or installation["capabilities"].get("ui_design_hook"):
             for relative in RUNTIME_FILES:
                 add("home", relative)
@@ -1591,7 +1650,11 @@ def installation_fingerprints(target: Path, installation: dict[str, Any]) -> tup
         add("codex_home", "hooks.json")
     entries = [fingerprint_entry(root_name, roots[root_name], path) for root_name, path in candidates]
     entries.sort(key=lambda item: (item["root"], item["path"]))
-    return {name: str(path) for name, path in roots.items()}, entries
+    preserved_foreign = [
+        {"root": root_name, "path": path}
+        for root_name, path in sorted(foreign_skill_directories)
+    ]
+    return {name: str(path) for name, path in roots.items()}, entries, preserved_foreign
 
 
 def update_integrity_key(*, create: bool) -> bytes:
@@ -1630,9 +1693,11 @@ def cmd_update_plan(args: argparse.Namespace) -> int:
     state = load_update_state(target)
     expected_scope = "global" if args.global_mode else "project"
     migration_warnings: list[str] = []
+    reconstructed = False
     if "schema_version" in state or "installation" in state:
         installation = validate_installation_manifest(state)
     else:
+        reconstructed = True
         installation = reconstruct_pre_manifest_installation(target, expected_scope, state)
         migration_warnings.append(
             "Pre-manifest installation choices were reconstructed from managed markers and ownership state; "
@@ -1647,7 +1712,9 @@ def cmd_update_plan(args: argparse.Namespace) -> int:
         )
     remote = args.update_from or OFFICIAL_REMOTE
     release = resolve_stable_release(remote, args.version)
-    roots, fingerprints = installation_fingerprints(target, installation)
+    roots, fingerprints, foreign_skill_directories = installation_fingerprints(
+        target, installation, infer_legacy_skill_ownership=reconstructed
+    )
     payload: dict[str, Any] = {
         "schema_version": 1,
         "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -1658,6 +1725,7 @@ def cmd_update_plan(args: argparse.Namespace) -> int:
         "release": release,
         "installation": installation,
         "fingerprints": fingerprints,
+        "foreign_skill_directories": foreign_skill_directories,
         "proposed_changes": [],
         "preserved_foreign_content": [
             "Content outside AgentSmith-managed markers and owned configuration remains in place.",
@@ -1705,10 +1773,11 @@ def validated_plan(path: Path) -> dict[str, Any]:
     allowed = {
         "schema_version", "created_at", "scope", "target", "roots", "remote", "release",
         "installation", "fingerprints", "proposed_changes", "preserved_foreign_content",
-        "migration_warnings", "verification", "integrity",
+        "foreign_skill_directories", "migration_warnings", "verification", "integrity",
     }
+    required = allowed - {"foreign_skill_directories"}
     unknown = sorted(set(plan) - allowed)
-    missing = sorted(allowed - set(plan))
+    missing = sorted(required - set(plan))
     if unknown or missing:
         detail = f"unknown: {', '.join(unknown)}" if unknown else f"missing: {', '.join(missing)}"
         raise CliError(f"Plan fields are not supported ({detail})")
@@ -1749,6 +1818,33 @@ def validated_plan(path: Path) -> dict[str, Any]:
             raise CliError("Plan fingerprint hash is malformed")
         if item["mode"] is not None and (not isinstance(item["mode"], int) or not 0 <= item["mode"] <= 0o777):
             raise CliError("Plan fingerprint mode is malformed")
+    foreign_skill_directories = plan.get("foreign_skill_directories", [])
+    if not isinstance(foreign_skill_directories, list):
+        raise CliError("Plan foreign skill directories must be a list")
+    foreign_paths: set[tuple[str, str]] = set()
+    for item in foreign_skill_directories:
+        if not isinstance(item, dict) or set(item) != {"root", "path"}:
+            raise CliError("Plan contains a malformed foreign skill directory")
+        root_name, relative = item["root"], item["path"]
+        if root_name not in {"target", "home"} or not isinstance(relative, str):
+            raise CliError("Plan foreign skill directory has an unknown root or path")
+        expected_root_name = "home" if plan["scope"] == "global" else "target"
+        relative_path = Path(relative)
+        parts = relative_path.parts
+        if root_name != expected_root_name:
+            raise CliError("Plan foreign skill directory has the wrong scope root")
+        if (
+            relative_path.is_absolute()
+            or ".." in parts
+            or len(parts) != 3
+            or tuple(parts[:2]) not in {(".agents", "skills"), (".claude", "skills")}
+            or (parts[0] == ".claude" and "claude" not in installation["agents"])
+        ):
+            raise CliError("Plan foreign skill directory is outside the skill roots")
+        identity = (root_name, relative)
+        if identity in foreign_paths:
+            raise CliError("Plan contains a duplicate foreign skill directory")
+        foreign_paths.add(identity)
     if not isinstance(plan["proposed_changes"], list):
         raise CliError("Plan proposed changes must be a list")
     proposed_paths: set[tuple[str, str]] = set()
@@ -1788,6 +1884,10 @@ def recheck_plan_fingerprints(plan: dict[str, Any]) -> None:
         actual_mode = path.stat().st_mode & 0o777 if path.is_file() else None
         if actual != item["sha256"] or actual_mode != item["mode"]:
             raise CliError(f"Update refused: {item['root']}:{item['path']} changed after planning")
+    for item in plan.get("foreign_skill_directories", []):
+        path = Path(plan["roots"][item["root"]]).joinpath(item["path"])
+        if not path.exists():
+            raise CliError(f"Update refused: foreign skill collision disappeared after planning: {item['path']}")
 
 
 def copy_plan_inputs_to_shadow(plan: dict[str, Any], shadow_roots: dict[str, Path]) -> None:
@@ -1809,6 +1909,13 @@ def copy_plan_inputs_to_shadow(plan: dict[str, Any], shadow_roots: dict[str, Pat
             destination.write_bytes(translated)
 
 
+def preserve_foreign_skill_collisions(plan: dict[str, Any], shadow_roots: dict[str, Path]) -> None:
+    """Represent authenticated foreign top-level names without reading or copying their contents."""
+    for item in plan.get("foreign_skill_directories", []):
+        destination = safe_update_path(shadow_roots[item["root"]], item["path"])
+        destination.mkdir(parents=True, exist_ok=True)
+
+
 def prepare_owned_skills(plan: dict[str, Any], shadow_roots: dict[str, Path]) -> set[tuple[str, str]]:
     inventory = plan["installation"].get("managed_files", [])
     grouped: dict[tuple[str, str], list[dict[str, str]]] = {}
@@ -1827,11 +1934,9 @@ def prepare_owned_skills(plan: dict[str, Any], shadow_roots: dict[str, Path]) ->
         recorded = {item["path"]: item["sha256"] for item in items}
         current: dict[str, str] = {}
         if actual_root.is_dir():
-            for path in actual_root.rglob("*"):
-                relative = path.relative_to(source_root)
-                checked = safe_update_path(source_root, relative)
-                if checked.is_file():
-                    current[relative.as_posix()] = file_sha256(checked)
+            for checked in inventory_files(source_root, actual_root):
+                relative = checked.relative_to(source_root)
+                current[relative.as_posix()] = file_sha256(checked)
         shadow_skill = safe_update_path(shadow_roots[root_name], prefix)
         if current == recorded:
             if shadow_skill.exists():
@@ -1862,6 +1967,39 @@ def retain_customized_skill_baselines(
         if any(item.get("root") == root_name and item.get("path", "").startswith(prefix + "/") for root_name, prefix in preserved)
     ]
     installation["managed_files"] = [*kept_new, *kept_prior]
+    atomic_write(state_path(state_root), json.dumps(state, indent=2, ensure_ascii=False) + "\n")
+
+
+def retain_reconstructed_skill_baselines(plan: dict[str, Any], shadow_roots: dict[str, Path]) -> None:
+    reconstructed = any(
+        isinstance(warning, str) and warning.startswith("Pre-manifest installation choices were reconstructed")
+        for warning in plan["migration_warnings"]
+    )
+    if not reconstructed or not plan["installation"]["capabilities"].get("skills"):
+        return
+    state_root = shadow_roots["home"] if plan["scope"] == "global" else shadow_roots["target"]
+    state = load_state(state_root)
+    installation = state.get("installation")
+    if not isinstance(installation, dict):
+        raise CliError("Staged installer did not write an installation manifest")
+    inventory = installation.get("managed_files", [])
+    existing = {
+        (item.get("root"), item.get("path"))
+        for item in inventory
+        if isinstance(item, dict)
+    }
+    for item in plan["fingerprints"]:
+        parts = Path(item["path"]).parts
+        identity = (item["root"], item["path"])
+        if (
+            item["sha256"] is not None
+            and len(parts) >= 4
+            and tuple(parts[:2]) in {(".agents", "skills"), (".claude", "skills")}
+            and identity not in existing
+        ):
+            inventory.append({"root": item["root"], "path": item["path"], "sha256": item["sha256"]})
+            existing.add(identity)
+    installation["managed_files"] = sorted(inventory, key=lambda item: (item["root"], item["path"]))
     atomic_write(state_path(state_root), json.dumps(state, indent=2, ensure_ascii=False) + "\n")
 
 
@@ -2054,6 +2192,7 @@ def stage_planned_update(
         root.mkdir(parents=True, exist_ok=True)
     copy_plan_inputs_to_shadow(plan, shadow_roots)
     preserved_skills = prepare_owned_skills(plan, shadow_roots)
+    preserve_foreign_skill_collisions(plan, shadow_roots)
     shadow_env = {
         "HOME": str(shadow_roots["home"]),
         "USERPROFILE": str(shadow_roots["home"]),
@@ -2084,6 +2223,7 @@ def stage_planned_update(
     else:
         trusted_stage_install(checkout, plan["release"]["version"], install_arguments, shadow_env)
     retain_customized_skill_baselines(plan, shadow_roots, preserved_skills)
+    retain_reconstructed_skill_baselines(plan, shadow_roots)
     translated_files: dict[str, dict[str, tuple[bytes, int]]] = {}
     for root_name, shadow_root in shadow_roots.items():
         translated_files[root_name] = {}
@@ -2218,17 +2358,31 @@ def validate_post_update_health(plan: dict[str, Any]) -> None:
 
     if capabilities.get("skills"):
         skill_root = Path(plan["roots"]["home"]) if plan["scope"] == "global" else target
-        required_roots = [skill_root / ".agents" / "skills"]
+        inventory_root = "home" if plan["scope"] == "global" else "target"
+        required_roots = [(skill_root / ".agents" / "skills", ".agents/skills/")]
         if "claude" in installation["agents"]:
-            required_roots.append(skill_root / ".claude" / "skills")
-        if any(not root.is_dir() or not any(root.rglob("SKILL.md")) for root in required_roots):
-            raise CliError("Post-update health check failed: a managed skill root is missing or empty")
+            required_roots.append((skill_root / ".claude" / "skills", ".claude/skills/"))
         inventory = installed.get("managed_files", [])
         if not inventory or any(
             not safe_update_path(Path(plan["roots"][item["root"]]), item["path"]).is_file()
             for item in inventory
         ):
             raise CliError("Post-update health check failed: managed skill inventory is missing a file")
+        for root, prefix in required_roots:
+            owned = [
+                item for item in inventory
+                if item.get("root") == inventory_root
+                and isinstance(item.get("path"), str)
+                and item["path"].startswith(prefix)
+                and item["path"].endswith("/SKILL.md")
+            ]
+            if not root.is_dir() or not owned:
+                raise CliError(f"Post-update health check failed: managed skill inventory is missing for {prefix}")
+            if any(
+                not safe_update_path(Path(plan["roots"][item["root"]]), item["path"]).is_file()
+                for item in owned
+            ):
+                raise CliError(f"Post-update health check failed: managed skill inventory is stale for {prefix}")
 
     requested_mcp = set(capabilities.get("mcp", []))
     if requested_mcp and plan["scope"] == "global":
@@ -3264,41 +3418,56 @@ def inspect_instructions(agent_id: str, agent: dict[str, Any], target: Path) -> 
     }, warnings
 
 
-def directory_snapshot(path: Path) -> dict[Path, bytes]:
-    return {item.relative_to(path): item.read_bytes() for item in path.rglob("*") if item.is_file()} if path.is_dir() else {}
+def directory_snapshot(path: Path, root: Path | None = None) -> dict[Path, bytes]:
+    if not path.is_dir():
+        return {}
+    boundary = root.resolve() if root is not None else path.resolve()
+    return {item.relative_to(path): item.read_bytes() for item in inventory_files(boundary, path)}
 
 
-def inspect_skills(agent_id: str, agent: dict[str, Any], target: Path) -> dict[str, Any]:
+def classify_skill_directories(
+    agent_id: str,
+    target: Path,
+    installation: dict[str, Any] | None = None,
+    *,
+    infer_bundled_ownership: bool | None = None,
+) -> dict[Path, dict[str, set[str]]]:
     roots = [target / ".agents" / "skills"]
     if agent_id == "claude":
         roots.append(target / ".claude" / "skills")
     bundled_root = ROOT / "skills"
     bundled = (
-        {path.name: directory_snapshot(path) for path in bundled_root.iterdir() if path.is_dir()}
+        {path.name: directory_snapshot(path, bundled_root) for path in bundled_root.iterdir() if path.is_dir()}
         if bundled_root.is_dir()
         else None
     )
-    installation = load_state(target).get("installation", {})
+    if installation is None:
+        stored_installation = load_state(target).get("installation")
+        if infer_bundled_ownership is None:
+            infer_bundled_ownership = not isinstance(stored_installation, dict)
+        installation = stored_installation
+    if infer_bundled_ownership is None:
+        infer_bundled_ownership = False
     installation = installation if isinstance(installation, dict) else {}
     inventory = installation.get("managed_files", [])
     inventory = inventory if isinstance(inventory, list) else []
     inventory_root = "home" if installation.get("scope") == "global" else "target"
-    managed_names: set[str] = set()
-    stale_names: set[str] = set()
-    foreign_names: set[str] = set()
+    result: dict[Path, dict[str, set[str]]] = {}
     for root in roots:
+        groups = {"managed": set(), "stale": set(), "foreign": set()}
+        result[root] = groups
         if not root.is_dir():
             continue
         for installed in root.iterdir():
             if not installed.is_dir():
                 continue
-            if bundled is not None:
+            if infer_bundled_ownership and bundled is not None:
                 if installed.name not in bundled:
-                    foreign_names.add(installed.name)
-                elif directory_snapshot(installed) == bundled[installed.name]:
-                    managed_names.add(installed.name)
+                    groups["foreign"].add(installed.name)
+                elif directory_snapshot(installed, target) == bundled[installed.name]:
+                    groups["managed"].add(installed.name)
                 else:
-                    stale_names.add(installed.name)
+                    groups["stale"].add(installed.name)
             else:
                 prefix = installed.relative_to(target).as_posix() + "/"
                 recorded = {
@@ -3312,15 +3481,23 @@ def inspect_skills(agent_id: str, agent: dict[str, Any], target: Path) -> dict[s
                 }
                 current = {
                     path.relative_to(target).as_posix(): file_sha256(path)
-                    for path in installed.rglob("*")
-                    if path.is_file()
+                    for path in inventory_files(target, installed)
                 }
                 if not recorded:
-                    foreign_names.add(installed.name)
+                    groups["foreign"].add(installed.name)
                 elif current == recorded:
-                    managed_names.add(installed.name)
+                    groups["managed"].add(installed.name)
                 else:
-                    stale_names.add(installed.name)
+                    groups["stale"].add(installed.name)
+    return result
+
+
+def inspect_skills(agent_id: str, agent: dict[str, Any], target: Path) -> dict[str, Any]:
+    classifications = classify_skill_directories(agent_id, target)
+    roots = list(classifications)
+    managed_names = set().union(*(groups["managed"] for groups in classifications.values()))
+    stale_names = set().union(*(groups["stale"] for groups in classifications.values()))
+    foreign_names = set().union(*(groups["foreign"] for groups in classifications.values()))
     state = "stale" if stale_names else ("managed" if managed_names else ("foreign" if foreign_names else "missing"))
     return {
         "declared": str(agent.get("skills_tools", {}).get("agent_skills", {}).get("client_support", "unverified")),
