@@ -6,7 +6,7 @@ the existing installation, and keep planning separate from applying.
 
 ## Current release and legacy blockers
 
-The current stable release is `v0.2.3`.
+The current stable release is `v0.2.4`.
 
 **Do not apply `v0.2.1` to a pre-manifest, Claude-only installation when skills exist only under
 `~/.claude/skills` or its user-scope MCP configuration exists only in `~/.claude.json`.** In that legacy shape,
@@ -25,6 +25,14 @@ recorded in
 The fixed updater does not parse global MCP to infer capability ownership and never treats a global
 server as AgentSmith-managed. Valid foreign client configuration remains preserved. Do not remove
 foreign MCP configuration or edit an authenticated plan as a workaround for either older release.
+
+`v0.2.3` still inventories every directory under a detected skill root. On a legacy global Claude
+installation, a foreign skill containing a normal Python virtual-environment link such as
+`.venv/lib64 -> lib` can therefore block planning, and unrelated foreign files can enter the
+installation fingerprints. This ownership defect is fixed in `v0.2.4` and recorded in
+[`feedback/0023-update-inventoried-foreign-skill-trees.md`](feedback/0023-update-inventoried-foreign-skill-trees.md).
+Use `v0.2.4` for the complete legacy global update chain: foreign skill contents are preserved and
+ignored, while symlinks escaping an owned inventory root remain rejected.
 
 ## Before updating
 
@@ -50,7 +58,7 @@ installation that does not have one yet.
 ```bash
 AGENTSMITH_BOOTSTRAP_DIR="$(mktemp -d)"
 
-git clone --depth 1 --branch v0.2.3 \
+git clone --depth 1 --branch v0.2.4 \
   https://github.com/PromptPartner/agentsmith.git \
   "$AGENTSMITH_BOOTSTRAP_DIR"
 
@@ -58,7 +66,7 @@ git -C "$AGENTSMITH_BOOTSTRAP_DIR" rev-parse HEAD
 git -C "$AGENTSMITH_BOOTSTRAP_DIR" describe --tags --exact-match
 ```
 
-The final command must print `v0.2.3`. This proves the bootstrap is the immutable release tag rather
+The final command must print `v0.2.4`. This proves the bootstrap is the immutable release tag rather
 than an unreviewed branch checkout.
 
 ## Update one project installation
@@ -68,13 +76,13 @@ but does not modify the target.
 
 ```bash
 AGENTSMITH_TARGET="/absolute/path/to/project"
-AGENTSMITH_PLAN="/tmp/agentsmith-project-name-v0.2.3-plan.json"
+AGENTSMITH_PLAN="/tmp/agentsmith-project-name-v0.2.4-plan.json"
 
 git -C "$AGENTSMITH_TARGET" status --short
 
 python3 "$AGENTSMITH_BOOTSTRAP_DIR/agentsmith.py" update plan \
   --target "$AGENTSMITH_TARGET" \
-  --version v0.2.3 \
+  --version v0.2.4 \
   --save "$AGENTSMITH_PLAN"
 
 python3 -m json.tool "$AGENTSMITH_PLAN" | less
@@ -108,23 +116,23 @@ python3 "$AGENTSMITH_TARGET/.agentsmith/agentsmith.py" doctor \
 Global scope is separate from every project scope. Create and inspect its own plan:
 
 ```bash
-AGENTSMITH_PLAN="/tmp/agentsmith-global-v0.2.3-plan.json"
+AGENTSMITH_PLAN="/tmp/agentsmith-global-v0.2.4-plan.json"
 
 python3 "$AGENTSMITH_BOOTSTRAP_DIR/agentsmith.py" update plan \
   --global \
-  --version v0.2.3 \
+  --version v0.2.4 \
   --save "$AGENTSMITH_PLAN"
 
 python3 -m json.tool "$AGENTSMITH_PLAN" | less
 ```
 
 Global MCP is foreign by construction because AgentSmith supports MCP ownership only at project
-scope. `v0.2.3` therefore does not parse global MCP while reconstructing or validating capability
+scope. `v0.2.4` therefore does not parse global MCP while reconstructing or validating capability
 ownership. For valid user-scope client configuration, it preserves foreign MCP entries. A malformed
 client config can still block reconciliation of other AgentSmith-managed native settings, so repair
 invalid JSON or TOML before a non-assemble-only update. For a reconstructed legacy installation,
-confirm the plan records `capabilities.mcp` as an empty list and proposes no MCP-file changes. After
-approving the plan:
+confirm the plan records `capabilities.mcp` as an empty list, proposes no MCP-file changes, and
+contains no foreign skill paths in `fingerprints` or `proposed_changes`. After approving the plan:
 
 ```bash
 python3 "$AGENTSMITH_BOOTSTRAP_DIR/agentsmith.py" update apply \
