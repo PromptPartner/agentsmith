@@ -599,6 +599,18 @@ class UpdateCheckTests(unittest.TestCase):
         rejected = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
         self.assertNotEqual(rejected.returncode, 0)
         self.assertIn("not supported", rejected.stderr)
+        malformed_foreign = json.loads(original)
+        malformed_foreign["foreign_skill_directories"] = [
+            {"root": "target", "path": ".agents/skills/.."}
+        ]
+        malformed_foreign["integrity"] = integrity(
+            malformed_foreign,
+            (Path(environment["HOME"]) / ".agentsmith" / "update-integrity.key").read_bytes(),
+        )
+        plan_path.write_text(json.dumps(malformed_foreign, indent=2) + "\n", encoding="utf-8")
+        rejected = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("outside the skill roots", rejected.stderr)
         mismatched = json.loads(original)
         mismatched["proposed_changes"][0]["after_sha256"] = "0" * 64
         mismatched["integrity"] = integrity(
@@ -687,6 +699,18 @@ class UpdateCheckTests(unittest.TestCase):
             json.dumps({"mcpServers": {"gemini": {"command": "user-owned-gemini"}}}, indent=2) + "\n",
             encoding="utf-8",
         )
+        foreign_skill = home / ".claude" / "skills" / "excalidraw-diagram"
+        foreign_venv_lib = foreign_skill / "references" / ".venv" / "lib"
+        foreign_venv_lib.mkdir(parents=True)
+        foreign_probe = foreign_venv_lib / "foreign.py"
+        foreign_probe.write_text("# user-owned virtual environment\n", encoding="utf-8")
+        foreign_lib64 = foreign_venv_lib.parent / "lib64"
+        try:
+            foreign_lib64.symlink_to("lib", target_is_directory=True)
+        except (NotImplementedError, OSError):
+            # The ownership assertions below remain portable when the test host
+            # does not permit unprivileged symbolic-link creation.
+            foreign_lib64 = None
 
         with mock.patch.dict(os.environ, environment, clear=False):
             reconstructed = runtime.reconstruct_pre_manifest_installation(home.resolve(), "global", legacy_state)
@@ -707,15 +731,100 @@ class UpdateCheckTests(unittest.TestCase):
         plan = json.loads(plan_path.read_text(encoding="utf-8"))
         self.assertEqual(plan["schema_version"], 1)
         self.assertEqual(plan["installation"]["capabilities"]["mcp"], [])
+        self.assertTrue(plan["installation"]["capabilities"]["skills"])
+        foreign_prefix = ".claude/skills/excalidraw-diagram/"
+        self.assertFalse(
+            any(
+                item["root"] == "home" and item["path"].startswith(foreign_prefix)
+                for item in plan["fingerprints"]
+            )
+        )
+        self.assertFalse(
+            any(
+                item["root"] == "home" and item["path"].startswith(foreign_prefix)
+                for item in plan["proposed_changes"]
+            )
+        )
+        self.assertIn(
+            {"root": "home", "path": ".claude/skills/excalidraw-diagram"},
+            plan["foreign_skill_directories"],
+        )
+        self.assertTrue(
+            any(
+                item["root"] == "home" and item["path"] == ".agents/skills/handoff/SKILL.md"
+                for item in plan["proposed_changes"]
+            )
+        )
         self.assertEqual(state_path.read_bytes(), before)
 
         applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
 
         self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
         self.assertEqual((home / ".claude.json").read_bytes(), foreign_mcp_before)
+        self.assertEqual(foreign_probe.read_text(encoding="utf-8"), "# user-owned virtual environment\n")
+        if foreign_lib64 is not None:
+            self.assertTrue(foreign_lib64.is_symlink())
         updated = json.loads(state_path.read_text(encoding="utf-8"))
         self.assertEqual(updated["schema_version"], 1)
         self.assertEqual(updated["installation"]["capabilities"]["mcp"], [])
+        updated_inventory = updated["installation"]["managed_files"]
+        self.assertTrue(any(item["path"].startswith(".agents/skills/") for item in updated_inventory))
+        self.assertTrue(any(item["path"].startswith(".claude/skills/") for item in updated_inventory))
+        self.assertFalse(any(item["path"].startswith(foreign_prefix) for item in updated_inventory))
+
+    def test_legacy_global_skill_inventory_allows_contained_links_but_rejects_escaping_links(self) -> None:
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
+        cloned = subprocess.run(
+            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(cloned.returncode, 0, cloned.stdout + cloned.stderr)
+        home = self.root / "legacy-link-home"
+        environment = {
+            **os.environ,
+            "HOME": str(home),
+            "CODEX_HOME": str(self.root / "legacy-link-codex"),
+        }
+        installed = self.run_core("install", "--agent", "claude", "--global", "--with-skills", env=environment)
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        state_path = home / ".agentsmith" / "state.json"
+        legacy_state = json.loads(state_path.read_text(encoding="utf-8"))
+        legacy_state.pop("schema_version")
+        legacy_state.pop("installation")
+        state_path.write_text(json.dumps(legacy_state, indent=2) + "\n", encoding="utf-8")
+        shutil.rmtree(home / ".agents")
+        owned_skill = home / ".claude" / "skills" / "handoff"
+        contained_link = owned_skill / "contained-skill-link.md"
+        try:
+            contained_link.symlink_to("SKILL.md")
+        except (NotImplementedError, OSError) as exc:
+            self.skipTest(f"symbolic links are unavailable: {exc}")
+        contained_plan = self.root / "contained-link-plan.json"
+
+        planned = self.run_core(
+            "update", "plan", "--global", "--version", NEXT_TAG,
+            "--from", str(self.remote), "--save", str(contained_plan), env=environment,
+        )
+
+        self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        plan = json.loads(contained_plan.read_text(encoding="utf-8"))
+        self.assertTrue(plan["installation"]["capabilities"]["skills"])
+        self.assertFalse(any(item["path"].endswith("contained-skill-link.md") for item in plan["fingerprints"]))
+
+        contained_link.unlink()
+        outside = self.root / "outside-skill-file.md"
+        outside.write_text("outside the installation root\n", encoding="utf-8")
+        (owned_skill / "escaping-skill-link.md").symlink_to(outside)
+        escaping = self.run_core(
+            "update", "plan", "--global", "--version", NEXT_TAG,
+            "--from", str(self.remote), env=environment,
+        )
+
+        self.assertNotEqual(escaping.returncode, 0)
+        self.assertIn("inventory path escapes its declared root", escaping.stderr)
 
     def test_global_foreign_mcp_files_are_not_parsed_during_reconstruction(self) -> None:
         for agent_id in ("claude", "codex"):
@@ -908,6 +1017,13 @@ class UpdateCheckTests(unittest.TestCase):
         installation["capabilities"]["skills"] = True
         state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
         with mock.patch.dict(os.environ, environment, clear=False):
+            runtime.validate_post_update_health(plan)
+
+        auxiliary = home / ".agents" / "skills" / "writing-rules" / "HARNESS-SURFACES.md"
+        auxiliary.unlink()
+        with mock.patch.dict(os.environ, environment, clear=False), self.assertRaisesRegex(
+            runtime.CliError, "managed skill inventory is missing a file"
+        ):
             runtime.validate_post_update_health(plan)
 
     def test_assemble_only_is_preserved_for_project_and_global_updates(self) -> None:
@@ -1295,6 +1411,80 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertTrue(all(
             path.relative_to(force_target).as_posix() in forced_inventory for path in forced_collisions
         ))
+
+    def test_update_preserves_a_foreign_name_that_a_future_release_bundles(self) -> None:
+        self.commit_and_tag(CURRENT_VERSION)
+        future_source = self.seed / "skills" / "future-collision" / "SKILL.md"
+        future_source.parent.mkdir(parents=True)
+        future_source.write_text("# Candidate-owned version\n", encoding="utf-8")
+        self.commit_and_tag(NEXT_VERSION)
+        cloned = subprocess.run(
+            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(cloned.returncode, 0, cloned.stdout + cloned.stderr)
+        target = self.root / "future-collision-project"
+        target.mkdir()
+        environment = {
+            **os.environ,
+            "HOME": str(self.root / "future-collision-home"),
+            "CODEX_HOME": str(self.root / "future-collision-codex"),
+        }
+        foreign = target / ".agents" / "skills" / "future-collision" / "SKILL.md"
+        foreign.parent.mkdir(parents=True)
+        foreign.write_text("# User-owned version\n", encoding="utf-8")
+        installed = self.run_core(
+            "install", "--agent", "codex", "--profile", "software-dev", "--target", str(target),
+            "--with-skills", env=environment,
+        )
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        before = foreign.read_bytes()
+        plan_path = self.root / "future-collision-plan.json"
+
+        planned = self.run_core(
+            "update", "plan", "--target", str(target), "--version", NEXT_TAG,
+            "--from", str(self.remote), "--save", str(plan_path), env=environment,
+        )
+
+        self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        foreign_path = ".agents/skills/future-collision"
+        self.assertIn({"root": "target", "path": foreign_path}, plan["foreign_skill_directories"])
+        self.assertFalse(any(item["path"].startswith(foreign_path + "/") for item in plan["fingerprints"]))
+        self.assertFalse(any(item["path"].startswith(foreign_path + "/") for item in plan["proposed_changes"]))
+
+        applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
+
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        self.assertEqual(foreign.read_bytes(), before)
+        inventory = json.loads(
+            (target / ".agentsmith" / "state.json").read_text(encoding="utf-8")
+        )["installation"]["managed_files"]
+        self.assertFalse(any(item["path"].startswith(foreign_path + "/") for item in inventory))
+
+        second_plan_path = self.root / "future-collision-second-plan.json"
+        second_planned = subprocess.run(
+            [
+                sys.executable, str(self.seed / "agentsmith.py"),
+                "update", "plan", "--target", str(target), "--version", NEXT_TAG,
+                "--from", str(self.remote), "--save", str(second_plan_path),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+            env=environment,
+        )
+        self.assertEqual(second_planned.returncode, 0, second_planned.stdout + second_planned.stderr)
+        second_plan = json.loads(second_plan_path.read_text(encoding="utf-8"))
+        self.assertIn({"root": "target", "path": foreign_path}, second_plan["foreign_skill_directories"])
+        self.assertFalse(
+            any(item["path"].startswith(foreign_path + "/") for item in second_plan["fingerprints"])
+        )
+        self.assertFalse(
+            any(item["path"].startswith(foreign_path + "/") for item in second_plan["proposed_changes"])
+        )
 
     def test_project_mcp_is_authenticated_updated_and_rolled_back_with_foreign_servers(self) -> None:
         self.commit_and_tag(CURRENT_VERSION)
