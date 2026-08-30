@@ -27,10 +27,11 @@ let `setup.sh` do it.
 | **code-review** | On-demand diff review at adjustable effort. The everyday evaluation gate. |
 | **codex** | A *second, independent* model that reviews **and independently tests** your work adversarially — it reads the diff for a second opinion, and can write/run its own tests or reproduce the bug (a checker that *measures* beats one that only reads). The strongest cheap "eval" you can add before shipping anything risky. Optional (needs the Codex CLI), but recommended. |
 
-## Built-in skills worth knowing (no install needed)
+## Environment-provided skills worth knowing
 
-- **deep-research** — the engine for the *deep-research* profile.
-- **excalidraw-diagram** — clean diagrams for the *creative-design* profile.
+- **deep-research** — the engine for the *deep-research* profile when the host provides it.
+- **excalidraw-diagram** — clean diagrams for the *creative-design* profile when installed separately;
+  AgentSmith does not bundle it.
 - Plus whatever ships with your Claude Code build (`/run`, `/verify`, `/code-review`, …).
 
 ## By-profile, opt-in
