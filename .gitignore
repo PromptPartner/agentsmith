@@ -40,3 +40,4 @@ docs/feedback/[0-9]*.md
 !docs/feedback/0017-windows-evaluator-fake-client-reparsed-structured-argv.md
 !docs/feedback/0018-windows-statusline-wrapper-reencoded-claude-json-stdin.md
 !docs/feedback/0022-global-update-blocked-by-foreign-mcp.md
+!docs/feedback/0023-update-inventoried-foreign-skill-trees.md

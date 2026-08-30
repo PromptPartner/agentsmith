@@ -86,8 +86,8 @@ updates arrive free, and the harness owns none of it (R10). It installs as one p
 
 ## creative-design
 <!-- MAP creative-design | packs: - | skills: excalidraw-diagram,ui-ux-pro-max -->
-- **excalidraw-diagram** — built in. Clean diagrams. (Pairs with the excalidraw MCP — see
-  `../config/mcp.example.json`.)
+- **excalidraw-diagram** — third-party and not bundled with AgentSmith. Install it separately when
+  clean diagrams are part of the work. (Pairs with the excalidraw MCP — see `../config/mcp.example.json`.)
 - **ui-ux-pro-max** — third-party (MIT), for real interface work: design systems, colour/type
   pairing, layout rules. Not bundled here and deliberately so — it needs **Python 3**, which
   nothing else in this harness does, and it is only useful if you are actually designing a UI.
