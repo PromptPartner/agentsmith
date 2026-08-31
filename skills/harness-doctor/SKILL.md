@@ -13,8 +13,9 @@ Confirm the harness is wired correctly, in plain language, with a concrete fix p
 
 ## Identify the target
 Use the agent named by the operator or the explicit `AGENTSMITH_AGENT` value. Never infer the active
-agent from this skill's install path: `.agents/skills` is shared across clients. Without an explicit
-agent, run the common project checks and label agent-specific capabilities as unknown.
+agent from this skill's install path: portable canonical content may be copied into a required
+client adapter such as `.claude/skills`. Without an explicit agent, run the common project checks
+and label agent-specific capabilities as unknown.
 
 ## Fast path — if the Agentsmith CLI is available
 Run `agentsmith doctor`, adding `--agent <id[,id...]>` when the target is known. If the command is

@@ -41,3 +41,4 @@ docs/feedback/[0-9]*.md
 !docs/feedback/0018-windows-statusline-wrapper-reencoded-claude-json-stdin.md
 !docs/feedback/0022-global-update-blocked-by-foreign-mcp.md
 !docs/feedback/0023-update-inventoried-foreign-skill-trees.md
+!docs/feedback/0024-claude-skill-adapter-drift-treated-as-customization.md
