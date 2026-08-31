@@ -6,6 +6,7 @@
 
 - **Date:** 2026-08-31
 - **Status:** applied
+- **Fixed release:** `v0.2.5`
 - **Cost:** A Claude report and a second planning pass were needed to catch a stale runtime adapter that Doctor called managed.
 
 ## 1. Evidence / symptom
