@@ -42,8 +42,12 @@ second editable copy of the core.
 
 The canonical Agent Skills pack lives in `.agents/skills`. A runtime-specific copy is allowed
 only when the client genuinely requires it; Claude's `.claude/skills` adapter is the known native
-case. A skill's behavior must come from its declared compatibility metadata, never merely from
-the directory in which it happens to be installed.
+case. Registry `skill_directories` list only paths the client discovers;
+`managed_skill_directories` separately lists every canonical or derived surface AgentSmith owns.
+Claude discovers only `.claude/skills`; AgentSmith preserves canonical customizations in
+`.agents/skills` and regenerates the Claude adapter from those effective bytes. A skill's behavior
+must come from its declared compatibility metadata, never merely from the directory in which it
+happens to be installed.
 
 ## Evidence vocabulary
 

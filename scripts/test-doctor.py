@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -156,6 +157,107 @@ class DoctorTests(unittest.TestCase):
         _, conflict_payload = self.doctor(project, "claude")
         codes = self.warning_codes(conflict_payload["claude"])
         self.assertIn("conflicting-generator-metadata", codes)
+
+    def test_claude_adapter_drift_fails_strict_and_reinstall_mirrors_canonical_customization(self) -> None:
+        project = self.root / "adapter drift project"
+        installed = self.install(
+            project, "--agent", "claude", "--profile", "software-dev", "--with-skills"
+        )
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        canonical = project / ".agents" / "skills" / "handoff" / "SKILL.md"
+        adapter = project / ".claude" / "skills" / "handoff" / "SKILL.md"
+        self.assertEqual(canonical.read_bytes(), adapter.read_bytes())
+        canonical.write_bytes(canonical.read_bytes() + b"\nCANONICAL CUSTOMIZATION\n")
+        adapter.write_bytes(adapter.read_bytes() + b"\nSTALE ADAPTER EDIT\n")
+        foreign = project / ".claude" / "skills" / "foreign-skill" / "references" / ".venv" / "probe.py"
+        foreign.parent.mkdir(parents=True)
+        foreign.write_bytes(b"# foreign virtual environment\n")
+
+        strict = self.run_core(
+            "doctor", "--agent", "claude", "--target", str(project), "--strict", "--json"
+        )
+        self.assertNotEqual(strict.returncode, 0, strict.stdout + strict.stderr)
+        payload = json.loads(strict.stdout)["claude"]
+        self.assertEqual(payload["skills"]["canonical_customized_names"], ["handoff"])
+        self.assertEqual(payload["skills"]["adapter_diverged_names"], ["handoff"])
+        self.assertIn("canonical-skill-customized", self.warning_codes(payload))
+        self.assertIn("skill-adapter-diverged", self.warning_codes(payload))
+
+        reinstalled = self.run_core(
+            "install", "--agent", "claude", "--profile", "software-dev", "--target", str(project),
+            "--with-skills",
+        )
+        self.assertEqual(reinstalled.returncode, 0, reinstalled.stdout + reinstalled.stderr)
+        self.assertIn(b"CANONICAL CUSTOMIZATION", canonical.read_bytes())
+        self.assertNotIn(b"STALE ADAPTER EDIT", adapter.read_bytes())
+        self.assertEqual(canonical.read_bytes(), adapter.read_bytes())
+        self.assertEqual(
+            hashlib.sha256(canonical.read_bytes()).hexdigest(),
+            hashlib.sha256(adapter.read_bytes()).hexdigest(),
+        )
+        self.assertEqual(foreign.read_bytes(), b"# foreign virtual environment\n")
+        healthy = self.run_core(
+            "doctor", "--agent", "claude", "--target", str(project), "--strict", "--json"
+        )
+        self.assertEqual(healthy.returncode, 0, healthy.stdout + healthy.stderr)
+        healthy_skills = json.loads(healthy.stdout)["claude"]["skills"]
+        self.assertEqual(healthy_skills["state"], "customized")
+        self.assertEqual(healthy_skills["adapter_diverged_names"], [])
+
+    def test_global_claude_reinstall_regenerates_owned_adapter_without_force(self) -> None:
+        installed = self.run_core("install", "--agent", "claude", "--global", "--with-skills")
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        home = Path(self.env["HOME"])
+        canonical = home / ".agents" / "skills" / "handoff" / "SKILL.md"
+        adapter = home / ".claude" / "skills" / "handoff" / "SKILL.md"
+        canonical_before = canonical.read_bytes()
+        adapter.write_bytes(b"outdated owned adapter\n")
+
+        reinstalled = self.run_core("install", "--agent", "claude", "--global", "--with-skills")
+
+        self.assertEqual(reinstalled.returncode, 0, reinstalled.stdout + reinstalled.stderr)
+        self.assertEqual(canonical.read_bytes(), canonical_before)
+        self.assertEqual(adapter.read_bytes(), canonical.read_bytes())
+
+    def test_skill_install_refuses_symlinked_adapter_root_before_external_writes(self) -> None:
+        project = self.root / "symlinked adapter project"
+        project.mkdir()
+        external = self.root / "external skills"
+        external.mkdir()
+        (project / ".claude").mkdir()
+        try:
+            (project / ".claude" / "skills").symlink_to(external, target_is_directory=True)
+        except (NotImplementedError, OSError) as exc:
+            self.skipTest(f"symbolic links are unavailable: {exc}")
+
+        installed = self.run_core(
+            "install", "--agent", "claude", "--profile", "software-dev", "--target", str(project),
+            "--with-skills",
+        )
+
+        self.assertNotEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        self.assertIn("symbolic link", installed.stderr)
+        self.assertEqual(list(external.iterdir()), [])
+
+    def test_strict_doctor_detects_adapter_only_symlink_drift(self) -> None:
+        project = self.root / "adapter symlink drift"
+        installed = self.install(
+            project, "--agent", "claude", "--profile", "software-dev", "--with-skills"
+        )
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        adapter = project / ".claude" / "skills" / "handoff"
+        try:
+            (adapter / "extra-link.md").symlink_to("SKILL.md")
+        except (NotImplementedError, OSError) as exc:
+            self.skipTest(f"symbolic links are unavailable: {exc}")
+
+        strict = self.run_core(
+            "doctor", "--agent", "claude", "--target", str(project), "--strict", "--json"
+        )
+
+        self.assertNotEqual(strict.returncode, 0, strict.stdout + strict.stderr)
+        skills = json.loads(strict.stdout)["claude"]["skills"]
+        self.assertEqual(skills["adapter_diverged_names"], ["handoff"])
 
 
 if __name__ == "__main__":

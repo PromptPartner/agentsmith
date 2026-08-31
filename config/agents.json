@@ -47,7 +47,8 @@
       },
       "skills_tools": {
         "agent_skills": { "client_support": "supported", "agentsmith_management": "native", "notes": "Canonical skills live in .agents/skills; Claude receives its required .claude/skills adapter." },
-        "skill_directories": ["~/.agents/skills", "~/.claude/skills", ".agents/skills", ".claude/skills"],
+        "skill_directories": ["~/.claude/skills", ".claude/skills"],
+        "managed_skill_directories": ["~/.agents/skills", "~/.claude/skills", ".agents/skills", ".claude/skills"],
         "mcp": { "client_support": "supported", "agentsmith_management": "native", "notes": "Only AgentSmith-owned configuration is reconciled." }
       },
       "native_runtime": {

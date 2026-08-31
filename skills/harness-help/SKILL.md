@@ -15,8 +15,9 @@ next. This is the non-coder's front door.
 
 ## Identify the target
 Use the agent named by the operator or the explicit `AGENTSMITH_AGENT` value. Never infer the active
-agent from this skill's install path: `.agents/skills` is shared across clients. Without a declared
-agent, explain the common rules and label agent-specific safety configuration as unknown.
+agent from this skill's install path: portable canonical content may be copied into a required
+client adapter such as `.claude/skills`. Without a declared agent, explain the common rules and
+label agent-specific safety configuration as unknown.
 
 ## What to do (no script needed)
 Read the canonical managed block in `AGENTS.md` and report:

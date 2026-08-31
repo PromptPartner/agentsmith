@@ -14,8 +14,9 @@ whenever work winds down — even if no one asked (core/50).
 
 ## Runtime neutrality
 This workflow is identical in every client. Never infer the active agent from this skill's install
-path: `.agents/skills` is the shared Agent Skills location. Use “fresh chat” rather than a
-runtime-specific reset command so the note remains portable.
+path: portable canonical content may be copied into a required client adapter such as
+`.claude/skills`. Use “fresh chat” rather than a runtime-specific reset command so the note remains
+portable.
 
 ## Fast path — if the Agentsmith CLI is available
 1. Run `agentsmith handoff [item-id]` — use `.agentsmith/agentsmith` on macOS/Linux or

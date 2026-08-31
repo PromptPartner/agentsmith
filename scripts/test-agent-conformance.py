@@ -197,6 +197,13 @@ def validate_registry(results: Results, contract: dict[str, Any]) -> list[dict[s
         all(adapter_kind(actual.get(agent_id, {})) == spec["adapter"] for agent_id, spec in expected.items()),
         "registry adapter kinds match the certification contract",
     )
+    claude_skills = actual.get("claude", {}).get("skills_tools", {})
+    results.check(
+        claude_skills.get("skill_directories") == ["~/.claude/skills", ".claude/skills"]
+        and claude_skills.get("managed_skill_directories")
+        == ["~/.agents/skills", "~/.claude/skills", ".agents/skills", ".claude/skills"],
+        "Claude discovery paths are separate from AgentSmith-managed skill surfaces",
+    )
 
     statuses = set(contract["capability_statuses"])
     evidence = set(contract["evidence_levels"])
