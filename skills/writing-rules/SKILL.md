@@ -20,8 +20,9 @@ When the document is a harness surface — a `core/` rule, a profile, a skill, a
 
 ## Instruction vocabulary
 `AGENTS.md` is the canonical portable instruction file. Never infer the active agent from this
-skill's install path: `.agents/skills` is shared across clients. Treat client-specific instruction
-files as generated adapters; edit their shared `core/` or `profiles/` source, never an adapter copy.
+skill's install path: portable canonical content may be copied into a required client adapter such
+as `.claude/skills`. Treat client-specific instruction files as generated adapters; edit their
+shared `core/` or `profiles/` source, never an adapter copy.
 
 ## The two loads
 
