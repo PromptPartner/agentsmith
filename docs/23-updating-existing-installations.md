@@ -6,7 +6,7 @@ the existing installation, and keep planning separate from applying.
 
 ## Current release and legacy blockers
 
-The current stable release is `v0.2.4`.
+The current stable release is `v0.2.5`.
 
 **Do not apply `v0.2.1` to a pre-manifest, Claude-only installation when skills exist only under
 `~/.claude/skills` or its user-scope MCP configuration exists only in `~/.claude.json`.** In that legacy shape,
@@ -31,8 +31,13 @@ installation, a foreign skill containing a normal Python virtual-environment lin
 `.venv/lib64 -> lib` can therefore block planning, and unrelated foreign files can enter the
 installation fingerprints. This ownership defect is fixed in `v0.2.4` and recorded in
 [`feedback/0023-update-inventoried-foreign-skill-trees.md`](feedback/0023-update-inventoried-foreign-skill-trees.md).
-Use `v0.2.4` for the complete legacy global update chain: foreign skill contents are preserved and
-ignored, while symlinks escaping an owned inventory root remain rejected.
+`v0.2.4` can still preserve a stale AgentSmith-owned `.claude/skills` adapter when its canonical
+`.agents/skills` source changes. Claude discovers the stale adapter, while strict Doctor can report
+it as healthy. This ownership defect is fixed in `v0.2.5` and recorded in
+[`feedback/0024-claude-skill-adapter-drift-treated-as-customization.md`](feedback/0024-claude-skill-adapter-drift-treated-as-customization.md).
+Use `v0.2.5` for the complete legacy global update chain: foreign skill contents are preserved and
+ignored, canonical customizations are retained and mirrored to Claude, and symlinks escaping an
+owned inventory root remain rejected.
 
 ## Before updating
 
@@ -58,7 +63,7 @@ installation that does not have one yet.
 ```bash
 AGENTSMITH_BOOTSTRAP_DIR="$(mktemp -d)"
 
-git clone --depth 1 --branch v0.2.4 \
+git clone --depth 1 --branch v0.2.5 \
   https://github.com/PromptPartner/agentsmith.git \
   "$AGENTSMITH_BOOTSTRAP_DIR"
 
@@ -66,7 +71,7 @@ git -C "$AGENTSMITH_BOOTSTRAP_DIR" rev-parse HEAD
 git -C "$AGENTSMITH_BOOTSTRAP_DIR" describe --tags --exact-match
 ```
 
-The final command must print `v0.2.4`. This proves the bootstrap is the immutable release tag rather
+The final command must print `v0.2.5`. This proves the bootstrap is the immutable release tag rather
 than an unreviewed branch checkout.
 
 ## Update one project installation
@@ -76,13 +81,13 @@ but does not modify the target.
 
 ```bash
 AGENTSMITH_TARGET="/absolute/path/to/project"
-AGENTSMITH_PLAN="/tmp/agentsmith-project-name-v0.2.4-plan.json"
+AGENTSMITH_PLAN="/tmp/agentsmith-project-name-v0.2.5-plan.json"
 
 git -C "$AGENTSMITH_TARGET" status --short
 
 python3 "$AGENTSMITH_BOOTSTRAP_DIR/agentsmith.py" update plan \
   --target "$AGENTSMITH_TARGET" \
-  --version v0.2.4 \
+  --version v0.2.5 \
   --save "$AGENTSMITH_PLAN"
 
 python3 -m json.tool "$AGENTSMITH_PLAN" | less
@@ -116,18 +121,18 @@ python3 "$AGENTSMITH_TARGET/.agentsmith/agentsmith.py" doctor \
 Global scope is separate from every project scope. Create and inspect its own plan:
 
 ```bash
-AGENTSMITH_PLAN="/tmp/agentsmith-global-v0.2.4-plan.json"
+AGENTSMITH_PLAN="/tmp/agentsmith-global-v0.2.5-plan.json"
 
 python3 "$AGENTSMITH_BOOTSTRAP_DIR/agentsmith.py" update plan \
   --global \
-  --version v0.2.4 \
+  --version v0.2.5 \
   --save "$AGENTSMITH_PLAN"
 
 python3 -m json.tool "$AGENTSMITH_PLAN" | less
 ```
 
 Global MCP is foreign by construction because AgentSmith supports MCP ownership only at project
-scope. `v0.2.4` therefore does not parse global MCP while reconstructing or validating capability
+scope. `v0.2.5` therefore does not parse global MCP while reconstructing or validating capability
 ownership. For valid user-scope client configuration, it preserves foreign MCP entries. A malformed
 client config can still block reconciliation of other AgentSmith-managed native settings, so repair
 invalid JSON or TOML before a non-assemble-only update. For a reconstructed legacy installation,
