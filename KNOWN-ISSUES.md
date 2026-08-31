@@ -8,3 +8,6 @@ recorded here because no external tracker write has been authorized.
   mode to `acceptEdits` from a project operation.
 - [ ] Project install appends a generated block to an existing unmarked `CLAUDE.md` and also adds
   `AGENTS.md`, leaving two authoritative instruction rulebooks in one repository.
+- [ ] A contained symlink added inside an AgentSmith-owned `.claude/skills` adapter is detected by
+  strict Doctor and repaired by ordinary reinstall, but staged update fails closed because plan
+  receipts cannot yet authenticate deletion and exact rollback restoration of symlink metadata.
