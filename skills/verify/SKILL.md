@@ -14,8 +14,8 @@ compatibility: Requires command access; the fast path requires the cross-platfor
 
 ## Runtime neutrality
 The verification runner and evidence standard are client-neutral. Never infer the active agent
-from this skill's install path: `.agents/skills` is the shared Agent Skills location. Use canonical
-`AGENTS.md` when an instruction is relevant.
+from this skill's install path: portable canonical content may be copied into a required client
+adapter such as `.claude/skills`. Use canonical `AGENTS.md` when an instruction is relevant.
 
 ## Fast path — if the Agentsmith CLI is available
 1. Run `agentsmith verify` (or the installed-project shim `.agentsmith/agentsmith verify` on

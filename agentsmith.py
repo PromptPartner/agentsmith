@@ -664,7 +664,7 @@ def record_installation_manifest(
         if agent_id in {"claude", "codex"}
     }
     state["schema_version"] = 1
-    managed_root = home_dir() if args.global_mode else target
+    managed_root = (home_dir() if args.global_mode else target).resolve()
     managed_root_name = "home" if args.global_mode else "target"
     managed_files_by_path: dict[str, dict[str, str]] = {}
     prior_managed_files = prior_installation.get("managed_files", []) if isinstance(prior_installation, dict) else []
@@ -840,27 +840,89 @@ def reconcile_codex_toml(path: Path, safety: str | None, mcp: dict[str, Any], *,
 
 
 def install_skills(target: Path, agents: list[str], *, force: bool, dry_run: bool) -> list[Path]:
-    canonical = target / ".agents" / "skills"
-    destinations = [canonical]
+    target = target.resolve()
+    # Validate every root before the first skill write. In particular, never let
+    # a client adapter symlink redirect a managed copy outside the install root.
+    canonical = safe_update_path(target, ".agents/skills")
+    adapter = safe_update_path(target, ".claude/skills") if "claude" in agents else None
     installed_directories: list[Path] = []
+    stored = load_state(target).get("installation")
+    installation = stored if isinstance(stored, dict) else {}
+    inventory = installation.get("managed_files", [])
+    inventory = inventory if isinstance(inventory, list) else []
+    expected_root = "home" if installation.get("scope") == "global" else "target"
+
+    def recorded_skill(name: str) -> dict[str, str]:
+        prefix = f".agents/skills/{name}/"
+        return {
+            item["path"][len(prefix):]: item["sha256"]
+            for item in inventory
+            if isinstance(item, dict)
+            and item.get("root") == expected_root
+            and isinstance(item.get("path"), str)
+            and item["path"].startswith(prefix)
+            and isinstance(item.get("sha256"), str)
+        }
+
+    def replace_directory(source: Path, destination: Path) -> None:
+        if destination.is_symlink():
+            destination.unlink()
+        elif destination.is_dir():
+            shutil.rmtree(destination)
+        elif destination.exists():
+            destination.unlink()
+        shutil.copytree(source, destination)
+
+    sources = [
+        source for source in sorted((ROOT / "skills").iterdir())
+        if source.is_dir() and (source / "SKILL.md").exists()
+    ]
+    owned_names: set[str] = set()
+    if dry_run:
+        say(f"DRY RUN — would reconcile canonical skills in {canonical}")
+    else:
+        canonical.mkdir(parents=True, exist_ok=True)
+        for source in sources:
+            destination = canonical / source.name
+            recorded = recorded_skill(source.name)
+            owned = bool(recorded)
+            if destination.is_dir() and owned:
+                current = {
+                    path.relative_to(destination).as_posix(): file_sha256(path)
+                    for path in inventory_files(target, destination)
+                }
+                if current == recorded:
+                    replace_directory(source, destination)
+                    installed_directories.append(destination)
+                else:
+                    warn(f"customized canonical skill preserved: {destination}")
+            elif destination.exists() and not force:
+                warn(f"foreign canonical skill collision preserved: {destination}")
+                continue
+            else:
+                replace_directory(source, destination)
+                installed_directories.append(destination)
+                owned = True
+            if owned:
+                owned_names.add(source.name)
+        ok(f"canonical skills reconciled in {canonical}")
+
     if "claude" in agents:
-        destinations.append(target / ".claude" / "skills")
-    for destination in destinations:
+        if adapter is None:
+            raise CliError("Claude skill adapter root was not resolved")
         if dry_run:
-            say(f"DRY RUN — would install canonical skills into {destination}")
-            continue
-        destination.mkdir(parents=True, exist_ok=True)
-        for source in sorted((ROOT / "skills").iterdir()):
-            if not source.is_dir() or not (source / "SKILL.md").exists():
-                continue
-            dest = destination / source.name
-            if dest.exists() and not force:
-                continue
-            if dest.exists():
-                shutil.rmtree(dest)
-            shutil.copytree(source, dest)
-            installed_directories.append(dest)
-        ok(f"skills installed into {destination}")
+            say(f"DRY RUN — would regenerate owned Claude skill adapters in {adapter}")
+        else:
+            adapter.mkdir(parents=True, exist_ok=True)
+            for name in sorted(owned_names):
+                source = canonical / name
+                if not source.is_dir():
+                    continue
+                destination = adapter / name
+                if directory_snapshot(destination, target) != directory_snapshot(source):
+                    replace_directory(source, destination)
+                installed_directories.append(destination)
+            ok(f"owned Claude skill adapters regenerated in {adapter}")
     return installed_directories
 
 
@@ -1657,6 +1719,49 @@ def installation_fingerprints(
     return {name: str(path) for name, path in roots.items()}, entries, preserved_foreign
 
 
+def infer_legacy_skill_inventory(
+    target: Path,
+    installation: dict[str, Any],
+    fingerprints: list[dict[str, Any]],
+) -> bool:
+    """Record inferred owned names so staged migration can preserve canonical edits only."""
+    if not installation["capabilities"].get("skills"):
+        return False
+    skill_target = home_dir().resolve() if installation["scope"] == "global" else target
+    skill_agent = "claude" if "claude" in installation["agents"] else "codex"
+    classification = classify_skill_directories(
+        skill_agent, skill_target, installation, infer_bundled_ownership=True
+    )
+    owned_prefixes: set[str] = set()
+    customized_canonical_prefixes: set[str] = set()
+    adapter_owned = False
+    for root, groups in classification.items():
+        for name in groups["managed"] | groups["stale"]:
+            prefix = (root / name).relative_to(skill_target).as_posix() + "/"
+            owned_prefixes.add(prefix)
+            if prefix.startswith(".claude/skills/"):
+                adapter_owned = True
+            elif name in groups["stale"]:
+                customized_canonical_prefixes.add(prefix)
+    root_name = "home" if installation["scope"] == "global" else "target"
+    installation["managed_files"] = [
+        {
+            "root": item["root"],
+            "path": item["path"],
+            # A legacy canonical edit has no trustworthy old baseline. A valid
+            # non-matching sentinel adopts the name while preserving its bytes.
+            "sha256": "0" * 64 if any(
+                item["path"].startswith(prefix) for prefix in customized_canonical_prefixes
+            ) else item["sha256"],
+        }
+        for item in fingerprints
+        if item["root"] == root_name
+        and item["sha256"] is not None
+        and any(item["path"].startswith(prefix) for prefix in owned_prefixes)
+    ]
+    return adapter_owned
+
+
 def update_integrity_key(*, create: bool) -> bytes:
     key_path = safe_update_path(home_dir().resolve(), ".agentsmith/update-integrity.key")
     if key_path.exists():
@@ -1715,6 +1820,11 @@ def cmd_update_plan(args: argparse.Namespace) -> int:
     roots, fingerprints, foreign_skill_directories = installation_fingerprints(
         target, installation, infer_legacy_skill_ownership=reconstructed
     )
+    if reconstructed and infer_legacy_skill_inventory(target, installation, fingerprints):
+        migration_warnings.append(
+            "Claude skill adapter directories are derived from canonical skills; apply will replace "
+            "AgentSmith-owned adapter bytes and preserve their previous content in the rollback receipt."
+        )
     payload: dict[str, Any] = {
         "schema_version": 1,
         "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -1853,7 +1963,7 @@ def validated_plan(path: Path) -> dict[str, Any]:
             "root", "path", "operation", "before_sha256", "before_mode", "after_sha256", "after_mode"
         }:
             raise CliError("Plan contains a malformed proposed change")
-        if item["root"] not in expected_roots or item["operation"] not in {"create", "replace"}:
+        if item["root"] not in expected_roots or item["operation"] not in {"create", "replace", "delete"}:
             raise CliError("Plan proposed change has an unknown root or operation")
         if not isinstance(item["path"], str) or not allowed_update_path(item["root"], item["path"], installation):
             raise CliError("Plan proposed change is outside managed update surfaces")
@@ -1864,7 +1974,12 @@ def validated_plan(path: Path) -> dict[str, Any]:
         for name in ("before_mode", "after_mode"):
             if item[name] is not None and (not isinstance(item[name], int) or not 0 <= item[name] <= 0o777):
                 raise CliError("Plan proposed change mode is malformed")
-        if item["after_sha256"] is None or item["after_mode"] is None:
+        if item["operation"] == "delete":
+            if item["after_sha256"] is not None or item["after_mode"] is not None:
+                raise CliError("Plan delete operation has a staged file result")
+            if item["before_sha256"] is None or item["before_mode"] is None:
+                raise CliError("Plan delete operation has no existing-file baseline")
+        elif item["after_sha256"] is None or item["after_mode"] is None:
             raise CliError("Plan proposed change has no staged result")
         if item["operation"] == "create" and (item["before_sha256"] is not None or item["before_mode"] is not None):
             raise CliError("Plan create operation has an existing-file baseline")
@@ -1938,7 +2053,13 @@ def prepare_owned_skills(plan: dict[str, Any], shadow_roots: dict[str, Path]) ->
                 relative = checked.relative_to(source_root)
                 current[relative.as_posix()] = file_sha256(checked)
         shadow_skill = safe_update_path(shadow_roots[root_name], prefix)
-        if current == recorded:
+        if prefix.startswith(".claude/skills/"):
+            # Claude's tree is a derived runtime adapter, not a customization surface.
+            # Removing the staged copy forces the candidate installer to regenerate it
+            # from the effective canonical skill bytes.
+            if shadow_skill.exists():
+                shutil.rmtree(shadow_skill)
+        elif current == recorded:
             if shadow_skill.exists():
                 shutil.rmtree(shadow_skill)
         else:
@@ -1994,12 +2115,27 @@ def retain_reconstructed_skill_baselines(plan: dict[str, Any], shadow_roots: dic
         if (
             item["sha256"] is not None
             and len(parts) >= 4
-            and tuple(parts[:2]) in {(".agents", "skills"), (".claude", "skills")}
+            and tuple(parts[:2]) == (".agents", "skills")
             and identity not in existing
         ):
             inventory.append({"root": item["root"], "path": item["path"], "sha256": item["sha256"]})
             existing.add(identity)
     installation["managed_files"] = sorted(inventory, key=lambda item: (item["root"], item["path"]))
+    atomic_write(state_path(state_root), json.dumps(state, indent=2, ensure_ascii=False) + "\n")
+
+
+def seed_reconstructed_installation(plan: dict[str, Any], shadow_roots: dict[str, Path]) -> None:
+    """Give the staged installer authenticated legacy ownership before it reconciles skills."""
+    reconstructed = any(
+        isinstance(warning, str) and warning.startswith("Pre-manifest installation choices were reconstructed")
+        for warning in plan["migration_warnings"]
+    )
+    if not reconstructed:
+        return
+    state_root = shadow_roots["home"] if plan["scope"] == "global" else shadow_roots["target"]
+    state = load_state(state_root)
+    state["schema_version"] = 1
+    state["installation"] = plan["installation"]
     atomic_write(state_path(state_root), json.dumps(state, indent=2, ensure_ascii=False) + "\n")
 
 
@@ -2181,7 +2317,7 @@ def trusted_stage_install(
 
 def stage_planned_update(
     plan: dict[str, Any], temporary_root: Path, *, execute_candidate: bool
-) -> tuple[Path, list[tuple[str, str, bytes, int]]]:
+) -> tuple[Path, list[tuple[str, str, bytes | None, int | None]]]:
     checkout = checkout_planned_release(plan["remote"], plan["release"], temporary_root / "release")
     shadow_roots = {
         "target": temporary_root / "target",
@@ -2191,6 +2327,7 @@ def stage_planned_update(
     for root in shadow_roots.values():
         root.mkdir(parents=True, exist_ok=True)
     copy_plan_inputs_to_shadow(plan, shadow_roots)
+    seed_reconstructed_installation(plan, shadow_roots)
     preserved_skills = prepare_owned_skills(plan, shadow_roots)
     preserve_foreign_skill_collisions(plan, shadow_roots)
     shadow_env = {
@@ -2235,7 +2372,7 @@ def stage_planned_update(
                 mode,
             )
     refresh_translated_statusline_hashes(plan, translated_files)
-    proposed: list[tuple[str, str, bytes, int]] = []
+    proposed: list[tuple[str, str, bytes | None, int | None]] = []
     for root_name, files in translated_files.items():
         for relative, (content, mode) in files.items():
             actual = safe_update_path(Path(plan["roots"][root_name]), relative)
@@ -2245,12 +2382,27 @@ def stage_planned_update(
             current_mode = actual.stat().st_mode & 0o777 if actual.is_file() else None
             if current != content or current_mode != mode:
                 proposed.append((root_name, relative, content, mode))
+    staged_paths = {
+        (root_name, relative)
+        for root_name, files in translated_files.items()
+        for relative in files
+    }
+    for item in plan["fingerprints"]:
+        identity = (item["root"], item["path"])
+        if (
+            item["sha256"] is not None
+            and item["path"].startswith(".claude/skills/")
+            and identity not in staged_paths
+        ):
+            # The adapter is derived, so an authenticated live file absent from
+            # the regenerated tree is planned as a rollback-backed deletion.
+            proposed.append((item["root"], item["path"], None, None))
     proposed.sort(key=lambda item: (item[0], item[1]))
     return checkout, proposed
 
 
 def proposed_change_manifest(
-    plan: dict[str, Any], proposed: list[tuple[str, str, bytes, int]]
+    plan: dict[str, Any], proposed: list[tuple[str, str, bytes | None, int | None]]
 ) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for root_name, relative, content, mode in proposed:
@@ -2260,10 +2412,10 @@ def proposed_change_manifest(
         result.append({
             "root": root_name,
             "path": relative,
-            "operation": "replace" if existed else "create",
+            "operation": "delete" if content is None else ("replace" if existed else "create"),
             "before_sha256": hashlib.sha256(before).hexdigest() if before is not None else None,
             "before_mode": actual.stat().st_mode & 0o777 if existed else None,
-            "after_sha256": hashlib.sha256(content).hexdigest(),
+            "after_sha256": hashlib.sha256(content).hexdigest() if content is not None else None,
             "after_mode": mode,
         })
     return result
@@ -2383,6 +2535,22 @@ def validate_post_update_health(plan: dict[str, Any]) -> None:
                 for item in owned
             ):
                 raise CliError(f"Post-update health check failed: managed skill inventory is stale for {prefix}")
+        if "claude" in installation["agents"]:
+            canonical_names = {
+                Path(item["path"]).parts[2]
+                for item in inventory
+                if item.get("root") == inventory_root
+                and isinstance(item.get("path"), str)
+                and len(Path(item["path"]).parts) >= 4
+                and tuple(Path(item["path"]).parts[:2]) == (".agents", "skills")
+            }
+            for name in canonical_names:
+                canonical = skill_root / ".agents" / "skills" / name
+                adapter = skill_root / ".claude" / "skills" / name
+                if directory_snapshot(canonical, skill_root) != directory_snapshot(adapter, skill_root):
+                    raise CliError(
+                        f"Post-update health check failed: Claude skill adapter diverges from canonical skill {name}"
+                    )
 
     requested_mcp = set(capabilities.get("mcp", []))
     if requested_mcp and plan["scope"] == "global":
@@ -2502,14 +2670,21 @@ def cmd_update_apply(args: argparse.Namespace) -> int:
                     backup_path = safe_update_path(backup_root, Path(root_name) / relative)
                     backup_path.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(actual, backup_path)
-                atomic_write_bytes(actual, content, mode)
+                if content is None:
+                    if not existed:
+                        raise CliError(f"Planned deletion target disappeared before apply: {root_name}:{relative}")
+                    actual.unlink()
+                else:
+                    if mode is None:
+                        raise CliError(f"Planned file mode is missing: {root_name}:{relative}")
+                    atomic_write_bytes(actual, content, mode)
                 changes.append({
                     "root": root_name,
                     "path": relative,
                     "existed": existed,
                     "before_sha256": hashlib.sha256(before_content).hexdigest() if existed else None,
                     "before_mode": before_mode,
-                    "after_sha256": hashlib.sha256(content).hexdigest(),
+                    "after_sha256": hashlib.sha256(content).hexdigest() if content is not None else None,
                     "after_mode": mode,
                 })
             validate_post_update_health(plan)
@@ -2586,10 +2761,18 @@ def cmd_update_rollback(args: argparse.Namespace) -> int:
             "root", "path", "existed", "before_sha256", "before_mode", "after_sha256", "after_mode"
         }:
             raise CliError("Rollback receipt contains a malformed change")
-        if not isinstance(change["after_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", change["after_sha256"]):
+        deletion = change["after_sha256"] is None and change["after_mode"] is None
+        if not deletion and (
+            not isinstance(change["after_sha256"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", change["after_sha256"])
+        ):
             raise CliError("Rollback receipt contains a malformed post-update hash")
-        if not isinstance(change["after_mode"], int) or not 0 <= change["after_mode"] <= 0o777:
+        if not deletion and (
+            not isinstance(change["after_mode"], int) or not 0 <= change["after_mode"] <= 0o777
+        ):
             raise CliError("Rollback receipt contains a malformed post-update mode")
+        if (change["after_sha256"] is None) != (change["after_mode"] is None):
+            raise CliError("Rollback receipt contains a partial post-update file result")
         if not isinstance(change["existed"], bool):
             raise CliError("Rollback receipt contains a malformed existence flag")
         if change["existed"] and (
@@ -3419,10 +3602,20 @@ def inspect_instructions(agent_id: str, agent: dict[str, Any], target: Path) -> 
 
 
 def directory_snapshot(path: Path, root: Path | None = None) -> dict[Path, bytes]:
-    if not path.is_dir():
+    if path.is_symlink() or not path.is_dir():
         return {}
-    boundary = root.resolve() if root is not None else path.resolve()
-    return {item.relative_to(path): item.read_bytes() for item in inventory_files(boundary, path)}
+    boundary = root.resolve() if root is not None else path.parent.resolve()
+    normalized = path.resolve()
+    snapshot = {
+        item.relative_to(normalized): item.read_bytes()
+        for item in inventory_files(boundary, normalized)
+    }
+    for item in normalized.rglob("*"):
+        if item.is_symlink():
+            snapshot[item.relative_to(normalized)] = (
+                b"\0AGENTSMITH-SYMLINK\0" + os.fsencode(os.readlink(item))
+            )
+    return snapshot
 
 
 def classify_skill_directories(
@@ -3432,9 +3625,11 @@ def classify_skill_directories(
     *,
     infer_bundled_ownership: bool | None = None,
 ) -> dict[Path, dict[str, set[str]]]:
-    roots = [target / ".agents" / "skills"]
+    canonical_root = target / ".agents" / "skills"
+    roots = [canonical_root]
+    adapter_root = target / ".claude" / "skills"
     if agent_id == "claude":
-        roots.append(target / ".claude" / "skills")
+        roots.append(adapter_root)
     bundled_root = ROOT / "skills"
     bundled = (
         {path.name: directory_snapshot(path, bundled_root) for path in bundled_root.iterdir() if path.is_dir()}
@@ -3452,60 +3647,95 @@ def classify_skill_directories(
     inventory = installation.get("managed_files", [])
     inventory = inventory if isinstance(inventory, list) else []
     inventory_root = "home" if installation.get("scope") == "global" else "target"
-    result: dict[Path, dict[str, set[str]]] = {}
-    for root in roots:
-        groups = {"managed": set(), "stale": set(), "foreign": set()}
-        result[root] = groups
-        if not root.is_dir():
-            continue
-        for installed in root.iterdir():
+    result: dict[Path, dict[str, set[str]]] = {
+        root: {"managed": set(), "stale": set(), "foreign": set()} for root in roots
+    }
+
+    def recorded_files(installed: Path) -> dict[str, str]:
+        prefix = installed.relative_to(target).as_posix() + "/"
+        return {
+            item["path"]: item["sha256"]
+            for item in inventory
+            if isinstance(item, dict)
+            and item.get("root") == inventory_root
+            and isinstance(item.get("path"), str)
+            and isinstance(item.get("sha256"), str)
+            and item["path"].startswith(prefix)
+        }
+
+    canonical_groups = result[canonical_root]
+    if canonical_root.is_dir():
+        for installed in canonical_root.iterdir():
             if not installed.is_dir():
                 continue
-            if infer_bundled_ownership and bundled is not None:
-                if installed.name not in bundled:
-                    groups["foreign"].add(installed.name)
-                elif directory_snapshot(installed, target) == bundled[installed.name]:
-                    groups["managed"].add(installed.name)
-                else:
-                    groups["stale"].add(installed.name)
+            if infer_bundled_ownership and bundled is not None and installed.name in bundled:
+                state = "managed" if directory_snapshot(installed, target) == bundled[installed.name] else "stale"
+                canonical_groups[state].add(installed.name)
+                continue
+            recorded = recorded_files(installed)
+            current = {
+                path.relative_to(target).as_posix(): file_sha256(path)
+                for path in inventory_files(target, installed)
+            }
+            if not recorded:
+                canonical_groups["foreign"].add(installed.name)
+            elif current == recorded:
+                canonical_groups["managed"].add(installed.name)
             else:
-                prefix = installed.relative_to(target).as_posix() + "/"
-                recorded = {
-                    item["path"]: item["sha256"]
-                    for item in inventory
-                    if isinstance(item, dict)
-                    and item.get("root") == inventory_root
-                    and isinstance(item.get("path"), str)
-                    and isinstance(item.get("sha256"), str)
-                    and item["path"].startswith(prefix)
-                }
-                current = {
-                    path.relative_to(target).as_posix(): file_sha256(path)
-                    for path in inventory_files(target, installed)
-                }
-                if not recorded:
-                    groups["foreign"].add(installed.name)
-                elif current == recorded:
-                    groups["managed"].add(installed.name)
-                else:
-                    groups["stale"].add(installed.name)
+                canonical_groups["stale"].add(installed.name)
+
+    if agent_id != "claude":
+        return result
+
+    adapter_groups = result[adapter_root]
+    canonical_owned = canonical_groups["managed"] | canonical_groups["stale"]
+    if adapter_root.is_dir():
+        for installed in adapter_root.iterdir():
+            if not installed.is_dir():
+                continue
+            inferred_owned = bool(
+                infer_bundled_ownership and bundled is not None and installed.name in bundled
+            )
+            if installed.name not in canonical_owned and not inferred_owned:
+                adapter_groups["foreign"].add(installed.name)
+                continue
+            canonical = canonical_root / installed.name
+            if canonical.is_dir():
+                matches = directory_snapshot(installed, target) == directory_snapshot(canonical, target)
+            else:
+                matches = bool(bundled is not None and directory_snapshot(installed, target) == bundled[installed.name])
+            adapter_groups["managed" if matches else "stale"].add(installed.name)
     return result
 
 
 def inspect_skills(agent_id: str, agent: dict[str, Any], target: Path) -> dict[str, Any]:
     classifications = classify_skill_directories(agent_id, target)
     roots = list(classifications)
-    managed_names = set().union(*(groups["managed"] for groups in classifications.values()))
-    stale_names = set().union(*(groups["stale"] for groups in classifications.values()))
+    canonical = classifications[roots[0]]
+    managed_names = canonical["managed"] | canonical["stale"]
+    canonical_customized_names = set(canonical["stale"])
+    adapter_diverged_names: set[str] = set()
+    if agent_id == "claude":
+        adapter = classifications[roots[1]]
+        adapter_present = adapter["managed"] | adapter["stale"]
+        adapter_diverged_names = set(adapter["stale"]) | (managed_names - adapter_present)
     foreign_names = set().union(*(groups["foreign"] for groups in classifications.values()))
-    state = "stale" if stale_names else ("managed" if managed_names else ("foreign" if foreign_names else "missing"))
+    state = (
+        "stale" if adapter_diverged_names
+        else "customized" if canonical_customized_names
+        else "managed" if managed_names
+        else "foreign" if foreign_names
+        else "missing"
+    )
     return {
         "declared": str(agent.get("skills_tools", {}).get("agent_skills", {}).get("client_support", "unverified")),
         "state": state,
         "path": str(roots[0]),
         "paths": [str(path) for path in roots],
         "managed_names": sorted(managed_names),
-        "stale_names": sorted(stale_names),
+        "stale_names": sorted(canonical_customized_names | adapter_diverged_names),
+        "canonical_customized_names": sorted(canonical_customized_names),
+        "adapter_diverged_names": sorted(adapter_diverged_names),
         "foreign_names": sorted(foreign_names),
     }
 
@@ -3784,6 +4014,24 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     "Re-run install with the relevant hook flags; foreign commands will be preserved.",
                 )
             )
+        if skills["canonical_customized_names"]:
+            warnings.append(
+                doctor_warning(
+                    "canonical-skill-customized",
+                    "Canonical AgentSmith skill customizations are present: "
+                    + ", ".join(skills["canonical_customized_names"]),
+                    "Review or retain these supported canonical customizations; Claude adapters mirror them.",
+                )
+            )
+        if skills["adapter_diverged_names"]:
+            warnings.append(
+                doctor_warning(
+                    "skill-adapter-diverged",
+                    "Claude's derived skill adapter differs from canonical content: "
+                    + ", ".join(skills["adapter_diverged_names"]),
+                    "Re-run install with --with-skills to regenerate owned adapters.",
+                )
+            )
         expanded = any(capabilities[name]["state"] == "managed" for name in ("skills", "mcp", "hooks"))
         if safety["state"] == "trusted" and expanded:
             warnings.append(
@@ -3795,6 +4043,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             )
         result[agent_id] = {**capabilities, "safety": safety, "warnings": warnings}
         unhealthy |= instructions["state"] in {"missing", "malformed"}
+        unhealthy |= bool(skills["adapter_diverged_names"])
     if args.json:
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:

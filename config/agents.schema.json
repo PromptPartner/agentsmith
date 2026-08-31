@@ -109,6 +109,7 @@
           "properties": {
             "agent_skills": { "$ref": "#/$defs/capability" },
             "skill_directories": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+            "managed_skill_directories": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
             "mcp": { "$ref": "#/$defs/capability" }
           }
         },

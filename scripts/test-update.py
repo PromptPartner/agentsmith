@@ -771,6 +771,13 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertTrue(any(item["path"].startswith(".agents/skills/") for item in updated_inventory))
         self.assertTrue(any(item["path"].startswith(".claude/skills/") for item in updated_inventory))
         self.assertFalse(any(item["path"].startswith(foreign_prefix) for item in updated_inventory))
+        canonical = home / ".agents" / "skills" / "handoff" / "SKILL.md"
+        adapter = home / ".claude" / "skills" / "handoff" / "SKILL.md"
+        self.assertEqual(canonical.read_bytes(), adapter.read_bytes())
+        self.assertEqual(
+            hashlib.sha256(canonical.read_bytes()).hexdigest(),
+            hashlib.sha256(adapter.read_bytes()).hexdigest(),
+        )
 
     def test_legacy_global_skill_inventory_allows_contained_links_but_rejects_escaping_links(self) -> None:
         self.commit_and_tag(CURRENT_VERSION)
@@ -879,9 +886,12 @@ class UpdateCheckTests(unittest.TestCase):
         legacy_state.pop("schema_version")
         legacy_state.pop("installation")
         state_path.write_text(json.dumps(legacy_state, indent=2) + "\n", encoding="utf-8")
+        before = state_path.read_bytes()
         shutil.rmtree(target / ".agents")
         claude_skill = target / ".claude" / "skills" / "handoff" / "SKILL.md"
         claude_skill_before = claude_skill.read_bytes()
+        extra_adapter = claude_skill.parent / "legacy-extra.txt"
+        extra_adapter.write_bytes(b"legacy adapter-only drift\n")
         mcp_path = target / ".mcp.json"
         mcp_before = mcp_path.read_bytes()
         plan_path = self.root / "legacy-claude-project-plan.json"
@@ -900,13 +910,33 @@ class UpdateCheckTests(unittest.TestCase):
             {"handoff_hooks": False, "hooks": False, "mcp": ["context7"], "skills": True, "ui_design_hook": False},
         )
         self.assertTrue(any(item["path"].startswith(".agents/skills/") for item in plan["proposed_changes"]))
+        self.assertTrue(any(
+            item["operation"] == "replace"
+            and item["path"] == ".claude/skills/handoff/SKILL.md"
+            and item["before_sha256"] == hashlib.sha256(claude_skill_before).hexdigest()
+            for item in plan["proposed_changes"]
+        ))
+        self.assertTrue(any(
+            item["operation"] == "delete"
+            and item["path"] == ".claude/skills/handoff/legacy-extra.txt"
+            and item["before_sha256"] == hashlib.sha256(extra_adapter.read_bytes()).hexdigest()
+            and item["after_sha256"] is None
+            for item in plan["proposed_changes"]
+        ))
+        self.assertTrue(any("Claude skill adapter" in warning for warning in plan["migration_warnings"]))
 
         applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
 
         self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
         canonical_skill = target / ".agents" / "skills" / "handoff" / "SKILL.md"
         self.assertIn(NEXT_SKILL_PROBE, canonical_skill.read_text(encoding="utf-8"))
-        self.assertEqual(claude_skill.read_bytes(), claude_skill_before)
+        self.assertNotEqual(claude_skill.read_bytes(), claude_skill_before)
+        self.assertEqual(claude_skill.read_bytes(), canonical_skill.read_bytes())
+        self.assertEqual(
+            hashlib.sha256(claude_skill.read_bytes()).hexdigest(),
+            hashlib.sha256(canonical_skill.read_bytes()).hexdigest(),
+        )
+        self.assertFalse(extra_adapter.exists())
         self.assertEqual(mcp_path.read_bytes(), mcp_before)
         updated = json.loads(state_path.read_text(encoding="utf-8"))
         self.assertEqual(updated["schema_version"], 1)
@@ -926,6 +956,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertEqual(doctor_result["claude"]["skills"]["state"], "managed")
         self.assertIn("handoff", doctor_result["claude"]["skills"]["managed_names"])
 
+        updated_state_bytes = state_path.read_bytes()
         updated["installation"] = []
         state_path.write_text(json.dumps(updated, indent=2) + "\n", encoding="utf-8")
         malformed_state_doctor = subprocess.run(
@@ -943,6 +974,22 @@ class UpdateCheckTests(unittest.TestCase):
         )
         malformed_result = json.loads(malformed_state_doctor.stdout)
         self.assertEqual(malformed_result["claude"]["skills"]["state"], "foreign")
+
+        state_path.write_bytes(updated_state_bytes)
+        receipt_line = next(line for line in applied.stdout.splitlines() if "rollback receipt:" in line)
+        receipt_path = Path(receipt_line.split("rollback receipt:", 1)[1].strip())
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        adapter_change = next(
+            item for item in receipt["changes"]
+            if item["path"] == ".claude/skills/handoff/SKILL.md"
+        )
+        self.assertEqual(adapter_change["before_sha256"], hashlib.sha256(claude_skill_before).hexdigest())
+        rolled_back = self.run_core("update", "rollback", "--receipt", str(receipt_path), env=environment)
+        self.assertEqual(rolled_back.returncode, 0, rolled_back.stdout + rolled_back.stderr)
+        self.assertEqual(claude_skill.read_bytes(), claude_skill_before)
+        self.assertEqual(extra_adapter.read_bytes(), b"legacy adapter-only drift\n")
+        self.assertFalse(canonical_skill.exists())
+        self.assertEqual(state_path.read_bytes(), before)
 
     def test_pre_manifest_reconstruction_does_not_invent_unselected_or_absent_capabilities(self) -> None:
         target = self.root / "legacy-empty-claude-project"
