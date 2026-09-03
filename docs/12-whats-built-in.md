@@ -44,7 +44,7 @@ emulate hooks or MCP to make matrix cells green.
 
 | Command | Purpose |
 |---|---|
-| `agentsmith verify` | Run `.harness/verify.conf` phases with the native OS shell. |
+| `agentsmith verify [--record <directory>]` | Run `.harness/verify.conf` phases with the native OS shell; optionally retain a local redacted command receipt. |
 | `agentsmith handoff` | Scaffold durable session memory with branch/HEAD/dirty facts. |
 | `agentsmith new-research` | Create a durable research note that is archived, never silently deleted. |
 | `agentsmith new-feedback` | Create the five-stage post-incident record. |
@@ -62,7 +62,8 @@ not the directory in which a skill happened to be installed.
 
 The autonomous-run controller remains constrained to macOS/Linux because its isolation layer uses
 `sandbox-exec` or Bubblewrap. That limitation is declared rather than hidden behind a generic
-Windows compatibility claim.
+Windows compatibility claim. Concurrent local controllers also reserve conservative path prefixes
+and optional manifest resource keys under a repository coordination lock before execution begins.
 
 ## Verification and CI
 

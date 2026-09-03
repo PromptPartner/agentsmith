@@ -18,7 +18,9 @@ until the operator posts it; naming Linear never grants the run a connector.
 Copy `templates/autonomous-run.json` through the controller's `prepare` command. The manifest pins
 the spec hash, ticket, base ref, maker/checker runtime and model, path boundary, verifier, attempt
 cap, wall-clock budget, and git/external-write policy. It must be reviewed and committed before
-`start` will accept it.
+`start` will accept it. `scope.resources` optionally names local coordination keys such as
+`port:3000`, `db:local/test`, or `service:redis`; omit it in an older manifest or use an empty list
+when the run reserves none.
 
 ## What runs overnight
 
@@ -44,6 +46,16 @@ The v1 boundary is deliberately narrow:
 - maximum three attempts, then escalation;
 - one immutable wall-clock deadline across stop/resume;
 - no automatic context-percentage rollover.
+
+Worktrees isolate tracked files, not every local dependency. Before creating a branch, worktree, or
+run state, the controller compares each live run's declared scope under a short repository-wide
+coordination lock. It derives a conservative literal prefix from each `allowed_paths` glob: parent
+and child prefixes conflict, and a pattern with no literal prefix reserves the whole repository.
+An exact shared resource key also conflicts. These declarations coordinate cooperating AgentSmith
+runs; they do not bind a port or isolate a database at the operating-system level. Concurrent
+worktrees also share writable Git metadata needed for local commits. The controller verifies live
+peer identity before accounting for peer Git artifacts, but this is collision coordination, not
+adversarial isolation: do not run mutually untrusted makers concurrently in one repository.
 
 Codex receives the manifest objective and remaining native goal token budget. Claude receives only
 the remaining run-wide USD allowance. The controller accumulates usage reported by both CLIs and
@@ -74,7 +86,11 @@ Wayfinder spec flow remains available to every work type.
 
 `status <id>` reads controller state from the repository's git-common directory. `start` and
 `resume` hold one per-run lifecycle lock, so a second live controller is refused; a dead owner's
-lock is reclaimed only after its PID is demonstrably gone. `stop <id>` atomically writes a stop
+lock is reclaimed only after its PID is demonstrably gone. While starting or resuming, the short
+repository coordination lock serializes the live-scope scan and lifecycle-state transition, then
+releases before model execution. A conflict names the other run and overlapping path prefix or
+resource. Malformed live scope fails closed; a demonstrably dead controller and a stopped run do
+not block new work. `stop <id>` atomically writes a stop
 request, signals the active controller and child, then waits up to five seconds for the controller
 to persist `interrupted`. It never writes `state.json` itself. If the controller has already died,
 the request remains in place and `resume` reconciles the interruption after acquiring the stale
