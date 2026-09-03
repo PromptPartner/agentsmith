@@ -91,7 +91,10 @@ an expert developer, most of the friction here is words — clear that, and the 
 - **Hook** — code that runs at a lifecycle point (pre-commit, pre-tool-call) and can block the
   action. The strongest kind of guard. Codex user hooks require review/trust through `/hooks`.
 - **`agentsmith verify` / `verify.conf`** — the project's "is this shippable?" gate and its definition:
-  `label :: command` phases, run in order, first failure stops.
+  `label :: command` phases, run in order, first failure stops. `--record <directory>` preserves
+  deterministic command evidence without replacing separate runtime or visual evidence.
+- **Verification receipt** — an opt-in, local `receipt.json` plus redacted stdout/stderr sidecars.
+  It ties phase exits and output hashes to the verification config, Git state, platform, and time.
 
 ## Loops (unattended work)
 

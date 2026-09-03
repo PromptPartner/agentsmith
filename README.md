@@ -160,6 +160,7 @@ Claude-only `--org-policy` manages the OS policy directory with backup/restore o
 ```bash
 agentsmith verify --list
 agentsmith verify
+agentsmith verify --record .harness/receipts/my-check
 agentsmith handoff ITEM-123
 agentsmith new-research "topic"
 agentsmith new-feedback "observed failure"
@@ -171,7 +172,9 @@ printf '%s\n' "text to inspect" | agentsmith secret-scan -
 
 An installed project carries the Python runtime and command shims under `.agentsmith/`, so hooks
 and skills resolve the same CLI on macOS, Linux, and Windows. Verification phases are
-project-owned and run with the native OS shell.
+project-owned and run with the native OS shell. `--record` adds a local, durable `receipt.json`
+and redacted stdout/stderr sidecars; it refuses an existing destination instead of overwriting
+earlier evidence.
 
 The default secret scan examines only added lines in the staged Git diff, which is the pre-commit
 contract. `--all` scans the tracked working tree; file arguments and `-` select explicit files or

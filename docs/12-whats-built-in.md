@@ -44,7 +44,7 @@ emulate hooks or MCP to make matrix cells green.
 
 | Command | Purpose |
 |---|---|
-| `agentsmith verify` | Run `.harness/verify.conf` phases with the native OS shell. |
+| `agentsmith verify [--record <directory>]` | Run `.harness/verify.conf` phases with the native OS shell; optionally retain a local redacted command receipt. |
 | `agentsmith handoff` | Scaffold durable session memory with branch/HEAD/dirty facts. |
 | `agentsmith new-research` | Create a durable research note that is archived, never silently deleted. |
 | `agentsmith new-feedback` | Create the five-stage post-incident record. |

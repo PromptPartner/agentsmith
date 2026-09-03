@@ -17,6 +17,7 @@ import io
 import json
 import os
 from pathlib import Path
+import platform
 import re
 import secrets
 import shlex
@@ -25,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 import tomllib
 from typing import Any, Iterable
@@ -86,6 +88,9 @@ SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             re.IGNORECASE,
         ),
     ),
+)
+PEM_PRIVATE_KEY_BEGIN = re.compile(
+    r"-----BEGIN (?P<label>[A-Z0-9 ]*PRIVATE KEY)-----"
 )
 
 
@@ -4081,15 +4086,324 @@ def parse_verify_conf(path: Path) -> list[tuple[str, str]]:
     return phases
 
 
+def verify_timestamp() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def pem_private_key_label(match: re.Match[str]) -> str:
+    return match.group("label")
+
+
+def pem_private_key_end(label: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"^[ \t]*-----END {re.escape(label)}-----[ \t]*(?:\r?\n|\Z)",
+        re.MULTILINE,
+    )
+
+
+def redact_pem_private_keys(value: str) -> tuple[str, int]:
+    output: list[str] = []
+    cursor = 0
+    count = 0
+    while begin := PEM_PRIVATE_KEY_BEGIN.search(value, cursor):
+        output.extend((value[cursor:begin.start()], "[REDACTED]"))
+        count += 1
+        end = pem_private_key_end(pem_private_key_label(begin)).search(value, begin.end())
+        if end is None:
+            cursor = len(value)
+            break
+        cursor = end.end()
+    output.append(value[cursor:])
+    return "".join(output), count
+
+
+def redact_secret_text(value: str) -> tuple[str, list[str]]:
+    redacted, pem_count = redact_pem_private_keys(value)
+    categories: list[str] = []
+    if pem_count:
+        categories.append("PEM private key")
+    for category, pattern in SECRET_PATTERNS:
+        redacted, count = pattern.subn("[REDACTED]", redacted)
+        if count:
+            categories.append(category)
+    return redacted, categories
+
+
+def verification_git_metadata(root: Path) -> dict[str, Any]:
+    available = shutil.which("git") is not None
+    result: dict[str, Any] = {"available": available, "head": None, "branch": None, "dirty": None}
+    if not available:
+        return result
+    inside = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--is-inside-work-tree"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if inside.returncode or inside.stdout.strip() != "true":
+        return result
+
+    def git_value(*arguments: str) -> str | None:
+        observed = subprocess.run(
+            ["git", "-C", str(root), *arguments],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        value = observed.stdout.strip()
+        return value if observed.returncode == 0 and value else None
+
+    result["head"] = git_value("rev-parse", "HEAD")
+    result["branch"] = git_value("symbolic-ref", "--quiet", "--short", "HEAD")
+    status = subprocess.run(
+        ["git", "-C", str(root), "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    result["dirty"] = bool(status.stdout) if status.returncode == 0 else None
+    return result
+
+
+def write_verification_receipt(path: Path, receipt: dict[str, Any]) -> None:
+    receipt["updated_at"] = verify_timestamp()
+    rendered = json.dumps(receipt, indent=2, ensure_ascii=False) + "\n"
+    rendered, late_categories = redact_secret_text(rendered)
+    if late_categories:
+        receipt["redactions"] = sorted(set(receipt.get("redactions", [])) | set(late_categories))
+        rendered, _ = redact_secret_text(json.dumps(receipt, indent=2, ensure_ascii=False) + "\n")
+    payload = rendered.encode("utf-8")
+    atomic_write_bytes(path, payload)
+
+
+def stream_redacted_output(source: Any, destination: Any, display: Any,
+                           categories: set[str], failures: list[BaseException]) -> None:
+    pem_label: str | None = None
+    try:
+        for chunk in iter(source.readline, ""):
+            output: list[str] = []
+            remaining = chunk
+            while remaining:
+                if pem_label is not None:
+                    end = pem_private_key_end(pem_label).search(remaining)
+                    if end is None:
+                        remaining = ""
+                        continue
+                    remaining = remaining[end.end():]
+                    pem_label = None
+                begin = PEM_PRIVATE_KEY_BEGIN.search(remaining)
+                if begin is None:
+                    safe, found = redact_secret_text(remaining)
+                    output.append(safe)
+                    categories.update(found)
+                    remaining = ""
+                    continue
+                safe_prefix, found = redact_secret_text(remaining[:begin.start()])
+                output.extend((safe_prefix, "[REDACTED]"))
+                categories.update(found)
+                categories.add("PEM private key")
+                after_begin = remaining[begin.end():]
+                pem_label = pem_private_key_label(begin)
+                end = pem_private_key_end(pem_label).search(after_begin)
+                if end is None:
+                    if chunk.endswith("\n"):
+                        output.append("\n")
+                    remaining = ""
+                else:
+                    remaining = after_begin[end.end():]
+                    pem_label = None
+            redacted = "".join(output)
+            destination.write(redacted)
+            destination.flush()
+            display.write(redacted)
+            display.flush()
+    except BaseException as exc:  # propagated on the controller thread after both streams close
+        failures.append(exc)
+    finally:
+        source.close()
+
+
+def recorded_verify_phase(command: str, root: Path, stdout_path: Path,
+                          stderr_path: Path) -> tuple[int, set[str]]:
+    categories: set[str] = set()
+    failures: list[BaseException] = []
+    process: subprocess.Popen[str] | None = None
+    with (
+        stdout_path.open("w", encoding="utf-8", newline="") as stdout_file,
+        stderr_path.open("w", encoding="utf-8", newline="") as stderr_file,
+    ):
+        process = subprocess.Popen(
+            command,
+            cwd=root,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+        assert process.stdout is not None and process.stderr is not None
+        workers = [
+            threading.Thread(
+                target=stream_redacted_output,
+                args=(process.stdout, stdout_file, sys.stdout, categories, failures),
+                daemon=True,
+            ),
+            threading.Thread(
+                target=stream_redacted_output,
+                args=(process.stderr, stderr_file, sys.stderr, categories, failures),
+                daemon=True,
+            ),
+        ]
+        for worker in workers:
+            worker.start()
+        try:
+            return_code = process.wait()
+        except KeyboardInterrupt:
+            process.terminate()
+            process.wait()
+            for worker in workers:
+                worker.join()
+            raise
+        for worker in workers:
+            worker.join()
+        if failures:
+            raise RuntimeError(f"could not capture verification output: {failures[0]}")
+        stdout_file.flush()
+        stderr_file.flush()
+        os.fsync(stdout_file.fileno())
+        os.fsync(stderr_file.fileno())
+    return return_code, categories
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
     root = Path(args.target or os.getcwd()).resolve()
     conf = root / ".harness" / "verify.conf"
     if not conf.exists():
         raise CliError(f"No verification config at {conf}")
     phases = [(label, cmd) for label, cmd in parse_verify_conf(conf) if not args.only or args.only in label]
+    if args.record and args.list:
+        raise CliError("--record cannot be combined with --list")
     if args.list:
         for index, (label, command) in enumerate(phases, 1):
             print(f"{index}. {label} :: {command}")
+        return 0
+    if args.record:
+        record_dir = Path(args.record).expanduser()
+        if not record_dir.is_absolute():
+            record_dir = root / record_dir
+        record_dir = record_dir.resolve()
+        if record_dir.exists():
+            raise CliError(f"Refusing to overwrite existing verification receipt destination {record_dir}")
+        configuration_sha256 = file_sha256(conf)
+        git_metadata = verification_git_metadata(root)
+        try:
+            record_dir.parent.mkdir(parents=True, exist_ok=True)
+            record_dir.mkdir()
+        except FileExistsError as exc:
+            raise CliError(f"Refusing to overwrite existing verification receipt destination {record_dir}") from exc
+        except OSError as exc:
+            raise CliError(f"Cannot create verification receipt destination {record_dir}: {exc}") from exc
+
+        receipt_path = record_dir / "receipt.json"
+        started_at = verify_timestamp()
+        receipt_phases: list[dict[str, Any]] = []
+        for index, (label, command) in enumerate(phases, 1):
+            stdout_name = f"phase-{index:03d}.stdout.txt"
+            stderr_name = f"phase-{index:03d}.stderr.txt"
+            safe_label, label_categories = redact_secret_text(label)
+            safe_command, command_categories = redact_secret_text(command)
+            receipt_phases.append({
+                "index": index,
+                "label": safe_label,
+                "command": safe_command,
+                "status": "pending",
+                "started_at": None,
+                "completed_at": None,
+                "duration_seconds": None,
+                "exit_code": None,
+                "output_paths": {"stdout": stdout_name, "stderr": stderr_name},
+                "output_hashes": {},
+                "redactions": sorted(set(label_categories) | set(command_categories)),
+            })
+        safe_only, _ = redact_secret_text(args.only or "")
+        receipt: dict[str, Any] = {
+            "schema_version": 1,
+            "status": "running",
+            "started_at": started_at,
+            "updated_at": started_at,
+            "completed_at": None,
+            "target": str(root),
+            "only": safe_only if args.only is not None else None,
+            "configuration": {"path": str(conf.resolve()), "sha256": configuration_sha256},
+            "git": git_metadata,
+            "platform": {"os": platform.system(), "python_version": platform.python_version()},
+            "phases": receipt_phases,
+        }
+        write_verification_receipt(receipt_path, receipt)
+        active_phase: dict[str, Any] | None = None
+        try:
+            for index, ((label, command), phase) in enumerate(zip(phases, receipt_phases), 1):
+                active_phase = phase
+                phase_started = time.monotonic()
+                safe_label, label_categories = redact_secret_text(label)
+                safe_command, command_categories = redact_secret_text(command)
+                print(f"[{index}/{len(phases)}] {safe_label}\n  {safe_command}")
+                phase["redactions"] = sorted(
+                    set(phase["redactions"]) | set(label_categories) | set(command_categories)
+                )
+                phase["status"] = "running"
+                phase["started_at"] = verify_timestamp()
+                write_verification_receipt(receipt_path, receipt)
+                stdout_path = record_dir / phase["output_paths"]["stdout"]
+                stderr_path = record_dir / phase["output_paths"]["stderr"]
+                return_code, output_categories = recorded_verify_phase(
+                    command, root, stdout_path, stderr_path
+                )
+                phase["completed_at"] = verify_timestamp()
+                phase["duration_seconds"] = round(time.monotonic() - phase_started, 6)
+                phase["exit_code"] = return_code
+                phase["status"] = "passed" if return_code == 0 else "failed"
+                phase["redactions"] = sorted(set(phase["redactions"]) | output_categories)
+                phase["output_hashes"] = {
+                    "stdout": file_sha256(stdout_path),
+                    "stderr": file_sha256(stderr_path),
+                }
+                if return_code:
+                    receipt["status"] = "failed"
+                    receipt["completed_at"] = verify_timestamp()
+                    write_verification_receipt(receipt_path, receipt)
+                    warn(f"verification phase '{safe_label}' failed with exit {return_code}")
+                    return return_code
+                write_verification_receipt(receipt_path, receipt)
+                active_phase = None
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:
+            if active_phase is not None:
+                active_phase["status"] = "error"
+                active_phase["completed_at"] = verify_timestamp()
+                active_phase["duration_seconds"] = round(time.monotonic() - phase_started, 6)
+                for stream, stored_path in active_phase["output_paths"].items():
+                    output_path = record_dir / stored_path
+                    if output_path.is_file():
+                        active_phase["output_hashes"][stream] = file_sha256(output_path)
+            receipt["status"] = "error"
+            receipt["completed_at"] = verify_timestamp()
+            write_verification_receipt(receipt_path, receipt)
+            safe_error, _ = redact_secret_text(str(exc))
+            raise CliError(f"Verification recording failed: {safe_error}") from exc
+        receipt["status"] = "passed"
+        receipt["completed_at"] = verify_timestamp()
+        write_verification_receipt(receipt_path, receipt)
+        ok(f"all {len(phases)} verification phases passed")
         return 0
     for index, (label, command) in enumerate(phases, 1):
         print(f"[{index}/{len(phases)}] {label}\n  {command}")
@@ -4468,6 +4782,7 @@ def parser() -> argparse.ArgumentParser:
     verify.add_argument("--target")
     verify.add_argument("--only")
     verify.add_argument("--list", action="store_true")
+    verify.add_argument("--record", metavar="DIRECTORY")
     for name in ("handoff", "new-feedback", "new-research"):
         scaffold = sub.add_parser(name)
         scaffold.add_argument("name", nargs="?")
