@@ -22,9 +22,16 @@ adapter such as `.claude/skills`. Use canonical `AGENTS.md` when an instruction 
    macOS/Linux and `.agentsmith\\agentsmith.cmd verify` on Windows). It runs every phase in
    `.harness/verify.conf` and stops at the first
    failure). `--list` shows the phases; `--only <tag>` iterates just one.
+   Add `--record <directory>` when deterministic command evidence needs a durable local receipt.
+   The destination must be new; relative paths resolve from the project target. Record mode
+   redacts secret-shaped console and sidecar output before either is emitted.
 2. On a failure: read the label + command it printed, explain in plain language what broke, and
    point at that phase's line in `.harness/verify.conf` to fix or refine.
 3. Report the actual pass/fail output — not a summary of intent.
+
+The v1 receipt covers deterministic commands only. Keep screenshots, videos, manual assertions,
+published results, and real runtime or visual checks as separately referenced artifacts. A green
+receipt does not satisfy an end-to-end gate that requires those observations.
 
 ## Fallback — no runner or no conf
 1. Say so plainly, and look at `.harness/verify.conf.example` for the intended phases.

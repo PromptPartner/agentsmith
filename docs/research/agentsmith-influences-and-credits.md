@@ -155,6 +155,39 @@ surrounding prose in the harness voice with R-number cross-references.
 
 ---
 
+## 8. Michael Shimeles — durable evidence and worktree collision awareness
+
+**Who/source:** Michael Shimeles's `skills` repository, inspected at pinned commit
+[`5d403ea66775c04df222a1e9b302ef64ae45c712`](https://github.com/michaelshimeles/skills/commit/5d403ea66775c04df222a1e9b302ef64ae45c712)
+on 2026-09-02.
+
+- **Evidence provenance.** [`evidence-driven-testing`](https://github.com/michaelshimeles/skills/blob/5d403ea66775c04df222a1e9b302ef64ae45c712/evidence-driven-testing/SKILL.md)
+  binds an evidence manifest/report to the revision or deployment, environment, and named
+  assertions. AgentSmith adapts that provenance idea into optional deterministic command receipts:
+  phase output, timestamps, exit codes, hashes, config identity, Git state, and runtime environment.
+  Screenshots, video, manual assertions, and publishing remain separate evidence rather than fields
+  in the v1 receipt. *Confidence: high* on the source and conceptual lineage; the implementation is
+  independent.
+- **Collision awareness beyond worktrees.** [`new-feature`](https://github.com/michaelshimeles/skills/blob/5d403ea66775c04df222a1e9b302ef64ae45c712/new-feature/SKILL.md)
+  checks changed-file overlap before creating a worktree and warns that ports and databases remain
+  shared. AgentSmith adapts that observation into a local controller guard over conservative path
+  prefixes and declared resource keys, serialized while initial lifecycle state is created.
+  *Confidence: high* on the source and conceptual lineage; AgentSmith does not query pull requests.
+
+**Boundaries:** the FFmpeg recorder, screenshots/video, annotations, uploads, PR/tracker comments,
+`git fetch`, `gh pr list`/`gh pr diff`, dependency installation, and branch/worktree cleanup were not
+adopted. They add dependencies, network or external-write authority, or lifecycle policy beyond the
+two bounded changes.
+
+**Licence and tests:** the pinned repository root contains no `LICENSE`, `LICENSE.md`, or `COPYING`
+file. AgentSmith therefore copied no upstream code and independently implemented concepts only.
+The pinned tree contains a synthetic recorder smoke test (`tests/test_evidence.py`) but no test for
+the `new-feature` procedure; that upstream coverage does not establish real visual-session,
+publishing, or collision-guard behavior. Detailed assessment:
+[`michaelshimeles-skills-assessment.md`](michaelshimeles-skills-assessment.md).
+
+---
+
 ## Mapping at a glance (harness principle → primary source)
 | Harness principle | Strongest source |
 |---|---|
@@ -168,6 +201,8 @@ surrounding prose in the harness voice with R-number cross-references.
 | Writing rules: no-op test, single source of truth, leading words | Matt Pocock, *writing-for-agents* (#7) |
 | Context pointers: a skill description == a CLAUDE.md line naming a doc | Matt Pocock (#7) |
 | Shared architectural language and the risk of locally-correct drift | Armin Ronacher, *The Tower Keeps Rising* (#6); OpenAI Codex harness as complementary implementation evidence |
+| Durable verification evidence tied to revision and environment | Michael Shimeles, `evidence-driven-testing` (#8) |
+| Concurrent worktree collision awareness, including shared local resources | Michael Shimeles, `new-feature` (#8) |
 
 ## All source URLs (flat list)
 - https://x.com/karpathy/status/1937902205765607626
@@ -203,3 +238,6 @@ surrounding prose in the harness voice with R-number cross-references.
 - https://addyosmani.com/blog/agentic-code-quality/
 - https://www.youtube.com/watch?v=96jN2OCOfLs
 - https://lucumr.pocoo.org/2026/7/13/the-tower-keeps-rising/
+- https://github.com/michaelshimeles/skills/commit/5d403ea66775c04df222a1e9b302ef64ae45c712
+- https://github.com/michaelshimeles/skills/blob/5d403ea66775c04df222a1e9b302ef64ae45c712/evidence-driven-testing/SKILL.md
+- https://github.com/michaelshimeles/skills/blob/5d403ea66775c04df222a1e9b302ef64ae45c712/new-feature/SKILL.md
