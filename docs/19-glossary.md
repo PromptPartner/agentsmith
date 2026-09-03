@@ -101,6 +101,10 @@ an expert developer, most of the friction here is words — clear that, and the 
 - **Autonomous run** — one finite, accepted implementation ticket executed by a local controller:
   fresh maker → deterministic verifier → fresh checker → accept, retry, or escalate. Its v1
   authority ends at local commits. → [`21-autonomous-runs.md`](21-autonomous-runs.md)
+- **Run scope / resource key** — the path prefixes and optional lowercase `<kind>:<identifier>`
+  values a live autonomous controller reserves against other cooperating runs. This prevents local
+  collisions but provides neither operating-system resource isolation nor adversarial isolation
+  between makers that share repository Git metadata.
 - **Loop** — a harness plus a schedule, durable state, and a verification chain; work that lands
   with no human watching. → [`05-operating-modes.md`](05-operating-modes.md), `profiles/autonomous-loops.md`
 - **Maker / checker** — the mandatory split: the agent that did the work never judges it; a

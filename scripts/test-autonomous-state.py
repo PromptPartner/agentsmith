@@ -23,6 +23,94 @@ SPEC.loader.exec_module(CONTROLLER)
 
 
 class AutonomousStateTests(unittest.TestCase):
+    def test_legacy_scope_defaults_to_no_coordinated_resources(self) -> None:
+        scope = {"allowed_paths": ["src/**"], "denied_paths": []}
+        self.assertEqual(CONTROLLER.scope_resources(scope), [])
+        self.assertNotIn("resources", scope)
+
+    def test_resource_keys_are_lowercase_unique_coordination_identifiers(self) -> None:
+        valid = ["port:3000", "db:local/test", "service:redis"]
+        self.assertEqual(CONTROLLER.scope_resources({"resources": valid}), valid)
+
+        for invalid in (
+            ["PORT:3000"],
+            ["port:Local"],
+            ["port"],
+            ["port:"],
+            [":3000"],
+            ["port:3000 extra"],
+        ):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(CONTROLLER.RunError, "scope.resources"):
+                    CONTROLLER.scope_resources({"resources": invalid})
+
+        with self.assertRaisesRegex(CONTROLLER.RunError, "unique"):
+            CONTROLLER.scope_resources({"resources": ["port:3000", "port:3000"]})
+
+    def test_fixed_prefix_stops_before_the_first_glob_segment(self) -> None:
+        cases = {
+            "src/**": "src",
+            "src/components/*.tsx": "src/components",
+            "docs/[ab]*/index.md": "docs",
+            "README.md": "README.md",
+            "**/*.md": ".",
+            "*": ".",
+        }
+        for pattern, expected in cases.items():
+            with self.subTest(pattern=pattern):
+                self.assertEqual(CONTROLLER.fixed_prefix(pattern), expected)
+
+    def test_scope_paths_reject_dot_segments_that_can_hide_overlap(self) -> None:
+        with self.assertRaisesRegex(CONTROLLER.RunError, "repository-relative"):
+            CONTROLLER.normalized_scope({"allowed_paths": ["src/./**"]})
+
+    def test_unlocked_state_cannot_exempt_a_self_declared_git_ref(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith forged state ") as temporary:
+            common = Path(temporary)
+            run_dir = common / "agentsmith-runs" / "evil"
+            run_dir.mkdir(parents=True)
+            CONTROLLER.write_json(
+                run_dir / "state.json",
+                {"run_id": "evil", "branch": "agentsmith/evil"},
+            )
+
+            refs, logs, worktrees = CONTROLLER.registered_run_git_artifacts(
+                common, "refs/heads/agentsmith/active"
+            )
+
+            self.assertEqual(refs, set())
+            self.assertEqual(logs, set())
+            self.assertEqual(worktrees, set())
+
+    def test_prefix_overlap_is_segment_aware_and_bidirectional(self) -> None:
+        self.assertTrue(CONTROLLER.prefixes_overlap("src", "src/widgets"))
+        self.assertTrue(CONTROLLER.prefixes_overlap("src/widgets", "src"))
+        self.assertTrue(CONTROLLER.prefixes_overlap("src", "src"))
+        self.assertFalse(CONTROLLER.prefixes_overlap("src", "src2"))
+        self.assertFalse(CONTROLLER.prefixes_overlap("docs", "src"))
+
+    def test_wildcard_root_reserves_the_whole_repository(self) -> None:
+        broad = {"allowed_paths": ["**/*.md"]}
+        narrow = {"allowed_paths": ["src/**"]}
+        self.assertEqual(CONTROLLER.scope_collision(broad, narrow), ("path", "."))
+        self.assertEqual(CONTROLLER.scope_collision(narrow, broad), ("path", "."))
+
+    def test_scope_collision_names_shared_paths_or_resources(self) -> None:
+        parent = {"allowed_paths": ["src/**"], "resources": ["port:3000"]}
+        child = {"allowed_paths": ["src/widgets/**"], "resources": ["service:redis"]}
+        other_path_same_resource = {
+            "allowed_paths": ["docs/**"],
+            "resources": ["port:3000"],
+        }
+        disjoint = {"allowed_paths": ["tests/**"], "resources": ["db:local/test"]}
+
+        self.assertEqual(CONTROLLER.scope_collision(parent, child), ("path", "src"))
+        self.assertEqual(
+            CONTROLLER.scope_collision(parent, other_path_same_resource),
+            ("resource", "port:3000"),
+        )
+        self.assertIsNone(CONTROLLER.scope_collision(parent, disjoint))
+
     def test_atomic_replace_retries_a_transient_windows_sharing_denial(self) -> None:
         denial = PermissionError("destination is momentarily shared")
         denial.winerror = 5
@@ -92,6 +180,54 @@ class AutonomousStateTests(unittest.TestCase):
             recovered = CONTROLLER.acquire_lifecycle_lock(run_dir, "fixture")
             self.assertNotEqual(recovered, "stale")
             CONTROLLER.release_lifecycle_lock(run_dir, recovered)
+
+    def test_repository_coordination_lock_serializes_and_reclaims_stale_owner(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith coordination ") as temporary:
+            root = Path(temporary)
+            first_entered = threading.Event()
+            second_attempted = threading.Event()
+            second_entered = threading.Event()
+            release_first = threading.Event()
+            observed_lock: list[Path] = []
+
+            def first() -> None:
+                with CONTROLLER.coordination_lock(root):
+                    files = list(root.iterdir())
+                    self.assertEqual(len(files), 1)
+                    observed_lock.append(files[0])
+                    first_entered.set()
+                    self.assertTrue(release_first.wait(2))
+
+            def second() -> None:
+                self.assertTrue(first_entered.wait(2))
+                second_attempted.set()
+                with CONTROLLER.coordination_lock(root):
+                    second_entered.set()
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                first_future = pool.submit(first)
+                second_future = pool.submit(second)
+                self.assertTrue(first_entered.wait(2))
+                self.assertTrue(second_attempted.wait(2))
+                self.assertFalse(second_entered.wait(0.05))
+                release_first.set()
+                first_future.result()
+                second_future.result()
+
+            self.assertTrue(second_entered.is_set())
+            lock = observed_lock[0]
+            self.assertFalse(lock.exists())
+            stale_pid = next(
+                pid for pid in range(99_999_999, 99_999_900, -1)
+                if not CONTROLLER.process_is_live(pid)
+            )
+            lock.write_text(
+                json.dumps({"pid": stale_pid, "run_id": "coordination", "token": "stale"}) + "\n",
+                encoding="utf-8",
+            )
+            with CONTROLLER.coordination_lock(root):
+                self.assertTrue(lock.exists())
+            self.assertFalse(lock.exists())
 
     def test_stop_request_creation_is_atomic_and_idempotent(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith stop ") as temporary:

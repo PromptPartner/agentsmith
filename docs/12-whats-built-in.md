@@ -62,7 +62,8 @@ not the directory in which a skill happened to be installed.
 
 The autonomous-run controller remains constrained to macOS/Linux because its isolation layer uses
 `sandbox-exec` or Bubblewrap. That limitation is declared rather than hidden behind a generic
-Windows compatibility claim.
+Windows compatibility claim. Concurrent local controllers also reserve conservative path prefixes
+and optional manifest resource keys under a repository coordination lock before execution begins.
 
 ## Verification and CI
 

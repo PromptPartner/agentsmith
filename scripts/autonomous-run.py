@@ -240,13 +240,66 @@ def release_lifecycle_lock(run_dir: Path, token: str) -> None:
         path.unlink(missing_ok=True)
 
 
+def coordination_lock_path(root: Path) -> Path:
+    return root / "coordination.lock"
+
+
+def read_coordination_lock(root: Path) -> dict[str, Any] | None:
+    path = coordination_lock_path(root)
+    if not path.exists():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RunError(f"cannot verify repository coordination lock {path}: {exc}") from exc
+    if not isinstance(value, dict) or not isinstance(value.get("pid"), int):
+        raise RunError(f"cannot verify repository coordination lock {path}: malformed owner metadata")
+    return value
+
+
 @contextlib.contextmanager
-def lifecycle_lock(run_dir: Path, run_id: str):
-    token = acquire_lifecycle_lock(run_dir, run_id)
+def coordination_lock(root: Path):
+    root.mkdir(parents=True, exist_ok=True)
+    path = coordination_lock_path(root)
+    token = uuid.uuid4().hex
+    record = {"pid": os.getpid(), "run_id": "coordination", "started_at": now(), "token": token}
+    encoded = (json.dumps(record, sort_keys=True) + "\n").encode()
+    deadline = time.monotonic() + 10
+    while True:
+        try:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            existing = read_coordination_lock(root)
+            if existing is None:
+                continue
+            if process_is_live(existing["pid"]):
+                if time.monotonic() >= deadline:
+                    raise RunError(
+                        f"repository coordination is still held by live process {existing['pid']}"
+                    )
+                time.sleep(0.02)
+                continue
+            try:
+                before = path.read_bytes()
+                if path.read_bytes() == before:
+                    path.unlink(missing_ok=True)
+            except FileNotFoundError:
+                pass
+            continue
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        break
     try:
         yield
     finally:
-        release_lifecycle_lock(run_dir, token)
+        try:
+            existing = read_coordination_lock(root)
+        except RunError:
+            existing = None
+        if existing and existing.get("token") == token:
+            path.unlink(missing_ok=True)
 
 
 def create_stop_request(run_dir: Path) -> None:
@@ -271,6 +324,64 @@ def state_root(repo: Path) -> Path:
 
 def state_path(repo: Path, run_id: str) -> Path:
     return state_root(repo) / run_id / "state.json"
+
+
+def live_run_scope(repo: Path, run_dir: Path, owner: dict[str, Any]) -> tuple[str, dict[str, list[str]]]:
+    run_id = run_dir.name
+    try:
+        if owner.get("run_id") != run_id:
+            raise RunError("lifecycle lock run_id does not match its directory")
+        state_file = run_dir / "state.json"
+        state = load_json(state_file)
+        if state.get("run_id") != run_id:
+            raise RunError("state run_id does not match its directory")
+        if state.get("controller_pid") != owner.get("pid"):
+            raise RunError("lifecycle lock pid does not match durable state")
+        token = owner.get("token")
+        if not isinstance(token, str) or not token or state.get("controller_token") != token:
+            raise RunError("lifecycle lock token does not match durable state")
+        manifest_value = state.get("manifest_path")
+        if not isinstance(manifest_value, str):
+            raise RunError("state has no manifest_path")
+        manifest_path = Path(manifest_value).resolve()
+        if not manifest_path.is_relative_to(repo):
+            raise RunError("manifest path is outside the repository")
+        expected_hash = state.get("manifest_sha256")
+        if not isinstance(expected_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_hash):
+            raise RunError("state has no valid manifest hash")
+        if not manifest_path.is_file() or hashlib.sha256(manifest_path.read_bytes()).hexdigest() != expected_hash:
+            raise RunError("manifest no longer matches durable state")
+        manifest = load_json(manifest_path)
+        if str(manifest.get("run_id")) != run_id:
+            raise RunError("manifest run_id does not match durable state")
+        return run_id, normalized_scope(manifest.get("scope"))
+    except (OSError, RunError) as exc:
+        raise RunError(f"cannot verify scope for live run {run_id}: {exc}") from exc
+
+
+def assert_no_live_scope_conflicts(repo: Path, run_id: str, scope: Any) -> None:
+    candidate = normalized_scope(scope)
+    root = state_root(repo)
+    if not root.exists():
+        return
+    for run_dir in sorted((path for path in root.iterdir() if path.is_dir()), key=lambda path: path.name):
+        if run_dir.name == run_id:
+            continue
+        owner = read_lock(run_dir)
+        if owner is None or not process_is_live(owner["pid"]):
+            continue
+        other_id, other_scope = live_run_scope(repo, run_dir, owner)
+        collision = scope_collision(candidate, other_scope)
+        if collision is None:
+            continue
+        kind, value = collision
+        if kind == "path":
+            raise RunError(
+                f"run {run_id} conflicts with live run {other_id}: overlapping path scope '{value}'"
+            )
+        raise RunError(
+            f"run {run_id} conflicts with live run {other_id}: shared resource '{value}'"
+        )
 
 
 def event(state: dict[str, Any], kind: str, **fields: Any) -> None:
@@ -302,6 +413,80 @@ def frontmatter(text: str) -> dict[str, str]:
     return values
 
 
+RESOURCE_KEY = re.compile(r"[a-z][a-z0-9_-]*:[a-z0-9][a-z0-9._/-]*\Z")
+
+
+def scope_resources(scope: dict[str, Any]) -> list[str]:
+    resources = scope.get("resources", [])
+    if not isinstance(resources, list) or not all(isinstance(item, str) for item in resources):
+        raise RunError("scope.resources must be an array of lowercase coordination keys")
+    if any(not RESOURCE_KEY.fullmatch(item) for item in resources):
+        raise RunError("scope.resources entries must match <kind>:<identifier> in lowercase")
+    if len(resources) != len(set(resources)):
+        raise RunError("scope.resources entries must be unique")
+    return list(resources)
+
+
+def scope_paths(scope: dict[str, Any], key: str) -> list[str]:
+    paths = scope.get(key, [])
+    if not isinstance(paths, list) or not all(isinstance(item, str) and item for item in paths):
+        raise RunError(f"scope.{key} must be an array of repository-relative glob strings")
+    for pattern in paths:
+        parts = pattern.split("/")
+        if pattern.startswith("/") or "\\" in pattern or "." in parts or ".." in parts:
+            raise RunError(f"scope.{key} entries must be repository-relative POSIX globs")
+    return list(paths)
+
+
+def normalized_scope(scope: Any) -> dict[str, list[str]]:
+    if not isinstance(scope, dict):
+        raise RunError("scope must be a JSON object")
+    allowed = scope_paths(scope, "allowed_paths")
+    if not allowed:
+        raise RunError("scope.allowed_paths must reserve at least one path")
+    return {
+        "allowed_paths": allowed,
+        "denied_paths": scope_paths(scope, "denied_paths"),
+        "resources": scope_resources(scope),
+    }
+
+
+def fixed_prefix(pattern: str) -> str:
+    for index, segment in enumerate(pattern.split("/")):
+        if any(marker in segment for marker in "*?["):
+            literal = pattern.split("/")[:index]
+            return "/".join(literal) if literal else "."
+    return pattern.rstrip("/") or "."
+
+
+def prefixes_overlap(left: str, right: str) -> bool:
+    if left == "." or right == ".":
+        return True
+    left_parts = tuple(part for part in left.split("/") if part)
+    right_parts = tuple(part for part in right.split("/") if part)
+    shared = min(len(left_parts), len(right_parts))
+    return left_parts[:shared] == right_parts[:shared]
+
+
+def scope_collision(left_scope: Any, right_scope: Any) -> tuple[str, str] | None:
+    left = normalized_scope(left_scope)
+    right = normalized_scope(right_scope)
+    for left_pattern in left["allowed_paths"]:
+        left_prefix = fixed_prefix(left_pattern)
+        for right_pattern in right["allowed_paths"]:
+            right_prefix = fixed_prefix(right_pattern)
+            if prefixes_overlap(left_prefix, right_prefix):
+                if "." in {left_prefix, right_prefix}:
+                    return "path", "."
+                left_parts = left_prefix.split("/")
+                right_parts = right_prefix.split("/")
+                return "path", left_prefix if len(left_parts) <= len(right_parts) else right_prefix
+    shared_resources = sorted(set(left["resources"]) & set(right["resources"]))
+    if shared_resources:
+        return "resource", shared_resources[0]
+    return None
+
+
 def validate_manifest(manifest: dict[str, Any], repo: Path) -> tuple[Path, str]:
     required = ["schema_version", "run_id", "spec_path", "implementation_ticket", "base_ref",
                 "roles", "scope", "verify", "limits", "git", "external_writes"]
@@ -317,6 +502,7 @@ def validate_manifest(manifest: dict[str, Any], repo: Path) -> tuple[Path, str]:
         raise RunError("implementation_ticket is required; a decision ticket is not executable work")
     if manifest["external_writes"] is not False:
         raise RunError("v1 requires external_writes=false")
+    normalized_scope(manifest["scope"])
     git_policy = manifest["git"]
     expected = {"local_commits": True, "push": False, "merge": False, "history_rewrite": False}
     if any(git_policy.get(k) != v for k, v in expected.items()):
@@ -404,10 +590,64 @@ def resolved_git_path(repo: Path, argument: str) -> Path:
     return raw.resolve() if raw.is_absolute() else (repo / raw).resolve()
 
 
+def registered_run_git_artifacts(common: Path, active_ref: str) -> tuple[set[str], set[Path], set[Path]]:
+    other_refs: set[str] = set()
+    branch_logs: set[Path] = set()
+    worktree_admin: set[Path] = set()
+    runs = common / "agentsmith-runs"
+    if not runs.is_dir():
+        return other_refs, branch_logs, worktree_admin
+    for state_file in runs.glob("*/state.json"):
+        try:
+            state = load_json(state_file)
+            run_id = state_file.parent.name
+            owner = read_lock(state_file.parent)
+            if owner is None or not process_is_live(owner["pid"]):
+                continue
+            repo_value = state.get("repo")
+            if not isinstance(repo_value, str):
+                continue
+            recorded_repo = Path(repo_value).resolve()
+            if state_root(recorded_repo).resolve() != runs.resolve():
+                continue
+            verified_run_id, _ = live_run_scope(recorded_repo, state_file.parent, owner)
+            if verified_run_id != run_id:
+                continue
+            branch = state.get("branch")
+            if state.get("run_id") != run_id or branch != f"agentsmith/{run_id}":
+                continue
+            ref = f"refs/heads/{branch}"
+            if ref != active_ref:
+                other_refs.add(ref)
+                branch_logs.add(Path("logs") / ref)
+            candidates = [state.get("worktree"), state.get("checker_worktree")]
+            for candidate in candidates:
+                if not isinstance(candidate, str):
+                    continue
+                dot_git = Path(candidate) / ".git"
+                if not dot_git.is_file():
+                    continue
+                marker = dot_git.read_text(encoding="utf-8", errors="replace").strip()
+                if not marker.startswith("gitdir: "):
+                    continue
+                git_dir = Path(marker[8:]).resolve()
+                if git_dir.is_relative_to(common):
+                    worktree_admin.add(git_dir.relative_to(common))
+        except (OSError, RunError):
+            # Unverifiable state earns no exclusion. Its Git changes therefore remain protected
+            # and make the caller fail closed instead of being mistaken for controller activity.
+            continue
+    return other_refs, branch_logs, worktree_admin
+
+
 def git_metadata(repo: Path) -> dict[str, Any]:
     common = resolved_git_path(repo, "--git-common-dir")
     active = resolved_git_path(repo, "--git-dir")
     active_rel = active.relative_to(common) if active.is_relative_to(common) else None
+    branch_ref = git(repo, "symbolic-ref", "-q", "HEAD", check=False)
+    other_run_refs, run_branch_logs, run_worktree_admin = registered_run_git_artifacts(
+        common, branch_ref
+    )
     hooks: list[tuple[str, str]] = []
     hooks_dir = common / "hooks"
     if hooks_dir.is_dir():
@@ -415,7 +655,6 @@ def git_metadata(repo: Path) -> dict[str, Any]:
             hooks.append((str(path.relative_to(hooks_dir)), file_digest(path)))
     protected: list[tuple[str, str]] = []
     objects: list[tuple[str, str]] = []
-    branch_ref = git(repo, "symbolic-ref", "-q", "HEAD", check=False)
     branch_log = Path("logs") / branch_ref if branch_ref else None
     for path in sorted(item for item in common.rglob("*") if item.is_file()):
         rel = path.relative_to(common)
@@ -424,12 +663,17 @@ def git_metadata(repo: Path) -> dict[str, Any]:
         if rel.parts[0] == "objects":
             objects.append((rel.as_posix(), file_digest(path)))
             continue
-        if rel.parts[0] == "refs" or (branch_log and rel == branch_log):
+        if rel.parts[0] == "refs" or (branch_log and rel == branch_log) or rel in run_branch_logs:
             continue
         if active_rel and (rel == active_rel or active_rel in rel.parents):
             continue
+        if any(rel == admin or admin in rel.parents for admin in run_worktree_admin):
+            continue
         protected.append((rel.as_posix(), file_digest(path)))
-    refs = git(repo, "for-each-ref", "--format=%(refname) %(objectname)").splitlines()
+    refs = [
+        line for line in git(repo, "for-each-ref", "--format=%(refname) %(objectname)").splitlines()
+        if line.split(" ", 1)[0] not in other_run_refs
+    ]
     return {
         "refs": refs,
         "config": file_digest(common / "config"),
@@ -771,9 +1015,13 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
         checker_worktree = worktree.with_name(f"{worktree.name}-check-{state['attempt']}")
         if checker_worktree.exists():
             raise RunError(f"refusing to overwrite checker worktree {checker_worktree}")
+        state["checker_worktree"] = str(checker_worktree)
+        save_state(state)
         added = run(["git", "worktree", "add", "--detach", str(checker_worktree), checker_head],
                     Path(state["repo"]))
         if added.returncode:
+            state.pop("checker_worktree", None)
+            save_state(state)
             raise RunError(added.stderr.strip() or "checker worktree creation failed")
         try:
             verify = sandboxed_verify(manifest["verify"]["command"], checker_worktree,
@@ -811,6 +1059,8 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
                 event(state, "checker_worktree_cleanup_failed", path=str(checker_worktree),
                       error=removed.stderr.strip())
                 raise RunError(f"could not remove disposable checker worktree: {removed.stderr.strip()}")
+            state.pop("checker_worktree", None)
+            save_state(state)
         if verify.returncode == 0 and checker["status"] == "accepted":
             state["status"] = "accepted"
             state["accepted_commit"] = checker_head
@@ -881,44 +1131,59 @@ def start(args: argparse.Namespace) -> int:
     path = state_path(repo, name)
     if path.exists():
         raise RunError(f"run {name} already exists; use resume or choose another run_id")
-    with lifecycle_lock(path.parent, name):
-        if path.exists():
-            raise RunError(f"run {name} already exists; use resume or choose another run_id")
-        base_head = git(repo, "rev-parse", str(manifest["base_ref"]))
-        if (not git(repo, "config", "user.name", check=False)
-                or not git(repo, "config", "user.email", check=False)):
-            raise RunError("git user.name and user.email must be configured before local commits")
-        branch = f"agentsmith/{name}"
-        default_worktree = repo.parent / f"{repo.name}-{name}"
-        worktree = Path(manifest.get("worktree_path") or default_worktree).resolve()
-        if worktree.exists() or git(repo, "show-ref", "--verify", f"refs/heads/{branch}", check=False):
-            raise RunError(f"refusing to overwrite existing branch/worktree for {name}")
-        created = run(["git", "worktree", "add", "-b", branch, str(worktree), base_head], repo)
-        if created.returncode:
-            raise RunError(created.stderr.strip() or "git worktree creation failed")
-        state = {
-            "schema_version": SCHEMA_VERSION,
-            "run_id": name,
-            "status": "prepared",
-            "attempt": 0,
-            "repo": str(repo),
-            "worktree": str(worktree),
-            "branch": branch,
-            "base_head": base_head,
-            "spec_path": spec_rel.as_posix(),
-            "spec_sha256": spec_hash,
-            "manifest_path": str(manifest_path),
-            "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
-            "started_at": now(),
-            "started_epoch": time.time(),
-            "deadline_epoch": time.time() + int(manifest["limits"]["wall_minutes"]) * 60,
-            "claude_cost_usd": 0.0,
-            "codex_tokens_used": 0,
-            "active_pid": None,
-            "state_path": str(path),
-        }
-        save_state(state, "run_started", branch=branch, worktree=str(worktree))
+    token: str | None = None
+    try:
+        with coordination_lock(state_root(repo)):
+            token = acquire_lifecycle_lock(path.parent, name)
+            if path.exists():
+                raise RunError(f"run {name} already exists; use resume or choose another run_id")
+            assert_no_live_scope_conflicts(repo, name, manifest["scope"])
+            base_head = git(repo, "rev-parse", str(manifest["base_ref"]))
+            if (not git(repo, "config", "user.name", check=False)
+                    or not git(repo, "config", "user.email", check=False)):
+                raise RunError("git user.name and user.email must be configured before local commits")
+            branch = f"agentsmith/{name}"
+            default_worktree = repo.parent / f"{repo.name}-{name}"
+            worktree = Path(manifest.get("worktree_path") or default_worktree).resolve()
+            if worktree.exists() or git(repo, "show-ref", "--verify", f"refs/heads/{branch}", check=False):
+                raise RunError(f"refusing to overwrite existing branch/worktree for {name}")
+            created = run(["git", "worktree", "add", "-b", branch, str(worktree), base_head], repo)
+            if created.returncode:
+                raise RunError(created.stderr.strip() or "git worktree creation failed")
+            state = {
+                "schema_version": SCHEMA_VERSION,
+                "run_id": name,
+                "status": "prepared",
+                "attempt": 0,
+                "repo": str(repo),
+                "worktree": str(worktree),
+                "branch": branch,
+                "base_head": base_head,
+                "spec_path": spec_rel.as_posix(),
+                "spec_sha256": spec_hash,
+                "manifest_path": str(manifest_path),
+                "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+                "scope": normalized_scope(manifest["scope"]),
+                "started_at": now(),
+                "started_epoch": time.time(),
+                "deadline_epoch": time.time() + int(manifest["limits"]["wall_minutes"]) * 60,
+                "claude_cost_usd": 0.0,
+                "codex_tokens_used": 0,
+                "active_pid": None,
+                "controller_pid": os.getpid(),
+                "controller_token": token,
+                "state_path": str(path),
+            }
+            save_state(state, "run_started", branch=branch, worktree=str(worktree))
         return run_controller(state, manifest)
+    finally:
+        if token is not None:
+            release_lifecycle_lock(path.parent, token)
+            if not path.exists():
+                try:
+                    path.parent.rmdir()
+                except OSError:
+                    pass
 
 
 def status_cmd(args: argparse.Namespace) -> int:
@@ -974,34 +1239,44 @@ def resume(args: argparse.Namespace) -> int:
     if state["status"] == "accepted":
         raise RunError("accepted runs do not resume")
     run_dir = Path(state["state_path"]).parent
-    with lifecycle_lock(run_dir, args.run_id):
-        state = load_run(repo, args.run_id)
-        manifest_path = Path(state["manifest_path"])
-        manifest = load_json(manifest_path)
-        if hashlib.sha256(manifest_path.read_bytes()).hexdigest() != state["manifest_sha256"]:
-            raise RunError("manifest changed since start; create a new run for a changed contract")
-        spec_rel, spec_hash = validate_manifest(manifest, repo)
-        if str(manifest["run_id"]) != state["run_id"]:
-            raise RunError("manifest run_id no longer matches the durable run state")
-        if spec_rel.as_posix() != state["spec_path"] or spec_hash != state["spec_sha256"]:
-            raise RunError("spec changed since start; create a new run for a changed contract")
-        if git(repo, "rev-parse", str(manifest["base_ref"])) != state["base_head"]:
-            raise RunError("base_ref changed since start; create a new run for a changed contract")
-        worktree = Path(state["worktree"])
-        if not worktree.is_dir() or repo_root(worktree) != worktree.resolve():
-            raise RunError("run worktree is missing or no longer a Git worktree")
-        if git(worktree, "symbolic-ref", "--short", "HEAD") != state["branch"]:
-            raise RunError("run worktree is no longer on its recorded branch")
-        if not clean(worktree):
-            raise RunError("cannot resume a dirty worktree")
-        stop_file = run_dir / "STOP"
-        if stop_file.exists():
-            persist_interrupted(state)
-            stop_file.unlink()
-        state["status"] = "resuming"
-        state["reason"] = None
-        save_state(state, "run_resumed")
+    token: str | None = None
+    try:
+        with coordination_lock(state_root(repo)):
+            token = acquire_lifecycle_lock(run_dir, args.run_id)
+            state = load_run(repo, args.run_id)
+            manifest_path = Path(state["manifest_path"])
+            manifest = load_json(manifest_path)
+            if hashlib.sha256(manifest_path.read_bytes()).hexdigest() != state["manifest_sha256"]:
+                raise RunError("manifest changed since start; create a new run for a changed contract")
+            spec_rel, spec_hash = validate_manifest(manifest, repo)
+            if str(manifest["run_id"]) != state["run_id"]:
+                raise RunError("manifest run_id no longer matches the durable run state")
+            if spec_rel.as_posix() != state["spec_path"] or spec_hash != state["spec_sha256"]:
+                raise RunError("spec changed since start; create a new run for a changed contract")
+            if git(repo, "rev-parse", str(manifest["base_ref"])) != state["base_head"]:
+                raise RunError("base_ref changed since start; create a new run for a changed contract")
+            worktree = Path(state["worktree"])
+            if not worktree.is_dir() or repo_root(worktree) != worktree.resolve():
+                raise RunError("run worktree is missing or no longer a Git worktree")
+            if git(worktree, "symbolic-ref", "--short", "HEAD") != state["branch"]:
+                raise RunError("run worktree is no longer on its recorded branch")
+            if not clean(worktree):
+                raise RunError("cannot resume a dirty worktree")
+            assert_no_live_scope_conflicts(repo, args.run_id, manifest["scope"])
+            stop_file = run_dir / "STOP"
+            if stop_file.exists():
+                persist_interrupted(state)
+                stop_file.unlink()
+            state["status"] = "resuming"
+            state["reason"] = None
+            state["scope"] = normalized_scope(manifest["scope"])
+            state["controller_pid"] = os.getpid()
+            state["controller_token"] = token
+            save_state(state, "run_resumed")
         return run_controller(state, manifest)
+    finally:
+        if token is not None:
+            release_lifecycle_lock(run_dir, token)
 
 
 def parser() -> argparse.ArgumentParser:
