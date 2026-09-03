@@ -157,6 +157,13 @@ maker structurally cannot fake** — an LLM second opinion cannot catch an overf
 the backtest *is* the overfit artifact.
 → [loop-engineering](https://github.com/cobusgreyling/loop-engineering) · [the essay](https://cobusgreyling.substack.com/p/loop-engineering)
 
+**Michael Shimeles — `evidence-driven-testing` and `new-feature`** — prompted two bounded additions:
+durable command evidence tied to the tested revision/environment, and local collision checks that
+account for both file scope and shared resources outside a worktree. AgentSmith independently adapts
+the concepts; the pinned snapshot has no repository-wide license, so no upstream code was copied and
+its recorder, publishing, and GitHub-query workflows were not adopted.
+→ [evidence skill](https://github.com/michaelshimeles/skills/blob/5d403ea66775c04df222a1e9b302ef64ae45c712/evidence-driven-testing/SKILL.md) · [worktree skill](https://github.com/michaelshimeles/skills/blob/5d403ea66775c04df222a1e9b302ef64ae45c712/new-feature/SKILL.md) · [pinned commit](https://github.com/michaelshimeles/skills/commit/5d403ea66775c04df222a1e9b302ef64ae45c712)
+
 ## Complementary work (not influences)
 
 These shaped nothing in `core/` — they sit *alongside* it, at a different layer.

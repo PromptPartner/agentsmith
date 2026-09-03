@@ -6,6 +6,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 pass=0; fail=0
+concurrent_run_ids=()
+concurrent_runner_pids=()
 ok()  { printf '  \033[32m✓\033[0m %s\n' "$1"; pass=$((pass+1)); }
 bad() { printf '  \033[31m✗\033[0m %s\n' "$1"; fail=$((fail+1)); }
 assert() { local label="$1"; shift; if "$@"; then ok "$label"; else bad "$label"; fi; }
@@ -47,6 +49,7 @@ make_fake() {
     '  emit "{\"status\":\"$status\",\"summary\":\"checker $status\",\"commit\":\"$(git rev-parse HEAD)\",\"changed_paths\":[\"src/change.txt\"],\"evidence\":[\"fake check\"],\"unresolved\":[],\"next_state\":\"$status\"}"' \
     'else' \
     '  if [ "$mode" = slow ]; then sleep 20; fi' \
+    '  if [ "$mode" = collision-slow ]; then sleep 60; fi' \
     '  mkdir -p src' \
     '  n=0; [ -f src/change.txt ] && n="$(<src/change.txt)"' \
     '  printf "%s\n" "$((n+1))" > src/change.txt' \
@@ -116,6 +119,87 @@ invoke() {
     AGENTSMITH_CLAUDE_BIN="$repo/../fake/bin/fake-agent" \
     CODEX_HOME="$repo/../fake/codex-home" \
     python3 "$repo/../fake/controller.py" "$@"
+}
+
+set_manifest_scope() {
+  local repo="$1" id="$2" allowed="$3" resources="$4"
+  python3 - "$repo/.harness/runs/$id.json" "$allowed" "$resources" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value['scope']['allowed_paths'] = [sys.argv[2]]
+if sys.argv[3] == '__legacy__':
+    value['scope'].pop('resources', None)
+else:
+    value['scope']['resources'] = json.loads(sys.argv[3])
+path.write_text(json.dumps(value, indent=2) + '\n')
+PY
+  git -C "$repo" add . && git -C "$repo" commit -qm 'test: declare collision scope'
+}
+
+wait_for_active_run() {
+  local repo="$1" id="$2" state
+  state="$repo/.git/agentsmith-runs/$id/state.json"
+  for _ in {1..50}; do
+    if [ -f "$state" ] && python3 -c 'import json,sys; raise SystemExit(0 if json.load(open(sys.argv[1])).get("active_pid") else 1)' "$state" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.05
+  done
+  return 1
+}
+
+stop_started_run() {
+  local repo="$1" id="$2"
+  if [ -f "$repo/.git/agentsmith-runs/$id/state.json" ]; then
+    (cd "$repo" && python3 "$repo/../fake/controller.py" stop "$id" >/dev/null 2>&1) || true
+  fi
+}
+
+expect_collision() {
+  local repo="$1" id="$2" label="$3" output error runner rc
+  output="$repo/../$id-out"
+  error="$repo/../$id-err"
+  (
+    cd "$repo" || exit 1
+    invoke "$repo" collision-slow start ".harness/runs/$id.json" >"$output" 2>"$error"
+  ) & runner=$!
+  for _ in {1..50}; do
+    if [ -f "$repo/.git/agentsmith-runs/$id/state.json" ] || ! kill -0 "$runner" 2>/dev/null; then break; fi
+    sleep 0.05
+  done
+  if [ -f "$repo/.git/agentsmith-runs/$id/state.json" ]; then
+    bad "$label"
+    stop_started_run "$repo" "$id"
+    wait "$runner" 2>/dev/null || true
+  else
+    wait "$runner"; rc=$?
+    if [ "$rc" -ne 0 ]; then ok "$label"; else bad "$label"; fi
+  fi
+  assert "$id rejection creates no branch" bash -c "! git -C '$repo' show-ref --verify --quiet 'refs/heads/agentsmith/$id'"
+  assert "$id rejection creates no worktree" test ! -e "$repo-$id"
+  assert "$id rejection creates no state" test ! -e "$repo/.git/agentsmith-runs/$id/state.json"
+}
+
+expect_concurrent_start() {
+  local repo="$1" id="$2" label="$3" hold="${4:-yes}" runner
+  (
+    cd "$repo" || exit 1
+    invoke "$repo" collision-slow start ".harness/runs/$id.json" >"$repo/../$id-out" 2>"$repo/../$id-err"
+  ) & runner=$!
+  if wait_for_active_run "$repo" "$id"; then
+    ok "$label"
+    if [ "$hold" = yes ]; then
+      concurrent_run_ids+=("$id")
+      concurrent_runner_pids+=("$runner")
+    else
+      stop_started_run "$repo" "$id"
+      wait "$runner" 2>/dev/null || true
+    fi
+  else
+    bad "$label"
+    wait "$runner" 2>/dev/null || true
+  fi
 }
 
 case "$(uname -s)" in
@@ -304,6 +388,143 @@ if (cd "$repo" && invoke "$repo" always-reject start .harness/runs/capped.json >
   bad 'run exceeded its rejection cap'
 else ok 'three checker rejections escalate'; fi
 assert 'attempt cap is persisted and reported' grep -q 'attempt cap reached (3)' "$repo/../err"
+
+echo 'autonomous-run — concurrent scope and resource collision protection'
+repo="$(new_repo collisions)"; make_fake "$repo/../fake"
+manifest "$repo" live-primary; set_manifest_scope "$repo" live-primary 'src/**' '["port:3000"]'
+manifest "$repo" overlap-path; set_manifest_scope "$repo" overlap-path 'src/widgets/**' '["service:widgets"]'
+manifest "$repo" shared-resource; set_manifest_scope "$repo" shared-resource 'docs/**' '["port:3000"]'
+manifest "$repo" disjoint; set_manifest_scope "$repo" disjoint 'docs/**' '["service:redis"]'
+manifest "$repo" wildcard-root; set_manifest_scope "$repo" wildcard-root '**/*.md' '["db:wide"]'
+manifest "$repo" legacy; set_manifest_scope "$repo" legacy 'tests/**' '__legacy__'
+manifest "$repo" malformed-candidate; set_manifest_scope "$repo" malformed-candidate 'tests/**' '["service:malformed-check"]'
+manifest "$repo" dead-owner-ignored; set_manifest_scope "$repo" dead-owner-ignored 'src/widgets/**' '["service:dead-check"]'
+manifest "$repo" race-a; set_manifest_scope "$repo" race-a 'packages/shared/**' '["service:race-a"]'
+manifest "$repo" race-b; set_manifest_scope "$repo" race-b 'packages/shared/sub/**' '["service:race-b"]'
+manifest "$repo" successor; set_manifest_scope "$repo" successor 'src/widgets/**' '["port:4000"]'
+(
+  cd "$repo" || exit 1
+  invoke "$repo" collision-slow start .harness/runs/live-primary.json >../primary-out 2>../primary-err
+) & primary_runner=$!
+if wait_for_active_run "$repo" live-primary; then ok 'primary collision fixture is live'
+else bad 'primary collision fixture did not become live'; fi
+
+expect_collision "$repo" overlap-path 'ancestor/descendant path overlap is rejected'
+assert 'path collision names the conflicting run and prefix' bash -c "grep -q 'live-primary' '$repo/../overlap-path-err' && grep -q 'src' '$repo/../overlap-path-err'"
+expect_collision "$repo" shared-resource 'shared declared resource is rejected'
+assert 'resource collision names the conflicting run and key' bash -c "grep -q 'live-primary' '$repo/../shared-resource-err' && grep -q 'port:3000' '$repo/../shared-resource-err'"
+expect_collision "$repo" wildcard-root 'glob without a fixed prefix reserves the repository root'
+assert 'wildcard-root collision names the conflicting run' grep -q 'live-primary' "$repo/../wildcard-root-err"
+
+mkdir -p "$repo/.git/agentsmith-runs/malformed-live"
+python3 - "$repo/.git/agentsmith-runs/malformed-live/controller.lock" <<'PY'
+import json, os, pathlib, sys
+pathlib.Path(sys.argv[1]).write_text(
+    json.dumps({'pid': os.getppid(), 'run_id': 'malformed-live', 'token': 'fixture'}) + '\n',
+    encoding='utf-8',
+)
+PY
+expect_collision "$repo" malformed-candidate 'unverifiable scope for a live owner fails closed'
+assert 'malformed live-state refusal names the run' grep -q 'malformed-live' "$repo/../malformed-candidate-err"
+python3 - "$repo/.git/agentsmith-runs/malformed-live" <<'PY'
+import pathlib, sys
+directory = pathlib.Path(sys.argv[1])
+(directory / 'controller.lock').unlink()
+directory.rmdir()
+PY
+
+expect_concurrent_start "$repo" disjoint 'disjoint paths and resources may run concurrently'
+expect_concurrent_start "$repo" legacy 'legacy manifest without resources remains valid and non-conflicting'
+
+(
+  cd "$repo" || exit 1
+  invoke "$repo" collision-slow start .harness/runs/race-a.json >../race-a-out 2>../race-a-err
+) & race_a_runner=$!
+(
+  cd "$repo" || exit 1
+  invoke "$repo" collision-slow start .harness/runs/race-b.json >../race-b-out 2>../race-b-err
+) & race_b_runner=$!
+for _ in {1..50}; do
+  race_states=0
+  [ -f "$repo/.git/agentsmith-runs/race-a/state.json" ] && race_states=$((race_states+1))
+  [ -f "$repo/.git/agentsmith-runs/race-b/state.json" ] && race_states=$((race_states+1))
+  [ "$race_states" -gt 0 ] && break
+  sleep 0.05
+done
+sleep 0.2
+race_states=0
+[ -f "$repo/.git/agentsmith-runs/race-a/state.json" ] && race_states=$((race_states+1))
+[ -f "$repo/.git/agentsmith-runs/race-b/state.json" ] && race_states=$((race_states+1))
+if [ "$race_states" -eq 1 ]; then ok 'simultaneous overlapping starts serialize to one live run'
+else bad 'simultaneous overlapping starts did not serialize to one live run'; fi
+if [ -f "$repo/.git/agentsmith-runs/race-a/state.json" ]; then
+  race_winner=race-a; race_loser=race-b
+else
+  race_winner=race-b; race_loser=race-a
+fi
+if [ "$race_states" -eq 1 ]; then
+  assert 'simultaneous-start loser creates no branch' bash -c "! git -C '$repo' show-ref --verify --quiet 'refs/heads/agentsmith/$race_loser'"
+  assert 'simultaneous-start loser creates no worktree' test ! -e "$repo-$race_loser"
+fi
+(cd "$repo" && python3 "$repo/../fake/controller.py" stop live-primary >/dev/null 2>&1)
+wait "$primary_runner" 2>/dev/null || true
+assert 'stopped primary run is durably interrupted' bash -c "cd '$repo' && python3 '$repo/../fake/controller.py' status live-primary | grep -q '\"status\": \"interrupted\"'"
+for id in "${concurrent_run_ids[@]}" race-a race-b; do
+  stop_started_run "$repo" "$id"
+done
+for runner in "${concurrent_runner_pids[@]}" "$race_a_runner" "$race_b_runner"; do
+  wait "$runner" 2>/dev/null || true
+done
+mkdir -p "$repo/.git/agentsmith-runs/dead-scope"
+python3 - "$repo/.git/agentsmith-runs/dead-scope/controller.lock" <<'PY'
+import json, pathlib, sys
+pathlib.Path(sys.argv[1]).write_text(
+    json.dumps({'pid': 99999999, 'run_id': 'dead-scope', 'token': 'fixture'}) + '\n',
+    encoding='utf-8',
+)
+PY
+expect_concurrent_start "$repo" dead-owner-ignored 'demonstrably dead controller no longer reserves its scope' no
+(
+  cd "$repo" || exit 1
+  invoke "$repo" collision-slow start .harness/runs/successor.json >../successor-out 2>../successor-err
+) & successor_runner=$!
+if wait_for_active_run "$repo" successor; then ok 'stopped run no longer reserves its former scope'
+else
+  sed -n '1,8p' "$repo/../successor-err"
+  bad 'stopped run still blocked its former scope'
+fi
+
+(
+  cd "$repo" || exit 1
+  invoke "$repo" collision-slow resume live-primary >../resume-collision-out 2>../resume-collision-err
+) & resume_runner=$!
+resume_restarted=0
+for _ in {1..50}; do
+  if ! kill -0 "$resume_runner" 2>/dev/null; then break; fi
+  if python3 -c 'import json,sys; raise SystemExit(0 if json.load(open(sys.argv[1])).get("active_pid") else 1)' \
+      "$repo/.git/agentsmith-runs/live-primary/state.json" 2>/dev/null; then
+    resume_restarted=1
+    break
+  fi
+  sleep 0.05
+done
+if [ "$resume_restarted" -eq 1 ]; then
+  bad 'resume is rejected while another conflicting controller is live'
+  stop_started_run "$repo" live-primary
+  wait "$resume_runner" 2>/dev/null || true
+else
+  wait "$resume_runner"; resume_rc=$?
+  if [ "$resume_rc" -ne 0 ]; then ok 'resume is rejected while another conflicting controller is live'
+  else bad 'resume is rejected while another conflicting controller is live'; fi
+fi
+if grep -q 'successor' "$repo/../resume-collision-err" && grep -q 'src' "$repo/../resume-collision-err"; then
+  ok 'resume collision names the live conflicting run and prefix'
+else
+  sed -n '1,8p' "$repo/../resume-collision-err"
+  bad 'resume collision names the live conflicting run and prefix'
+fi
+stop_started_run "$repo" successor
+wait "$successor_runner" 2>/dev/null || true
 
 echo 'autonomous-run — operator stop and clean resume'
 repo="$(new_repo stopped)"; make_fake "$repo/../fake"; manifest "$repo" stopped
