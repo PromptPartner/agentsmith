@@ -172,6 +172,7 @@ Set `HARNESS_ORG_DIR` to an explicit directory for fleet packaging or a non-priv
 ```bash
 agentsmith verify --list
 agentsmith verify
+agentsmith verify --record .harness/receipts/my-check
 agentsmith handoff ITEM-123
 agentsmith new-research "topic"
 agentsmith new-feedback "symptom"
@@ -194,7 +195,9 @@ normalized schema-v2 records. Review every failure and secret-scan the records b
 
 Project verification phases live in `.harness/verify.conf` and run with the native OS shell.
 Replace the failing `unwired` placeholder with real build, lint, test, render, or evaluation
-commands before calling the project verified.
+commands before calling the project verified. `verify --record <directory>` resolves a relative
+directory from the project target, refuses to overwrite it, and stores an atomic command receipt
+plus redacted per-phase output. Receipts remain local unless you deliberately move them.
 
 ## 7. Evidence and migration
 

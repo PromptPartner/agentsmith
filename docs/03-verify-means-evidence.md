@@ -85,3 +85,14 @@ you wire real phases**. Replacing that line with your build/test/checks is the h
 five minutes in the whole setup ([`02-your-first-hour.md`](02-your-first-hour.md) walks it). From then
 on, "done" has a definition that's versioned with your repo — and the agent's claim and your
 gate are the same command.
+
+Use `agentsmith verify --record <directory>` when the command evidence must survive the terminal
+session. The optional receipt starts in `running`, is replaced atomically after each phase, and
+finishes as `passed`, `failed`, or `error`. It records the config hash, Git/platform context,
+selected filter, phase timing and exit codes, plus SHA-256 hashes of deterministic UTF-8 stdout and
+stderr sidecars. Secret-shaped text is replaced before it reaches either the terminal or disk.
+The destination must not already exist, so a later run cannot silently rewrite earlier evidence.
+
+A command receipt proves only the deterministic phases it captured. Browser screenshots, videos,
+manual assertions, deployed-service checks, and other runtime or visual evidence stay separate;
+reference those artifacts alongside the receipt when the work's end-to-end gate requires them.
