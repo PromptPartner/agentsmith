@@ -10,7 +10,8 @@ The current stable release is `v0.3.1`.
 
 `v0.3.1` adds a conditional MCP/integration validation checkpoint, a static non-launching
 configuration validator, explicit verification-tree provenance, and durable pre-gate recovery
-fields. Its integration validator does not install or launch MCP packages.
+fields. Its integration validator does not install or launch MCP packages. It also retries bounded
+Windows sharing denials when reading atomically replaced autonomous-run state.
 
 `v0.3.0` adds opt-in durable verification receipts and cooperative collision protection for local
 autonomous runs. Both features are additive; existing verification commands and autonomous-run

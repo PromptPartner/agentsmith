@@ -44,3 +44,4 @@ docs/feedback/[0-9]*.md
 !docs/feedback/0023-update-inventoried-foreign-skill-trees.md
 !docs/feedback/0024-claude-skill-adapter-drift-treated-as-customization.md
 !docs/feedback/0025-mcp-validation-mutated-durable-state.md
+!docs/feedback/0026-windows-atomic-state-read-sharing-denial.md
