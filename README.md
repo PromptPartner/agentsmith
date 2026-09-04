@@ -160,7 +160,8 @@ Claude-only `--org-policy` manages the OS policy directory with backup/restore o
 ```bash
 agentsmith verify --list
 agentsmith verify
-agentsmith verify --record .harness/receipts/my-check
+agentsmith verify --record .harness/receipts/my-check --tree-class operator-worktree
+agentsmith validate-integration --checkpoint .planning/integration-checkpoint.json
 agentsmith handoff ITEM-123
 agentsmith new-research "topic"
 agentsmith new-feedback "observed failure"
@@ -172,9 +173,11 @@ printf '%s\n' "text to inspect" | agentsmith secret-scan -
 
 An installed project carries the Python runtime and command shims under `.agentsmith/`, so hooks
 and skills resolve the same CLI on macOS, Linux, and Windows. Verification phases are
-project-owned and run with the native OS shell. `--record` adds a local, durable `receipt.json`
-and redacted stdout/stderr sidecars; it refuses an existing destination instead of overwriting
-earlier evidence.
+project-owned and run with the native OS shell. `--record` plus an explicit `--tree-class` adds a
+local, durable `receipt.json` and redacted stdout/stderr sidecars; `clean-clone` refuses dirty Git
+state, and every mode refuses an existing destination. `validate-integration` reads the structured
+checkpoint described by `.harness/templates/integration-checkpoint.md`; it never installs or starts
+the configured package.
 
 The default secret scan examines only added lines in the staged Git diff, which is the pre-commit
 contract. `--all` scans the tracked working tree; file arguments and `-` select explicit files or

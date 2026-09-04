@@ -6,6 +6,21 @@
 **Branch / version:** <branch + HEAD SHA, or saved-version name>
 **State of the tree:** <clean / what's committed vs stashed — never leave it mid-edit>
 
+## Recovery checkpoint
+Complete this before a long external wait or an irreversible external gate; use `n/a` explicitly.
+
+- **Exact objective:**
+- **Repository / worktree:**
+- **Protected-state hashes:**
+- **Branch / commit:**
+- **External identifiers:** <PR, CI run, tag, deployment, release>
+- **Completed verification:**
+- **Active external operation:**
+- **Next read-only recovery command:**
+- **Remaining authorized writes:**
+- **Stop conditions:**
+- **Skipped validation:**
+
 ## What shipped
 -
 

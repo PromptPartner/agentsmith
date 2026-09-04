@@ -110,8 +110,11 @@ else:
         return conf
 
     def run_verify(self, *arguments: str) -> subprocess.CompletedProcess[str]:
+        resolved_arguments = list(arguments)
+        if "--record" in resolved_arguments and "--tree-class" not in resolved_arguments:
+            resolved_arguments.extend(("--tree-class", "operator-worktree"))
         return subprocess.run(
-            [sys.executable, str(CORE), "verify", "--target", str(self.root), *arguments],
+            [sys.executable, str(CORE), "verify", "--target", str(self.root), *resolved_arguments],
             cwd=ROOT,
             env=self.env,
             text=True,
@@ -138,6 +141,10 @@ else:
     def assert_valid_receipt(self, directory: Path, receipt: dict, *, final: bool) -> None:
         self.assertEqual(receipt["schema_version"], 1)
         self.assertEqual(Path(receipt["target"]), self.root.resolve())
+        self.assertIn(
+            receipt["tree_class"],
+            {"clean-clone", "disposable-fixture", "linked-worktree", "operator-worktree"},
+        )
         self.assert_timestamp(receipt["started_at"])
         self.assert_timestamp(receipt["updated_at"])
         if final:
@@ -243,6 +250,8 @@ else:
             str(self.root),
             "--record",
             directory.name,
+            "--tree-class",
+            "operator-worktree",
         ]
         process_options: dict[str, object] = {}
         if os.name == "nt":
@@ -325,6 +334,37 @@ else:
         self.assertTrue(git_metadata["branch"])
         self.assertTrue(git_metadata["dirty"])
 
+    def test_record_requires_explicit_tree_class_and_clean_class_rejects_dirty_git(self) -> None:
+        self.configure(("check", self.phase("emit", "ok")))
+        missing = subprocess.run(
+            [sys.executable, str(CORE), "verify", "--target", str(self.root), "--record", "missing-class"],
+            cwd=ROOT, env=self.env, text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(missing.returncode, 2)
+        self.assertIn("tree class", missing.stderr.lower())
+
+        subprocess.run(["git", "-C", str(self.root), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "config", "user.name", "Receipt Test"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "config", "user.email", "user@example.com"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(self.root), "commit", "-qm", "test: clean baseline"], check=True)
+        local = self.root / "operator-local.txt"
+        local.write_text("private operator bytes\n", encoding="utf-8")
+        before = local.read_bytes()
+
+        rejected = self.run_verify("--record", "false-clean", "--tree-class", "clean-clone")
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn("clean-clone", rejected.stderr)
+        self.assertEqual(before, local.read_bytes())
+        self.assertFalse((self.root / "false-clean").exists())
+
+        accepted = self.run_verify("--record", "operator", "--tree-class", "operator-worktree")
+        self.assertEqual(accepted.returncode, 0, accepted.stdout + accepted.stderr)
+        receipt = self.read_receipt(self.root / "operator")
+        self.assertEqual(receipt["tree_class"], "operator-worktree")
+        self.assertTrue(receipt["git"]["dirty"])
+        self.assertEqual(before, local.read_bytes())
+
     def test_only_records_selected_filter_and_selected_phases(self) -> None:
         marker = self.root / "excluded.txt"
         self.configure(
@@ -366,7 +406,8 @@ else:
         self.configure(("check", self.phase("emit", "must not run")))
         directory = self.root / "error receipt"
         arguments = argparse.Namespace(
-            target=str(self.root), only=None, list=False, record=directory.name
+            target=str(self.root), only=None, list=False, record=directory.name,
+            tree_class="operator-worktree",
         )
 
         def fail_capture(_command: str, _root: Path, stdout_path: Path, stderr_path: Path) -> None:
