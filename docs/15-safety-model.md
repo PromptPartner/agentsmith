@@ -79,6 +79,20 @@ connected MCP server, not just the one the harness happens to know about. Readin
 writing is always asked. (The tracker case, and why the default is *propose, don't post*, is in
 [`14-project-tracker-guide.md`](14-project-tracker-guide.md).)
 
+Projects can grant standing authority more narrowly through an explicit operator instruction; the
+tool's presence alone is never the grant. Name the exact system and permitted actions, require
+read-only diagnosis first, and keep the normal stops for missing credentials, surprising external
+state, destructive recovery, production or customer data, and scope expansion. For example:
+
+> Standing authority: after read-only queue and service checks, diagnose and restart dedicated CI
+> runner `project-ci-1` when it is unhealthy or not consuming this repository's jobs. Do not use
+> destructive recovery, touch production or customer data, or extend this grant to another runner.
+> Stop for missing credentials or surprising external state.
+
+Keep such a grant in the project's operator-owned contract or give it explicitly for the session.
+Do not add it to AgentSmith's universal core, and do not edit a generated runtime adapter as its
+source.
+
 ## Unattended work has a hard denylist
 
 When work runs without a human in the path (a loop), the blast radius is bounded by category:

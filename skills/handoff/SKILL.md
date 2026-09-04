@@ -1,6 +1,6 @@
 ---
 name: handoff
-description: Wrap up a work session for a clean restart — fires on "handoff", "wrap up", "let's stop here", when context is filling, or when a phase closed. Part of the Agentsmith harness; writes a durable handoff note plus a paste-ready kickoff block so a fresh session loses nothing.
+description: Checkpoint work for recovery — fires on "handoff", "wrap up", context pressure, a closed phase, or before a long external wait or irreversible gate. Part of the Agentsmith harness; writes durable state plus a paste-ready kickoff block so a fresh session loses nothing.
 compatibility: Requires filesystem access and git; the fast path requires the cross-platform Agentsmith CLI.
 ---
 
@@ -10,7 +10,8 @@ A fresh session has **zero** memory of this one; the handoff note is the only br
 whenever work winds down — even if no one asked (core/50).
 
 ## When this fires
-"handoff" / "wrap up" / "let's stop here" / "I'm running low on context" / a phase or task just closed.
+"handoff" / "wrap up" / "let's stop here" / context pressure / a closed phase / before a long
+external wait, merge, release, deployment, or other irreversible external gate.
 
 ## Runtime neutrality
 This workflow is identical in every client. Never infer the active agent from this skill's install
@@ -29,6 +30,9 @@ portable.
 1. **Safe state FIRST** (core/50 step 1): commit or stash so nothing half-edited is lost. Never
    hand off a dirty tree silently.
 2. Write `.harness/handoffs/handoff-<stamp>.md` with these sections:
+   - **Recovery checkpoint** — exact objective; repository/worktree; protected-state hashes;
+     branch/commit and external identifiers; completed/skipped verification; active operation;
+     next read-only recovery command; remaining authorized writes; stop conditions.
    - **What shipped this session** — with commit SHAs / PR links.
    - **What is still pending.**
    - **Deviations / decisions made** (so they're not re-litigated).

@@ -27,5 +27,8 @@ files/assets/areas to change. Reuse what already exists — reference it by path
 How we'll prove this works end-to-end (the verify command/phases, the real run, the
 click-through, the reconciliation) — see the active profile's quality gates.
 
+External integration or MCP work → complete `.harness/templates/integration-checkpoint.md`
+before the first launch; its static validator never installs or starts the integration.
+
 ## Done means
 The concrete, checkable definition of done for this unit of work.

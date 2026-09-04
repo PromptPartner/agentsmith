@@ -10,7 +10,7 @@ mkdir -p "$DIR"
 STAMP="$(date +%Y%m%d-%H%M 2>/dev/null || echo session)"
 FILE="$DIR/handoff-$STAMP.md"
 BRANCH="$(git -C "$ROOT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'n/a')"
-HEAD="$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo 'n/a')"
+HEAD="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || echo 'n/a')"
 DIRTY="$(git -C "$ROOT_DIR" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
 
 cat > "$FILE" <<EOF
@@ -18,6 +18,20 @@ cat > "$FILE" <<EOF
 
 **Branch:** $BRANCH   **HEAD:** $HEAD   **Uncommitted files:** $DIRTY
 $( [ "$DIRTY" != "0" ] && echo '> ⚠ Tree is dirty — commit or stash BEFORE handing off (core/50 step 1).' )
+
+## Recovery checkpoint
+
+- **Exact objective:** $ITEM
+- **Repository / worktree:** $ROOT_DIR
+- **Protected-state hashes:**
+- **Branch / commit:** $BRANCH / $HEAD
+- **External identifiers:**
+- **Completed verification:**
+- **Active external operation:**
+- **Next read-only recovery command:**
+- **Remaining authorized writes:**
+- **Stop conditions:**
+- **Skipped validation:**
 
 ## What shipped this session
 
