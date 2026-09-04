@@ -775,6 +775,350 @@ def mcp_source(names: Iterable[str]) -> dict[str, Any]:
     return selected
 
 
+EXACT_PACKAGE_SPEC = re.compile(
+    r"^(?:@[A-Za-z0-9._-]+/[A-Za-z0-9._-]+|[A-Za-z0-9._-]+)@"
+    r"(?P<version>(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+    r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$"
+)
+
+
+def executable_package_spec(configuration: Any) -> str | None:
+    """Return an npx package operand from structured configuration without running it."""
+    if not isinstance(configuration, dict):
+        return None
+    command = configuration.get("command")
+    args = configuration.get("args")
+    if not isinstance(command, str) or not isinstance(args, list):
+        return None
+    executable = Path(command).name.casefold().removesuffix(".cmd").removesuffix(".exe")
+    if executable != "npx":
+        return None
+    for value in args:
+        if isinstance(value, str) and value and not value.startswith("-"):
+            return value
+    return None
+
+
+def executable_package_version(configuration: Any) -> str:
+    package = executable_package_spec(configuration)
+    match = EXACT_PACKAGE_SPEC.fullmatch(package or "")
+    return match.group("version") if match else ""
+
+
+def integration_issue(issues: list[dict[str, str]], index: int, code: str, message: str) -> None:
+    issues.append({"integration": f"integration-{index}", "code": code, "message": message})
+
+
+def integration_flag(configuration: dict[str, Any], argument: str, environment: str) -> bool:
+    args = configuration.get("args") if isinstance(configuration.get("args"), list) else []
+    env = configuration.get("env") if isinstance(configuration.get("env"), dict) else {}
+    value = env.get(environment)
+    return any(
+        isinstance(item, str) and (item == argument or item.startswith(argument + "="))
+        for item in args
+    ) or (isinstance(value, str) and value.casefold() in {"1", "true", "yes"})
+
+
+def validate_integration_checkpoint(document: Any) -> dict[str, Any]:
+    """Validate declared checkpoint facts without installing or launching an integration."""
+    issues: list[dict[str, str]] = []
+    limit = "Static declarations only; no authority, side effects, invocation, response minimization, or cleanup was inferred."
+    if not isinstance(document, dict) or document.get("schema_version") != 1:
+        return {
+            "schema_version": 1,
+            "complete": False,
+            "integrations_checked": 0,
+            "issues": [{
+                "integration": "document",
+                "code": "unsupported-checkpoint-schema",
+                "message": "checkpoint must be a schema_version 1 object",
+            }],
+            "limits": limit,
+        }
+    integrations = document.get("integrations")
+    if not isinstance(integrations, list) or not integrations:
+        integrations = []
+        issues.append({
+            "integration": "document",
+            "code": "integrations-missing",
+            "message": "checkpoint must contain at least one integration",
+        })
+
+    for index, integration in enumerate(integrations, 1):
+        if not isinstance(integration, dict):
+            integration_issue(issues, index, "integration-malformed", "integration entry must be an object")
+            continue
+        configuration = integration.get("configuration")
+        configuration = configuration if isinstance(configuration, dict) else {}
+        args = configuration.get("args") if isinstance(configuration.get("args"), list) else []
+        env = configuration.get("env") if isinstance(configuration.get("env"), dict) else {}
+        diagnostics = configuration.get("diagnostics")
+        diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
+
+        package = executable_package_spec(configuration)
+        pinned_version = executable_package_version(configuration)
+        if package is not None and not pinned_version:
+            integration_issue(
+                issues, index, "executable-package-unpinned",
+                "pin the executable package to an exact semantic version in durable configuration",
+            )
+        package_record = integration.get("package")
+        discovered = package_record.get("discovered_version") if isinstance(package_record, dict) else None
+        if pinned_version and (not isinstance(discovered, str) or not discovered):
+            integration_issue(
+                issues, index, "package-discovery-unrecorded",
+                "record the discovered upstream version separately from the durable package pin",
+            )
+        elif pinned_version and discovered != pinned_version:
+            integration_issue(
+                issues, index, "package-pin-differs-from-discovery",
+                "the durable package pin must match the recorded discovered version",
+            )
+
+        consumers = integration.get("consumers")
+        if not isinstance(consumers, list) or not consumers or any(
+            not isinstance(item, dict)
+            or not isinstance(item.get("name"), str) or not item["name"].strip()
+            or not isinstance(item.get("credential_class"), str) or not item["credential_class"].strip()
+            for item in consumers
+        ):
+            integration_issue(
+                issues, index, "consumers-or-credentials-missing",
+                "enumerate every named consumer and its credential class",
+            )
+        for field in ("capabilities", "authentication_mode", "data_scope", "owner"):
+            value = integration.get(field)
+            if value is None or value == "" or value == []:
+                integration_issue(issues, index, f"{field.replace('_', '-')}-missing", f"record {field.replace('_', ' ')}")
+        authority = integration.get("authority")
+        authority = authority if isinstance(authority, dict) else {}
+        if any(not authority.get(field) for field in ("read", "write", "credential_privilege")):
+            integration_issue(
+                issues, index, "authority-declaration-incomplete",
+                "record read authority, write authority, and credential privilege separately",
+            )
+
+        native_cli = integration.get("native_cli")
+        native_cli = native_cli if isinstance(native_cli, dict) else {}
+        if native_cli.get("available") is True and native_cli.get("adequate") is True and integration.get("mcp_install_planned") is True:
+            integration_issue(
+                issues, index, "native-cli-already-adequate",
+                "use the adequate native CLI instead of adding another MCP installation",
+            )
+
+        name = integration.get("name")
+        playwright = (
+            isinstance(name, str) and "playwright" in name.casefold()
+        ) or any(isinstance(value, str) and "playwright" in value.casefold() for value in args)
+        resources = integration.get("resources")
+        resources = resources if isinstance(resources, dict) else {}
+        profile = resources.get("profile")
+        profile = profile if isinstance(profile, dict) else {}
+        browser_cache = resources.get("browser_cache")
+        browser_cache = browser_cache if isinstance(browser_cache, dict) else {}
+        profile_configured = integration_flag(configuration, "--isolated", "PLAYWRIGHT_MCP_ISOLATED")
+        if not profile_configured:
+            profile_configured = any(
+                isinstance(value, str) and (value == "--user-data-dir" or value.startswith("--user-data-dir="))
+                for value in args
+            )
+        cache_path = env.get("PLAYWRIGHT_BROWSERS_PATH")
+        shared_cache_preserved = (
+            browser_cache.get("mode") == "shared"
+            and (
+                env.get("PLAYWRIGHT_SKIP_BROWSER_GC") == "1"
+                or browser_cache.get("preservation") in {"trusted-snapshot", "skip-browser-gc"}
+            )
+        )
+        if playwright and (profile.get("mode") != "isolated" or not profile_configured):
+            integration_issue(
+                issues, index, "playwright-profile-not-isolated",
+                "configure an isolated Playwright profile before launch",
+            )
+        if playwright and not (
+            browser_cache.get("mode") == "isolated" and isinstance(cache_path, str) and bool(cache_path.strip())
+        ) and not shared_cache_preserved:
+            integration_issue(
+                issues, index, "playwright-cache-unprotected",
+                "configure an isolated browser cache or declare shared-cache preservation",
+            )
+
+        no_sandbox = integration_flag(configuration, "--no-sandbox", "PLAYWRIGHT_MCP_NO_SANDBOX")
+        sandbox = integration.get("sandbox_exception")
+        sandbox = sandbox if isinstance(sandbox, dict) else {}
+        if no_sandbox:
+            reason = sandbox.get("runtime_reason")
+            if sandbox.get("enabled") is not True or not isinstance(reason, str) or not reason.strip():
+                integration_issue(
+                    issues, index, "sandbox-exception-unjustified",
+                    "--no-sandbox requires an explicit runtime reason",
+                )
+            compensated = (
+                sandbox.get("compensating_isolation") is True
+                and profile.get("mode") == "isolated"
+                and browser_cache.get("mode") == "isolated"
+            )
+            if not compensated:
+                integration_issue(
+                    issues, index, "sandbox-exception-uncompensated",
+                    "--no-sandbox requires compensating isolated profile and browser cache",
+                )
+
+        if diagnostics.get("emit_full_argv") is not False:
+            integration_issue(
+                issues, index, "full-argv-output-forbidden",
+                "diagnostics must suppress complete process argument vectors",
+            )
+        if diagnostics.get("emit_full_environment") is not False:
+            integration_issue(
+                issues, index, "full-environment-output-forbidden",
+                "diagnostics must suppress complete environment blocks",
+            )
+
+        validation = integration.get("validation")
+        validation = validation if isinstance(validation, dict) else {}
+        if not isinstance(validation.get("client_auto_start_observed"), bool):
+            integration_issue(
+                issues, index, "auto-start-state-unrecorded",
+                "record client auto-start separately from capability listing and invocation",
+            )
+        for field, code, message in (
+            ("configured", "configuration-not-confirmed", "record configured state explicitly"),
+            ("authenticated", "authentication-not-confirmed", "record authenticated state explicitly"),
+            ("read_tested", "read-not-tested", "a real read remains untested"),
+            ("capability_listing_completed", "capabilities-not-listed", "capability listing remains incomplete"),
+            ("harmless_tool_invocation_observed", "harmless-call-not-observed", "observe the declared harmless tool invocation"),
+            ("tool_schema_inspected", "tool-schema-not-inspected", "inspect the tool schema before invocation"),
+        ):
+            if validation.get(field) is not True:
+                integration_issue(issues, index, code, message)
+        harmless_call = validation.get("declared_harmless_call")
+        if not isinstance(harmless_call, str) or not harmless_call.strip():
+            integration_issue(issues, index, "harmless-call-undeclared", "name the harmless validation call before invoking it")
+        bounded_side_effects = validation.get("bounded_side_effects")
+        if not isinstance(bounded_side_effects, list):
+            integration_issue(
+                issues, index, "bounded-side-effects-undeclared",
+                "declare the harmless call's bounded side effects before invocation",
+            )
+        if validation.get("least_privilege_accepted") is not True:
+            integration_issue(
+                issues, index, "least-privilege-unaccepted",
+                "successful access remains incomplete until least privilege or excess privilege is explicitly accepted",
+            )
+        if validation.get("response_status") == 403 and validation.get("scope_widening_recommended") is True:
+            integration_issue(
+                issues, index, "scope-widening-after-403",
+                "a 403 does not justify broader credential scopes; resolve service or plan capability separately",
+            )
+        minimum = validation.get("minimum_response_fields")
+        received = validation.get("received_response_fields")
+        retained = validation.get("retained_response_fields")
+        if not all(isinstance(value, list) and all(isinstance(item, str) for item in value) for value in (minimum, received, retained)):
+            integration_issue(
+                issues, index, "response-field-declaration-incomplete",
+                "record minimum, received, and retained response field names",
+            )
+        else:
+            minimum_set, received_set, retained_set = set(minimum), set(received), set(retained)
+            if not minimum_set <= received_set or not minimum_set <= retained_set:
+                integration_issue(
+                    issues, index, "minimum-response-fields-missing",
+                    "received and retained evidence must contain the declared minimum fields",
+                )
+            if not retained_set <= minimum_set:
+                integration_issue(
+                    issues, index, "response-fields-over-retained",
+                    "suppress response fields beyond the declared minimum from retained evidence",
+                )
+
+        protected = resources.get("protected_artifacts")
+        protected = protected if isinstance(protected, list) else []
+        for artifact in protected:
+            if isinstance(artifact, dict) and artifact.get("before_sha256") != artifact.get("after_sha256"):
+                integration_issue(
+                    issues, index, "protected-artifact-mutated",
+                    "a protected artifact changed during the validation window",
+                )
+                break
+        shared_store = resources.get("shared_store")
+        shared_store = shared_store if isinstance(shared_store, dict) else {}
+        if not isinstance(shared_store.get("observation_window"), str) or not shared_store["observation_window"].strip():
+            integration_issue(
+                issues, index, "shared-store-window-missing",
+                "define the shared-store observation window before validation",
+            )
+        drift = shared_store.get("observed_drift")
+        if isinstance(drift, list) and drift and shared_store.get("causality") == "ambiguous":
+            integration_issue(
+                issues, index, "ambiguous-shared-store-causality",
+                "stop: shared-store drift has ambiguous causality while other writers may be active",
+            )
+
+        operation = integration.get("operation")
+        operation = operation if isinstance(operation, dict) else {}
+        if operation.get("can_reprime") is True and operation.get("write_capable") is not True:
+            integration_issue(
+                issues, index, "write-capable-operation-misclassified",
+                "automatic re-priming makes this operation potentially write-capable",
+            )
+
+        lifecycle = integration.get("lifecycle")
+        lifecycle = lifecycle if isinstance(lifecycle, dict) else {}
+        expected_children = lifecycle.get("expected_children")
+        if not isinstance(expected_children, list) or not expected_children:
+            integration_issue(
+                issues, index, "expected-child-identities-missing",
+                "record expected child-process identities before launch",
+            )
+        launched = {pid for pid in lifecycle.get("launched_pids", []) if isinstance(pid, int)}
+        alive = {pid for pid in lifecycle.get("alive_pids_after_cleanup", []) if isinstance(pid, int)}
+        if integration.get("kind") == "mcp" and configuration.get("command") and not launched:
+            integration_issue(
+                issues, index, "launched-pids-missing",
+                "record exact server and browser PIDs launched by validation",
+            )
+        if launched & alive:
+            integration_issue(
+                issues, index, "launched-process-survived",
+                "cleanup is incomplete because an exact PID launched by validation is still alive",
+            )
+
+    return {
+        "schema_version": 1,
+        "complete": not issues,
+        "integrations_checked": len(integrations),
+        "issues": issues,
+        "limits": limit,
+    }
+
+
+def cmd_validate_integration(args: argparse.Namespace) -> int:
+    path = Path(args.checkpoint).expanduser().resolve()
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise CliError(f"Cannot read integration checkpoint {path}: {exc.strerror or 'read failed'}") from exc
+    except json.JSONDecodeError as exc:
+        raise CliError(
+            f"Integration checkpoint is not valid JSON at line {exc.lineno}, column {exc.colno}"
+        ) from exc
+    report = validate_integration_checkpoint(document)
+    if args.debug:
+        print(
+            f"debug: schema={report['schema_version']} integrations={report['integrations_checked']} "
+            "configuration-values=withheld"
+        )
+    for issue in report["issues"]:
+        print(f"FAIL {issue['integration']} {issue['code']}: {issue['message']}")
+    print(report["limits"])
+    if report["complete"]:
+        ok(f"integration checkpoint complete for {report['integrations_checked']} integration(s)")
+        return 0
+    warn(f"integration checkpoint incomplete ({len(report['issues'])} issue(s))")
+    return 1
+
+
 def toml_value(value: Any) -> str:
     if isinstance(value, str):
         return json.dumps(value, ensure_ascii=False)
@@ -4285,12 +4629,17 @@ def recorded_verify_phase(command: str, root: Path, stdout_path: Path,
 
 def cmd_verify(args: argparse.Namespace) -> int:
     root = Path(args.target or os.getcwd()).resolve()
+    tree_class = getattr(args, "tree_class", None)
     conf = root / ".harness" / "verify.conf"
     if not conf.exists():
         raise CliError(f"No verification config at {conf}")
     phases = [(label, cmd) for label, cmd in parse_verify_conf(conf) if not args.only or args.only in label]
     if args.record and args.list:
         raise CliError("--record cannot be combined with --list")
+    if args.record and not tree_class:
+        raise CliError("--record requires an explicit tree class (--tree-class)")
+    if tree_class and not args.record:
+        raise CliError("--tree-class is meaningful only with --record")
     if args.list:
         for index, (label, command) in enumerate(phases, 1):
             print(f"{index}. {label} :: {command}")
@@ -4304,6 +4653,10 @@ def cmd_verify(args: argparse.Namespace) -> int:
             raise CliError(f"Refusing to overwrite existing verification receipt destination {record_dir}")
         configuration_sha256 = file_sha256(conf)
         git_metadata = verification_git_metadata(root)
+        if tree_class == "clean-clone" and (
+            git_metadata["available"] is not True or git_metadata["dirty"] is not False
+        ):
+            raise CliError("clean-clone evidence requires a clean Git worktree")
         try:
             record_dir.parent.mkdir(parents=True, exist_ok=True)
             record_dir.mkdir()
@@ -4341,6 +4694,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
             "updated_at": started_at,
             "completed_at": None,
             "target": str(root),
+            "tree_class": tree_class,
             "only": safe_only if args.only is not None else None,
             "configuration": {"path": str(conf.resolve()), "sha256": configuration_sha256},
             "git": git_metadata,
@@ -4431,7 +4785,7 @@ def cmd_scaffold(kind: str, args: argparse.Namespace) -> int:
             result = subprocess.run(["git", "-C", str(root), *git_args], capture_output=True, text=True)
             return result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else fallback
         branch = git_value("rev-parse", "--abbrev-ref", "HEAD")
-        head = git_value("rev-parse", "--short", "HEAD")
+        head = git_value("rev-parse", "HEAD")
         status = git_value("status", "--porcelain", fallback="")
         dirty = len(status.splitlines()) if status else 0
         source = textwrap.dedent(f"""\
@@ -4439,6 +4793,20 @@ def cmd_scaffold(kind: str, args: argparse.Namespace) -> int:
 
             **Branch:** {branch}   **HEAD:** {head}   **Uncommitted files:** {dirty}
             {"> ⚠ Tree is dirty — commit or stash BEFORE handing off (core/50 step 1)." if dirty else ""}
+
+            ## Recovery checkpoint
+
+            - **Exact objective:** {item}
+            - **Repository / worktree:** {root}
+            - **Protected-state hashes:**
+            - **Branch / commit:** {branch} / {head}
+            - **External identifiers:**
+            - **Completed verification:**
+            - **Active external operation:**
+            - **Next read-only recovery command:**
+            - **Remaining authorized writes:**
+            - **Stop conditions:**
+            - **Skipped validation:**
 
             ## What shipped this session
 
@@ -4783,6 +5151,17 @@ def parser() -> argparse.ArgumentParser:
     verify.add_argument("--only")
     verify.add_argument("--list", action="store_true")
     verify.add_argument("--record", metavar="DIRECTORY")
+    verify.add_argument(
+        "--tree-class",
+        choices=("clean-clone", "disposable-fixture", "linked-worktree", "operator-worktree"),
+        help="required with --record; declares which tree produced the evidence",
+    )
+    integration = sub.add_parser(
+        "validate-integration",
+        help="validate a structured integration checkpoint without installing or launching it",
+    )
+    integration.add_argument("--checkpoint", required=True)
+    integration.add_argument("--debug", action="store_true", help="print only redacted structural diagnostics")
     for name in ("handoff", "new-feedback", "new-research"):
         scaffold = sub.add_parser(name)
         scaffold.add_argument("name", nargs="?")
@@ -4812,7 +5191,7 @@ def parser() -> argparse.ArgumentParser:
 def normalize_legacy_argv(argv: list[str]) -> list[str]:
     if not argv:
         return ["install", "--wizard"]
-    commands = {"install", "update", "agents", "doctor", "compatibility", "verify", "handoff", "new-feedback", "new-research", "secret-scan", "hook", "evaluate"}
+    commands = {"install", "update", "agents", "doctor", "compatibility", "verify", "validate-integration", "handoff", "new-feedback", "new-research", "secret-scan", "hook", "evaluate"}
     if argv[0] in commands or argv[0] in {"-h", "--help", "--version"}:
         return argv
     if "--doctor" in argv:
@@ -4837,7 +5216,7 @@ def apply_wizard_answers(args: argparse.Namespace, input_fn: Any = input) -> Non
 def run(argv: list[str] | None = None) -> int:
     require_python()
     args = parser().parse_args(normalize_legacy_argv(list(argv if argv is not None else sys.argv[1:])))
-    if args.command != "update":
+    if args.command not in {"update", "validate-integration"}:
         maybe_report_automatic_update()
     if args.command == "install":
         if args.wizard:
@@ -4867,6 +5246,8 @@ def run(argv: list[str] | None = None) -> int:
         return cmd_compatibility(args)
     if args.command == "verify":
         return cmd_verify(args)
+    if args.command == "validate-integration":
+        return cmd_validate_integration(args)
     if args.command in {"handoff", "new-feedback", "new-research"}:
         if args.command != "handoff" and not args.name:
             raise CliError(f"{args.command} requires a topic/symptom")

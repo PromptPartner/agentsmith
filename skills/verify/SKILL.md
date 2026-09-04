@@ -22,7 +22,9 @@ adapter such as `.claude/skills`. Use canonical `AGENTS.md` when an instruction 
    macOS/Linux and `.agentsmith\\agentsmith.cmd verify` on Windows). It runs every phase in
    `.harness/verify.conf` and stops at the first
    failure). `--list` shows the phases; `--only <tag>` iterates just one.
-   Add `--record <directory>` when deterministic command evidence needs a durable local receipt.
+   Add `--record <directory> --tree-class <clean-clone|disposable-fixture|linked-worktree|operator-worktree>`
+   when deterministic command evidence needs a durable local receipt. The explicit class keeps a
+   dirty operator tree from masquerading as clean-checkout evidence; `clean-clone` refuses a dirty tree.
    The destination must be new; relative paths resolve from the project target. Record mode
    redacts secret-shaped console and sidecar output before either is emitted.
 2. On a failure: read the label + command it printed, explain in plain language what broke, and

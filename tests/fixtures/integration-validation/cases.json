@@ -1,0 +1,186 @@
+{
+  "schema_version": 1,
+  "base": {
+    "schema_version": 1,
+    "integrations": [
+      {
+        "id": "browser-check",
+        "name": "playwright",
+        "kind": "mcp",
+        "capabilities": ["tools/list", "browser_snapshot"],
+        "authentication_mode": "none",
+        "data_scope": ["local disposable fixture"],
+        "owner": "test-team",
+        "consumers": [
+          {"name": "ui-verification", "credential_class": "none"}
+        ],
+        "authority": {
+          "read": "authorized",
+          "write": "none",
+          "credential_privilege": "minimal"
+        },
+        "package": {"discovered_version": "0.0.80"},
+        "configuration": {
+          "command": "npx",
+          "args": ["-y", "@playwright/mcp@0.0.80", "--headless", "--isolated"],
+          "env": {"PLAYWRIGHT_BROWSERS_PATH": ".harness/cache/playwright"},
+          "diagnostics": {"emit_full_argv": false, "emit_full_environment": false}
+        },
+        "native_cli": {"available": false, "adequate": false},
+        "mcp_install_planned": true,
+        "validation": {
+          "configured": true,
+          "authenticated": true,
+          "read_tested": true,
+          "least_privilege_accepted": true,
+          "client_auto_start_observed": true,
+          "capability_listing_completed": true,
+          "declared_harmless_call": "browser_snapshot",
+          "bounded_side_effects": ["temporary in-memory browser context"],
+          "harmless_tool_invocation_observed": true,
+          "tool_schema_inspected": true,
+          "minimum_response_fields": ["title", "url"],
+          "received_response_fields": ["title", "url"],
+          "retained_response_fields": ["title", "url"],
+          "response_status": 200,
+          "scope_widening_recommended": false
+        },
+        "resources": {
+          "profile": {"mode": "isolated"},
+          "browser_cache": {"mode": "isolated"},
+          "protected_artifacts": [
+            {
+              "path": "existing-profile/sentinel.bin",
+              "before_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "after_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ],
+          "shared_store": {
+            "observation_window": "2026-09-04T12:00:00Z/2026-09-04T12:01:00Z",
+            "background_writers": [],
+            "acceptable_drift": [],
+            "observed_drift": [],
+            "causality": "none"
+          }
+        },
+        "operation": {"name": "snapshot", "can_reprime": false, "write_capable": false},
+        "sandbox_exception": {"enabled": false, "runtime_reason": "", "compensating_isolation": false},
+        "lifecycle": {
+          "expected_children": ["npx", "node", "chromium"],
+          "launched_pids": [101, 102],
+          "alive_pids_after_cleanup": [],
+          "unrelated_pids": [999]
+        }
+      }
+    ]
+  },
+  "cases": [
+    {
+      "name": "unpinned-package",
+      "patch": {"integrations": [{"configuration": {"args": ["-y", "@vendor/server"]}, "package": {"discovered_version": "1.2.3"}}]},
+      "expected_codes": ["executable-package-unpinned"]
+    },
+    {
+      "name": "exact-package-pin",
+      "patch": {"integrations": [{"name": "vendor", "configuration": {"args": ["-y", "@vendor/server@1.2.3"]}, "package": {"discovered_version": "1.2.3"}}]},
+      "expected_codes": []
+    },
+    {
+      "name": "playwright-profile-missing",
+      "patch": {"integrations": [{"configuration": {"args": ["-y", "@playwright/mcp@0.0.80", "--headless"]}, "resources": {"profile": {"mode": "shared"}}}]},
+      "expected_codes": ["playwright-profile-not-isolated"]
+    },
+    {
+      "name": "playwright-cache-missing",
+      "patch": {"integrations": [{"configuration": {"env": null}, "resources": {"browser_cache": {"mode": "shared"}}}]},
+      "expected_codes": ["playwright-cache-unprotected"]
+    },
+    {
+      "name": "no-sandbox-unjustified",
+      "patch": {"integrations": [{"configuration": {"args": ["-y", "@playwright/mcp@0.0.80", "--headless", "--isolated", "--no-sandbox"]}, "sandbox_exception": {"enabled": true, "runtime_reason": "", "compensating_isolation": true}}]},
+      "expected_codes": ["sandbox-exception-unjustified"]
+    },
+    {
+      "name": "no-sandbox-without-compensation",
+      "patch": {"integrations": [{"configuration": {"args": ["-y", "@playwright/mcp@0.0.80", "--headless", "--no-sandbox"]}, "resources": {"profile": {"mode": "shared"}}, "sandbox_exception": {"enabled": true, "runtime_reason": "root runtime requires Chromium sandbox exception", "compensating_isolation": false}}]},
+      "expected_codes": ["playwright-profile-not-isolated", "sandbox-exception-uncompensated"]
+    },
+    {
+      "name": "shared-cache-preserved",
+      "patch": {"integrations": [{"configuration": {"env": {"PLAYWRIGHT_SKIP_BROWSER_GC": "1"}}, "resources": {"browser_cache": {"mode": "shared", "preservation": "skip-browser-gc"}}}]},
+      "expected_codes": []
+    },
+    {
+      "name": "auto-start-is-not-invocation",
+      "patch": {"integrations": [{"validation": {"client_auto_start_observed": true, "capability_listing_completed": false, "harmless_tool_invocation_observed": false}}]},
+      "expected_codes": ["capabilities-not-listed", "harmless-call-not-observed"]
+    },
+    {
+      "name": "capability-list-is-not-invocation",
+      "patch": {"integrations": [{"validation": {"client_auto_start_observed": true, "capability_listing_completed": true, "harmless_tool_invocation_observed": false}}]},
+      "expected_codes": ["harmless-call-not-observed"]
+    },
+    {
+      "name": "declared-call-not-observed",
+      "patch": {"integrations": [{"validation": {"harmless_tool_invocation_observed": false}}]},
+      "expected_codes": ["harmless-call-not-observed"]
+    },
+    {
+      "name": "admin-read-not-accepted",
+      "patch": {"integrations": [{"authority": {"credential_privilege": "admin"}, "validation": {"least_privilege_accepted": false}}]},
+      "expected_codes": ["least-privilege-unaccepted"]
+    },
+    {
+      "name": "plan-tier-403-no-scope-widening",
+      "patch": {"integrations": [{"validation": {"read_tested": false, "response_status": 403, "scope_widening_recommended": false}}]},
+      "expected_codes": ["read-not-tested"],
+      "forbidden_codes": ["scope-widening-after-403"]
+    },
+    {
+      "name": "plan-tier-403-with-scope-widening",
+      "patch": {"integrations": [{"validation": {"read_tested": false, "response_status": 403, "scope_widening_recommended": true}}]},
+      "expected_codes": ["read-not-tested", "scope-widening-after-403"]
+    },
+    {
+      "name": "adequate-native-cli",
+      "patch": {"integrations": [{"native_cli": {"available": true, "adequate": true}, "mcp_install_planned": true}]},
+      "expected_codes": ["native-cli-already-adequate"]
+    },
+    {
+      "name": "identity-response-minimized",
+      "patch": {"integrations": [{"validation": {"minimum_response_fields": ["login"], "received_response_fields": ["login", "email", "name", "avatar_url"], "retained_response_fields": ["login"]}}]},
+      "expected_codes": []
+    },
+    {
+      "name": "identity-response-over-retained",
+      "patch": {"integrations": [{"validation": {"minimum_response_fields": ["login"], "received_response_fields": ["login", "email"], "retained_response_fields": ["login", "email"]}}]},
+      "expected_codes": ["response-fields-over-retained"]
+    },
+    {
+      "name": "shared-store-ambiguous-causality",
+      "patch": {"integrations": [{"resources": {"shared_store": {"background_writers": ["sync-worker"], "acceptable_drift": [], "observed_drift": ["index.sqlite"], "causality": "ambiguous"}}}]},
+      "expected_codes": ["ambiguous-shared-store-causality"],
+      "forbidden_codes": ["protected-artifact-mutated"]
+    },
+    {
+      "name": "retrieval-can-reprime",
+      "patch": {"integrations": [{"operation": {"name": "retrieve", "can_reprime": true, "write_capable": false}}]},
+      "expected_codes": ["write-capable-operation-misclassified"]
+    },
+    {
+      "name": "launched-pid-survives",
+      "patch": {"integrations": [{"lifecycle": {"alive_pids_after_cleanup": [102, 999]}}]},
+      "expected_codes": ["launched-process-survived"]
+    },
+    {
+      "name": "unrelated-process-survives",
+      "patch": {"integrations": [{"lifecycle": {"alive_pids_after_cleanup": [999]}}]},
+      "expected_codes": []
+    },
+    {
+      "name": "unsafe-diagnostics",
+      "patch": {"integrations": [{"configuration": {"diagnostics": {"emit_full_argv": true, "emit_full_environment": true}}}]},
+      "expected_codes": ["full-argv-output-forbidden", "full-environment-output-forbidden"]
+    }
+  ]
+}

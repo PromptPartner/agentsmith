@@ -14,6 +14,10 @@ You were corrected on something a rule could have prevented; you iterated more t
 have; a human stepped in; you re-derived a decision a past session already made. After fixing the
 immediate thing, capture the lesson.
 
+## Absence gate
+Before filing or implementing a missing-item defect, confirm absence with an exact, count-based, or
+untruncated result. Truncated, paginated, filtered, or summarized search output is incomplete evidence.
+
 ## Fast path — if the Agentsmith CLI is available
 Run `agentsmith new-feedback "short symptom"` — use `.agentsmith/agentsmith` on macOS/Linux or
 `.agentsmith\\agentsmith.cmd` on Windows when the command is not on PATH. It computes the next number and writes
