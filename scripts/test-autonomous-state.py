@@ -123,6 +123,19 @@ class AutonomousStateTests(unittest.TestCase):
         self.assertEqual(replace.call_count, 2)
         pause.assert_called_once_with(0.01)
 
+    def test_json_read_retries_a_transient_windows_sharing_denial(self) -> None:
+        path = Path("state.json")
+        denial = PermissionError("destination is momentarily shared")
+        denial.winerror = 32
+        with (
+            mock.patch.object(CONTROLLER.os, "name", "nt"),
+            mock.patch.object(Path, "read_text", side_effect=[denial, '{"ready": true}']) as read,
+            mock.patch.object(CONTROLLER.time, "sleep") as pause,
+        ):
+            self.assertEqual(CONTROLLER.load_json(path), {"ready": True})
+        self.assertEqual(read.call_count, 2)
+        pause.assert_called_once_with(0.01)
+
     def test_process_liveness_recognizes_current_and_missing_processes(self) -> None:
         self.assertTrue(CONTROLLER.process_is_live(os.getpid()))
         stale_pid = next(
@@ -141,7 +154,7 @@ class AutonomousStateTests(unittest.TestCase):
             def observe() -> None:
                 while not finished.is_set():
                     try:
-                        value = json.loads(path.read_text(encoding="utf-8"))
+                        value = CONTROLLER.load_json(path)
                         if not isinstance(value.get("writer"), int):
                             raise AssertionError("state record lost its writer field")
                     except BaseException as exc:  # captured and asserted on the main test thread
