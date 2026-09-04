@@ -95,12 +95,25 @@ def repo_root(path: Path) -> Path:
 
 def load_json(path: Path) -> dict[str, Any]:
     try:
-        value = json.loads(path.read_text())
+        value = json.loads(read_text(path))
     except (OSError, json.JSONDecodeError) as exc:
         raise RunError(f"cannot read JSON {path}: {exc}") from exc
     if not isinstance(value, dict):
         raise RunError(f"{path} must contain a JSON object")
     return value
+
+
+def read_text(path: Path) -> str:
+    """Read a file while tolerating bounded Windows sharing races."""
+    for attempt in range(100):
+        try:
+            return path.read_text(encoding="utf-8")
+        except PermissionError as exc:
+            transient_windows_error = os.name == "nt" and getattr(exc, "winerror", None) in {5, 32}
+            if not transient_windows_error or attempt == 99:
+                raise
+            time.sleep(0.01)
+    raise AssertionError("unreachable")
 
 
 def write_json(path: Path, value: dict[str, Any]) -> None:
