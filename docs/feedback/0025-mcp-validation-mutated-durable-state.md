@@ -5,6 +5,7 @@
 
 - **Date:** 2026-09-04
 - **Status:** applied
+- **Fixed release:** `v0.3.1`
 - **Cost:** A Claude-to-Codex migration touched an operator browser profile and shared browser/index
   caches before the validation path was isolated; missing before-state evidence made restoration unsafe.
 
