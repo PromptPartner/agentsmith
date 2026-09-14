@@ -757,7 +757,7 @@ def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str])
     if sys.platform.startswith("linux") and shutil.which("bwrap"):
         home = Path.home().resolve()
         args = ["bwrap", "--unshare-net", "--die-with-parent", "--ro-bind", "/", "/",
-                "--tmpfs", str(home)]
+                "--tmpfs", str(home), "--tmpfs", "/tmp"]
         directories: set[Path] = set()
         for target in (cwd.resolve(), common):
             if target.is_relative_to(home):
@@ -768,7 +768,7 @@ def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str])
         for directory in sorted(directories, key=lambda item: len(item.parts)):
             args += ["--dir", str(directory)]
         args += ["--bind", str(cwd), str(cwd), "--ro-bind", str(common), str(common),
-                 "--tmpfs", "/tmp", "--dev", "/dev", "--proc", "/proc",
+                 "--dev", "/dev", "--proc", "/proc",
                  "--chdir", str(cwd), "/bin/bash", "-c", command]
         return run(args,
                    cwd, timeout=timeout, env=env)

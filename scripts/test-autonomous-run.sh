@@ -238,6 +238,27 @@ PY
     printf 'autonomous-run: %d passed, %d failed (state machine covered on macOS/Linux with an operational sandbox)\n' "$pass" "$fail"
     exit 0
   fi
+
+  tmp_worktree="$TMP/linux-tmp-worktree"
+  mkdir -p "$tmp_worktree"
+  git -C "$tmp_worktree" init -q
+  git -C "$tmp_worktree" config user.name 'Harness Test'
+  git -C "$tmp_worktree" config user.email 'user@example.com'
+  printf 'approved\n' > "$tmp_worktree/proof.txt"
+  git -C "$tmp_worktree" add proof.txt
+  git -C "$tmp_worktree" commit -qm 'test: approved tmp worktree'
+  if python3 - "$ROOT/scripts/autonomous-run.py" "$tmp_worktree" <<'PY'
+from pathlib import Path
+import sys
+namespace = {'__name__': 'agentsmith_sandbox_probe', '__file__': sys.argv[1]}
+exec(compile(Path(sys.argv[1]).read_text(), sys.argv[1], 'exec'), namespace)
+result = namespace['sandboxed_verify'](
+    'test "$(cat proof.txt)" = approved && git rev-parse HEAD >/dev/null',
+    Path(sys.argv[2]), 15, namespace['verifier_env']())
+raise SystemExit(result.returncode)
+PY
+  then ok 'Linux verifier keeps an approved worktree below private /tmp visible'
+  else bad 'Linux verifier hid an approved worktree below private /tmp'; fi
 fi
 
 if [ "$(uname -s)" = Darwin ] && [[ "$ROOT" = "$HOME/"* ]] &&
@@ -360,14 +381,14 @@ repo="$(new_repo verifier-escape)"; make_fake "$repo/../fake"; manifest "$repo" 
 python3 - "$repo/.harness/runs/verifier-escape.json" <<'PY'
 import json, pathlib, sys
 p = pathlib.Path(sys.argv[1]); v = json.loads(p.read_text())
-v['verify']['command'] = 'printf escaped > ../escaped'
+v['verify']['command'] = 'common=$(git rev-parse --git-common-dir) && test -d "$common" && printf escaped > "$common/escaped"'
 p.write_text(json.dumps(v) + '\n')
 PY
 git -C "$repo" add . && git -C "$repo" commit -qm 'test: hostile verifier contract'
 if (cd "$repo" && AWS_SECRET_ACCESS_KEY=do-not-expose invoke "$repo" accept start .harness/runs/verifier-escape.json >../out 2>../err); then
   bad 'escaping verifier was accepted'
 else ok 'verifier cannot write outside its disposable worktree'; fi
-assert 'verifier escape created no sibling artifact' test ! -e "$repo/../escaped"
+assert 'verifier escape created no Git metadata artifact' test ! -e "$repo/.git/escaped"
 
 repo="$(new_repo draft)"; make_fake "$repo/../fake"; manifest "$repo" draft
 sed -i.bak 's/status: accepted/status: draft/' "$repo/docs/specs/test.md" && rm "$repo/docs/specs/test.md.bak"
