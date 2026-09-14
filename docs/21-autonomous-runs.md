@@ -75,6 +75,23 @@ runs with a credential-free environment, no network, no access to other home-dir
 and no writes outside the disposable worktree. Read-only Git metadata remains visible so Git-based
 checks work. macOS uses the built-in sandbox; Linux requires `bubblewrap`. On any other host—or
 Linux without `bwrap`—verification exits closed instead of silently running unrestricted.
+
+Linux manifests may add `verify.offline_fixture` when the authoritative verifier needs local
+services or dependency caches. `rootfs` accepts one to four operator-reviewed images by immutable
+`name@sha256` reference. Before entering the sandbox, the controller checks that each exact digest
+is already cached, exports its never-started filesystem, removes the export container, and binds
+the filesystem read-only below `/tmp/agentsmith-fixtures/<name>`. The setup command receives that
+path as `AGENTSMITH_ROOTFS_<NAME>` and may start loopback-only fixture processes; the verifier then
+runs without capabilities, without the host Docker socket, and with `GOPROXY=off`. The setup
+command is part of the reviewed manifest contract, not maker-authored runtime input.
+
+`offline_fixture.caches` binds an ignored repository directory or a home-relative directory
+read-only only after its deterministic tree SHA-256 matches. Tools that require ephemeral files
+inside a cache may list exact descendant paths in `offline_fixture.scratch`; each becomes an empty
+writable tmpfs and cannot persist back to the declared cache. The optional fixture is deliberately
+absent from the generic template: add it only for a concrete offline verifier and record all four
+keys (`rootfs`, `setup`, `caches`, and `scratch`) explicitly.
+
 Both roles start fresh; their receipts, not conversational memory, are the handoff.
 The autonomous controller and `agentsmith evaluate` share the same immutable native-launch helper
 for command construction, structured-output parsing, usage extraction, sandbox settings, and the

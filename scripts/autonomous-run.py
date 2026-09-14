@@ -16,6 +16,8 @@ import os
 import re
 import signal
 import shutil
+import shlex
+import stat
 import subprocess
 import sys
 import tempfile
@@ -457,6 +459,9 @@ def decision_ticket_identities(meta: dict[str, str]) -> set[str]:
 
 
 RESOURCE_KEY = re.compile(r"[a-z][a-z0-9_-]*:[a-z0-9][a-z0-9._/-]*\Z")
+FIXTURE_NAME = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
+IMAGE_DIGEST = re.compile(r"[A-Za-z0-9._/-]+@sha256:[0-9a-f]{64}\Z")
+SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def scope_resources(scope: dict[str, Any]) -> list[str]:
@@ -468,6 +473,76 @@ def scope_resources(scope: dict[str, Any]) -> list[str]:
     if len(resources) != len(set(resources)):
         raise RunError("scope.resources entries must be unique")
     return list(resources)
+
+
+def relative_path(value: Any, label: str) -> Path:
+    if not isinstance(value, str) or not value:
+        raise RunError(f"{label} must be a nonempty relative POSIX path")
+    path = Path(value)
+    if path.is_absolute() or "\\" in value or "." in path.parts or ".." in path.parts:
+        raise RunError(f"{label} must be a relative POSIX path without traversal")
+    return path
+
+
+def verifier_fixture(verify: Any) -> dict[str, Any] | None:
+    if not isinstance(verify, dict) or not isinstance(verify.get("command"), str) or not verify["command"]:
+        raise RunError("verify.command must be a nonempty string")
+    fixture = verify.get("offline_fixture")
+    if fixture is None:
+        return None
+    if not isinstance(fixture, dict) or set(fixture) != {"rootfs", "setup", "caches", "scratch"}:
+        raise RunError("verify.offline_fixture requires exactly rootfs, setup, caches and scratch")
+    rootfs = fixture["rootfs"]
+    if not isinstance(rootfs, list) or not 1 <= len(rootfs) <= 4:
+        raise RunError("offline_fixture.rootfs must contain one to four pinned images")
+    names: set[str] = set()
+    for entry in rootfs:
+        if not isinstance(entry, dict) or set(entry) != {"name", "image"}:
+            raise RunError("each offline rootfs requires exactly name and image")
+        if not isinstance(entry["name"], str) or not FIXTURE_NAME.fullmatch(entry["name"]):
+            raise RunError("offline rootfs names must be lowercase identifiers")
+        if entry["name"] in names:
+            raise RunError("offline rootfs names must be unique")
+        names.add(entry["name"])
+        if not isinstance(entry["image"], str) or not IMAGE_DIGEST.fullmatch(entry["image"]):
+            raise RunError("offline rootfs images must use immutable name@sha256 references")
+    if not isinstance(fixture["setup"], str) or not fixture["setup"] or len(fixture["setup"]) > 65536:
+        raise RunError("offline_fixture.setup must be a nonempty bounded command")
+    caches = fixture["caches"]
+    if not isinstance(caches, list) or len(caches) > 16:
+        raise RunError("offline_fixture.caches must be an array with at most 16 entries")
+    seen: set[tuple[str, str]] = set()
+    for entry in caches:
+        if not isinstance(entry, dict) or set(entry) != {"source", "path", "sha256"}:
+            raise RunError("each offline cache requires exactly source, path and sha256")
+        if entry["source"] not in {"repo", "home"}:
+            raise RunError("offline cache source must be repo or home")
+        path = relative_path(entry["path"], "offline cache path").as_posix()
+        key = (entry["source"], path)
+        if key in seen:
+            raise RunError("offline cache entries must be unique")
+        seen.add(key)
+        if not isinstance(entry["sha256"], str) or not SHA256.fullmatch(entry["sha256"]):
+            raise RunError("offline cache sha256 must be 64 lowercase hexadecimal characters")
+    scratch = fixture["scratch"]
+    if not isinstance(scratch, list) or len(scratch) > 16:
+        raise RunError("offline_fixture.scratch must be an array with at most 16 entries")
+    scratch_seen: set[tuple[str, str]] = set()
+    for entry in scratch:
+        if not isinstance(entry, dict) or set(entry) != {"source", "path"}:
+            raise RunError("each offline scratch mount requires exactly source and path")
+        if entry["source"] not in {"repo", "home"}:
+            raise RunError("offline scratch source must be repo or home")
+        path = relative_path(entry["path"], "offline scratch path")
+        key = (entry["source"], path.as_posix())
+        if key in scratch_seen:
+            raise RunError("offline scratch entries must be unique")
+        scratch_seen.add(key)
+        parents = [relative_path(cache["path"], "offline cache path") for cache in caches
+                   if cache["source"] == entry["source"]]
+        if not any(path != parent and path.is_relative_to(parent) for parent in parents):
+            raise RunError("offline scratch paths must be descendants of a declared cache")
+    return fixture
 
 
 def scope_paths(scope: dict[str, Any], key: str) -> list[str]:
@@ -546,6 +621,7 @@ def validate_manifest(manifest: dict[str, Any], repo: Path) -> tuple[Path, str]:
     if manifest["external_writes"] is not False:
         raise RunError("v1 requires external_writes=false")
     normalized_scope(manifest["scope"])
+    verifier_fixture(manifest["verify"])
     git_policy = manifest["git"]
     expected = {"local_commits": True, "push": False, "merge": False, "history_rewrite": False}
     if any(git_policy.get(k) != v for k, v in expected.items()):
@@ -763,9 +839,137 @@ def validate_git_unchanged(before: dict[str, Any], after: dict[str, Any], actor:
             raise RunError(f"{actor} changed protected Git metadata: {key}")
 
 
-def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+def directory_digest(root: Path) -> str:
+    """Hash a cache tree without following links or accepting special files."""
+    if not root.is_dir() or root.is_symlink():
+        raise RunError(f"offline cache is not a regular directory: {root}")
+    digest = hashlib.sha256()
+
+    def visit(directory: Path, relative: Path) -> None:
+        try:
+            entries = sorted(directory.iterdir(), key=lambda entry: entry.name)
+        except OSError as exc:
+            raise RunError(f"cannot inspect offline cache {root}: {exc}") from exc
+        for entry in entries:
+            child = relative / entry.name
+            try:
+                before = entry.lstat()
+            except OSError as exc:
+                raise RunError(f"cannot inspect offline cache entry {child}: {exc}") from exc
+            mode = stat.S_IMODE(before.st_mode)
+            encoded = child.as_posix().encode("utf-8", errors="surrogateescape")
+            if stat.S_ISLNK(before.st_mode):
+                digest.update(b"L\0" + encoded + b"\0" + str(mode).encode() + b"\0")
+                digest.update(os.readlink(entry).encode("utf-8", errors="surrogateescape") + b"\0")
+            elif stat.S_ISDIR(before.st_mode):
+                digest.update(b"D\0" + encoded + b"\0" + str(mode).encode() + b"\0")
+                visit(entry, child)
+            elif stat.S_ISREG(before.st_mode):
+                digest.update(b"F\0" + encoded + b"\0" + str(mode).encode() + b"\0")
+                digest.update(str(before.st_size).encode() + b"\0")
+                try:
+                    with entry.open("rb") as handle:
+                        for block in iter(lambda: handle.read(1024 * 1024), b""):
+                            digest.update(block)
+                    after = entry.stat()
+                except OSError as exc:
+                    raise RunError(f"cannot read offline cache entry {child}: {exc}") from exc
+                identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+                if identity != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+                    raise RunError(f"offline cache changed while hashing: {child}")
+            else:
+                raise RunError(f"offline cache contains a special file: {child}")
+
+    visit(root, Path())
+    return digest.hexdigest()
+
+
+def offline_cache_bindings(fixture: dict[str, Any], source_repo: Path,
+                           worktree: Path) -> list[tuple[Path, Path]]:
+    bindings: list[tuple[Path, Path]] = []
+    home = Path.home().resolve()
+    for entry in fixture["caches"]:
+        relative = relative_path(entry["path"], "offline cache path")
+        if entry["source"] == "repo":
+            source = (source_repo / relative).resolve()
+            target = worktree / relative
+            ignored = run(["git", "check-ignore", "-q", "--", relative.as_posix()], source_repo)
+            if ignored.returncode:
+                raise RunError(f"repository cache is not ignored: {relative.as_posix()}")
+        else:
+            source = (home / relative).resolve()
+            target = home / relative
+        if not source.is_relative_to(source_repo if entry["source"] == "repo" else home):
+            raise RunError("offline cache resolved outside its declared source")
+        actual = directory_digest(source)
+        if actual != entry["sha256"]:
+            raise RunError(f"offline cache digest mismatch: {entry['source']}:{relative.as_posix()}")
+        bindings.append((source, target))
+    return bindings
+
+
+def offline_scratch_targets(fixture: dict[str, Any], worktree: Path) -> list[Path]:
+    home = Path.home().resolve()
+    return [(worktree if entry["source"] == "repo" else home) /
+            relative_path(entry["path"], "offline scratch path")
+            for entry in fixture["scratch"]]
+
+
+@contextlib.contextmanager
+def prepared_rootfs(fixture: dict[str, Any]):
+    docker = os.environ.get("AGENTSMITH_DOCKER_BIN") or shutil.which("docker")
+    tar = shutil.which("tar")
+    if not docker or not tar:
+        raise RunError("offline rootfs fixtures require local docker and tar")
+    bindings: list[tuple[Path, Path]] = []
+    environment: dict[str, str] = {}
+    with tempfile.TemporaryDirectory(prefix="agentsmith-offline-rootfs-") as temporary:
+        root = Path(temporary)
+        for entry in fixture["rootfs"]:
+            image = entry["image"]
+            inspected = run([docker, "image", "inspect", image], root)
+            try:
+                records = json.loads(inspected.stdout)
+            except json.JSONDecodeError as exc:
+                raise RunError(f"cannot inspect cached offline image {image}") from exc
+            if inspected.returncode or not isinstance(records, list) or len(records) != 1:
+                raise RunError(f"immutable offline image is not cached: {image}")
+            if image not in records[0].get("RepoDigests", []):
+                raise RunError(f"cached image provenance does not match {image}")
+            created = run([docker, "create", "--pull=never", "--network=none", image], root)
+            if created.returncode or not created.stdout.strip():
+                raise RunError(f"cannot create offline export container for {image}")
+            container = created.stdout.strip()
+            archive = root / f"{entry['name']}.tar"
+            extracted = root / entry["name"]
+            extracted.mkdir()
+            try:
+                exported = run([docker, "export", "--output", str(archive), container], root)
+            finally:
+                removed = run([docker, "container", "rm", container], root)
+            if exported.returncode:
+                raise RunError(f"cannot export cached offline image {image}")
+            if removed.returncode:
+                raise RunError(f"cannot remove offline export container {container}")
+            unpacked = run([tar, "--extract", "--file", str(archive), "--directory", str(extracted),
+                            "--no-same-owner", "--no-same-permissions"], root)
+            if unpacked.returncode:
+                raise RunError(f"cannot unpack cached offline image {image}")
+            target = Path("/tmp/agentsmith-fixtures") / entry["name"]
+            bindings.append((extracted, target))
+            environment[f"AGENTSMITH_ROOTFS_{entry['name'].upper().replace('-', '_')}"] = str(target)
+        yield bindings, environment
+
+
+def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str], *,
+                     fixture_setup: str | None = None,
+                     readonly_bindings: list[tuple[Path, Path]] | None = None,
+                     scratch_targets: list[Path] | None = None,
+                     fixture_environment: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     """Run the human-approved verifier with no network and no writes outside its worktree."""
     common = resolved_git_path(cwd, "--git-common-dir")
+    if fixture_setup and sys.platform != "linux":
+        return subprocess.CompletedProcess([], 126, "", "offline rootfs fixtures require Linux bubblewrap")
     if sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").exists():
         escaped = str(cwd).replace('"', '\\"')
         escaped_common = str(common).replace('"', '\\"')
@@ -785,10 +989,12 @@ def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str])
                    cwd, timeout=timeout, env=env)
     if sys.platform.startswith("linux") and shutil.which("bwrap"):
         home = Path.home().resolve()
-        args = ["bwrap", "--unshare-net", "--die-with-parent", "--ro-bind", "/", "/",
-                "--tmpfs", str(home), "--tmpfs", "/tmp"]
+        args = ["bwrap", "--unshare-net", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
+                "--die-with-parent", "--ro-bind", "/", "/", "--tmpfs", str(home),
+                "--tmpfs", "/tmp", "--tmpfs", "/run"]
         directories: set[Path] = set()
-        for target in (cwd.resolve(), common):
+        bindings = [(cwd.resolve(), cwd.resolve()), (common, common), *(readonly_bindings or [])]
+        for _source, target in bindings:
             if target.is_relative_to(home):
                 current = home
                 for part in target.relative_to(home).parts:
@@ -796,12 +1002,55 @@ def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str])
                     directories.add(current)
         for directory in sorted(directories, key=lambda item: len(item.parts)):
             args += ["--dir", str(directory)]
-        args += ["--bind", str(cwd), str(cwd), "--ro-bind", str(common), str(common),
-                 "--dev", "/dev", "--proc", "/proc",
-                 "--chdir", str(cwd), "/bin/bash", "-c", command]
+        args += ["--bind", str(cwd), str(cwd), "--ro-bind", str(common), str(common)]
+        rootfs_parent = Path("/tmp/agentsmith-fixtures")
+        if any(target.is_relative_to(rootfs_parent) for _source, target in readonly_bindings or []):
+            args += ["--dir", str(rootfs_parent)]
+        for source, target in readonly_bindings or []:
+            args += ["--ro-bind", str(source), str(target)]
+        for target in scratch_targets or []:
+            args += ["--tmpfs", str(target)]
+        args += ["--dev", "/dev", "--proc", "/proc", "--chdir", str(cwd)]
+        sandbox_env = dict(env)
+        sandbox_env.update(fixture_environment or {})
+        if fixture_setup:
+            capsh = shutil.which("capsh")
+            if not capsh:
+                return subprocess.CompletedProcess([], 126, "", "offline fixtures require capsh")
+            sandbox_env.update({"AGENTSMITH_FIXTURE_SETUP": fixture_setup,
+                                "AGENTSMITH_VERIFY_COMMAND": command})
+            wrapper = r'''set -euo pipefail
+cleanup() {
+  for child in $(jobs -pr); do kill "$child" >/dev/null 2>&1 || true; done
+  wait >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+eval -- "$AGENTSMITH_FIXTURE_SETUP"
+exec_command="$AGENTSMITH_VERIFY_COMMAND"
+''' + shlex.quote(capsh) + r''' --drop=all --caps= --noamb -- -c "$exec_command"
+'''
+            args += ["/bin/bash", "-c", wrapper]
+        else:
+            args += ["--cap-drop", "ALL", "/bin/bash", "-c", command]
         return run(args,
-                   cwd, timeout=timeout, env=env)
+                   cwd, timeout=timeout, env=sandbox_env)
     return subprocess.CompletedProcess([], 126, "", "no supported fail-closed verifier sandbox (macOS sandbox-exec or Linux bubblewrap)")
+
+
+def run_sandboxed_verify(manifest: dict[str, Any], source_repo: Path, cwd: Path,
+                         timeout: int, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    fixture = verifier_fixture(manifest["verify"])
+    if fixture is None:
+        return sandboxed_verify(manifest["verify"]["command"], cwd, timeout, env)
+    caches = offline_cache_bindings(fixture, source_repo, cwd)
+    scratch = offline_scratch_targets(fixture, cwd)
+    with prepared_rootfs(fixture) as (rootfs, fixture_environment):
+        fixture_environment["GOPROXY"] = "off"
+        return sandboxed_verify(manifest["verify"]["command"], cwd, timeout, env,
+                                fixture_setup=fixture["setup"],
+                                readonly_bindings=[*caches, *rootfs],
+                                scratch_targets=scratch,
+                                fixture_environment=fixture_environment)
 
 
 def path_allowed(path: str, manifest: dict[str, Any]) -> bool:
@@ -1066,8 +1315,8 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             save_state(state)
             raise RunError(added.stderr.strip() or "checker worktree creation failed")
         try:
-            verify = sandboxed_verify(manifest["verify"]["command"], checker_worktree,
-                                      remaining_seconds(state, manifest), verifier_env())
+            verify = run_sandboxed_verify(manifest, Path(state["repo"]), checker_worktree,
+                                          remaining_seconds(state, manifest), verifier_env())
             verify_output = f"exit={verify.returncode}\nSTDOUT:\n{verify.stdout}\nSTDERR:\n{verify.stderr}"
             verify_path = Path(state["state_path"]).parent / f"attempt-{state['attempt']}-verify.txt"
             verify_path.write_text(verify_output)

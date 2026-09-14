@@ -259,6 +259,126 @@ raise SystemExit(result.returncode)
 PY
   then ok 'Linux verifier keeps an approved worktree below private /tmp visible'
   else bad 'Linux verifier hid an approved worktree below private /tmp'; fi
+
+  docker_escape="$TMP/docker-socket-escape"
+  mkdir -p "$docker_escape"
+  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 &&
+     docker image inspect alpine:3 >/dev/null 2>&1; then
+    python3 - "$ROOT/scripts/autonomous-run.py" "$ROOT" "$docker_escape" <<'PY'
+from pathlib import Path
+import shlex
+import sys
+namespace = {'__name__': 'agentsmith_sandbox_probe', '__file__': sys.argv[1]}
+exec(compile(Path(sys.argv[1]).read_text(), sys.argv[1], 'exec'), namespace)
+escape = Path(sys.argv[3])
+command = (
+    'docker run --rm --pull=never --network none '
+    f'--mount type=bind,src={shlex.quote(str(escape))},dst=/escape '
+    "alpine:3 sh -c 'printf escaped > /escape/proof'"
+)
+result = namespace['sandboxed_verify'](
+    command, Path(sys.argv[2]), 30, namespace['verifier_env']())
+raise SystemExit(0 if result.returncode != 0 and not (escape / 'proof').exists() else 1)
+PY
+    if [ "$?" -eq 0 ]; then ok 'Linux verifier cannot escape through the host Docker socket'
+    else bad 'Linux verifier escaped through the host Docker socket'; fi
+  else
+    ok 'Linux Docker escape probe skipped because no cached local daemon fixture exists'
+  fi
+
+  fixture_probe="$TMP/offline-fixture"
+  mkdir -p "$fixture_probe/bin" "$fixture_probe/rootfs" "$fixture_probe/state" \
+    "$fixture_probe/source/cache/.tmp"
+  printf 'pinned\n' > "$fixture_probe/rootfs/marker.txt"
+  printf 'cache-pinned\n' > "$fixture_probe/source/cache/marker.txt"
+  printf 'cache/\n' > "$fixture_probe/source/.gitignore"
+  git -C "$fixture_probe/source" init -q
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    'case "$1 $2" in' \
+    '  "image inspect") printf '\''[{"RepoDigests":["example.invalid/synthetic@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]}]\n'\'' ;;' \
+    '  "create --pull=never") printf created > "$FAKE_DOCKER_STATE/container"; printf '\''synthetic-container\n'\'' ;;' \
+    '  "export --output") tar -cf "$3" -C "$FAKE_ROOTFS_SOURCE" . ;;' \
+    '  "container rm") rm "$FAKE_DOCKER_STATE/container"; printf '\''synthetic-container\n'\'' ;;' \
+    '  *) exit 64 ;;' \
+    'esac' > "$fixture_probe/bin/docker"
+  chmod +x "$fixture_probe/bin/docker"
+  if AGENTSMITH_DOCKER_BIN="$fixture_probe/bin/docker" \
+     FAKE_ROOTFS_SOURCE="$fixture_probe/rootfs" FAKE_DOCKER_STATE="$fixture_probe/state" \
+     python3 - "$ROOT/scripts/autonomous-run.py" "$fixture_probe/state" \
+       "$fixture_probe/source" <<'PY'
+import copy
+from pathlib import Path
+import sys
+namespace = {'__name__': 'agentsmith_fixture_probe', '__file__': sys.argv[1]}
+exec(compile(Path(sys.argv[1]).read_text(), sys.argv[1], 'exec'), namespace)
+image = 'example.invalid/synthetic@sha256:' + 'a' * 64
+source = Path(sys.argv[3])
+cache_digest = namespace['directory_digest'](source / 'cache')
+manifest = {'verify': {
+    'command': (
+        'test ! -S /var/run/docker.sock && '
+        'test "$(cat cache/marker.txt)" = cache-pinned && '
+        '! sh -c "printf changed > cache/marker.txt" && '
+        'printf scratch > cache/.tmp/proof && '
+        'test "$(cat cache/.tmp/proof)" = scratch && '
+        'curl -fsS http://127.0.0.1:18080/marker.txt | grep -Fx pinned && '
+        '! timeout 2 bash -c "exec 3<>/dev/tcp/192.0.2.1/80"'
+    ),
+    'offline_fixture': {
+        'rootfs': [{'name': 'synthetic', 'image': image}],
+        'setup': (
+            'test "$(cat "$AGENTSMITH_ROOTFS_SYNTHETIC/marker.txt")" = pinned; '
+            'python3 -m http.server 18080 --bind 127.0.0.1 '
+            '--directory "$AGENTSMITH_ROOTFS_SYNTHETIC" >/tmp/fixture-http.log 2>&1 & '
+            'for attempt in $(seq 1 20); do '
+            'curl -fsS http://127.0.0.1:18080/marker.txt >/dev/null 2>&1 && break; '
+            'sleep 0.1; done'
+        ),
+        'caches': [{'source': 'repo', 'path': 'cache', 'sha256': cache_digest}],
+        'scratch': [{'source': 'repo', 'path': 'cache/.tmp'}],
+    },
+}}
+
+bad_image = copy.deepcopy(manifest['verify'])
+bad_image['offline_fixture']['rootfs'][0]['image'] = 'example.invalid/synthetic:latest'
+try:
+    namespace['verifier_fixture'](bad_image)
+except namespace['RunError'] as exc:
+    assert 'immutable name@sha256' in str(exc)
+else:
+    raise AssertionError('mutable fixture image was accepted')
+
+bad_scratch = copy.deepcopy(manifest['verify'])
+bad_scratch['offline_fixture']['scratch'][0]['path'] = 'outside'
+try:
+    namespace['verifier_fixture'](bad_scratch)
+except namespace['RunError'] as exc:
+    assert 'descendants of a declared cache' in str(exc)
+else:
+    raise AssertionError('scratch outside a declared cache was accepted')
+
+bad_digest = copy.deepcopy(manifest['verify']['offline_fixture'])
+bad_digest['caches'][0]['sha256'] = '0' * 64
+try:
+    namespace['offline_cache_bindings'](bad_digest, source, source)
+except namespace['RunError'] as exc:
+    assert 'digest mismatch' in str(exc)
+else:
+    raise AssertionError('cache digest mismatch was accepted')
+
+result = namespace['run_sandboxed_verify'](
+    manifest, source, source, 30, namespace['verifier_env']())
+if result.returncode:
+    print(result.stdout, result.stderr, file=sys.stderr)
+assert not (Path(sys.argv[2]) / 'container').exists(), 'export container was not removed'
+assert not (source / 'cache/.tmp/proof').exists(), 'scratch escaped its tmpfs overlay'
+assert (source / 'cache/marker.txt').read_text() == 'cache-pinned\n', 'cache was modified'
+raise SystemExit(result.returncode)
+PY
+  then ok 'Linux verifier runs validated pinned rootfs/cache fixtures offline and cleans them up'
+  else bad 'Linux pinned rootfs fixture did not execute or clean up'; fi
 fi
 
 if [ "$(uname -s)" = Darwin ] && [[ "$ROOT" = "$HOME/"* ]] &&
