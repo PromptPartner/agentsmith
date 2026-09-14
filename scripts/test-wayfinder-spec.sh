@@ -56,7 +56,7 @@ if [ "$(head -1 "$TEMPLATE")" = '---' ] && [ "$(grep -c '^---$' "$TEMPLATE")" -g
 else
   bad 'template: YAML-style frontmatter missing'
 fi
-for field in 'decision_ticket:' 'accepted_by:' 'accepted_at:'; do
+for field in 'decision_tickets:' 'accepted_by:' 'accepted_at:'; do
   has "$TEMPLATE" "$field" \
     && ok "template: frontmatter carries $field" \
     || bad "template: frontmatter missing $field"

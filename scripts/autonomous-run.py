@@ -426,6 +426,36 @@ def frontmatter(text: str) -> dict[str, str]:
     return values
 
 
+TRACKER_TICKET = re.compile(r"(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9]*-[0-9]+)(?![A-Za-z0-9])")
+
+
+def ticket_identity(reference: str) -> str:
+    match = TRACKER_TICKET.search(reference)
+    return match.group(1).upper() if match else reference.strip().casefold()
+
+
+def decision_ticket_identities(meta: dict[str, str]) -> set[str]:
+    """Read the canonical list while preserving accepted legacy spec metadata."""
+    if meta.get("decision_tickets"):
+        references = [item.strip() for item in meta["decision_tickets"].split(",")]
+        if any(not item for item in references):
+            raise RunError("decision_tickets must be a comma-separated list without empty entries")
+    elif meta.get("decision_ticket"):
+        references = [meta["decision_ticket"]]
+    elif meta.get("tracking"):
+        # Historical Wayfinder specs used a free-form tracking field. Only explicit tracker-style
+        # IDs are compatible: arbitrary prose must not silently become acceptance metadata.
+        references = TRACKER_TICKET.findall(meta["tracking"])
+        if not references:
+            raise RunError("legacy tracking metadata contains no decision-ticket references")
+    else:
+        raise RunError("accepted spec requires decision_tickets metadata")
+    identities = {ticket_identity(reference) for reference in references}
+    if not identities or "" in identities:
+        raise RunError("accepted spec requires at least one decision-ticket reference")
+    return identities
+
+
 RESOURCE_KEY = re.compile(r"[a-z][a-z0-9_-]*:[a-z0-9][a-z0-9._/-]*\Z")
 
 
@@ -540,10 +570,9 @@ def validate_manifest(manifest: dict[str, Any], repo: Path) -> tuple[Path, str]:
         raise RunError("spec status must be accepted; agents may only author draft specs")
     if not meta.get("accepted_by") or not meta.get("accepted_at"):
         raise RunError("accepted spec requires accepted_by and accepted_at")
-    if not meta.get("decision_ticket"):
-        raise RunError("accepted spec requires a decision_ticket reference")
-    if str(manifest["implementation_ticket"]) == meta.get("decision_ticket"):
-        raise RunError("implementation_ticket must be separate from decision_ticket")
+    decisions = decision_ticket_identities(meta)
+    if ticket_identity(str(manifest["implementation_ticket"])) in decisions:
+        raise RunError("implementation_ticket must be separate from every decision ticket")
     digest = hashlib.sha256(shown.encode()).hexdigest()
     return spec_rel, digest
 

@@ -82,7 +82,7 @@ new_repo() {
     'ignored.tmp' \
     '---' \
     'status: accepted' \
-    'decision_ticket: DEC-1' \
+    'decision_tickets: DEC-1' \
     'accepted_by: Test Operator' \
     'accepted_at: 2026-08-25' \
     '---' \
@@ -680,6 +680,43 @@ git -C "$repo" add . && git -C "$repo" commit -qm 'test: invalid ticket seam'
 if (cd "$repo" && invoke "$repo" accept start .harness/runs/same-ticket.json >../out 2>../err); then
   bad 'decision ticket was reused for implementation'
 else ok 'decision and implementation tickets must differ'; fi
+
+repo="$(new_repo multi-decision-compat)"; make_fake "$repo/../fake"; manifest "$repo" multi-decision-compat
+sed -i.bak 's/decision_tickets: DEC-1/tracking: AI-910 \/ AI-911/' "$repo/docs/specs/test.md"
+rm "$repo/docs/specs/test.md.bak"
+git -C "$repo" add docs/specs/test.md && git -C "$repo" commit -qm 'test: accepted legacy multi-ticket spec'
+if python3 - "$repo/../fake/controller.py" "$repo" "$repo/.harness/runs/multi-decision-compat.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+namespace = {'__name__': 'agentsmith_ticket_probe', '__file__': sys.argv[1]}
+exec(compile(Path(sys.argv[1]).read_text(), sys.argv[1], 'exec'), namespace)
+assert namespace['decision_ticket_identities'](
+    {'decision_tickets': 'AI-910, https://linear.example/issue/AI-911/title'}) == {'AI-910', 'AI-911'}
+assert namespace['decision_ticket_identities']({'decision_ticket': 'DEC-1'}) == {'DEC-1'}
+try:
+    namespace['decision_ticket_identities']({'tracking': 'release planning notes'})
+except namespace['RunError']:
+    pass
+else:
+    raise AssertionError('free-form tracking prose became decision metadata')
+manifest = json.loads(Path(sys.argv[3]).read_text())
+manifest['base_ref'] = 'HEAD'
+manifest['implementation_ticket'] = 'AI-864'
+namespace['validate_manifest'](manifest, Path(sys.argv[2]))
+for decision in ('AI-910', 'AI-911'):
+    manifest['implementation_ticket'] = decision
+    try:
+        namespace['validate_manifest'](manifest, Path(sys.argv[2]))
+    except namespace['RunError'] as error:
+        if 'separate' not in str(error):
+            raise
+    else:
+        raise AssertionError(f'decision ticket {decision} was accepted as implementation')
+PY
+then ok 'legacy tracking metadata preserves all decision tickets without reusing them'
+else bad 'accepted legacy multi-ticket spec did not validate safely'; fi
 
 echo
 printf 'autonomous-run: %d passed, %d failed\n' "$pass" "$fail"

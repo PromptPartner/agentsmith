@@ -15,6 +15,12 @@ The agent may write a draft spec, but it cannot accept its own spec. Starting th
 separate human action. If Linear writes are not authorized, the ticket remains a paste-ready draft
 until the operator posts it; naming Linear never grants the run a connector.
 
+New Wayfinder specs record every decision identity in the comma-separated `decision_tickets`
+frontmatter field. The controller also recognizes the former singular `decision_ticket` field and,
+for already accepted specs, ticket-style IDs in the historical free-form `tracking` field. That
+compatibility preserves the committed human acceptance: it treats every referenced decision as
+distinct from the implementation ticket and never chooses one reference on the operator's behalf.
+
 Copy `templates/autonomous-run.json` through the controller's `prepare` command. The manifest pins
 the spec hash, ticket, base ref, maker/checker runtime and model, path boundary, verifier, attempt
 cap, wall-clock budget, and git/external-write policy. It must be reviewed and committed before
