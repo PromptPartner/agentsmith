@@ -64,8 +64,10 @@ A spec can be offered for acceptance only when:
 
 Present the spec as `draft` and ask the operator to accept or revise it. Only an explicit operator
 acceptance may change `status` to `accepted`; record that human in `accepted_by` and the acceptance
-time in `accepted_at`. An agent's own evaluation cannot accept it. Acceptance closes the decision
-item and unlocks planning/execution against the separate implementation tickets.
+time in `accepted_at`. Record every decision item's tracker link, ID, or paste-ready draft name in
+the comma-separated `decision_tickets` frontmatter field. An agent's own evaluation cannot accept
+the spec. Acceptance closes the decision items and unlocks planning/execution against the separate
+implementation tickets.
 Tracker consent still governs closing or creating items: when writes are unauthorized, provide the
 close comment and implementation-ticket bodies as paste-ready drafts.
 

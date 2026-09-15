@@ -1,6 +1,6 @@
 ---
 status: draft
-decision_ticket: <tracker link/id or paste-ready draft name>
+decision_tickets: <one or more tracker links/IDs or paste-ready draft names, comma-separated>
 accepted_by:
 accepted_at:
 ---

@@ -15,6 +15,12 @@ The agent may write a draft spec, but it cannot accept its own spec. Starting th
 separate human action. If Linear writes are not authorized, the ticket remains a paste-ready draft
 until the operator posts it; naming Linear never grants the run a connector.
 
+New Wayfinder specs record every decision identity in the comma-separated `decision_tickets`
+frontmatter field. The controller also recognizes the former singular `decision_ticket` field and,
+for already accepted specs, ticket-style IDs in the historical free-form `tracking` field. That
+compatibility preserves the committed human acceptance: it treats every referenced decision as
+distinct from the implementation ticket and never chooses one reference on the operator's behalf.
+
 Copy `templates/autonomous-run.json` through the controller's `prepare` command. The manifest pins
 the spec hash, ticket, base ref, maker/checker runtime and model, path boundary, verifier, attempt
 cap, wall-clock budget, and git/external-write policy. It must be reviewed and committed before
@@ -69,6 +75,30 @@ runs with a credential-free environment, no network, no access to other home-dir
 and no writes outside the disposable worktree. Read-only Git metadata remains visible so Git-based
 checks work. macOS uses the built-in sandbox; Linux requires `bubblewrap`. On any other host—or
 Linux without `bwrap`—verification exits closed instead of silently running unrestricted.
+
+Linux manifests may add `verify.offline_fixture` when the authoritative verifier needs local
+services or dependency caches. `rootfs` accepts one to four operator-reviewed images by immutable
+`name@sha256` reference. Before entering the sandbox, the controller checks that each exact digest
+is already cached, exports its never-started filesystem, removes the export container, and binds
+the filesystem read-only below `/tmp/agentsmith-fixtures/<name>`. The setup command receives that
+path as `AGENTSMITH_ROOTFS_<NAME>` and may start loopback-only fixture processes; the verifier then
+runs without capabilities, without the host Docker socket, and with `GOPROXY=off`. The setup
+command is part of the reviewed manifest contract, not maker-authored runtime input. Rootfs names
+must also remain distinct after uppercasing and replacing `-` with `_`; aliases that would share one
+environment variable are rejected before any image operation.
+
+`offline_fixture.caches` binds an ignored repository directory or a home-relative directory
+read-only only after its deterministic tree SHA-256 matches. Tools that require ephemeral files
+inside a cache may list exact descendant paths in `offline_fixture.scratch`; each becomes an empty
+writable tmpfs and cannot persist back to the declared cache. The optional fixture is deliberately
+absent from the generic template: add it only for a concrete offline verifier and record all four
+keys (`rootfs`, `setup`, `caches`, and `scratch`) explicitly. Home caches fail closed to the reviewed
+credential-free roots `go` and `.local/bin` (or their descendants); credential stores and arbitrary
+home directories are not valid cache sources. Cache hashing, every Docker/export/tar preparation
+process, fixture setup, and the verifier all consume the original persisted wall-clock deadline.
+Temporary export-container removal is always attempted; if that deadline has already elapsed,
+cleanup receives one bounded five-second safety grace before the run escalates.
+
 Both roles start fresh; their receipts, not conversational memory, are the handoff.
 The autonomous controller and `agentsmith evaluate` share the same immutable native-launch helper
 for command construction, structured-output parsing, usage extraction, sandbox settings, and the
@@ -97,9 +127,11 @@ the request remains in place and `resume` reconciles the interruption after acqu
 lock.
 
 `resume <id>` works only when the committed manifest, accepted spec, base commit, recorded branch,
-and worktree still match and the worktree is clean. A changed contract requires a new run ID rather
-than silently moving the goalposts. The original deadline and accumulated Claude/Codex usage remain
-authoritative across every resume; pausing does not reset either budget.
+worktree, controller source, and imported native-launcher source still match and the worktree is
+clean. Their SHA-256 identities are captured in start state, so changed execution bytes require a
+new run rather than silently changing the controller or contract. The original deadline and
+accumulated Claude/Codex usage remain authoritative across every resume; pausing does not reset
+either budget.
 
 An accepted run prints the branch, commit, worktree, and evidence for human review. An escalated
 run prints the exact boundary that stopped it. Nothing leaves the machine until the operator

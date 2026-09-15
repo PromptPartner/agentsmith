@@ -82,7 +82,7 @@ new_repo() {
     'ignored.tmp' \
     '---' \
     'status: accepted' \
-    'decision_ticket: DEC-1' \
+    'decision_tickets: DEC-1' \
     'accepted_by: Test Operator' \
     'accepted_at: 2026-08-25' \
     '---' \
@@ -238,6 +238,325 @@ PY
     printf 'autonomous-run: %d passed, %d failed (state machine covered on macOS/Linux with an operational sandbox)\n' "$pass" "$fail"
     exit 0
   fi
+
+  tmp_worktree="$TMP/linux-tmp-worktree"
+  mkdir -p "$tmp_worktree"
+  git -C "$tmp_worktree" init -q
+  git -C "$tmp_worktree" config user.name 'Harness Test'
+  git -C "$tmp_worktree" config user.email 'user@example.com'
+  printf 'approved\n' > "$tmp_worktree/proof.txt"
+  git -C "$tmp_worktree" add proof.txt
+  git -C "$tmp_worktree" commit -qm 'test: approved tmp worktree'
+  if python3 - "$ROOT/scripts/autonomous-run.py" "$tmp_worktree" <<'PY'
+from pathlib import Path
+import sys
+namespace = {'__name__': 'agentsmith_sandbox_probe', '__file__': sys.argv[1]}
+exec(compile(Path(sys.argv[1]).read_text(), sys.argv[1], 'exec'), namespace)
+result = namespace['sandboxed_verify'](
+    'test "$(cat proof.txt)" = approved && git rev-parse HEAD >/dev/null',
+    Path(sys.argv[2]), 15, namespace['verifier_env']())
+raise SystemExit(result.returncode)
+PY
+  then ok 'Linux verifier keeps an approved worktree below private /tmp visible'
+  else bad 'Linux verifier hid an approved worktree below private /tmp'; fi
+
+  docker_escape="$TMP/docker-socket-escape"
+  mkdir -p "$docker_escape"
+  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 &&
+     docker image inspect alpine:3 >/dev/null 2>&1; then
+    python3 - "$ROOT/scripts/autonomous-run.py" "$ROOT" "$docker_escape" <<'PY'
+from pathlib import Path
+import shlex
+import sys
+namespace = {'__name__': 'agentsmith_sandbox_probe', '__file__': sys.argv[1]}
+exec(compile(Path(sys.argv[1]).read_text(), sys.argv[1], 'exec'), namespace)
+escape = Path(sys.argv[3])
+command = (
+    'docker run --rm --pull=never --network none '
+    f'--mount type=bind,src={shlex.quote(str(escape))},dst=/escape '
+    "alpine:3 sh -c 'printf escaped > /escape/proof'"
+)
+result = namespace['sandboxed_verify'](
+    command, Path(sys.argv[2]), 30, namespace['verifier_env']())
+raise SystemExit(0 if result.returncode != 0 and not (escape / 'proof').exists() else 1)
+PY
+    if [ "$?" -eq 0 ]; then ok 'Linux verifier cannot escape through the host Docker socket'
+    else bad 'Linux verifier escaped through the host Docker socket'; fi
+  else
+    ok 'Linux Docker escape probe skipped because no cached local daemon fixture exists'
+  fi
+
+  fixture_probe="$TMP/offline-fixture"
+  mkdir -p "$fixture_probe/bin" "$fixture_probe/rootfs" "$fixture_probe/state" \
+    "$fixture_probe/source/cache/.tmp"
+  printf 'pinned\n' > "$fixture_probe/rootfs/marker.txt"
+  printf 'cache-pinned\n' > "$fixture_probe/source/cache/marker.txt"
+  printf 'cache/\n' > "$fixture_probe/source/.gitignore"
+  git -C "$fixture_probe/source" init -q
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    'case "$1 $2" in' \
+    '  "image inspect") printf '\''[{"RepoDigests":["example.invalid/synthetic@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]}]\n'\'' ;;' \
+    '  "create --pull=never") printf created > "$FAKE_DOCKER_STATE/container"; printf '\''synthetic-container\n'\'' ;;' \
+    '  "export --output") tar -cf "$3" -C "$FAKE_ROOTFS_SOURCE" . ;;' \
+    '  "container rm") rm "$FAKE_DOCKER_STATE/container"; printf '\''synthetic-container\n'\'' ;;' \
+    '  *) exit 64 ;;' \
+    'esac' > "$fixture_probe/bin/docker"
+  chmod +x "$fixture_probe/bin/docker"
+  if AGENTSMITH_DOCKER_BIN="$fixture_probe/bin/docker" \
+     FAKE_ROOTFS_SOURCE="$fixture_probe/rootfs" FAKE_DOCKER_STATE="$fixture_probe/state" \
+     python3 - "$ROOT/scripts/autonomous-run.py" "$fixture_probe/state" \
+       "$fixture_probe/source" <<'PY'
+import copy
+from pathlib import Path
+import sys
+namespace = {'__name__': 'agentsmith_fixture_probe', '__file__': sys.argv[1]}
+exec(compile(Path(sys.argv[1]).read_text(), sys.argv[1], 'exec'), namespace)
+image = 'example.invalid/synthetic@sha256:' + 'a' * 64
+source = Path(sys.argv[3])
+deadline = namespace['time'].time() + 30
+cache_digest = namespace['directory_digest'](source / 'cache', deadline)
+manifest = {'verify': {
+    'command': (
+        'test ! -S /var/run/docker.sock && '
+        'test "$(cat cache/marker.txt)" = cache-pinned && '
+        '! sh -c "printf changed > cache/marker.txt" && '
+        'printf scratch > cache/.tmp/proof && '
+        'test "$(cat cache/.tmp/proof)" = scratch && '
+        'curl -fsS http://127.0.0.1:18080/marker.txt | grep -Fx pinned && '
+        '! timeout 2 bash -c "exec 3<>/dev/tcp/192.0.2.1/80"'
+    ),
+    'offline_fixture': {
+        'rootfs': [{'name': 'synthetic', 'image': image}],
+        'setup': (
+            'test "$(cat "$AGENTSMITH_ROOTFS_SYNTHETIC/marker.txt")" = pinned; '
+            'python3 -m http.server 18080 --bind 127.0.0.1 '
+            '--directory "$AGENTSMITH_ROOTFS_SYNTHETIC" >/tmp/fixture-http.log 2>&1 & '
+            'for attempt in $(seq 1 20); do '
+            'curl -fsS http://127.0.0.1:18080/marker.txt >/dev/null 2>&1 && break; '
+            'sleep 0.1; done'
+        ),
+        'caches': [{'source': 'repo', 'path': 'cache', 'sha256': cache_digest}],
+        'scratch': [{'source': 'repo', 'path': 'cache/.tmp'}],
+    },
+}}
+
+colliding_names = copy.deepcopy(manifest['verify'])
+colliding_names['offline_fixture']['rootfs'] = [
+    {'name': 'a-b', 'image': image},
+    {'name': 'a_b', 'image': image},
+]
+normalized_names = {
+    'AGENTSMITH_ROOTFS_' + entry['name'].upper().replace('-', '_')
+    for entry in colliding_names['offline_fixture']['rootfs']
+}
+assert normalized_names == {'AGENTSMITH_ROOTFS_A_B'}, 'collision precondition did not take effect'
+schema_failures = []
+try:
+    namespace['verifier_fixture'](colliding_names)
+except namespace['RunError'] as exc:
+    assert 'environment variable' in str(exc)
+else:
+    schema_failures.append('colliding rootfs environment-variable identities were accepted')
+
+sensitive_home = copy.deepcopy(manifest['verify'])
+sensitive_home['offline_fixture']['caches'] = [
+    {'source': 'home', 'path': '.ssh', 'sha256': '0' * 64},
+]
+sensitive_home['offline_fixture']['scratch'] = []
+assert sensitive_home['offline_fixture']['caches'][0]['path'] == '.ssh', \
+    'sensitive-home precondition did not take effect'
+try:
+    namespace['verifier_fixture'](sensitive_home)
+except namespace['RunError'] as exc:
+    assert 'home cache' in str(exc)
+else:
+    schema_failures.append('credential-bearing home cache root was accepted')
+
+if schema_failures:
+    raise AssertionError('; '.join(schema_failures))
+
+w1_home_caches = copy.deepcopy(manifest['verify'])
+w1_home_caches['offline_fixture']['caches'] = [
+    {'source': 'home', 'path': 'go', 'sha256': '0' * 64},
+    {'source': 'home', 'path': '.local/bin', 'sha256': '0' * 64},
+]
+w1_home_caches['offline_fixture']['scratch'] = []
+namespace['verifier_fixture'](w1_home_caches)
+
+bad_image = copy.deepcopy(manifest['verify'])
+bad_image['offline_fixture']['rootfs'][0]['image'] = 'example.invalid/synthetic:latest'
+try:
+    namespace['verifier_fixture'](bad_image)
+except namespace['RunError'] as exc:
+    assert 'immutable name@sha256' in str(exc)
+else:
+    raise AssertionError('mutable fixture image was accepted')
+
+bad_scratch = copy.deepcopy(manifest['verify'])
+bad_scratch['offline_fixture']['scratch'][0]['path'] = 'outside'
+try:
+    namespace['verifier_fixture'](bad_scratch)
+except namespace['RunError'] as exc:
+    assert 'descendants of a declared cache' in str(exc)
+else:
+    raise AssertionError('scratch outside a declared cache was accepted')
+
+bad_digest = copy.deepcopy(manifest['verify']['offline_fixture'])
+bad_digest['caches'][0]['sha256'] = '0' * 64
+try:
+    namespace['offline_cache_bindings'](bad_digest, source, source, deadline)
+except namespace['RunError'] as exc:
+    assert 'digest mismatch' in str(exc)
+else:
+    raise AssertionError('cache digest mismatch was accepted')
+
+result = namespace['run_sandboxed_verify'](
+    manifest, source, source, namespace['time'].time() + 30, namespace['verifier_env']())
+if result.returncode:
+    print(result.stdout, result.stderr, file=sys.stderr)
+assert not (Path(sys.argv[2]) / 'container').exists(), 'export container was not removed'
+assert not (source / 'cache/.tmp/proof').exists(), 'scratch escaped its tmpfs overlay'
+assert (source / 'cache/marker.txt').read_text() == 'cache-pinned\n', 'cache was modified'
+raise SystemExit(result.returncode)
+PY
+  then ok 'Linux verifier runs validated pinned rootfs/cache fixtures offline and cleans them up'
+  else bad 'Linux pinned rootfs fixture did not execute or clean up'; fi
+
+  if python3 - "$ROOT/scripts/autonomous-run.py" "$fixture_probe/source" <<'PY'
+import contextlib
+from pathlib import Path
+import subprocess
+import sys
+import types
+
+namespace = {'__name__': 'agentsmith_deadline_probe', '__file__': sys.argv[1]}
+exec(compile(Path(sys.argv[1]).read_text(), sys.argv[1], 'exec'), namespace)
+source = Path(sys.argv[2])
+image = 'example.invalid/synthetic@sha256:' + 'a' * 64
+fixture = {
+    'rootfs': [{'name': 'synthetic', 'image': image}],
+    'setup': 'true',
+    'caches': [{'source': 'repo', 'path': 'cache', 'sha256': '0' * 64}],
+    'scratch': [],
+}
+manifest = {'verify': {'command': 'true', 'offline_fixture': fixture}}
+clock = {'now': 100.0}
+namespace['time'] = types.SimpleNamespace(time=lambda: clock['now'])
+observed = {'cache_deadlines': [], 'rootfs_deadlines': [], 'sandbox_timeouts': []}
+
+try:
+    namespace['directory_digest'](source / 'cache', 99.0)
+except namespace['RunError'] as exc:
+    assert 'wall-clock budget exhausted' in str(exc)
+else:
+    raise AssertionError('expired cache-hashing deadline was ignored')
+
+def fake_caches(_fixture, _source, _worktree, deadline_epoch=None):
+    observed['cache_deadlines'].append(deadline_epoch)
+    clock['now'] += 7
+    return []
+
+@contextlib.contextmanager
+def fake_rootfs(_fixture, deadline_epoch=None):
+    observed['rootfs_deadlines'].append(deadline_epoch)
+    clock['now'] += 11
+    yield [], {}
+
+def fake_sandbox(_command, _cwd, timeout, _env, **_kwargs):
+    observed['sandbox_timeouts'].append(timeout)
+    return subprocess.CompletedProcess([], 0, '', '')
+
+namespace['offline_cache_bindings'] = fake_caches
+actual_prepared_rootfs = namespace['prepared_rootfs']
+namespace['prepared_rootfs'] = fake_rootfs
+namespace['sandboxed_verify'] = fake_sandbox
+namespace['run_sandboxed_verify'](manifest, source, source, 130.0, {})
+assert clock['now'] == 118.0, 'deadline mutation precondition did not take effect'
+
+failures = []
+if observed['cache_deadlines'] != [130.0]:
+    failures.append(f"cache hashing deadline={observed['cache_deadlines']!r}")
+if observed['rootfs_deadlines'] != [130.0]:
+    failures.append(f"rootfs preparation deadline={observed['rootfs_deadlines']!r}")
+if observed['sandbox_timeouts'] != [12.0]:
+    failures.append(f"sandbox timeout={observed['sandbox_timeouts']!r}, expected freshly remaining 12.0")
+
+operation_calls = []
+clock['now'] = 200.0
+namespace['time'] = types.SimpleNamespace(time=lambda: clock['now'])
+namespace['os'].environ['AGENTSMITH_DOCKER_BIN'] = '/fixture/docker'
+namespace['shutil'].which = lambda name: f'/fixture/{name}'
+
+def fake_run(command, _cwd, *, timeout=None, **_kwargs):
+    operation_calls.append((tuple(command[:2]), timeout))
+    clock['now'] += 2
+    if command[1:3] == ['image', 'inspect']:
+        return subprocess.CompletedProcess(command, 0, f'[{{"RepoDigests":["{image}"]}}]', '')
+    if command[1:2] == ['create']:
+        return subprocess.CompletedProcess(command, 0, 'fixture-container\n', '')
+    return subprocess.CompletedProcess(command, 0, '', '')
+
+namespace['run'] = fake_run
+try:
+    with actual_prepared_rootfs(fixture, 230.0):
+        pass
+except TypeError as exc:
+    failures.append(f'rootfs helper has no persisted-deadline input: {exc}')
+else:
+    expected_operations = [
+        ('/fixture/docker', 'image'),
+        ('/fixture/docker', 'create'),
+        ('/fixture/docker', 'export'),
+        ('/fixture/docker', 'container'),
+        ('/fixture/tar', '--extract'),
+    ]
+    if [call[0] for call in operation_calls] != expected_operations:
+        failures.append(f'preparation operations not all exercised: {operation_calls!r}')
+    timeouts = [call[1] for call in operation_calls]
+    if any(value is None for value in timeouts):
+        failures.append(f'unbounded Docker/tar timeout(s): {timeouts!r}')
+    if any(later > earlier for earlier, later in zip(timeouts, timeouts[1:])):
+        failures.append(f'operation deadlines increased: {timeouts!r}')
+
+cleanup_calls = []
+clock['now'] = 300.0
+
+def fake_timeout_run(command, _cwd, *, timeout=None, **_kwargs):
+    cleanup_calls.append((tuple(command), timeout))
+    if command[1:3] == ['image', 'inspect']:
+        return subprocess.CompletedProcess(command, 0, f'[{{"RepoDigests":["{image}"]}}]', '')
+    if command[1:2] == ['create']:
+        return subprocess.CompletedProcess(command, 0, 'timed-out-container\n', '')
+    if command[1:2] == ['export']:
+        clock['now'] = 331.0
+        raise subprocess.TimeoutExpired(command, timeout)
+    return subprocess.CompletedProcess(command, 0, '', '')
+
+namespace['run'] = fake_timeout_run
+try:
+    with actual_prepared_rootfs(fixture, 330.0):
+        pass
+except (namespace['RunError'], subprocess.TimeoutExpired):
+    pass
+else:
+    failures.append('timed-out export precondition did not raise')
+if not any(call[0][1:3] == ('export', '--output') for call in cleanup_calls):
+    failures.append('timed-out export precondition did not take effect')
+if clock['now'] <= 330.0:
+    failures.append('cleanup probe did not exhaust the persisted deadline')
+cleanup_attempts = [call for call in cleanup_calls if call[0][1:3] == ('container', 'rm')]
+if not cleanup_attempts:
+    failures.append('timed-out export skipped temporary container cleanup')
+elif cleanup_attempts[0][1] is None:
+    failures.append('temporary container cleanup has no bounded timeout')
+
+if failures:
+    raise AssertionError('; '.join(failures))
+PY
+  then ok 'offline cache, Docker, tar, and sandbox work share the persisted deadline'
+  else bad 'offline fixture preparation escaped or extended the persisted deadline'; fi
 fi
 
 if [ "$(uname -s)" = Darwin ] && [[ "$ROOT" = "$HOME/"* ]] &&
@@ -360,14 +679,14 @@ repo="$(new_repo verifier-escape)"; make_fake "$repo/../fake"; manifest "$repo" 
 python3 - "$repo/.harness/runs/verifier-escape.json" <<'PY'
 import json, pathlib, sys
 p = pathlib.Path(sys.argv[1]); v = json.loads(p.read_text())
-v['verify']['command'] = 'printf escaped > ../escaped'
+v['verify']['command'] = 'common=$(git rev-parse --git-common-dir) && test -d "$common" && printf escaped > "$common/escaped"'
 p.write_text(json.dumps(v) + '\n')
 PY
 git -C "$repo" add . && git -C "$repo" commit -qm 'test: hostile verifier contract'
 if (cd "$repo" && AWS_SECRET_ACCESS_KEY=do-not-expose invoke "$repo" accept start .harness/runs/verifier-escape.json >../out 2>../err); then
   bad 'escaping verifier was accepted'
 else ok 'verifier cannot write outside its disposable worktree'; fi
-assert 'verifier escape created no sibling artifact' test ! -e "$repo/../escaped"
+assert 'verifier escape created no Git metadata artifact' test ! -e "$repo/.git/escaped"
 
 repo="$(new_repo draft)"; make_fake "$repo/../fake"; manifest "$repo" draft
 sed -i.bak 's/status: accepted/status: draft/' "$repo/docs/specs/test.md" && rm "$repo/docs/specs/test.md.bak"
@@ -580,6 +899,44 @@ assert state['codex_tokens_used'] == 60
 PY
 assert 'completed controller releases the lifecycle lock' test ! -e "$repo/.git/agentsmith-runs/stopped/controller.lock"
 
+echo 'autonomous-run — controller execution provenance'
+for component in controller native_launcher; do
+  repo="$(new_repo "provenance-$component")"; make_fake "$repo/../fake"; manifest "$repo" "provenance-$component"
+  (
+    cd "$repo" || exit 1
+    invoke "$repo" slow start ".harness/runs/provenance-$component.json" >../out 2>../err
+  ) & runner=$!
+  for _ in {1..50}; do
+    sleep 0.1
+    if (cd "$repo" && python3 "$repo/../fake/controller.py" status "provenance-$component" 2>/dev/null | grep -Eq '"active_pid": [1-9]'); then break; fi
+  done
+  (cd "$repo" && python3 "$repo/../fake/controller.py" stop "provenance-$component" >/dev/null 2>&1)
+  wait "$runner" 2>/dev/null || true
+  if python3 - "$repo/.git/agentsmith-runs/provenance-$component/state.json" "$repo/../fake/controller.py" "$repo/../fake/native_launcher.py" <<'PY'
+import hashlib, json, pathlib, sys
+state = json.loads(pathlib.Path(sys.argv[1]).read_text())
+recorded = state.get('execution_provenance')
+assert set(recorded or {}) == {'controller', 'native_launcher'}
+for name, source in zip(('controller', 'native_launcher'), sys.argv[2:]):
+    assert recorded[name]['sha256'] == hashlib.sha256(pathlib.Path(source).read_bytes()).hexdigest()
+PY
+  then ok "$component run records complete controller execution provenance"
+  else bad "$component run did not record complete controller execution provenance"; fi
+  if [ "$component" = controller ]; then source="$repo/../fake/controller.py"; else source="$repo/../fake/native_launcher.py"; fi
+  before_hash="$(sha256sum "$source" | cut -d' ' -f1)"
+  printf '\n# provenance mutation\n' >> "$source"
+  after_hash="$(sha256sum "$source" | cut -d' ' -f1)"
+  assert "$component mutation changes executable bytes" test "$before_hash" != "$after_hash"
+  if (cd "$repo" && invoke "$repo" accept resume "provenance-$component" >../resume-out 2>../resume-err); then
+    bad "resume accepted changed $component bytes"
+  elif grep -q 'controller execution provenance changed' "$repo/../resume-err"; then
+    ok "resume rejects changed $component bytes"
+  else
+    sed -n '1,8p' "$repo/../resume-err"
+    bad "changed $component provenance refusal was not explicit"
+  fi
+done
+
 echo 'autonomous-run — dead controller, live refusal, and stale recovery'
 repo="$(new_repo dead-controller)"; make_fake "$repo/../fake"; manifest "$repo" dead-controller
 (
@@ -659,6 +1016,43 @@ git -C "$repo" add . && git -C "$repo" commit -qm 'test: invalid ticket seam'
 if (cd "$repo" && invoke "$repo" accept start .harness/runs/same-ticket.json >../out 2>../err); then
   bad 'decision ticket was reused for implementation'
 else ok 'decision and implementation tickets must differ'; fi
+
+repo="$(new_repo multi-decision-compat)"; make_fake "$repo/../fake"; manifest "$repo" multi-decision-compat
+sed -i.bak 's/decision_tickets: DEC-1/tracking: AI-910 \/ AI-911/' "$repo/docs/specs/test.md"
+rm "$repo/docs/specs/test.md.bak"
+git -C "$repo" add docs/specs/test.md && git -C "$repo" commit -qm 'test: accepted legacy multi-ticket spec'
+if python3 - "$repo/../fake/controller.py" "$repo" "$repo/.harness/runs/multi-decision-compat.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+namespace = {'__name__': 'agentsmith_ticket_probe', '__file__': sys.argv[1]}
+exec(compile(Path(sys.argv[1]).read_text(), sys.argv[1], 'exec'), namespace)
+assert namespace['decision_ticket_identities'](
+    {'decision_tickets': 'AI-910, https://linear.example/issue/AI-911/title'}) == {'AI-910', 'AI-911'}
+assert namespace['decision_ticket_identities']({'decision_ticket': 'DEC-1'}) == {'DEC-1'}
+try:
+    namespace['decision_ticket_identities']({'tracking': 'release planning notes'})
+except namespace['RunError']:
+    pass
+else:
+    raise AssertionError('free-form tracking prose became decision metadata')
+manifest = json.loads(Path(sys.argv[3]).read_text())
+manifest['base_ref'] = 'HEAD'
+manifest['implementation_ticket'] = 'AI-864'
+namespace['validate_manifest'](manifest, Path(sys.argv[2]))
+for decision in ('AI-910', 'AI-911'):
+    manifest['implementation_ticket'] = decision
+    try:
+        namespace['validate_manifest'](manifest, Path(sys.argv[2]))
+    except namespace['RunError'] as error:
+        if 'separate' not in str(error):
+            raise
+    else:
+        raise AssertionError(f'decision ticket {decision} was accepted as implementation')
+PY
+then ok 'legacy tracking metadata preserves all decision tickets without reusing them'
+else bad 'accepted legacy multi-ticket spec did not validate safely'; fi
 
 echo
 printf 'autonomous-run: %d passed, %d failed\n' "$pass" "$fail"
