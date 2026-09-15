@@ -459,6 +459,7 @@ FIXTURE_NAME = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
 IMAGE_DIGEST = re.compile(r"[A-Za-z0-9._/-]+@sha256:[0-9a-f]{64}\Z")
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 HOME_CACHE_PREFIXES = (Path("go"), Path(".local/bin"))
+OFFLINE_CONTAINER_CLEANUP_GRACE_SECONDS = 5.0
 
 
 def scope_resources(scope: dict[str, Any]) -> list[str]:
@@ -992,12 +993,19 @@ def prepared_rootfs(fixture: dict[str, Any], deadline_epoch: float):
                 exported = run([docker, "export", "--output", str(archive), container], root,
                                timeout=remaining_timeout(deadline_epoch, "offline image export"))
             finally:
-                removed = run([docker, "container", "rm", container], root,
-                              timeout=remaining_timeout(deadline_epoch, "offline container cleanup"))
+                cleanup_timeout = max(OFFLINE_CONTAINER_CLEANUP_GRACE_SECONDS,
+                                      deadline_epoch - time.time())
+                try:
+                    removed = run([docker, "container", "rm", container], root,
+                                  timeout=cleanup_timeout)
+                except subprocess.TimeoutExpired as exc:
+                    raise RunError(
+                        f"cannot remove offline export container {container} within cleanup grace"
+                    ) from exc
+                if removed.returncode:
+                    raise RunError(f"cannot remove offline export container {container}")
             if exported.returncode:
                 raise RunError(f"cannot export cached offline image {image}")
-            if removed.returncode:
-                raise RunError(f"cannot remove offline export container {container}")
             unpacked = run([tar, "--extract", "--file", str(archive), "--directory", str(extracted),
                             "--no-same-owner", "--no-same-permissions"], root,
                            timeout=remaining_timeout(deadline_epoch, "offline image extraction"))

@@ -96,6 +96,8 @@ keys (`rootfs`, `setup`, `caches`, and `scratch`) explicitly. Home caches fail c
 credential-free roots `go` and `.local/bin` (or their descendants); credential stores and arbitrary
 home directories are not valid cache sources. Cache hashing, every Docker/export/tar preparation
 process, fixture setup, and the verifier all consume the original persisted wall-clock deadline.
+Temporary export-container removal is always attempted; if that deadline has already elapsed,
+cleanup receives one bounded five-second safety grace before the run escalates.
 
 Both roles start fresh; their receipts, not conversational memory, are the handoff.
 The autonomous controller and `agentsmith evaluate` share the same immutable native-launch helper

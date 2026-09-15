@@ -520,6 +520,38 @@ else:
     if any(later > earlier for earlier, later in zip(timeouts, timeouts[1:])):
         failures.append(f'operation deadlines increased: {timeouts!r}')
 
+cleanup_calls = []
+clock['now'] = 300.0
+
+def fake_timeout_run(command, _cwd, *, timeout=None, **_kwargs):
+    cleanup_calls.append((tuple(command), timeout))
+    if command[1:3] == ['image', 'inspect']:
+        return subprocess.CompletedProcess(command, 0, f'[{{"RepoDigests":["{image}"]}}]', '')
+    if command[1:2] == ['create']:
+        return subprocess.CompletedProcess(command, 0, 'timed-out-container\n', '')
+    if command[1:2] == ['export']:
+        clock['now'] = 331.0
+        raise subprocess.TimeoutExpired(command, timeout)
+    return subprocess.CompletedProcess(command, 0, '', '')
+
+namespace['run'] = fake_timeout_run
+try:
+    with actual_prepared_rootfs(fixture, 330.0):
+        pass
+except (namespace['RunError'], subprocess.TimeoutExpired):
+    pass
+else:
+    failures.append('timed-out export precondition did not raise')
+if not any(call[0][1:3] == ('export', '--output') for call in cleanup_calls):
+    failures.append('timed-out export precondition did not take effect')
+if clock['now'] <= 330.0:
+    failures.append('cleanup probe did not exhaust the persisted deadline')
+cleanup_attempts = [call for call in cleanup_calls if call[0][1:3] == ('container', 'rm')]
+if not cleanup_attempts:
+    failures.append('timed-out export skipped temporary container cleanup')
+elif cleanup_attempts[0][1] is None:
+    failures.append('temporary container cleanup has no bounded timeout')
+
 if failures:
     raise AssertionError('; '.join(failures))
 PY
