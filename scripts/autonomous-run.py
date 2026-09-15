@@ -28,22 +28,18 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from native_launcher import (
-        build_native_command,
-        claude_sandbox_settings,
-        minimal_environment,
-        native_environment,
-        usage_metrics as shared_usage_metrics,
-    )
+    import native_launcher as native_launcher_module
 except ModuleNotFoundError:  # source-tree execution from scripts/
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from native_launcher import (
-        build_native_command,
-        claude_sandbox_settings,
-        minimal_environment,
-        native_environment,
-        usage_metrics as shared_usage_metrics,
-    )
+    import native_launcher as native_launcher_module
+
+from native_launcher import (
+    build_native_command,
+    claude_sandbox_settings,
+    minimal_environment,
+    native_environment,
+    usage_metrics as shared_usage_metrics,
+)
 
 
 SCHEMA_VERSION = 1
@@ -462,6 +458,7 @@ RESOURCE_KEY = re.compile(r"[a-z][a-z0-9_-]*:[a-z0-9][a-z0-9._/-]*\Z")
 FIXTURE_NAME = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
 IMAGE_DIGEST = re.compile(r"[A-Za-z0-9._/-]+@sha256:[0-9a-f]{64}\Z")
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+HOME_CACHE_PREFIXES = (Path("go"), Path(".local/bin"))
 
 
 def scope_resources(scope: dict[str, Any]) -> list[str]:
@@ -484,6 +481,14 @@ def relative_path(value: Any, label: str) -> Path:
     return path
 
 
+def rootfs_environment_key(name: str) -> str:
+    return f"AGENTSMITH_ROOTFS_{name.upper().replace('-', '_')}"
+
+
+def home_cache_allowed(path: Path) -> bool:
+    return any(path == prefix or path.is_relative_to(prefix) for prefix in HOME_CACHE_PREFIXES)
+
+
 def verifier_fixture(verify: Any) -> dict[str, Any] | None:
     if not isinstance(verify, dict) or not isinstance(verify.get("command"), str) or not verify["command"]:
         raise RunError("verify.command must be a nonempty string")
@@ -496,6 +501,7 @@ def verifier_fixture(verify: Any) -> dict[str, Any] | None:
     if not isinstance(rootfs, list) or not 1 <= len(rootfs) <= 4:
         raise RunError("offline_fixture.rootfs must contain one to four pinned images")
     names: set[str] = set()
+    environment_keys: set[str] = set()
     for entry in rootfs:
         if not isinstance(entry, dict) or set(entry) != {"name", "image"}:
             raise RunError("each offline rootfs requires exactly name and image")
@@ -504,6 +510,10 @@ def verifier_fixture(verify: Any) -> dict[str, Any] | None:
         if entry["name"] in names:
             raise RunError("offline rootfs names must be unique")
         names.add(entry["name"])
+        environment_key = rootfs_environment_key(entry["name"])
+        if environment_key in environment_keys:
+            raise RunError("offline rootfs names must have unique environment variable identities")
+        environment_keys.add(environment_key)
         if not isinstance(entry["image"], str) or not IMAGE_DIGEST.fullmatch(entry["image"]):
             raise RunError("offline rootfs images must use immutable name@sha256 references")
     if not isinstance(fixture["setup"], str) or not fixture["setup"] or len(fixture["setup"]) > 65536:
@@ -517,7 +527,10 @@ def verifier_fixture(verify: Any) -> dict[str, Any] | None:
             raise RunError("each offline cache requires exactly source, path and sha256")
         if entry["source"] not in {"repo", "home"}:
             raise RunError("offline cache source must be repo or home")
-        path = relative_path(entry["path"], "offline cache path").as_posix()
+        relative = relative_path(entry["path"], "offline cache path")
+        if entry["source"] == "home" and not home_cache_allowed(relative):
+            raise RunError("offline home cache must be go, .local/bin, or a descendant")
+        path = relative.as_posix()
         key = (entry["source"], path)
         if key in seen:
             raise RunError("offline cache entries must be unique")
@@ -694,6 +707,13 @@ def remaining_seconds(state: dict[str, Any], manifest: dict[str, Any]) -> int:
     return max(0, int(float(state["deadline_epoch"]) - time.time()))
 
 
+def remaining_timeout(deadline_epoch: float, activity: str) -> float:
+    remaining = float(deadline_epoch) - time.time()
+    if remaining <= 0:
+        raise RunError(f"wall-clock budget exhausted during {activity}")
+    return remaining
+
+
 def changed_paths(worktree: Path, base: str, head: str = "HEAD") -> list[str]:
     output = git(worktree, "diff", "--name-only", f"{base}..{head}")
     return [line for line in output.splitlines() if line]
@@ -701,6 +721,23 @@ def changed_paths(worktree: Path, base: str, head: str = "HEAD") -> list[str]:
 
 def file_digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "missing"
+
+
+def execution_provenance() -> dict[str, dict[str, str]]:
+    native_path = Path(str(native_launcher_module.__file__)).resolve()
+    sources = {"controller": Path(__file__).resolve(), "native_launcher": native_path}
+    provenance: dict[str, dict[str, str]] = {}
+    for name, path in sources.items():
+        digest = file_digest(path)
+        if digest == "missing":
+            raise RunError(f"cannot establish controller execution provenance for {name}")
+        provenance[name] = {"sha256": digest}
+    return provenance
+
+
+def assert_execution_provenance(state: dict[str, Any]) -> None:
+    if state.get("execution_provenance") != execution_provenance():
+        raise RunError("controller execution provenance changed since start; create a new run")
 
 
 def resolved_git_path(repo: Path, argument: str) -> Path:
@@ -839,18 +876,21 @@ def validate_git_unchanged(before: dict[str, Any], after: dict[str, Any], actor:
             raise RunError(f"{actor} changed protected Git metadata: {key}")
 
 
-def directory_digest(root: Path) -> str:
+def directory_digest(root: Path, deadline_epoch: float) -> str:
     """Hash a cache tree without following links or accepting special files."""
+    remaining_timeout(deadline_epoch, "offline cache hashing")
     if not root.is_dir() or root.is_symlink():
         raise RunError(f"offline cache is not a regular directory: {root}")
     digest = hashlib.sha256()
 
     def visit(directory: Path, relative: Path) -> None:
+        remaining_timeout(deadline_epoch, "offline cache hashing")
         try:
             entries = sorted(directory.iterdir(), key=lambda entry: entry.name)
         except OSError as exc:
             raise RunError(f"cannot inspect offline cache {root}: {exc}") from exc
         for entry in entries:
+            remaining_timeout(deadline_epoch, "offline cache hashing")
             child = relative / entry.name
             try:
                 before = entry.lstat()
@@ -870,6 +910,7 @@ def directory_digest(root: Path) -> str:
                 try:
                     with entry.open("rb") as handle:
                         for block in iter(lambda: handle.read(1024 * 1024), b""):
+                            remaining_timeout(deadline_epoch, "offline cache hashing")
                             digest.update(block)
                     after = entry.stat()
                 except OSError as exc:
@@ -881,14 +922,16 @@ def directory_digest(root: Path) -> str:
                 raise RunError(f"offline cache contains a special file: {child}")
 
     visit(root, Path())
+    remaining_timeout(deadline_epoch, "offline cache hashing")
     return digest.hexdigest()
 
 
 def offline_cache_bindings(fixture: dict[str, Any], source_repo: Path,
-                           worktree: Path) -> list[tuple[Path, Path]]:
+                           worktree: Path, deadline_epoch: float) -> list[tuple[Path, Path]]:
     bindings: list[tuple[Path, Path]] = []
     home = Path.home().resolve()
     for entry in fixture["caches"]:
+        remaining_timeout(deadline_epoch, "offline cache preparation")
         relative = relative_path(entry["path"], "offline cache path")
         if entry["source"] == "repo":
             source = (source_repo / relative).resolve()
@@ -901,7 +944,7 @@ def offline_cache_bindings(fixture: dict[str, Any], source_repo: Path,
             target = home / relative
         if not source.is_relative_to(source_repo if entry["source"] == "repo" else home):
             raise RunError("offline cache resolved outside its declared source")
-        actual = directory_digest(source)
+        actual = directory_digest(source, deadline_epoch)
         if actual != entry["sha256"]:
             raise RunError(f"offline cache digest mismatch: {entry['source']}:{relative.as_posix()}")
         bindings.append((source, target))
@@ -916,7 +959,7 @@ def offline_scratch_targets(fixture: dict[str, Any], worktree: Path) -> list[Pat
 
 
 @contextlib.contextmanager
-def prepared_rootfs(fixture: dict[str, Any]):
+def prepared_rootfs(fixture: dict[str, Any], deadline_epoch: float):
     docker = os.environ.get("AGENTSMITH_DOCKER_BIN") or shutil.which("docker")
     tar = shutil.which("tar")
     if not docker or not tar:
@@ -927,7 +970,8 @@ def prepared_rootfs(fixture: dict[str, Any]):
         root = Path(temporary)
         for entry in fixture["rootfs"]:
             image = entry["image"]
-            inspected = run([docker, "image", "inspect", image], root)
+            inspected = run([docker, "image", "inspect", image], root,
+                            timeout=remaining_timeout(deadline_epoch, "offline image inspection"))
             try:
                 records = json.loads(inspected.stdout)
             except json.JSONDecodeError as exc:
@@ -936,7 +980,8 @@ def prepared_rootfs(fixture: dict[str, Any]):
                 raise RunError(f"immutable offline image is not cached: {image}")
             if image not in records[0].get("RepoDigests", []):
                 raise RunError(f"cached image provenance does not match {image}")
-            created = run([docker, "create", "--pull=never", "--network=none", image], root)
+            created = run([docker, "create", "--pull=never", "--network=none", image], root,
+                          timeout=remaining_timeout(deadline_epoch, "offline container creation"))
             if created.returncode or not created.stdout.strip():
                 raise RunError(f"cannot create offline export container for {image}")
             container = created.stdout.strip()
@@ -944,20 +989,23 @@ def prepared_rootfs(fixture: dict[str, Any]):
             extracted = root / entry["name"]
             extracted.mkdir()
             try:
-                exported = run([docker, "export", "--output", str(archive), container], root)
+                exported = run([docker, "export", "--output", str(archive), container], root,
+                               timeout=remaining_timeout(deadline_epoch, "offline image export"))
             finally:
-                removed = run([docker, "container", "rm", container], root)
+                removed = run([docker, "container", "rm", container], root,
+                              timeout=remaining_timeout(deadline_epoch, "offline container cleanup"))
             if exported.returncode:
                 raise RunError(f"cannot export cached offline image {image}")
             if removed.returncode:
                 raise RunError(f"cannot remove offline export container {container}")
             unpacked = run([tar, "--extract", "--file", str(archive), "--directory", str(extracted),
-                            "--no-same-owner", "--no-same-permissions"], root)
+                            "--no-same-owner", "--no-same-permissions"], root,
+                           timeout=remaining_timeout(deadline_epoch, "offline image extraction"))
             if unpacked.returncode:
                 raise RunError(f"cannot unpack cached offline image {image}")
             target = Path("/tmp/agentsmith-fixtures") / entry["name"]
             bindings.append((extracted, target))
-            environment[f"AGENTSMITH_ROOTFS_{entry['name'].upper().replace('-', '_')}"] = str(target)
+            environment[rootfs_environment_key(entry["name"])] = str(target)
         yield bindings, environment
 
 
@@ -1038,14 +1086,16 @@ exec_command="$AGENTSMITH_VERIFY_COMMAND"
 
 
 def run_sandboxed_verify(manifest: dict[str, Any], source_repo: Path, cwd: Path,
-                         timeout: int, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+                         deadline_epoch: float, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     fixture = verifier_fixture(manifest["verify"])
     if fixture is None:
+        timeout = remaining_timeout(deadline_epoch, "sandboxed verification")
         return sandboxed_verify(manifest["verify"]["command"], cwd, timeout, env)
-    caches = offline_cache_bindings(fixture, source_repo, cwd)
+    caches = offline_cache_bindings(fixture, source_repo, cwd, deadline_epoch)
     scratch = offline_scratch_targets(fixture, cwd)
-    with prepared_rootfs(fixture) as (rootfs, fixture_environment):
+    with prepared_rootfs(fixture, deadline_epoch) as (rootfs, fixture_environment):
         fixture_environment["GOPROXY"] = "off"
+        timeout = remaining_timeout(deadline_epoch, "sandboxed verification")
         return sandboxed_verify(manifest["verify"]["command"], cwd, timeout, env,
                                 fixture_setup=fixture["setup"],
                                 readonly_bindings=[*caches, *rootfs],
@@ -1316,7 +1366,7 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             raise RunError(added.stderr.strip() or "checker worktree creation failed")
         try:
             verify = run_sandboxed_verify(manifest, Path(state["repo"]), checker_worktree,
-                                          remaining_seconds(state, manifest), verifier_env())
+                                          float(state["deadline_epoch"]), verifier_env())
             verify_output = f"exit={verify.returncode}\nSTDOUT:\n{verify.stdout}\nSTDERR:\n{verify.stderr}"
             verify_path = Path(state["state_path"]).parent / f"attempt-{state['attempt']}-verify.txt"
             verify_path.write_text(verify_output)
@@ -1454,6 +1504,7 @@ def start(args: argparse.Namespace) -> int:
                 "spec_sha256": spec_hash,
                 "manifest_path": str(manifest_path),
                 "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+                "execution_provenance": execution_provenance(),
                 "scope": normalized_scope(manifest["scope"]),
                 "started_at": now(),
                 "started_epoch": time.time(),
@@ -1535,6 +1586,7 @@ def resume(args: argparse.Namespace) -> int:
         with coordination_lock(state_root(repo)):
             token = acquire_lifecycle_lock(run_dir, args.run_id)
             state = load_run(repo, args.run_id)
+            assert_execution_provenance(state)
             manifest_path = Path(state["manifest_path"])
             manifest = load_json(manifest_path)
             if hashlib.sha256(manifest_path.read_bytes()).hexdigest() != state["manifest_sha256"]:
