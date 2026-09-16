@@ -42,10 +42,10 @@ only when the skill needs them.
 
 ## The bundled skill pack
 
-Nine small skills ship in this repo. The starter `example-skill` is not part of that bundled count.
+Ten small skills ship in this repo. The starter `example-skill` is not part of that bundled count.
 Procedural skills use the cross-platform `agentsmith` CLI.
 **writing-rules** is pure reference;
-**wayfinder** is the repository-native decision-to-spec workflow.
+**grill-with-docs** and **wayfinder** cover single-session and multi-session decision work.
 
 | Skill | Fires on | What it does |
 |---|---|---|
@@ -56,6 +56,7 @@ Procedural skills use the cross-platform `agentsmith` CLI.
 | **new-research** | "start a research note" | Scaffolds a durable `docs/research/` source note (R9). |
 | **new-feedback** | "log a harness lesson" | Scaffolds a numbered `docs/feedback/` post-incident (System-Evolution loop). |
 | **writing-rules** | writing/reviewing a rule, gate, skill description, or agent prompt | The levers that decide whether a line changes behaviour or only costs tokens. |
+| **grill-with-docs** | "grill/stress-test this repository plan" | Resolves a single-session design tree into shared language, sparse ADRs, and a handoff-ready plan. |
 | **wayfinder** | a foggy effort whose destination is known but route is not | Builds a decision map and an operator-accepted spec before separate implementation tickets. |
 | **autonomous-run** | start/status/resume/stop a bounded local run from an accepted spec | Drives the finite maker/checker controller without granting external writes. |
 

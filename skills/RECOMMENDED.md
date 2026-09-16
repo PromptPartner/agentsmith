@@ -6,12 +6,11 @@ Two sources of skills: the **bundled harness pack** (ships in this repo, install
 marketplace. Keep the set tight (R10) — add per need. Skill names below omit invocation syntax:
 use `/<name>` in Claude Code and `$<name>` in Codex.
 
-The `<!-- MAP ... -->` line under each profile is machine-readable: the setup wizard parses it to
-recommend packs and skills for the profile you pick. Edit the prose and the MAP line together —
-they're the single source of truth.
+The `<!-- MAP ... -->` line under each profile is a machine-checkable index. Edit the prose and the
+MAP line together so recommendations do not drift.
 
 ## Bundled with the harness (install with `--with-skills`)
-Nine small, work-type-neutral skills. Procedural skills prefer a project-local `scripts/<x>.sh`
+Ten small, work-type-neutral skills. Procedural skills prefer a project-local `scripts/<x>.sh`
 when present and otherwise carry their fallback in the skill; the rest are repository-native
 workflow/reference:
 - **handoff** — wrap up a session: durable note + paste-ready kickoff block.
@@ -25,6 +24,10 @@ workflow/reference:
   most on a draft you already have. Adapted from Matt Pocock's
   [`writing-for-agents`](https://github.com/mattpocock/skills) (MIT) — install his upstream pack for
   the original plus its skill-frontmatter companion.
+- **grill-with-docs** — stress-test a fuzzy, single-session repository change while keeping settled
+  language, architectural decisions, and the implementation plan durable. Adapted from Matt
+  Pocock's [`grill-with-docs`](https://github.com/mattpocock/skills/blob/main/skills/engineering/grill-with-docs/SKILL.md)
+  (MIT), made self-contained and plan-complete for AgentSmith.
 - **wayfinder** — turn a foggy, multi-session effort into a repository-native decision map,
   operator-accepted terminal spec, and separate implementation-ticket drafts. Adapted from Matt
   Pocock's [`wayfinder`](https://github.com/mattpocock/skills) (MIT), with tracker consent retained.
@@ -52,7 +55,9 @@ updates arrive free, and the harness owns none of it (R10). It installs as one p
 29 skills — no per-skill install, which costs nothing since skills load on demand by description.
 
 ## software-dev
-<!-- MAP software-dev | packs: dev-workflow,stack-lsp,security | skills: test-driven-development,using-git-worktrees,code-review,ui-ux-pro-max,owasp-audit,dependency-audit -->
+<!-- MAP software-dev | packs: dev-workflow,stack-lsp,security | skills: grill-with-docs,test-driven-development,using-git-worktrees,code-review,ui-ux-pro-max,owasp-audit,dependency-audit -->
+- **grill-with-docs** — before planning a fuzzy change that can be settled in one session; use
+  **wayfinder** when the decision work spans sessions.
 - **test-driven-development**, **using-git-worktrees** — `superpowers`.
 - the `code-review` skill + the **codex** two-AI gate (plugins) for review.
 - language LSP / dev plugins (stack-lsp pack) for navigation + fixes.

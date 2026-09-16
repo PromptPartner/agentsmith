@@ -87,13 +87,13 @@ fi
 
 # The pack count excludes example-skill, which is explicitly a starter scaffold.
 bundled_count="$(find "$ROOT_DIR/skills" -mindepth 2 -maxdepth 2 -name SKILL.md ! -path '*/example-skill/*' | wc -l | tr -d ' ')"
-if [ "$bundled_count" = 9 ]; then
-  ok 'catalog: nine bundled non-example skills exist'
+if [ "$bundled_count" = 10 ]; then
+  ok 'catalog: ten bundled non-example skills exist'
 else
-  bad "catalog: expected 9 bundled non-example skills, found $bundled_count"
+  bad "catalog: expected 10 bundled non-example skills, found $bundled_count"
 fi
-has "$CATALOG" 'Nine small skills ship in this repo.' \
-  && ok 'catalog: documented count is nine' \
+has "$CATALOG" 'Ten small skills ship in this repo.' \
+  && ok 'catalog: documented count is ten' \
   || bad 'catalog: bundled count drifted'
 has "$RECOMMENDED" '**wayfinder**' \
   && ok 'recommendations: Wayfinder is indexed' \
