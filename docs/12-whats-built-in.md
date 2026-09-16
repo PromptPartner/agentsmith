@@ -57,7 +57,8 @@ emulate hooks or MCP to make matrix cells green.
 ## Skills
 
 The bundled skills are dynamic context: handoff, verify, harness-doctor, harness-help,
-new-research, new-feedback, writing-rules, wayfinder, autonomous-run, and the example skill.
+new-research, new-feedback, writing-rules, grill-with-docs, wayfinder, autonomous-run, and the
+example skill.
 Every `SKILL.md` declares compatibility metadata. Runtime-specific behavior uses explicit context,
 not the directory in which a skill happened to be installed.
 
