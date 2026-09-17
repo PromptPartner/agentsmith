@@ -2,9 +2,9 @@
 # Legacy manual Bash renderer. Current installs use config/statusline.py so Windows and POSIX
 # share a dependency-free implementation; this file remains for existing manual configurations.
 # Claude Code status line — user@host:/cwd  [model]  ctx:NN%
-# The ctx:NN% gauge shows context USED. Hand off + /clear EARLY — when used REACHES ~25-30%,
-# not when it's nearly full: model quality degrades as the window fills (Opus 4.8 sweet spot is
-# ~25-40% used, so hand off near the bottom of that band). See core/50-git-and-handoff.
+# The ctx:NN% gauge shows context USED. It is visibility, not a universal quality boundary:
+# reliable capacity varies by model, task, prompt position, and conversation history. Hand off at
+# a natural phase boundary or at a threshold you calibrated on your own work. See core/50.
 input=$(cat)
 cwd=$(echo "$input" | jq -r '.cwd // empty')
 model=$(echo "$input" | jq -r '.model.display_name // empty')

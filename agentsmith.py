@@ -92,6 +92,7 @@ SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 PEM_PRIVATE_KEY_BEGIN = re.compile(
     r"-----BEGIN (?P<label>[A-Z0-9 ]*PRIVATE KEY)-----"
 )
+CONTEXT_SESSION_ID = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 
 class CliError(RuntimeError):
@@ -5033,6 +5034,73 @@ def cmd_secret_scan(args: argparse.Namespace) -> int:
     return 0
 
 
+def context_budget_nudge(payload: str) -> dict[str, str] | None:
+    """Return one configured, best-effort context cue or fail open."""
+    threshold_raw = os.environ.get("HANDOFF_PCT_THRESHOLD", "").strip()
+    if not threshold_raw:
+        return None
+    if not threshold_raw.isdigit():
+        return None
+    threshold = int(threshold_raw)
+    if not 1 <= threshold <= 100:
+        return None
+
+    max_age_raw = os.environ.get("HANDOFF_SIGNAL_MAX_AGE_SECONDS", "300").strip()
+    if not max_age_raw.isdigit():
+        return None
+    max_age = int(max_age_raw)
+    if not 1 <= max_age <= 3600:
+        return None
+
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    session_id = data.get("session_id")
+    if not isinstance(session_id, str) or not CONTEXT_SESSION_ID.fullmatch(session_id):
+        return None
+
+    temporary = Path(tempfile.gettempdir())
+    signal = temporary / f"claude-ctx-{session_id}.pct"
+    marker = temporary / f"claude-ctx-{session_id}.nudged"
+    try:
+        age = time.time() - signal.stat().st_mtime
+        if age < 0 or age > max_age:
+            return None
+        raw_used = signal.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+    used_text = raw_used.strip()
+    if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", used_text):
+        return None
+    used = float(used_text)
+    if not 0 <= used <= 100 or int(used) < threshold:
+        return None
+
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(marker, flags, 0o600)
+    except OSError:
+        return None
+    os.close(descriptor)
+
+    displayed = int(used)
+    return {
+        "decision": "block",
+        "reason": (
+            f"Context is at {displayed}% used — at your configured handoff cue. "
+            "Context reliability varies by model, task, and conversation history; this percentage "
+            "is a personal workflow heuristic, not a quality boundary. Before you stop: bring the "
+            "working tree to a safe state, write a handoff note, and output a ready-to-paste recall "
+            "prompt with the item, branch, completed work, exact next step, and gotchas. Then stop."
+        ),
+    }
+
+
 def cmd_hook(args: argparse.Namespace) -> int:
     payload = sys.stdin.read()
     if args.hook_name == "git-pre-commit":
@@ -5040,7 +5108,9 @@ def cmd_hook(args: argparse.Namespace) -> int:
     if args.hook_name == "handoff-on-keyword" and re.search(r"(?i)\b(wrap up|handoff|reset context)\b", payload):
         print(json.dumps({"additionalContext": "Before ending, create durable handoff memory with `agentsmith handoff`."}))
     elif args.hook_name == "context-budget-nudge":
-        print(json.dumps({"additionalContext": "If the context is filling, write the handoff before summarizing."}))
+        cue = context_budget_nudge(payload)
+        if cue is not None:
+            print(json.dumps(cue))
     elif args.hook_name == "ui-design-reminder" and re.search(r"(?i)\.(css|scss|tsx|jsx|vue|svelte|html)", payload):
         print(json.dumps({"additionalContext": "Consult DESIGN.md before changing user-interface files, if it exists."}))
     return 0  # hooks fail open by design

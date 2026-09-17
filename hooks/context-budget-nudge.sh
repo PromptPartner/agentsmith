@@ -8,16 +8,15 @@
 # keyword (hooks/handoff-on-keyword.sh) and the human-watched ctx:NN% gauge. Treat this as a
 # backstop, not a guarantee. See docs/research/claude-code-hooks-and-managed-policy.md.
 #
-# Behaviour: when context USED ≥ threshold, it nudges ONCE per session (a marker file prevents a
-# block-loop), asking the agent to safe-state + write a recall prompt before stopping.
+# Behaviour: when an operator-configured context USED threshold is reached, it nudges ONCE per
+# session (a marker file prevents a block-loop), asking the agent to safe-state + write a recall
+# prompt before stopping.
 #
-# THRESHOLD IS "USED", NOT "LEFT", AND IT IS DELIBERATELY LOW. The cue to hand off + /clear is
-# when the window is ~25-30% USED — early, while the model is still sharp — NOT when it's nearly
-# full. Reason: model quality degrades as the window fills; for Opus 4.8 the sweet spot is ~25-40%
-# used, so you hand off near the BOTTOM of that band (leaving headroom to write the handoff and
-# clear before quality drifts). Default 30 used. Tune with HANDOFF_PCT_THRESHOLD (e.g. 25 to fire
-# earlier, up to ~40 to use more of the band). Signals older than 300 seconds fail open; tune that
-# bounded freshness window with HANDOFF_SIGNAL_MAX_AGE_SECONDS (1–3600).
+# No percentage is a reliable universal quality boundary: behavior varies by model, task, prompt
+# position, and conversation history. The hook is therefore disabled until HANDOFF_PCT_THRESHOLD
+# is set to an integer from 1–100. Treat that value as a personal workflow cue, calibrated on your
+# own tasks. Signals older than 300 seconds fail open; tune that bounded freshness window with
+# HANDOFF_SIGNAL_MAX_AGE_SECONDS (1–3600).
 #
 # Wire it (global ~/.claude/settings.json):
 #   "hooks": { "Stop": [ { "hooks": [
@@ -25,13 +24,14 @@
 set -euo pipefail
 command -v jq >/dev/null 2>&1 || exit 0
 
-THRESHOLD="${HANDOFF_PCT_THRESHOLD:-30}"
+THRESHOLD="${HANDOFF_PCT_THRESHOLD:-}"
 MAX_SIGNAL_AGE="${HANDOFF_SIGNAL_MAX_AGE_SECONDS:-300}"
 input=$(cat)
 sid=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null) || exit 0
 
 # Invalid configuration and unscoped events must stay silent. Falling back to a shared
 # "default" file can leak a percentage between sessions and produce a false handoff cue.
+[ -n "$THRESHOLD" ] || exit 0
 [[ "$THRESHOLD" =~ ^[0-9]+$ ]] || exit 0
 [ "$THRESHOLD" -ge 1 ] 2>/dev/null && [ "$THRESHOLD" -le 100 ] 2>/dev/null || exit 0
 [[ "$MAX_SIGNAL_AGE" =~ ^[0-9]+$ ]] || exit 0
@@ -64,7 +64,7 @@ pint=${pct%%.*}
 [ "$pint" -le 100 ] 2>/dev/null || exit 0
 
 if [ "$pint" -ge "$THRESHOLD" ]; then
-  output=$(jq -n --arg p "$pint" '{decision:"block", reason:("Context is at " + $p + "% used — at the handoff cue (hand off EARLY, while the model is still sharp, not when the window is nearly full). Before you stop: bring the working tree to a safe state (commit/stash), write a handoff note, and output a ready-to-paste post-/clear recall prompt (issue/branch IDs, what is done, exact next step, gotchas). Then stop.")}') || exit 0
+  output=$(jq -n --arg p "$pint" '{decision:"block", reason:("Context is at " + $p + "% used — at your configured handoff cue. Context reliability varies by model, task, and conversation history; this percentage is a personal workflow heuristic, not a quality boundary. Before you stop: bring the working tree to a safe state, write a handoff note, and output a ready-to-paste recall prompt with the item, branch, completed work, exact next step, and gotchas. Then stop.")}') || exit 0
   : > "$marker"
   printf '%s\n' "$output"
 fi

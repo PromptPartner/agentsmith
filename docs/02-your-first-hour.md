@@ -98,10 +98,11 @@ README → "Permissions and trusted mode."
 
 ## Minutes 50–60: the first handoff
 
-Here's the counterintuitive one: sessions should end *early*. An agent's working memory (the
-context window) degrades as it fills — quality drops well before the window is technically full,
-so the discipline is to hand off around **25–30% used**, while the model is still in its best
-range. Don't run it to the red.
+Here's the counterintuitive one: sessions should end at a good seam, not only when the context
+window is almost full. A context window is like a workbench: more space does not guarantee that
+every tool and note on it remains equally easy to find. Reliable capacity varies by model and task,
+so the `ctx:NN%` gauge shows load rather than a universal quality score. Hand off at a completed
+phase, before a risky new step, or when the agent starts repeating itself or missing details.
 
 Say **"handoff"**. The agent brings the work to a safe state, writes a memory note (branch, what
 shipped, what's pending, the gotchas), and prints a paste-ready kickoff block. That block is the
@@ -109,11 +110,11 @@ shipped, what's pending, the gotchas), and prints a paste-ready kickoff block. T
 kickoff and it resumes exactly where this one stopped.
 
 The optional keyword hook understands both runtimes' payloads. After a Codex hook install, run
-`/hooks` once and review/trust it. The automatic context-percentage nudge is Claude-only because it
-depends on Claude's status line. A normal install activates AgentSmith's Claude gauge only when no
-explicit status-line choice exists; Codex already activates its built-in gauge when unset. Codex
-gets no percentage nudge and this release adds no `PreCompact` hook. The written handoff protocol
-is the dependable mechanism on both platforms.
+`/hooks` once and review/trust it. Claude's experimental percentage nudge depends on its status line
+and stays disabled until you set a threshold calibrated on your own work. A normal install
+activates AgentSmith's Claude gauge only when no explicit status-line choice exists; Codex already
+activates its built-in gauge when unset. Codex gets no percentage nudge and this release adds no
+`PreCompact` hook. The written handoff protocol is the dependable mechanism on both platforms.
 
 That's the loop you'll live in: one unit of work, verified with evidence, handed off clean.
 

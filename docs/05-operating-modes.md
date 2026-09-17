@@ -34,9 +34,12 @@ subagents, review outcomes — for well-specified features and parallelizable sw
 more advanced; pick per task, and the rule of thumb is absolute: **the moment something surprises
 you, drop to conductor.**
 
-**End early, on purpose.** Hand off at ~25–30% of context *used* — quality degrades as the window
-fills, and the handoff note written while the agent still remembers everything is worth ten
-written at the bitter end. Saying "handoff" is not stopping work; it's how work survives.
+**End at a good seam, on purpose.** Context windows accept more tokens than every model can use
+reliably on every task, but there is no universal percentage where quality changes. Prefer a
+handoff at a natural phase boundary, before an unfamiliar or high-risk step, or when you observe
+repetition and missed details. The `ctx:NN%` gauge is evidence about load, not a quality score. If
+you automate a percentage cue, calibrate it on your own model and work. Saying "handoff" is not
+stopping work; it is how work survives.
 
 ## Autonomous-run mode (finite, approved, unattended)
 

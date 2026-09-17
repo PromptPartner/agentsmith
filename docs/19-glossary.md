@@ -9,8 +9,9 @@ an expert developer, most of the friction here is words — clear that, and the 
   orchestration, feedback loops. The ~90% of agent behavior you control. The model is the ~10%
   you don't. → [`01-harness-philosophy.md`](01-harness-philosophy.md)
 - **Agent** — the model *plus* the harness, running with autonomy. Not a chatbot with tools.
-- **Context window** — the model's working memory for a session. Finite, and quality degrades as
-  it fills — which is why sessions hand off early (~25–30% used), not when full.
+- **Context window** — the model's finite working memory for a session. Accepted capacity is not
+  the same as reliable capacity: results vary by model, task, information position, and history.
+  The usage gauge is a load signal, not a universal quality score.
 - **Static context** — what's loaded *every turn* and paid for every turn: canonical `AGENTS.md`
   (or Claude's generated copy). Rationed hard (600 lines / ~10k tokens here). → [`04-why-your-agent-ignored-the-rule.md`](04-why-your-agent-ignored-the-rule.md)
 - **Dynamic context** — loaded only on demand: skills, docs, memory, tool results. Free until used.
