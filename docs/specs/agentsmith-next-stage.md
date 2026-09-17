@@ -1,11 +1,15 @@
 ---
-status: accepted
+status: draft
 decision_ticket: "paste-ready draft: Define AgentSmith's next-stage product boundary and roadmap"
-accepted_by: Lukas Hertig
-accepted_at: 2026-09-17T06:35:42Z
+accepted_by:
+accepted_at:
 ---
 
 # Spec: AgentSmith's next-stage product update
+
+> The project lead approved the phased roadmap and authorized the first implementation batch on
+> 2026-09-17. This terminal spec remains `draft` until its remaining frontier decisions are
+> resolved; roadmap approval is not the same as accepting unresolved product contracts.
 
 ## Destination
 
@@ -69,9 +73,6 @@ for beginners without padding every expert workflow.
 
 ### Frontier
 
-- [ ] **Context-signal contract** — What replaces the hard-coded 25–30% guidance in prose,
-  status lines, and the opt-in nudge hook while preserving useful early-handoff behavior?;
-  blocked by: none
 - [ ] **Installation and profile state contract** — Which small, repository-owned state artifact
   and CLI verbs make global, project, layered, and self-contained installs understandable and make
   profile changes safe?; blocked by: none
@@ -119,6 +120,9 @@ for beginners without padding every expert workflow.
 
 - [Context research](#research-basis): remove the universal 25–30% performance claim; keep context
   visibility and deliberate handoffs, then calibrate interventions by model, runtime, and task.
+- [`context-window-policy-2026.md`](../research/context-window-policy-2026.md): keep a neutral usage
+  gauge and reliable explicit handoff; percentage automation has no default and activates only when
+  an operator supplies a threshold calibrated on their own work.
 - [`docs/07-how-to-pick-a-profile.md`](../07-how-to-pick-a-profile.md): keep distinct office
   profiles (`data-crunching`, `document-creation`, `marketing-outreach`, `general-admin`) and make
   their selection easier instead of collapsing their different quality gates.
@@ -207,8 +211,10 @@ default, or use model/runtime calibration data—and what exact user-visible beh
 
 **Blocked by:** none
 
-**Resolution:** Open. The universal 25–30% quality claim is already rejected; this decision chooses
-the replacement behavior, migration, and evaluation method.
+**Resolution:** Resolved 2026-09-17. Keep the neutral usage gauge and explicit/phase-boundary
+handoffs. Percentage automation is disabled when `HANDOFF_PCT_THRESHOLD` is absent. An explicit
+integer from 1–100 enables a once-per-session, fresh-signal cue described as a user-calibrated
+heuristic, not a quality boundary. Existing implicit-30% users receive a migration note.
 
 ### Installation and profile state contract
 
@@ -248,8 +254,8 @@ remaining decision chooses the painful job, proof hierarchy, and category langua
 **Question:** Which accepted decisions and implementation tickets form one releasable promise, and
 which later capabilities stay visibly on the roadmap?
 
-**Blocked by:** Context-signal contract, Installation and profile state contract, Orchestration
-contract, Marketing message hierarchy
+**Blocked by:** Installation and profile state contract, Orchestration contract, Marketing message
+hierarchy
 
 **Resolution:** Open.
 

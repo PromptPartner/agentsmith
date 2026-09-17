@@ -6,6 +6,11 @@
 > orchestration. Agentsmith now uses explicit, schema-validated role receipts instead; see
 > [`../21-autonomous-runs.md`](../21-autonomous-runs.md). This source note is retained under R9.
 
+> **Threshold policy superseded 2026-09-17:** independent long-context research did not support a
+> universal 25–30% quality boundary. The percentage references and recommendation below are retained
+> as historical source material. Current automation has no default threshold; an operator may set a
+> calibrated heuristic while the gauge and explicit handoff remain primary.
+
 > Decision note, verified 2026-08-25 against the shipped hooks and the locally installed
 > `codex-cli 0.149.0`. Keep this source material under `docs/research/` (R9); obsolete material
 > moves to `_archive/`, never deletion.

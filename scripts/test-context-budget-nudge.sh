@@ -57,33 +57,33 @@ else
   bad "stale signal triggered a handoff"
 fi
 
-write_signal below 29
-out="$(emit below)"
+write_signal disabled-default 99
+out="$(emit disabled-default)"
+if silent "$out" && [ ! -e "$(marker_path disabled-default)" ]; then
+  ok "no configured threshold → percentage nudge stays disabled"
+else
+  bad "percentage nudge used an uncalibrated default threshold"
+fi
+
+write_signal below 59
+out="$(emit below 60)"
 if silent "$out" && [ ! -e "$(marker_path below)" ]; then
-  ok "29% used → silent below default threshold"
+  ok "configured threshold → lower percentage stays silent"
 else
-  bad "29% used unexpectedly nudged"
+  bad "percentage below the configured threshold unexpectedly nudged"
 fi
 
-write_signal boundary 30
-out="$(emit boundary)"
-if jq -e '.decision == "block" and (.reason | contains("30% used"))' >/dev/null 2>&1 <<<"$out" &&
+write_signal boundary 60
+out="$(emit boundary 60)"
+if jq -e '.decision == "block" and (.reason | contains("60% used")) and (.reason | contains("configured handoff cue"))' >/dev/null 2>&1 <<<"$out" &&
    [ -f "$(marker_path boundary)" ]; then
-  ok "30% used → block response and session marker"
+  ok "configured threshold boundary → neutral nudge and session marker"
 else
-  bad "30% boundary did not emit the Stop block response"
-fi
-
-write_signal override 25
-out="$(emit override 25)"
-if jq -e '.decision == "block" and (.reason | contains("25% used"))' >/dev/null 2>&1 <<<"$out"; then
-  ok "HANDOFF_PCT_THRESHOLD override controls the boundary"
-else
-  bad "threshold override was ignored"
+  bad "configured threshold did not emit the neutral Stop response"
 fi
 
 write_signal repeat 31
-first="$(emit repeat)"; second="$(emit repeat)"
+first="$(emit repeat 30)"; second="$(emit repeat 30)"
 if ! silent "$first" && silent "$second" && [ -f "$(marker_path repeat)" ]; then
   ok "repeat invocation nudges once per session"
 else
@@ -92,7 +92,7 @@ fi
 
 write_signal isolated-a 30
 write_signal isolated-b 30
-out_a="$(emit isolated-a)"; out_b="$(emit isolated-b)"
+out_a="$(emit isolated-a 30)"; out_b="$(emit isolated-b 30)"
 if ! silent "$out_a" && ! silent "$out_b" &&
    [ -f "$(marker_path isolated-a)" ] && [ -f "$(marker_path isolated-b)" ]; then
   ok "different session IDs maintain independent marker state"
