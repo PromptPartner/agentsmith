@@ -180,6 +180,10 @@ recorded here because no external tracker write has been authorized.
 - [x] 2026-09-18 — Public-proof test repositories used reserved `.invalid` email addresses that were
   safe placeholders but did not match the leak gate's single accepted email convention. The fixtures
   now use `example.com`, so newly tracked proof sources pass the same release gate as all shipped files.
+- [x] 2026-09-18 — Profile-switch dry-run contracts compared displayed paths using POSIX separators
+  and the temporary directory's unreconciled Windows short spelling. The CLI correctly emitted native,
+  resolved paths; the tests now require the same file identities through platform-native separators
+  and resolved path spelling.
 - [ ] 2026-09-18 — The frozen First Verified Loop specification still calls the repository gate a
   24-phase gate, while `.harness/verify.conf` now contains 25 phases. The protected specification was
   intentionally not edited during FVL-08; release-facing documentation uses the observed count.
