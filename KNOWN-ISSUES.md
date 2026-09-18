@@ -174,8 +174,9 @@ recorded here because no external tracker write has been authorized.
   assertion that exercises Git's actual ignore rules.
 - [x] 2026-09-18 — The first hosted run exposed that First Verified Loop fixture hashes depended on
   the checkout platform: Windows converted LF to CRLF, then correctly rejected its own clean fixture
-  as stale. Git attributes now pin the entire frozen fixture tree to LF, and the contract asserts the
-  effective attribute before checking hashes or CRLF-preservation behavior.
+  as stale. A second run exposed the matching production template as another byte-level consumer.
+  Git attributes now pin both complete trees to LF, and the contract asserts both effective
+  attributes before checking hashes, template parity, or CRLF-preservation behavior.
 - [x] 2026-09-18 — Public-proof test repositories used reserved `.invalid` email addresses that were
   safe placeholders but did not match the leak gate's single accepted email convention. The fixtures
   now use `example.com`, so newly tracked proof sources pass the same release gate as all shipped files.
