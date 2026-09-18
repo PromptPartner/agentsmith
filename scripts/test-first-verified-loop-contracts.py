@@ -1062,10 +1062,10 @@ class FirstVerifiedLoopCommandContracts(unittest.TestCase):
         )
         self.assertEqual(self.read_only_surfaces(), before, "profile switch --dry-run changed target or global bytes")
         self.assert_success(result, "profile switch dry-run")
-        self.assertIn(".agentsmith/state.json", result.stdout)
+        self.assertIn(str(Path(".agentsmith") / "state.json"), result.stdout)
         self.assertIn("AGENTS.md", result.stdout)
         self.assertIn("preserve", result.stdout.lower())
-        self.assertIn(".harness/verify.conf", result.stdout)
+        self.assertIn(str(Path(".harness") / "verify.conf"), result.stdout)
 
     def test_profile_switch_dry_run_names_preserved_foreign_instruction_content(self) -> None:
         instructions = self.project / "AGENTS.md"
@@ -1080,7 +1080,7 @@ class FirstVerifiedLoopCommandContracts(unittest.TestCase):
         self.assert_success(result, "foreign-content profile switch preview")
         self.assertEqual(self.read_only_surfaces(), before)
         self.assertIn("foreign content", result.stdout.lower())
-        self.assertIn(str(instructions), result.stdout)
+        self.assertIn(str(instructions.resolve()), result.stdout)
 
     def test_profile_switch_updates_existing_manifest_without_touching_custom_verification(self) -> None:
         configuration = self.project / ".harness" / "verify.conf"
