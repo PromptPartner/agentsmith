@@ -172,6 +172,10 @@ recorded here because no external tracker write has been authorized.
   machine-specific directory was not ignored, so an ordinary broad stage could publish absolute
   operator paths. The directory is now excluded from source control, with an FVL-08 regression
   assertion that exercises Git's actual ignore rules.
+- [x] 2026-09-18 — The first hosted run exposed that First Verified Loop fixture hashes depended on
+  the checkout platform: Windows converted LF to CRLF, then correctly rejected its own clean fixture
+  as stale. Git attributes now pin the entire frozen fixture tree to LF, and the contract asserts the
+  effective attribute before checking hashes or CRLF-preservation behavior.
 - [x] 2026-09-18 — Public-proof test repositories used reserved `.invalid` email addresses that were
   safe placeholders but did not match the leak gate's single accepted email convention. The fixtures
   now use `example.com`, so newly tracked proof sources pass the same release gate as all shipped files.
