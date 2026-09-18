@@ -21,3 +21,7 @@
 # rewrite LF to CRLF, making a clean fixture look stale before any product behavior is exercised.
 templates/first-loop/** text eol=lf
 tests/fixtures/first-verified-loop/** text eol=lf
+
+# The public proof is byte-compared with a clean regeneration on every native CI runner. Pin its
+# checkout bytes as well as its source fixtures so Windows cannot rewrite the expected side to CRLF.
+docs/demos/first-verified-loop/** text eol=lf

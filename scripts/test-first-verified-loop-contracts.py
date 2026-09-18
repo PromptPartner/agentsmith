@@ -1627,6 +1627,22 @@ class FVL07DocumentationContracts(unittest.TestCase):
             if path.is_file()
         } if PUBLIC_PROOF.is_dir() else set()
         self.assertEqual(observed, required)
+        for path in sorted(PUBLIC_PROOF.rglob("*")):
+            if path.is_file():
+                self.assertNotIn(b"\r\n", path.read_bytes(), f"public proof must use LF: {path}")
+
+        proof_attributes = subprocess.run(
+            ["git", "check-attr", "text", "eol", "--", str(PUBLIC_PROOF / "artifacts/compatibility.json")],
+            cwd=ROOT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(proof_attributes.returncode, 0, proof_attributes.stderr)
+        self.assertIn("text: set", proof_attributes.stdout)
+        self.assertIn("eol: lf", proof_attributes.stdout)
 
         combined = "\n".join(
             path.read_text(encoding="utf-8") for path in sorted(PUBLIC_PROOF.rglob("*")) if path.is_file()
@@ -1703,7 +1719,11 @@ class FVL07DocumentationContracts(unittest.TestCase):
             )
             self.assertNotIn("caller-only-sentinel", generated_text)
             self.assertNotIn(python_sentinel, generated_text)
-            self.assertEqual(snapshot(generated), snapshot(PUBLIC_PROOF))
+            generated_snapshot = snapshot(generated)
+            published_snapshot = snapshot(PUBLIC_PROOF)
+            differences = changed_paths(generated_snapshot, published_snapshot)
+            self.assertEqual(differences, set(), f"public proof changed: {sorted(differences)}")
+            self.assertEqual(generated_snapshot, published_snapshot)
 
     def test_public_documentation_links_and_fences_resolve(self) -> None:
         documents = [
