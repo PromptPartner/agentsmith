@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 import fnmatch
 import hashlib
 import json
@@ -109,7 +110,9 @@ def read_text(path: Path) -> str:
         try:
             return path.read_text(encoding="utf-8")
         except PermissionError as exc:
-            transient_windows_error = os.name == "nt" and getattr(exc, "winerror", None) in {5, 32}
+            transient_windows_error = os.name == "nt" and (
+                getattr(exc, "winerror", None) in {5, 32} or exc.errno == errno.EACCES
+            )
             if not transient_windows_error or attempt == 499:
                 raise
             time.sleep(0.01)
@@ -137,7 +140,9 @@ def replace_file(source: Path, destination: Path) -> None:
             os.replace(source, destination)
             return
         except PermissionError as exc:
-            transient_windows_error = os.name == "nt" and getattr(exc, "winerror", None) in {5, 32}
+            transient_windows_error = os.name == "nt" and (
+                getattr(exc, "winerror", None) in {5, 32} or exc.errno == errno.EACCES
+            )
             if not transient_windows_error or attempt == 499:
                 raise
             time.sleep(0.01)
