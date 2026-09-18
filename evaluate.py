@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+import contextlib
 import datetime as dt
 import hashlib
 import json
@@ -95,6 +97,23 @@ SCENARIOS: dict[str, dict[str, Any]] = {
         ),
     },
 }
+
+
+@contextlib.contextmanager
+def resilient_temporary_directory(*, prefix: str) -> Iterator[str]:
+    """Remove a temporary tree despite brief Git pack/indexing races."""
+    temporary = tempfile.TemporaryDirectory(prefix=prefix)
+    try:
+        yield temporary.name
+    finally:
+        for attempt in range(5):
+            try:
+                temporary.cleanup()
+                break
+            except OSError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.05 * (2**attempt))
 
 
 def atomic_json(path: Path, value: dict[str, Any]) -> None:
@@ -355,7 +374,7 @@ def run_evaluation(args: Any, *, core_path: Path) -> int:
                     raise ValueError("Codex evaluation exhausted its run-wide token budget")
                 trial_raw = scenario_raw / f"trial-{trial_number}"
                 trial_raw.mkdir(parents=True, exist_ok=True)
-                with tempfile.TemporaryDirectory(prefix=f"agentsmith-eval-{scenario_id}-") as temporary:
+                with resilient_temporary_directory(prefix=f"agentsmith-eval-{scenario_id}-") as temporary:
                     repo = Path(temporary) / "repo"
                     sentinel = "AS_" + uuid.uuid4().hex
                     fixtures = setup_repository(repo, client, scenario_id, sentinel, core_path)

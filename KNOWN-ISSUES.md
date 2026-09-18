@@ -217,6 +217,9 @@ recorded here because no external tracker write has been authorized.
   but left child stdio locale-encoded. The release recorder's UTF-8 parent then decoded that output
   differently from the standalone fixture step. The fixture now keeps locale-mode behavior under test
   while pinning its subprocess stdio and parent decoding to UTF-8.
+- [x] 2026-09-18 — A hosted macOS evaluation run hit a transient `ENOTEMPTY` race while Python 3.13
+  removed an isolated Git fixture's object-pack directory. Evaluation cleanup now retries boundedly
+  for transient filesystem activity and still raises if the temporary tree cannot be removed.
 - [ ] 2026-09-18 — The frozen First Verified Loop specification still calls the repository gate a
   24-phase gate, while `.harness/verify.conf` now contains 25 phases. The protected specification was
   intentionally not edited during FVL-08; release-facing documentation uses the observed count.
