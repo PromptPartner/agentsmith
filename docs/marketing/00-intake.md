@@ -1,6 +1,6 @@
 # Marketing intake: AgentSmith
 
-**Status:** Step 0 complete; awaiting operator confirmation before ICP synthesis
+**Status:** Complete; Steps 0–10 and final consolidation confirmed on 2026-09-17
 **Date:** 2026-09-17
 
 ## Materials reviewed
@@ -14,6 +14,7 @@
 | [`12-whats-built-in.md`](../12-whats-built-in.md) | Profiles, skills, hooks, verification, and bundled capabilities | Reviewed |
 | [`22-compatibility-contract.md`](../22-compatibility-contract.md) | Evidence-backed support boundary across coding agents | Reviewed |
 | [`agentsmith-next-stage.md`](../specs/agentsmith-next-stage.md) | Approved roadmap direction, product boundary, audience paths, and open decisions | Reviewed |
+| [PromptPartner website](https://promptpartner.ai/) | Current service model, delivery method, calls to action, governance layer, and role of the coding and agent harness | Reviewed 2026-09-17 |
 | Profiles, six worked examples, architecture image, CI, compatibility registry, and native-client evaluation records | Repository-owned proof surfaces | Inventoried; proof strength still to be scored |
 
 ## Initial product understanding
@@ -100,48 +101,75 @@ source-backed competitive research before publication.
 | Gap | Why it matters | Proposed way to resolve it |
 |---|---|---|
 | Beginner buying/activation trigger | Determines which problem the opening message should name | Operator experience plus 3–5 short user conversations |
-| First successful 30-minute outcome | Defines onboarding, demo, and activation metric | Choose one observable beginner journey and usability-test it |
+| First successful 30-minute outcome | Defines onboarding, demo, and activation metric | Research supports a prepared sandbox first, then the user's real repository; confirm and usability-test it |
 | Experienced-developer priority pain | Prevents the secondary path from becoming generic | Select the strongest pain from real use: portability, quality drift, setup time, autonomy, or handoff continuity |
-| Customer/user evidence | Needed for irrefutable claims | Collect permissioned quotes, before/after examples, screenshots, and repository outcomes |
+| Customer/user evidence | Needed for irrefutable claims | Use AI Admin Panel as the named flagship; build a permission-safe portfolio of anonymous AI-foundation, Claude, skills, and plugin cases; publish only supported counts and outcomes |
 | Distribution starting point | Determines format and content cadence | Choose the first channel before producing a broad content calendar |
-| Commercial/support model | Changes buyer, trust, and call to action | Decide whether the near-term goal is adoption, community, services, sponsorship, or product revenue |
+| Lead-magnet conversion path | Connects GitHub adoption to the existing PromptPartner offer | Keep AgentSmith fully open; route interested teams into PromptPartner's current audit and build journey without creating a separate AgentSmith service |
 
 ## Planned marketing artifacts
 
 | Step | Artifact | Status |
 |---|---|---|
-| 1 | Ideal customer profile (ICP) synthesis for the primary path, with secondary-path differences | Waiting for intake confirmation |
-| 2 | Pain-point analysis | Not started |
-| 3 | Value Proposition Canvas | Not started |
-| 4 | Evidence-backed feature inventory | Not started |
-| 5 | Competitive alternatives analysis | Not started |
-| 6 | Positioning statement and strategic narrative | Not started |
-| 7 | Content pillars | Not started |
-| 8 | Feature → benefit → value map | Not started |
-| 9 | Headlines, taglines, and layered messaging | Not started |
-| 10 | Proof points and product vision | Not started |
-| Final | Consolidated marketing framework and launch plan | Not started |
+| 1 | Ideal customer profile (ICP) synthesis for the primary path, with secondary-path differences | Confirmed 2026-09-17 |
+| 2 | Pain-point analysis | Confirmed 2026-09-17 |
+| 3 | Value Proposition Canvas | Confirmed 2026-09-17 |
+| 4 | Evidence-backed feature inventory | Confirmed 2026-09-17 |
+| 5 | Competitive alternatives analysis | Confirmed 2026-09-17 |
+| 6 | Positioning statement and strategic narrative | Confirmed for now 2026-09-17; external positioning review planned |
+| 7 | Content pillars | Confirmed 2026-09-17 |
+| 8 | Feature → benefit → value map | Confirmed 2026-09-17 |
+| 9 | Headlines, taglines, and layered messaging | Confirmed 2026-09-17 |
+| 10 | Proof points and product vision | Confirmed 2026-09-17 |
+| Final | Consolidated marketing framework and launch plan | Confirmed 2026-09-17 |
 
-## Assumptions requiring confirmation
+## Confirmed direction and remaining assumptions
 
-- The technically curious first-time builder is the primary communication path, while experienced
-  developers are an important secondary path rather than a co-equal message in every asset.
-- The near-term call to action is to try AgentSmith on a real local project, not to purchase a
-  hosted service.
-- Trust, learning, and control matter more initially than raw speed or “replace your developers”
-  claims.
-- GitHub and founder-led technical content are likely initial discovery surfaces, but the primary
-  channel has not been selected.
+- **Confirmed:** the technically curious first-time builder is the primary communication path,
+  while experienced developers are an important secondary path rather than a co-equal message in
+  every asset.
+- **Confirmed:** initial go-to-market should focus on professionals with a real work problem. Students
+  and hobbyists remain an important later learning path, not an excluded audience.
+- The near-term call to action is to complete one open, verified sandbox loop and then apply
+  AgentSmith to a real local project—not to purchase a hosted service.
+- **Confirmed:** trust, limited learning, and control matter more initially than raw speed or
+  “replace your developers” claims.
+- **Confirmed:** Reddit is the first listening and discovery community. GitHub should be the proof
+  and conversion surface. LinkedIn may distribute evidence-backed material, but should not be
+  treated as a reliable source of market truth.
 
-## Questions before Step 1
+## Operator answers received on 2026-09-17
 
-1. What frustrating event should make a technically curious beginner look for AgentSmith?
-2. What should that person have produced or understood after their first successful 30 minutes?
-3. For an experienced developer, which pain should lead: inconsistent agent quality, repeated
-   setup, weak verification, long-session continuity, or safe autonomy?
-4. Which real user stories, screenshots, quotes, or outcome metrics can we use with permission?
-5. Where should initial discovery happen: GitHub, LinkedIn, technical communities, workshops, or
-   somewhere else?
+1. **Beginner trigger:** someone says non-developers should not use Claude Code or Codex; the user
+   wants to learn only the programming needed for the task; an agent changes more than requested;
+   one-shot “vibe coding” turns into an endless repair loop; the user discovers too late that a
+   specification should have come first; or prior coding-agent output is poor.
+2. **Expectation reset:** the first working draft can be fast, but reliable AI-assisted engineering
+   takes more planning, testing, review, and iteration than the demo suggests. The 30-minute
+   activation outcome still needs to be chosen and tested.
+3. **Experienced-developer pain:** all five candidate pains matter—inconsistent quality, repeated
+   setup, weak verification, long-session continuity, and safe autonomy. Research should determine
+   the lead pain instead of forcing an unsupported ranking.
+4. **Available proof:** AI Admin Panel has been developed with this approach for more than eight
+   months and is entering customer release; it is approved as the named flagship case. The operator
+   also reports more than ten PromptPartner customer projects, including anonymous engagements where
+   PromptPartner built the AI foundation with Claude, skills, plugins, and related workflow layers.
+   The duration, customer count, and outcomes are first-party statements until backed by repository
+   evidence or permissioned customer material.
+5. **Discovery:** begin with Reddit and other communities where practitioners describe real
+   failures. Use existing AgentSmith citations and find independent people who reference, test, or
+   challenge those sources. Treat LinkedIn claims cautiously.
+6. **Audience sequence:** professionals come first because they have an immediate work problem and a
+   clearer path to PromptPartner. Students and hobbyists still matter because today's agentic-coding
+   environment resembles an early internet adoption phase: the category is not yet settled, and
+   learning users may become future practitioners and advocates.
+7. **Business goal:** use AgentSmith to create PromptPartner leads and credibility while increasing
+   GitHub adoption. It is an open-source lead magnet and a free delivery component included and
+   tailored where relevant in PromptPartner projects—not a separate paid offer. The repository
+   should remain useful without requiring an email address.
+8. **Activation research:** the strongest current recommendation is a prepared, disposable template
+   repository for the first verified loop, followed immediately by an “apply this to your project”
+   path. This is a researched hypothesis, not yet user-tested evidence.
 
 ## Proposed intake enhancements
 
