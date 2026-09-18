@@ -49,15 +49,20 @@ jobs:
         run: python scripts/test-first-verified-loop-contracts.py --fvl08
       - name: Stable release updater
         run: python scripts/test-update.py
-      - name: Cross-platform receipts, scanner, consent, state ownership, doctor, and evaluation fixtures
-        run: |
-          python scripts/test-secret-scan.py
-          python scripts/test-verify-receipts.py
-          python scripts/test-tracker-consent.py
-          python scripts/test-autonomous-state.py
-          python scripts/test-doctor.py
-          python scripts/test-evaluate.py
-          python scripts/test-statusline.py
+      - name: Cross-platform secret scanner fixtures
+        run: python scripts/test-secret-scan.py
+      - name: Cross-platform verification receipt fixtures
+        run: python scripts/test-verify-receipts.py
+      - name: Cross-platform tracker consent fixtures
+        run: python scripts/test-tracker-consent.py
+      - name: Cross-platform autonomous state fixtures
+        run: python scripts/test-autonomous-state.py
+      - name: Cross-platform doctor fixtures
+        run: python scripts/test-doctor.py
+      - name: Cross-platform evaluation fixtures
+        run: python scripts/test-evaluate.py
+      - name: Cross-platform statusline fixtures
+        run: python scripts/test-statusline.py
       - name: PowerShell launcher parses and delegates
         if: runner.os == 'Windows'
         shell: pwsh
