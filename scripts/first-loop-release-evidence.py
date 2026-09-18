@@ -93,6 +93,10 @@ def git(arguments: list[str], *, environment: dict[str, str]) -> str:
     return result.stdout.decode("utf-8", errors="replace").strip()
 
 
+def dirty_paths(status: str) -> list[str]:
+    return [line[3:] if len(line) > 3 else line for line in status.splitlines() if line]
+
+
 def detected_platform() -> str:
     value = platform.system().lower()
     mapping = {"darwin": "macos", "linux": "linux", "windows": "windows"}
@@ -164,9 +168,13 @@ def record(output: Path, output_root: Path, expected_commit: str | None) -> int:
         raise EvidenceError("Git returned an invalid commit or tree identifier")
     if expected_commit is not None and commit != expected_commit:
         raise EvidenceError("checked-out commit does not match the workflow commit")
-    dirty_before = bool(git(["status", "--porcelain=v1", "--untracked-files=all"], environment=environment))
+    status_before = git(["status", "--porcelain=v1", "--untracked-files=all"], environment=environment)
+    dirty_before = bool(status_before)
     if dirty_before:
-        raise EvidenceError("native evidence must be recorded from a clean Git checkout")
+        observed = ", ".join(dirty_paths(status_before)[:20])
+        raise EvidenceError(
+            f"native evidence must be recorded from a clean Git checkout; changed paths: {observed}"
+        )
 
     phase_results: list[dict[str, Any]] = []
     status = "passed"
@@ -186,7 +194,8 @@ def record(output: Path, output_root: Path, expected_commit: str | None) -> int:
             status = "failed"
             break
 
-    dirty_after = bool(git(["status", "--porcelain=v1", "--untracked-files=all"], environment=environment))
+    status_after = git(["status", "--porcelain=v1", "--untracked-files=all"], environment=environment)
+    dirty_after = bool(status_after)
     if dirty_after:
         status = "failed"
     payload = {
@@ -208,7 +217,8 @@ def record(output: Path, output_root: Path, expected_commit: str | None) -> int:
     atomic_json(output, payload)
     if status != "passed":
         failed = next((phase["label"] for phase in phase_results if phase["exit_code"] != 0), None)
-        reason = f"phase {failed} failed" if failed else "the verification run changed the checkout"
+        changed = ", ".join(dirty_paths(status_after)[:20])
+        reason = f"phase {failed} failed" if failed else f"the verification run changed: {changed}"
         raise EvidenceError(reason)
     print(output)
     return 0

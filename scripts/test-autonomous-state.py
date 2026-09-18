@@ -129,12 +129,17 @@ class AutonomousStateTests(unittest.TestCase):
         denial.winerror = 32
         with (
             mock.patch.object(CONTROLLER.os, "name", "nt"),
-            mock.patch.object(Path, "read_text", side_effect=[denial, '{"ready": true}']) as read,
+            mock.patch.object(
+                Path,
+                "read_text",
+                side_effect=[denial] * 150 + ['{"ready": true}'],
+            ) as read,
             mock.patch.object(CONTROLLER.time, "sleep") as pause,
         ):
             self.assertEqual(CONTROLLER.load_json(path), {"ready": True})
-        self.assertEqual(read.call_count, 2)
-        pause.assert_called_once_with(0.01)
+        self.assertEqual(read.call_count, 151)
+        self.assertEqual(pause.call_count, 150)
+        pause.assert_called_with(0.01)
 
     def test_process_liveness_recognizes_current_and_missing_processes(self) -> None:
         self.assertTrue(CONTROLLER.process_is_live(os.getpid()))

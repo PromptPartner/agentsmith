@@ -196,6 +196,14 @@ recorded here because no external tracker write has been authorized.
   quoting after temporary paths became placeholders, while receipt hashes still bound unsanitized host
   output. Sanitization now canonicalizes those path forms and hashes the sanitized LF phase output,
   retaining outcomes and meaningful receipt integrity without making the public bundle host-dependent.
+- [x] 2026-09-18 — A hosted Windows stress run exhausted the autonomous state reader's one-second
+  sharing-violation retry budget while 200 atomic writers replaced the same file. Reads and replaces
+  now retain a bounded five-second retry window, with a simulated 150-denial regression proving the
+  longer window without slowing the suite.
+- [x] 2026-09-18 — The hosted workflow grouped seven native test commands in one PowerShell step, so
+  an early non-zero process could be masked by later successful commands. Each fixture suite is now a
+  separate fail-fast step, and the evidence recorder names bounded repository-relative dirty paths
+  when its clean-checkout invariant rejects a run.
 - [ ] 2026-09-18 — The frozen First Verified Loop specification still calls the repository gate a
   24-phase gate, while `.harness/verify.conf` now contains 25 phases. The protected specification was
   intentionally not edited during FVL-08; release-facing documentation uses the observed count.

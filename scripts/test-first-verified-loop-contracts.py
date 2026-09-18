@@ -2125,6 +2125,16 @@ class FVL08ReleaseEvidenceContracts(unittest.TestCase):
         self.assertIn("native-${{ runner.os }}.json", workflow)
         self.assertIn("--fvl08", workflow)
         self.assertRegex(workflow, r"needs:\s*\[compatibility, posix-guardrails\]")
+        for fixture in (
+            "secret scanner",
+            "verification receipt",
+            "tracker consent",
+            "autonomous state",
+            "doctor",
+            "evaluation",
+            "statusline",
+        ):
+            self.assertIn(f"- name: Cross-platform {fixture} fixtures", workflow)
 
 
 class BackwardCompatibilityContracts(unittest.TestCase):
