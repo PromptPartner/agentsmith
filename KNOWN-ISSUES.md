@@ -184,6 +184,10 @@ recorded here because no external tracker write has been authorized.
   and the temporary directory's unreconciled Windows short spelling. The CLI correctly emitted native,
   resolved paths; the tests now require the same file identities through platform-native separators
   and resolved path spelling.
+- [x] 2026-09-18 — The POSIX handoff security contract required the first `os.open()` call to target
+  a directory descriptor even on Windows, where the production code intentionally uses its documented
+  pinned-file fallback. The implementation-detail assertion is now POSIX-only; platform-neutral resume
+  behavior and containment contracts still run on every host.
 - [ ] 2026-09-18 — The frozen First Verified Loop specification still calls the repository gate a
   24-phase gate, while `.harness/verify.conf` now contains 25 phases. The protected specification was
   intentionally not edited during FVL-08; release-facing documentation uses the observed count.

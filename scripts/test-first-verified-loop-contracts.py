@@ -1454,6 +1454,10 @@ class FirstVerifiedLoopCommandContracts(unittest.TestCase):
         self.assertNotEqual(error.returncode, 0)
         self.assertNotIn(redaction_probe, error.stdout + error.stderr)
 
+    @unittest.skipUnless(
+        os.name == "posix" and hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY"),
+        "directory-descriptor handoff opening is a POSIX security contract",
+    )
     def test_resume_secure_open_starts_from_target_directory_descriptor(self) -> None:
         module_spec = importlib.util.spec_from_file_location("agentsmith_fvl_open", CORE)
         self.assertIsNotNone(module_spec)
