@@ -123,16 +123,18 @@ def file_snapshot(root: Path) -> dict[str, str]:
 
 def normalize_text(text: str, replacements: dict[str, str]) -> str:
     for actual, replacement in sorted(replacements.items(), key=lambda item: len(item[0]), reverse=True):
-        text = text.replace(actual, replacement)
-        text = text.replace(actual.replace("\\", "/"), replacement)
-        text = text.replace(actual.replace("/", "\\"), replacement)
+        variants = {actual, actual.replace("\\", "/"), actual.replace("/", "\\")}
+        for variant in variants:
+            text = text.replace(variant, replacement)
+            if re.match(r"^[A-Za-z]:[/\\]", variant):
+                text = re.sub(re.escape(variant), lambda _: replacement, text, flags=re.IGNORECASE)
     text = re.sub(r"(\$(?:SOURCE|DEMO|WORKSPACE|HOME))[/\\\\]+", r"\1/", text)
     text = re.sub(r'''["'](\$(?:SOURCE|DEMO|WORKSPACE|HOME))["']''', r"\1", text)
     text = re.sub(r"\b[0-9a-f]{40}\b", "<git-commit>", text)
     text = re.sub(r"\b\d{8}-\d{4}\b", "<handoff-time>", text)
     text = re.sub(r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b", "<recorded-at>", text)
     text = re.sub(r"\bin \d+(?:\.\d+)?s\b", "in <elapsed>s", text)
-    return text.replace("\r\n", "\n").replace("\r", "\n")
+    return text.replace("\r\n", "\n").replace("\r", "\n").replace("\\", "/")
 
 
 def normalized_output_hash(path: Path, replacements: dict[str, str]) -> str:
