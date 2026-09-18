@@ -1,8 +1,31 @@
 # How to pick a profile
 
+If this is your first project, do not pick from names alone. Run
+`agentsmith profiles recommend --target .`, inspect the evidence behind the ranking, and preview a
+switch before applying it. The [First Verified Loop proof](demos/first-verified-loop/README.md)
+shows where profile selection sits in the larger status → checks → evidence → handoff journey.
+
 A profile tailors the universal core to a kind of work — it defines what "done" and "verified"
 mean, the quality gates, and the failure modes to guard against. You assemble the selected native
 rule file (`CLAUDE.md`, `AGENTS.md`, or both) from the core plus one (or a few) profiles.
+
+Inspect the available profiles or get a deterministic recommendation without changing the project:
+
+```bash
+agentsmith profiles list
+agentsmith profiles recommend --target /path/to/project
+```
+
+For an existing project installation, preview a switch before applying it:
+
+```bash
+agentsmith profiles switch --target /path/to/project --profile software-dev --dry-run
+agentsmith profiles switch --target /path/to/project --profile software-dev
+```
+
+The switch changes only AgentSmith-managed instruction blocks and the existing installation
+manifest. It backs up changed instruction files, preserves foreign text and the exact verification
+configuration, and reports verification gates the new profile does not yet represent.
 
 ## The ten profiles
 
@@ -48,17 +71,17 @@ your work to see the end state — a filled `CLAUDE.md` project-specifics layer 
   input, or adds a dependency is still `software-dev` — its quality gates already carry a security
   pass and a CVE check. Reach for `security-audit` only when the deliverable is a *finding* rather
   than a ship: an audit, a pentest, a threat model, an incident write-up.
-- **Auditing a codebase you also build? Re-assemble, don't stack.** These two are the largest
-  profiles, and `software-dev,security-audit` lands ~635 lines — over the leanness budget, which is
+- **Auditing a codebase you also build? Switch, don't stack.** These two are the largest
+  profiles, and `software-dev,security-audit` exceeds the leanness budget, which is
   the signal that you're asking the agent to hold two full rule sets it won't use at once. Switch
-  for the audit (`--profile security-audit --assemble-only`) and switch back after. It's one command,
-  and it matches the mode you're actually in: you are finding, not shipping. (`devops-setup,security-audit`
-  stacks fine at 554 if you're hardening infra you also run.)
+  to `security-audit` for the audit and back to `software-dev` for implementation. The profile
+  switch measures both line and token budgets before its first write; do not rely on a historical
+  line count because the core evolves.
 - **When in doubt**, `general-admin` is the safe catch-all — it assumes outward-facing/irreversible
   actions need confirmation and that summaries must be faithful.
-- You can **re-assemble any time** as a project's focus shifts: re-run `setup.sh --assemble-only`
-  with the same `--platform` and a different `--profile` list. It only rewrites the selected
-  managed rule block(s).
+- You can **switch any time** as an installed project's focus shifts. Use `profiles switch` so the
+  existing ownership manifest, adapters, operator identity, tracker policy, and foreign content
+  remain authoritative. Use a fresh `install` only when changing installation capabilities.
 
 ## Layered: global core + per-project profile
 

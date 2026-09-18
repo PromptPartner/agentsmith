@@ -80,3 +80,7 @@ Unsupported and unverified are deliberately different. **Unsupported** is an exp
 AgentSmith will not emulate it to make a matrix cell green. **Unverified** means no claim is made
 until evidence exists. Compatibility output and doctor must preserve that distinction and report
 each dimension separately.
+
+The [First Verified Loop compatibility snapshot](demos/first-verified-loop/artifacts/compatibility.json)
+is a clean-room capture of this registry contract used by the public demonstration. It is fixture
+evidence and does not upgrade a pending certification target to observed or native support.

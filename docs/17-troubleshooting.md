@@ -57,8 +57,47 @@ isn't persisting in the state file ([`06-your-first-loop.md`](06-your-first-loop
 
 **"It said 'done' but the work wasn't actually verified."** Almost always a stub `verify.conf`. A
 fresh install ships a deliberately failing `unwired` phase, so `agentsmith verify` stays red until
-you wire real checks. Replace that line with your build/test commands — that's what makes "done"
-mean something ([`03-verify-means-evidence.md`](03-verify-means-evidence.md)).
+you wire real checks. Save a discovery plan with
+`agentsmith verify discover --target . --save PLAN`, inspect it with
+`agentsmith verify apply --plan PLAN --target . --dry-run`, and explicitly
+apply the reviewed plan. If discovery cannot recommend the right command, replace `unwired`
+manually with your build/test commands. That is what makes "done" mean something
+([`03-verify-means-evidence.md`](03-verify-means-evidence.md)).
+
+**"`status` says my instructions are drifted or duplicated."** `status` compares the existing
+installation manifests with the managed metadata in the effective global, project, nested, and
+generated instruction sources. Drift means those records disagree; duplication means more than one
+active source carries the full core. Run `agentsmith doctor --target .` for fingerprints and exact
+paths before changing anything. Do not automatically remove the project core: a self-contained copy
+may be intentional for collaborators.
+
+**"`profiles switch` refuses before changing anything."** This is fail-closed behavior. The switch
+rejects a missing or malformed project manifest, invalid profile names, malformed managed markers,
+symlinked write paths, unreadable verification evidence, and profile stacks above the static-context
+budget. Fix the named preflight condition and rerun `--dry-run`. Do not bypass the check with a
+broad reinstall: that can touch runtime capabilities the profile switch deliberately leaves alone.
+
+**"`demo first-loop` refuses my target."** The demo is disposable only because its write boundary
+is unambiguous. Choose a new or empty directory below an existing parent. AgentSmith rejects the
+home directory, current directory, repository root, non-empty targets, and symbolic-link targets;
+it does not clean or merge an occupied directory. Keep the named target and rerun the command. The
+[public runbook](demos/first-verified-loop/RUNBOOK.md) shows the expected clean-room sequence.
+
+**"My First Verified Loop output differs from the public proof."** First compare the named phase
+and exit code, not elapsed time or temporary paths. Regenerate the sanitized bundle with the command
+in the [runbook](demos/first-verified-loop/RUNBOOK.md). The file
+[`sanitization.json`](demos/first-verified-loop/sanitization.json) lists every volatile field that is
+normalized; test names, exits, phase labels, receipt status, and lifecycle preservation results are
+not normalized.
+
+**"`resume` says the handoff is incomplete or drifted."** Incomplete means a required section,
+scaffold field, recovery command, or kickoff prompt is still blank; fill the note before treating it
+as a continuation point. Only a bounded `agentsmith status` recovery command is accepted, and
+handoff-supplied kickoff prose is never echoed; resume synthesizes its own prompt from validated
+fields. Drift means the current branch, commit, or dirty/clean state differs from what the note
+recorded. Inspect the difference and decide which state is authoritative. `resume` is diagnostic
+only: it disables optional Git locks and never checks out, resets, commits, stashes, or rewrites the
+handoff.
 
 **"The explanation is too technical."** `--operator-role` tells the agent what you are responsible
 for; it does not describe what you know. Put that detail in `--operator-bio`, because experience can

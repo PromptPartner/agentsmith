@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "scenario": "launch-readiness",
+  "intentional_defect": "any-instead-of-all",
+  "files": [
+    ".harness/verify.conf",
+    "ACCEPTED_TASK.md",
+    "README.md",
+    "checks.json",
+    "exercise.py",
+    "readiness.py",
+    "test_readiness.py"
+  ],
+  "expected_baseline": {
+    "test_exit_code": 1,
+    "cli_exit_code": 0,
+    "cli_stdout": "READY\n",
+    "real_path_exit_code": 1
+  },
+  "next_steps": [
+    "agentsmith status",
+    "agentsmith verify",
+    "agentsmith handoff first-verified-loop"
+  ],
+  "rollback_boundary": "Delete only the explicitly chosen demo directory."
+}

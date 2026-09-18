@@ -1,0 +1,9 @@
+name: untrusted-discovery-hint
+
+on: workflow_dispatch
+
+jobs:
+  hint-only:
+    runs-on: ubuntu-latest
+    steps:
+      - run: python -c "from pathlib import Path; Path('DISCOVERY_EXECUTED').write_text('unsafe')"

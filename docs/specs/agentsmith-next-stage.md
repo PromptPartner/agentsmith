@@ -71,26 +71,32 @@ for beginners without padding every expert workflow.
 
 ## Decision map
 
+### Resolved
+
+- [x] **Installation and profile state contract** — Keep `.agentsmith/state.json` as the managed
+  ownership record; derive one read-only effective status from global/project state, instructions,
+  profiles, capabilities, and verification. Do not add a competing project-state file. Profile
+  operations reuse the installer write path.
+- [x] **Marketing message hierarchy** — Lead with “Your AI agent is capable. Prove the result.” and
+  Proof — Control — Continuity. The complete approved framework lives in
+  [`../marketing/11-strategic-marketing-framework.md`](../marketing/11-strategic-marketing-framework.md).
+- [x] **First release slice** — Deliver the accepted
+  [`first-verified-loop-wave.md`](first-verified-loop-wave.md): adaptive verification, active-state
+  clarity, profile UX, guided sandbox, continuity, documentation, and public proof.
+- [x] **Profile interaction design** — Add deterministic list/recommend/switch commands. Switching
+  reuses the installer and reports verification coverage gaps without overwriting custom checks.
+
 ### Frontier
 
-- [ ] **Installation and profile state contract** — Which small, repository-owned state artifact
-  and CLI verbs make global, project, layered, and self-contained installs understandable and make
-  profile changes safe?; blocked by: none
 - [ ] **Orchestration contract** — What is the minimum task-DAG, worktree, resume, and integration
   state needed above `autonomous-run.py`, and where do human authority gates remain?;
-  blocked by: none
-- [ ] **Marketing message hierarchy** — Which primary audience, painful job, proof points, and
-  category language should lead the README/site/content without overstating present capability?;
   blocked by: none
 
 ### Blocked
 
-- [ ] **Profile interaction design** — How should users recommend, explain, add, remove, and switch
-  profiles without rerunning opaque install commands?; blocked by: Installation and profile state
-  contract
 - [ ] **Extension-development profile** — What quality gates belong in a new
   `agent-extension-dev` profile without duplicating `software-dev` or creator-skill knowledge?;
-  blocked by: Installation and profile state contract
+  blocked by: completed First Verified Loop profile operations
 - [ ] **Multi-worktree scheduler** — How are ready tasks dispatched in parallel while path,
   resource, branch, and budget conflicts stay deterministic?; blocked by: Orchestration contract
 - [ ] **Integration train** — How are independently verified commits rebased or merged, retested as
@@ -99,10 +105,6 @@ for beginners without padding every expert workflow.
 - [ ] **Long-term development lifecycle** — How do discovery, accepted specs, task execution,
   integration, CI, release, observation, maintenance, and harness feedback form one documented
   operating loop?; blocked by: Profile interaction design, Integration train
-- [ ] **Release and launch slice** — Which decisions and implementation tickets form the next
-  coherent release, and which marketing claims become true only after it ships?; blocked by:
-  Context-signal contract, Installation and profile state contract, Orchestration contract,
-  Marketing message hierarchy
 
 ### Fog
 
@@ -113,8 +115,6 @@ for beginners without padding every expert workflow.
   and future runtimes.
 - Whether the first integration train should create a local candidate branch only or optionally
   prepare a pull-request body without posting it.
-- Whether marketing needs a standalone website now, or a strong README, worked examples, demo, and
-  launch content first.
 
 ## Decision index
 
@@ -135,6 +135,11 @@ for beginners without padding every expert workflow.
 - [Audience and language](#destination): lead with a learning path for technically curious
   first-time builders and provide a faster experienced-developer path; use friendly, collaborative,
   plain international English with useful analogies, expanded abbreviations, and explicit steps.
+- [`../marketing/11-strategic-marketing-framework.md`](../marketing/11-strategic-marketing-framework.md):
+  use the approved audience, Proof — Control — Continuity pillars, evidence-first message, proof
+  limits, and PromptPartner service boundary.
+- [`first-verified-loop-wave.md`](first-verified-loop-wave.md): the next accepted release boundary is
+  a complete vertical proof loop. Orchestration and integration no longer block this first release.
 - [`skills/grill-with-docs/SKILL.md`](../../skills/grill-with-docs/SKILL.md): use repository-native
   context and ADRs for fuzzy single-session decisions; retain Wayfinder for multi-session efforts.
 
@@ -164,6 +169,10 @@ for beginners without padding every expert workflow.
 Marketing discovery can run beside slices 1–4. Claims and launch assets that depend on new
 features wait until those features pass their end-to-end gates.
 
+The next implementation wave is now narrowed and accepted in
+[`first-verified-loop-wave.md`](first-verified-loop-wave.md). The coordination and integration
+slices remain the following wave; they are not prerequisites for shipping the first verified loop.
+
 ## Acceptance and evidence
 
 - Every normative 25–30% statement is removed or converted into historical/research context. The
@@ -179,9 +188,9 @@ features wait until those features pass their end-to-end gates.
   international English, a short analogy where useful, abbreviation expansion, reason before
   command, and step-by-step explanation for unfamiliar operations. These are tested outcomes, not
   extra paragraphs added blindly to the static core.
-- Profile switching updates instructions and verification presets together, shows the proposed
-  change before writing, preserves foreign content, and is reversible through the existing update
-  safety model.
+- Profile switching updates instructions through the existing managed write path, shows the
+  proposed change before writing, preserves foreign content, and is reversible. It reruns
+  verification coverage analysis and reports missing gates without overwriting custom commands.
 - `agent-extension-dev` assembles within the leanness budget and proves the relevant skill/plugin
   manifest, validation, fixture, compatibility, documentation, and install-path gates without
   copying creator manuals into static context.
@@ -224,8 +233,12 @@ or referenced by it?
 
 **Blocked by:** none
 
-**Resolution:** Open. The answer must cover fresh, legacy, global, project, layered, and
-self-contained installs without taking ownership of foreign configuration.
+**Resolution:** Resolved 2026-09-17. Do not add `.agentsmith/project.json`. Keep
+`.agentsmith/state.json` as the managed installation and ownership record. Add a read-only effective
+status derived from global/project manifests and actual files. Profile recommendation is
+deterministic; switching reuses the installer, supports dry run, preserves foreign content, and
+reports verification gaps instead of overwriting custom checks. The executable contract is in
+[`first-verified-loop-wave.md`](first-verified-loop-wave.md).
 
 ### Orchestration contract
 
@@ -245,19 +258,25 @@ workflow platforms?
 
 **Blocked by:** none
 
-**Resolution:** Open. The accepted audience shape has two paths: technically curious first-time
-builders first, and experienced developers seeking a strong starting environment second. The
-remaining decision chooses the painful job, proof hierarchy, and category language for those paths.
+**Resolution:** Resolved 2026-09-17. Professionals with a real work problem are the initial market;
+the technically curious first-time builder is the primary communication path and the experienced
+agentic developer is secondary. Use “Your AI agent is capable. Prove the result.”, “Proof before
+done.”, and Proof — Control — Continuity. The public category is “the portable control-and-evidence
+layer for AI-assisted work”; the technical category is “an open-source, agent-native SDLC harness.”
+See [`../marketing/11-strategic-marketing-framework.md`](../marketing/11-strategic-marketing-framework.md).
 
 ### Release and launch slice
 
 **Question:** Which accepted decisions and implementation tickets form one releasable promise, and
 which later capabilities stay visibly on the roadmap?
 
-**Blocked by:** Installation and profile state contract, Orchestration contract, Marketing message
-hierarchy
+**Blocked by:** none for the first verified loop; orchestration remains a later release
 
-**Resolution:** Open.
+**Resolution:** Resolved 2026-09-17 for the next release. Ship the accepted First Verified Loop wave
+through documentation and one public proof demonstration. Defer typed work graphs, parallel
+dispatch, integration trains, office recipes, extension-development profile, presentation
+production, and the AI Admin Panel bridge to the named later waves in
+[`first-verified-loop-wave.md`](first-verified-loop-wave.md).
 
 ## Implementation-ticket drafts
 
