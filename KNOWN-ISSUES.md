@@ -213,6 +213,10 @@ recorded here because no external tracker write has been authorized.
   checkout conversion had relied on global `core.autocrlf=true`. The clean-checkout observation then
   misclassified every CRLF-populated text file as modified. Evidence Git reads now state the
   normalization explicitly, with a regression fixture that still detects real content changes.
+- [x] 2026-09-18 — The Windows doctor fixture intentionally forced locale mode in its child process,
+  but left child stdio locale-encoded. The release recorder's UTF-8 parent then decoded that output
+  differently from the standalone fixture step. The fixture now keeps locale-mode behavior under test
+  while pinning its subprocess stdio and parent decoding to UTF-8.
 - [ ] 2026-09-18 — The frozen First Verified Loop specification still calls the repository gate a
   24-phase gate, while `.harness/verify.conf` now contains 25 phases. The protected specification was
   intentionally not edited during FVL-08; release-facing documentation uses the observed count.
