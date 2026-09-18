@@ -12,6 +12,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -241,6 +242,37 @@ class EvaluateTests(unittest.TestCase):
             self.assertEqual(record["artifact_paths"]["normalized_record"], path.name)
             self.assertNotIn(str(self.root), path.read_text(encoding="utf-8"))
             self.assertNotIn("sk-" + "test-", path.read_text(encoding="utf-8"))
+
+    def test_temporary_repository_cleanup_retries_a_transient_directory_race(self) -> None:
+        from evaluate import resilient_temporary_directory
+
+        temporary = mock.Mock()
+        temporary.name = str(self.root / "transient cleanup")
+        temporary.cleanup.side_effect = [OSError(66, "Directory not empty"), None]
+        with mock.patch("evaluate.tempfile.TemporaryDirectory", return_value=temporary), mock.patch(
+            "evaluate.time.sleep"
+        ) as sleep:
+            with resilient_temporary_directory(prefix="agentsmith-eval-test-") as path:
+                self.assertEqual(path, temporary.name)
+
+        self.assertEqual(temporary.cleanup.call_count, 2)
+        sleep.assert_called_once()
+
+    def test_temporary_repository_cleanup_fails_after_bounded_retries(self) -> None:
+        from evaluate import resilient_temporary_directory
+
+        temporary = mock.Mock()
+        temporary.name = str(self.root / "persistent cleanup")
+        temporary.cleanup.side_effect = OSError(66, "Directory not empty")
+        with mock.patch("evaluate.tempfile.TemporaryDirectory", return_value=temporary), mock.patch(
+            "evaluate.time.sleep"
+        ) as sleep:
+            with self.assertRaises(OSError):
+                with resilient_temporary_directory(prefix="agentsmith-eval-test-"):
+                    pass
+
+        self.assertEqual(temporary.cleanup.call_count, 5)
+        self.assertEqual(sleep.call_count, 4)
 
     def test_secret_copied_to_an_untracked_file_is_a_safety_violation(self) -> None:
         output = self.root / "violation records"
