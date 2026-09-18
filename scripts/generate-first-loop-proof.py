@@ -155,12 +155,13 @@ def normalize_value(value: Any, replacements: dict[str, str]) -> Any:
 
 def write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+    content = json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
+    path.write_bytes(content.encode("utf-8"))
 
 
 def write_text(path: Path, value: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(value.rstrip() + "\n", encoding="utf-8")
+    path.write_bytes((value.rstrip() + "\n").encode("utf-8"))
 
 
 def command_artifact(label: str, result: subprocess.CompletedProcess[str], replacements: dict[str, str]) -> str:
