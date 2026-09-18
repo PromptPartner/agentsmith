@@ -197,9 +197,10 @@ recorded here because no external tracker write has been authorized.
   output. Sanitization now canonicalizes those path forms and hashes the sanitized LF phase output,
   retaining outcomes and meaningful receipt integrity without making the public bundle host-dependent.
 - [x] 2026-09-18 — A hosted Windows stress run exhausted the autonomous state reader's one-second
-  sharing-violation retry budget while 200 atomic writers replaced the same file. Reads and replaces
-  now retain a bounded five-second retry window, with a simulated 150-denial regression proving the
-  longer window without slowing the suite.
+  sharing-violation retry budget while 200 atomic writers replaced the same file; a later run showed
+  the runner can surface the same denial as `EACCES` without `winerror`. Reads and replaces now accept
+  both Windows exception shapes within a bounded five-second window, with a simulated 150-denial
+  regression proving the classifier and longer window without slowing the suite.
 - [x] 2026-09-18 — The hosted workflow grouped seven native test commands in one PowerShell step, so
   an early non-zero process could be masked by later successful commands. Each fixture suite is now a
   separate fail-fast step, and the evidence recorder names bounded repository-relative dirty paths

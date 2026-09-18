@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import errno
 import importlib.util
 import json
 import os
@@ -125,8 +126,7 @@ class AutonomousStateTests(unittest.TestCase):
 
     def test_json_read_retries_a_transient_windows_sharing_denial(self) -> None:
         path = Path("state.json")
-        denial = PermissionError("destination is momentarily shared")
-        denial.winerror = 32
+        denial = PermissionError(errno.EACCES, "destination is momentarily shared")
         with (
             mock.patch.object(CONTROLLER.os, "name", "nt"),
             mock.patch.object(
