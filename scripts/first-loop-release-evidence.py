@@ -87,7 +87,11 @@ def run(arguments: list[str], *, environment: dict[str, str]) -> subprocess.Comp
 
 
 def git(arguments: list[str], *, environment: dict[str, str]) -> str:
-    result = run(["git", *arguments], environment=environment)
+    # actions/checkout may populate a Windows worktree with CRLF under a global
+    # core.autocrlf setting. The evidence environment intentionally ignores
+    # global Git config, so restate that normalization explicitly when reading
+    # the checkout or every converted text file appears modified.
+    result = run(["git", "-c", "core.autocrlf=true", *arguments], environment=environment)
     if result.returncode != 0:
         raise EvidenceError(f"Git observation failed: git {' '.join(arguments)}")
     return result.stdout.decode("utf-8", errors="replace").strip()

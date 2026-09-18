@@ -209,6 +209,10 @@ recorded here because no external tracker write has been authorized.
   partial JSON but treated Windows' transient atomic-replacement sharing denial as corruption. Its
   bounded partial-state polling loop now retries `PermissionError`; final receipt validation remains
   strict after the writer exits.
+- [x] 2026-09-18 — Native evidence intentionally ignores global Git configuration, but Windows
+  checkout conversion had relied on global `core.autocrlf=true`. The clean-checkout observation then
+  misclassified every CRLF-populated text file as modified. Evidence Git reads now state the
+  normalization explicitly, with a regression fixture that still detects real content changes.
 - [ ] 2026-09-18 — The frozen First Verified Loop specification still calls the repository gate a
   24-phase gate, while `.harness/verify.conf` now contains 25 phases. The protected specification was
   intentionally not edited during FVL-08; release-facing documentation uses the observed count.
