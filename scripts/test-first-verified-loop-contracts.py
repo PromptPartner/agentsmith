@@ -1599,6 +1599,39 @@ class FirstVerifiedLoopCommandContracts(unittest.TestCase):
 
 
 class FVL07DocumentationContracts(unittest.TestCase):
+    def test_public_proof_sanitizer_canonicalizes_windows_paths_and_output_hashes(self) -> None:
+        generator = ROOT / "scripts" / "generate-first-loop-proof.py"
+        module_spec = importlib.util.spec_from_file_location("agentsmith_fvl_proof", generator)
+        self.assertIsNotNone(module_spec)
+        self.assertIsNotNone(module_spec.loader)
+        module = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(module)
+
+        windows_root = r"C:\proof workspace\demo"
+        replacements = {windows_root: "$DEMO"}
+        windows_output = (
+            f'File "{windows_root}\\test_readiness.py"\r\n'
+            f'agentsmith status --target "{windows_root}"\r\n'
+            "Ran 2 tests in 0.321s\r\n"
+        )
+        portable_output = (
+            'File "$DEMO/test_readiness.py"\n'
+            "agentsmith status --target $DEMO\n"
+            "Ran 2 tests in <elapsed>s\n"
+        )
+        self.assertEqual(module.normalize_text(windows_output, replacements), portable_output)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            windows_path = root / "windows.txt"
+            portable_path = root / "portable.txt"
+            windows_path.write_bytes(windows_output.encode("utf-8"))
+            portable_path.write_bytes(portable_output.encode("utf-8"))
+            self.assertEqual(
+                module.normalized_output_hash(windows_path, replacements),
+                module.normalized_output_hash(portable_path, {}),
+            )
+
     def test_public_proof_bundle_is_complete_and_sanitized(self) -> None:
         required = {
             "README.md",
@@ -1649,6 +1682,7 @@ class FVL07DocumentationContracts(unittest.TestCase):
         )
         self.assertNotRegex(combined, r"(?i)(?:/Users/|/home/|[A-Z]:\\\\Users\\\\|/private/var/|/var/folders/)")
         self.assertNotIn("/private$", combined)
+        self.assertNotRegex(combined, r"\$(?:SOURCE|DEMO|WORKSPACE|HOME)\\")
         self.assertNotIn("operator", combined.lower())
         self.assertIn("fixture evidence", (PUBLIC_PROOF / "CLAIM-MAP.md").read_text(encoding="utf-8"))
         self.assertIn("does not prove", (PUBLIC_PROOF / "LIMITATIONS.md").read_text(encoding="utf-8"))
