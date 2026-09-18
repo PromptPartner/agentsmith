@@ -205,6 +205,10 @@ recorded here because no external tracker write has been authorized.
   an early non-zero process could be masked by later successful commands. Each fixture suite is now a
   separate fail-fast step, and the evidence recorder names bounded repository-relative dirty paths
   when its clean-checkout invariant rejects a run.
+- [x] 2026-09-18 — The verification-receipt durability test polled through “not created yet” and
+  partial JSON but treated Windows' transient atomic-replacement sharing denial as corruption. Its
+  bounded partial-state polling loop now retries `PermissionError`; final receipt validation remains
+  strict after the writer exits.
 - [ ] 2026-09-18 — The frozen First Verified Loop specification still calls the repository gate a
   24-phase gate, while `.harness/verify.conf` now contains 25 phases. The protected specification was
   intentionally not edited during FVL-08; release-facing documentation uses the observed count.
