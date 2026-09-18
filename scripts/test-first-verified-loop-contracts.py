@@ -2095,6 +2095,56 @@ class FVL08ReleaseEvidenceContracts(unittest.TestCase):
         self.assertIn("outside the repository", result.stderr)
         self.assertFalse(output.exists())
 
+    def test_native_git_observation_matches_a_windows_autocrlf_checkout(self) -> None:
+        script = ROOT / "scripts" / "first-loop-release-evidence.py"
+        spec = importlib.util.spec_from_file_location("first_loop_release_evidence", script)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        with tempfile.TemporaryDirectory(prefix="agentsmith fvl08 autocrlf ü ") as temporary:
+            checkout = Path(temporary) / "checkout"
+            checkout.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
+            subprocess.run(["git", "config", "user.name", "Fixture"], cwd=checkout, check=True)
+            subprocess.run(
+                ["git", "config", "user.email", "fixture@example.com"], cwd=checkout, check=True
+            )
+            sample = checkout / "sample.txt"
+            sample.write_bytes(b"one\ntwo\n")
+            subprocess.run(
+                ["git", "-c", "core.autocrlf=false", "add", "sample.txt"], cwd=checkout, check=True
+            )
+            subprocess.run(["git", "commit", "-qm", "fixture"], cwd=checkout, check=True)
+
+            global_config = Path(temporary) / "windows.gitconfig"
+            global_config.write_text("[core]\n\tautocrlf = true\n", encoding="utf-8")
+            sample.unlink()
+            checkout_environment = os.environ.copy()
+            checkout_environment["GIT_CONFIG_GLOBAL"] = str(global_config)
+            subprocess.run(
+                ["git", "checkout", "--", "sample.txt"],
+                cwd=checkout,
+                env=checkout_environment,
+                check=True,
+            )
+            self.assertIn(b"\r\n", sample.read_bytes())
+
+            module.ROOT = checkout
+            status = module.git(
+                ["status", "--porcelain=v1", "--untracked-files=all"],
+                environment=module.clean_environment(),
+            )
+            self.assertEqual(status, "")
+
+            sample.write_bytes(sample.read_bytes() + b"changed\r\n")
+            changed = module.git(
+                ["status", "--porcelain=v1", "--untracked-files=all"],
+                environment=module.clean_environment(),
+            )
+            self.assertIn("sample.txt", changed)
+
     def test_release_docs_name_every_security_boundary_and_definition_of_done_item(self) -> None:
         security = (PUBLIC_PROOF / "SECURITY-REVIEW.md").read_text(encoding="utf-8")
         readiness = (PUBLIC_PROOF / "RELEASE-READINESS.md").read_text(encoding="utf-8")
