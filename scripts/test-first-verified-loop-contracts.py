@@ -229,17 +229,20 @@ class FixtureContractTests(unittest.TestCase):
 
     def test_installed_python_repository_fixture_is_versioned_and_unwired(self) -> None:
         repository = REPOSITORIES / "installed-python"
-        fixture_ci = "tests/fixtures/first-verified-loop/v1/repositories/installed-python/.github/workflows/ci.yml"
-        eol_attribute = subprocess.run(
-            ["git", "check-attr", "eol", "--", fixture_ci],
-            cwd=ROOT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            capture_output=True,
-            check=True,
-        )
-        self.assertEqual(eol_attribute.stdout.strip(), f"{fixture_ci}: eol: lf")
+        for stable_path in (
+            "templates/first-loop/README.md",
+            "tests/fixtures/first-verified-loop/v1/repositories/installed-python/.github/workflows/ci.yml",
+        ):
+            eol_attribute = subprocess.run(
+                ["git", "check-attr", "eol", "--", stable_path],
+                cwd=ROOT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                check=True,
+            )
+            self.assertEqual(eol_attribute.stdout.strip(), f"{stable_path}: eol: lf")
         state = load_json(repository / ".agentsmith" / "state.json")
         self.assertEqual(state["schema_version"], 1)
         self.assertEqual(state["installation"]["profiles"], ["general-admin"])

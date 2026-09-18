@@ -19,4 +19,5 @@
 
 # First Verified Loop fixture hashes bind exact bytes. Windows checkout conversion would otherwise
 # rewrite LF to CRLF, making a clean fixture look stale before any product behavior is exercised.
+templates/first-loop/** text eol=lf
 tests/fixtures/first-verified-loop/** text eol=lf
