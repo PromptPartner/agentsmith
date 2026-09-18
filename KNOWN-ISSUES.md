@@ -172,6 +172,9 @@ recorded here because no external tracker write has been authorized.
   machine-specific directory was not ignored, so an ordinary broad stage could publish absolute
   operator paths. The directory is now excluded from source control, with an FVL-08 regression
   assertion that exercises Git's actual ignore rules.
+- [x] 2026-09-18 — Public-proof test repositories used reserved `.invalid` email addresses that were
+  safe placeholders but did not match the leak gate's single accepted email convention. The fixtures
+  now use `example.com`, so newly tracked proof sources pass the same release gate as all shipped files.
 - [ ] 2026-09-18 — The frozen First Verified Loop specification still calls the repository gate a
   24-phase gate, while `.harness/verify.conf` now contains 25 phases. The protected specification was
   intentionally not edited during FVL-08; release-facing documentation uses the observed count.
