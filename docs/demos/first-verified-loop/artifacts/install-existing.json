@@ -1,0 +1,17 @@
+{
+  "client_safety_configuration_retained": true,
+  "fixture": "existing",
+  "foreign_client_config_preserved": true,
+  "foreign_client_prefix_sha256": "3447d5e2b52434c336f3147c69852c97ca170dc8540d9a7dbf704b5f2d1f58bc",
+  "foreign_project_content_preserved": true,
+  "foreign_project_sha256": "61b69f61d04ac3287f3247b71e4397718a46af8cc5d0df8180cedfca5fc44609",
+  "idempotent": true,
+  "install_exit": 0,
+  "managed_project_instructions_removed": true,
+  "rerun_exit": 0,
+  "runtime_scaffolding_retained": true,
+  "schema_version": 1,
+  "source_tree_clean": true,
+  "status_exit": 0,
+  "uninstall_exit": 0
+}

@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="430" viewBox="0 0 1200 430" role="img" aria-labelledby="title desc">
+  <title id="title">First Verified Loop evidence flow</title>
+  <desc id="desc">A clean source copy produces status, a named red test, a bounded fix, green verification, real-path evidence, a receipt, handoff, read-only resume, and installation lifecycle evidence.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#315a7d"/></marker>
+    <style>.box{fill:#f4f8fb;stroke:#315a7d;stroke-width:2;rx:8}.label{font:600 14px sans-serif;fill:#183247;text-anchor:middle}.sub{font:12px sans-serif;fill:#46657c;text-anchor:middle}.edge{stroke:#315a7d;stroke-width:2;fill:none;marker-end:url(#arrow)}</style>
+  </defs>
+  <rect class="box" x="20" y="55" width="125" height="64"/><text class="label" x="82" y="82">Clean source</text><text class="sub" x="82" y="102">local commit</text>
+  <rect class="box" x="170" y="55" width="125" height="64"/><text class="label" x="232" y="82">Status</text><text class="sub" x="232" y="102">coverage</text>
+  <rect class="box" x="320" y="55" width="125" height="64"/><text class="label" x="382" y="82">Named red test</text><text class="sub" x="382" y="102">expected failure</text>
+  <rect class="box" x="470" y="55" width="125" height="64"/><text class="label" x="532" y="82">Bounded fix</text><text class="sub" x="532" y="102">any → all</text>
+  <rect class="box" x="620" y="55" width="125" height="64"/><text class="label" x="682" y="82">Green verify</text><text class="sub" x="682" y="102">three phases</text>
+  <rect class="box" x="770" y="55" width="125" height="64"/><text class="label" x="832" y="82">Real path</text><text class="sub" x="832" y="102">NOT READY</text>
+  <rect class="box" x="920" y="55" width="110" height="64"/><text class="label" x="975" y="82">Receipt</text><text class="sub" x="975" y="102">hashes + exits</text>
+  <rect class="box" x="1055" y="55" width="125" height="64"/><text class="label" x="1117" y="82">Handoff</text><text class="sub" x="1117" y="102">durable state</text>
+  <path class="edge" d="M145 87 H165"/><path class="edge" d="M295 87 H315"/><path class="edge" d="M445 87 H465"/><path class="edge" d="M595 87 H615"/><path class="edge" d="M745 87 H765"/><path class="edge" d="M895 87 H915"/><path class="edge" d="M1030 87 H1050"/>
+  <rect class="box" x="990" y="180" width="190" height="70"/><text class="label" x="1085" y="208">Read-only resume</text><text class="sub" x="1085" y="230">ready + zero drift</text><path class="edge" d="M1117 119 V175"/>
+  <rect class="box" x="185" y="300" width="230" height="72"/><text class="label" x="300" y="328">Clean install lifecycle</text><text class="sub" x="300" y="350">install · rerun · status · uninstall</text>
+  <rect class="box" x="485" y="300" width="250" height="72"/><text class="label" x="610" y="328">Existing-config lifecycle</text><text class="sub" x="610" y="350">foreign bytes preserved</text>
+  <rect class="box" x="805" y="300" width="190" height="72"/><text class="label" x="900" y="328">Claim map</text><text class="sub" x="900" y="350">proof + boundary</text>
+  <path class="edge" d="M82 119 V270 H300 V295"/><path class="edge" d="M82 119 V270 H610 V295"/><path class="edge" d="M415 336 H480"/><path class="edge" d="M735 336 H800"/><path class="edge" d="M1085 250 V270 H900 V295"/>
+</svg>

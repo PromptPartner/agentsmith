@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "target": "<absolute-target>",
+  "generated_at": "2026-09-17T12:00:00Z",
+  "input_fingerprint": {
+    "algorithm": "sha256",
+    "value": "25c9b343bd510f3f51431a952d5f57e1304c4e6fe8661b85da932e53c92d606b",
+    "files": [
+      {
+        "path": ".github/workflows/ci.yml",
+        "sha256": "8a161e0296b9f8b82c413bbb50602762f7c48fc8add0bb53baa9755f2eb52a8d"
+      },
+      {
+        "path": ".harness/verify.conf",
+        "sha256": "062f0d3bf985dd7a4d46c5f202478b3063501b825eaf5b81f34074f751879089"
+      },
+      {
+        "path": "pyproject.toml",
+        "sha256": "53a11666fb2bf7fc77943c69aa93c7ca1aeeee8488cd3483382059844eb00e72"
+      },
+      {
+        "path": "tests/test_readiness.py",
+        "sha256": "1edf24595526052124aa8f8caa5992c5a9a8bff1241e28e214851d2123aaa854"
+      }
+    ]
+  },
+  "detected_stacks": [
+    {
+      "name": "python",
+      "root": ".",
+      "evidence_paths": ["pyproject.toml", "tests/test_readiness.py"]
+    }
+  ],
+  "evidence": [
+    {"kind": "manifest", "path": "pyproject.toml", "detail": "Python project metadata"},
+    {"kind": "test", "path": "tests/test_readiness.py", "detail": "standard-library unittest module"},
+    {"kind": "configuration", "path": ".harness/verify.conf", "detail": "untouched generated unwired placeholder"},
+    {"kind": "ci-hint", "path": ".github/workflows/ci.yml", "detail": "untrusted command hint; never executed or copied into a proposal"}
+  ],
+  "existing_phases": [
+    {
+      "label": "unwired",
+      "command": "python3 -c \"raise SystemExit('configure .harness/verify.conf')\"",
+      "categories": [],
+      "origin": "agentsmith-placeholder"
+    }
+  ],
+  "proposed_phases": [
+    {
+      "category": "unit_integration_tests",
+      "label": "tests",
+      "command": "python3 -m unittest discover -s tests",
+      "detector": "python-stdlib-unittest",
+      "source_path": "tests/test_readiness.py",
+      "reason": "A unittest module is present under tests/.",
+      "confidence_class": "high",
+      "requires_review": false
+    }
+  ],
+  "coverage": {
+    "build": {"state": "not-applicable", "evidence": ["pyproject.toml has no build backend"], "gap": null},
+    "type_check": {"state": "missing", "evidence": [], "gap": "No allow-listed type checker configuration was detected."},
+    "lint_static_analysis": {"state": "missing", "evidence": [], "gap": "No allow-listed linter configuration was detected."},
+    "unit_integration_tests": {"state": "recommended", "evidence": ["tests/test_readiness.py"], "gap": null},
+    "dependency_risk": {"state": "not-applicable", "evidence": ["The fixture declares no third-party dependencies."], "gap": null},
+    "secret_scan": {"state": "missing", "evidence": [], "gap": "No project secret-scan phase is configured."},
+    "real_path_exercise": {"state": "manual", "evidence": ["readiness.py accepts a checks fixture"], "gap": "Discovery cannot prove the visible command result."},
+    "judgment_evaluation": {"state": "manual", "evidence": [], "gap": "A human or independent rubric must judge explanation quality."}
+  },
+  "unresolved": [],
+  "warnings": []
+}

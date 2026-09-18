@@ -31,6 +31,16 @@ on the AgentSmith folder you cloned. Each rule file is written inside marker com
 or `profiles/` in your harness checkout and re-run setup; anything you add *outside* the markers
 (project specifics) is yours and survives every re-run.
 
+Confirm which installation layers and profile actually apply before changing anything:
+
+```bash
+agentsmith status --target .
+```
+
+This is a read-only summary, not a second diagnostic dump. It shows the global-to-project
+instruction chain, active profile, verification gaps, and one safest useful next command. Use
+`agentsmith doctor` when the summary reports drift or you need capability-level detail.
+
 When a stable release is available, use `agentsmith update plan --target . --save FILE` before
 installing it. Planning does not change the installation. The first plan creates a local key under
 `~/.agentsmith` to authenticate plans and receipts. Read the saved plan, then run `agentsmith update
@@ -61,19 +71,59 @@ The software-development version is about 540 lines. In order:
 
 ## Minutes 25–30: wire one real check into `verify.conf`
 
-`.harness/verify.conf` starts with a placeholder phase that just echoes. Replace it with one real
-line in the `label :: command` format — your build, your test suite, whatever "shippable" means
-here:
+If the active profile does not fit the work, ask for a deterministic recommendation and preview the
+managed diff before switching:
+
+```bash
+agentsmith profiles recommend --target .
+agentsmith profiles switch --target . --profile software-dev --dry-run
+agentsmith profiles switch --target . --profile software-dev
+```
+
+The real switch backs up changed instruction files and updates the existing installation manifest.
+It does not rewrite your verification configuration; instead it reports which profile gates remain
+unrepresented so you can review them explicitly.
+
+`.harness/verify.conf` starts with a deliberately failing `unwired` phase. Discover the checks the
+repository supports without running its code, inspect the exact proposed diff, and then apply the
+reviewed plan:
+
+```bash
+agentsmith verify discover --target . --save .harness/verification-plan.json
+agentsmith verify apply --target . --plan .harness/verification-plan.json --dry-run
+agentsmith verify apply --target . --plan .harness/verification-plan.json
+```
+
+Discovery reports what it still cannot prove and refuses to compose ambiguous stacks silently. If
+no allow-listed detector fits, edit the config yourself with one real `label :: command` line —
+your build, test suite, or other definition of "shippable":
 
 ```
 test :: npm test        # or: pytest -q · go test ./... · cargo test
 ```
 
-This five-minute edit is disproportionately important: `agentsmith verify` runs every phase in order and
-is the agent's gate for calling anything done. Until it runs *your* checks, "verified" means
+This five-minute setup is disproportionately important: `agentsmith verify` runs every phase in order
+and is the agent's gate for calling anything done. Until it runs *your* checks, "verified" means
 nothing (the full story: [`03-verify-means-evidence.md`](03-verify-means-evidence.md)).
 
 ## Minutes 30–50: the first task
+
+If you want to learn the loop before touching the current project, create the bundled disposable
+scenario in a new or empty directory:
+
+```bash
+agentsmith demo first-loop --target ../agentsmith-first-loop-demo
+```
+
+The initializer performs no network access, installs no dependency, and refuses a non-empty or
+symbolic-link target before writing. Its launch-readiness checker deliberately uses `any` where the
+accepted task requires `all`. Follow the three printed steps to observe the named red test, make
+the one-line bounded fix, and prove both the tests and the visible command path.
+
+If you want a reference run before editing, inspect the
+[First Verified Loop public proof](demos/first-verified-loop/README.md). Its runbook was executed
+from a temporary clean Git copy and retains the red output, green receipt, real command result,
+handoff, read-only resume, lifecycle fixtures, and claim boundaries.
 
 Start your selected coding agent in the project and ask: *"what does my harness do, and what are my rules?"* — the
 agent explains its own contract back to you, which is both a sanity check and the fastest tour.
@@ -108,6 +158,18 @@ Say **"handoff"**. The agent brings the work to a safe state, writes a memory no
 shipped, what's pending, the gotchas), and prints a paste-ready kickoff block. That block is the
 *only* bridge to the next session — a fresh session remembers nothing. Next time, paste the
 kickoff and it resumes exactly where this one stopped.
+
+After the note is filled, verify the continuation point before opening a fresh session:
+
+```bash
+agentsmith resume --target .
+```
+
+This read-only command selects the newest handoff, reports incomplete sections or placeholders,
+compares recorded and current Git facts, and prints a validated recovery command plus a synthesized
+kickoff prompt. The command is limited to `agentsmith status`; handoff-supplied kickoff prose is
+validated for presence but never echoed as paste-ready text. A drift warning informs you; resume
+disables optional Git locks and never changes branches, commits, files, or stashes.
 
 The optional keyword hook understands both runtimes' payloads. After a Codex hook install, run
 `/hooks` once and review/trust it. Claude's experimental percentage nudge depends on its status line

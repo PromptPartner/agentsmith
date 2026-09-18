@@ -1,0 +1,28 @@
+{
+  "demo_initialization_observed": true,
+  "external_write_used": false,
+  "handoff_creation_observed": true,
+  "network_used": false,
+  "normalized": [
+    "temporary clean-source, demo, lifecycle, workspace, and home paths",
+    "40-character local Git commit identifiers",
+    "handoff filename timestamps",
+    "receipt timestamps",
+    "receipt hostname and platform fields",
+    "receipt phase durations",
+    "test elapsed times",
+    "line endings"
+  ],
+  "not_normalized": [
+    "exit codes",
+    "test names and pass/fail outcomes",
+    "verification phase labels",
+    "receipt status and output hashes",
+    "Git dirty-state booleans",
+    "installation ownership and preservation results",
+    "compatibility capability and evidence values"
+  ],
+  "purpose": "Remove machine-specific data while retaining command outcomes and evidence structure.",
+  "schema_version": 1,
+  "source_clean": true
+}

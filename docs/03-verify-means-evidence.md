@@ -27,6 +27,12 @@ This isn't agent cynicism; it's the same reason your CI doesn't take the PR auth
 tests pass. The harness just applies that instinct everywhere, because with an agent, *every*
 claim is a PR author's word.
 
+For one inspectable example, follow the
+[First Verified Loop evidence chain](demos/first-verified-loop/README.md): the same failed readiness
+value appears in status coverage, a named red test, the bounded fix, three passing phases, the real
+command, a receipt, and a zero-drift resume. The accompanying claim map also states what that fixture
+does not prove.
+
 ## Two kinds of proof — and most work needs both
 
 **Tests** cover the deterministic part: this input produces that output. Binary, cheap to rerun,
@@ -79,12 +85,32 @@ memory of the action that once made it true.
 ## The mechanical form
 
 `agentsmith verify` reads `.harness/verify.conf` — one `label :: command` per line, run in
-order, first failure stops — and is the gate for calling anything shippable. It starts as a
-placeholder that only echoes, which means **a fresh install's "verified" is vacuously true until
-you wire real phases**. Replacing that line with your build/test/checks is the highest-leverage
-five minutes in the whole setup ([`02-your-first-hour.md`](02-your-first-hour.md) walks it). From then
-on, "done" has a definition that's versioned with your repo — and the agent's claim and your
-gate are the same command.
+order, first failure stops — and is the gate for calling anything shippable. A fresh install starts
+with a deliberately failing `unwired` phase, so it cannot report a vacuous pass before real checks
+exist.
+
+`agentsmith verify discover --target <path> --save <plan>` inspects common software manifests,
+tests, the existing verification config, and untrusted continuous-integration hints without running
+project commands. Its eight-cell coverage map separates configured checks, allow-listed
+recommendations, manual evidence, missing coverage, and checks that do not apply. Review the saved
+plan, preview the exact change with `agentsmith verify apply --plan <plan> --target <path>
+--dry-run`, then run the same apply command without `--dry-run`. Apply rejects cross-project, stale,
+edited-command, symbolic-link, and label-collision plans before changing the config; an actual
+change receives an adjacent byte-exact backup. A phase whose required executable is absent from
+`PATH` remains a recommendation with a warning; it is never reported as configured or proven.
+No-op phases such as `true`, `echo`, `:`, and compound chains made only from stubs also remain
+unproven. Existing label and command secrets are redacted from discovery plans and dry-run output
+while apply preserves the original config bytes.
+
+Discovery and apply configure repeatable checks. They do not prove those checks pass. Run
+`agentsmith verify` after apply; then add the real-path and judgment evidence that automated phases
+cannot supply.
+
+For a safe worked example, `agentsmith demo first-loop --target <new-directory>` creates a
+dependency-free launch-readiness checker whose baseline test fails because the implementation uses
+`any` instead of `all`. The configured syntax, test, and real-path phases make the distinction
+visible: changing the logic is not enough until `agentsmith verify` passes and the actual command
+reports `NOT READY` for the supplied partial-check fixture.
 
 Use `agentsmith verify --record <directory>` when the command evidence must survive the terminal
 session. The optional receipt starts in `running`, is replaced atomically after each phase, and

@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import datetime as dt
+import difflib
 import hashlib
 import hmac
 import io
@@ -22,6 +23,7 @@ import re
 import secrets
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -64,6 +66,15 @@ GROUPS = {
     "all": AGENT_IDS,
 }
 CODE_PROFILES = {"software-dev", "devops-setup"}
+DEMO_TEMPLATE_FILES = (
+    ".harness/verify.conf",
+    "ACCEPTED_TASK.md",
+    "README.md",
+    "checks.json",
+    "exercise.py",
+    "readiness.py",
+    "test_readiness.py",
+)
 RUNTIME_FILES = (
     ".agentsmith/agentsmith.py",
     ".agentsmith/agentsmith",
@@ -71,6 +82,7 @@ RUNTIME_FILES = (
     ".agentsmith/config/agents.json",
     ".agentsmith/evaluate.py",
     ".agentsmith/native_launcher.py",
+    *(f".agentsmith/templates/first-loop/{path}" for path in DEMO_TEMPLATE_FILES),
 )
 SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("PEM private key", re.compile(r"BEGIN [A-Z ]*PRIVATE KEY")),
@@ -226,32 +238,37 @@ def managed_markers(text: str) -> tuple[str, str] | None:
     return None
 
 
+def validated_managed_markers(text: str, path: Path | None = None) -> tuple[str, str] | None:
+    pairs = ((BEGIN, END), (LEGACY_BEGIN, END), (OLDER_BEGIN, OLDER_END))
+    begin_count = sum(text.count(begin) for begin, _ in pairs)
+    end_count = sum(text.count(end) for end in {END, OLDER_END})
+    label = f" in {path}" if path is not None else ""
+    if begin_count == 0 and end_count == 0:
+        return None
+    if begin_count > 1 or end_count > 1:
+        raise CliError(f"Multiple managed instruction blocks are not allowed{label}")
+    markers = managed_markers(text)
+    if markers is None or begin_count != 1 or end_count != 1:
+        raise CliError(f"Managed instruction markers are malformed{label}")
+    begin, end = markers
+    if end not in text or text.find(end) < text.find(begin):
+        raise CliError(f"Managed instruction markers are malformed{label}")
+    return markers
+
+
 def reconcile_markdown(path: Path, block: str, *, force: bool, dry_run: bool) -> None:
+    old, rendered = render_profile_switch_document(path, block, force=force)
     if dry_run:
         say(f"DRY RUN — would reconcile {path}")
         return
-    old = path.read_text(encoding="utf-8") if path.exists() else ""
-    markers = managed_markers(old)
-    if markers:
-        begin, end = markers
-        pattern = re.compile(re.escape(begin) + r".*?" + re.escape(end), re.S)
-        rendered = pattern.sub(block.rstrip(), old, count=1)
-        rendered = rendered.rstrip() + "\n"
-        if rendered == old:
-            ok(f"managed instructions already current in {path}")
-            return
-        backup(path)
-        atomic_write(path, rendered)
-        ok(f"updated managed instructions in {path}")
-    elif old and not force:
-        bak = backup(path)
-        atomic_write(path, old.rstrip() + "\n\n" + block.rstrip() + "\n")
-        ok(f"appended managed instructions to {path} (backup: {bak.name if bak else 'none'})")
-    else:
-        if old:
-            backup(path)
-        atomic_write(path, block.rstrip() + "\n")
-        ok(f"wrote {path}")
+    if rendered == old:
+        ok(f"managed instructions already current in {path}")
+        return
+    prior = backup_file_exclusive(path, old, "Instruction") if old else None
+    mode = path.stat().st_mode & 0o777 if path.is_file() else None
+    atomic_write_bytes(path, rendered, mode=mode)
+    suffix = f" (backup: {prior.name})" if prior else ""
+    ok(f"reconciled managed instructions in {path}{suffix}")
 
 
 def remove_managed_markdown(path: Path, *, dry_run: bool) -> None:
@@ -1329,6 +1346,8 @@ def install_adapters(target: Path, agents: list[str], *, dry_run: bool) -> None:
 
 
 def copy_runtime(target: Path, *, dry_run: bool) -> Path:
+    # Validate the complete bundled dependency before the first runtime write.
+    demo_source = demo_template_path()
     destination = target / ".agentsmith" / "agentsmith.py"
     if not dry_run:
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -1340,6 +1359,14 @@ def copy_runtime(target: Path, *, dry_run: bool) -> Path:
             helper_source = ROOT / helper_name
             if helper_source.exists():
                 shutil.copy2(helper_source, destination.parent / helper_name)
+        demo_destination = destination.parent / "templates" / "first-loop"
+        for relative in DEMO_TEMPLATE_FILES:
+            source = demo_source / relative
+            if not source.is_file() or source.is_symlink():
+                raise CliError(f"Bundled first-loop template file is missing or unsafe: {source}")
+            copied = demo_destination / relative
+            copied.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, copied)
         posix_launcher = destination.parent / "agentsmith"
         windows_launcher = destination.parent / "agentsmith.cmd"
         atomic_write(posix_launcher, textwrap.dedent("""\
@@ -1726,6 +1753,30 @@ def validate_installation_manifest(state: dict[str, Any]) -> dict[str, Any]:
     missing = sorted(required - set(installation))
     if missing:
         raise CliError(f"Installation manifest is missing field(s): {', '.join(missing)}")
+    if installation["scope"] not in {"project", "global"}:
+        raise CliError("Installation manifest scope must be project or global")
+    if not isinstance(installation["include_core"], bool):
+        raise CliError("Installation manifest include_core field must be true or false")
+    agents = installation["agents"]
+    if (
+        not isinstance(agents, list)
+        or not agents
+        or any(not isinstance(agent, str) or agent not in AGENT_IDS for agent in agents)
+        or len(agents) != len(set(agents))
+    ):
+        raise CliError("Installation manifest agents field must contain unique supported agent IDs")
+    profiles = installation["profiles"]
+    if (
+        not isinstance(profiles, list)
+        or any(not isinstance(profile, str) or not profile for profile in profiles)
+        or len(profiles) != len(set(profiles))
+    ):
+        raise CliError("Installation manifest profiles field must contain unique profile names")
+    for name in ("source", "safety", "operator", "tracker", "capabilities"):
+        if not isinstance(installation[name], dict):
+            raise CliError(f"Installation manifest {name} field must be an object")
+    if not isinstance(installation["managed_files"], list):
+        raise CliError("Installation manifest managed_files field must be a list")
     return installation
 
 
@@ -3811,7 +3862,7 @@ def resolve_doctor_path(value: str, base: Path | None = None) -> Path:
 
 
 def managed_block(text: str) -> str:
-    markers = managed_markers(text)
+    markers = validated_managed_markers(text)
     if not markers:
         return ""
     begin, end = markers
@@ -3838,7 +3889,18 @@ def instruction_source(path: Path, scope: str) -> dict[str, Any]:
         return record
     payload = path.read_bytes()
     text = payload.decode("utf-8", errors="replace")
-    block = managed_block(text)
+    try:
+        block = managed_block(text)
+    except CliError:
+        record.update(
+            {
+                "managed_status": "malformed",
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "fingerprint_sha256": hashlib.sha256(payload).hexdigest(),
+                "tokens": max(1, len(text) // 4),
+            }
+        )
+        return record
     has_begin = any(begin in text for begin, _ in ((BEGIN, END), (LEGACY_BEGIN, END), (OLDER_BEGIN, OLDER_END)))
     record.update(
         {
@@ -4420,6 +4482,596 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return 1 if unhealthy and args.strict else 0
 
 
+def profile_catalog() -> list[dict[str, Any]]:
+    """Build stable public profile metadata from the profile sources themselves."""
+    profiles: list[dict[str, Any]] = []
+    for path in sorted((ROOT / "profiles").glob("*.md")):
+        text = path.read_text(encoding="utf-8")
+        heading = re.search(r"^## Profile: (.+)$", text, re.MULTILINE)
+        use = re.search(
+            r"\*\*Use this profile when\*\*\s*(.+?)(?=\n\s*\n)",
+            text,
+            re.DOTALL,
+        )
+        title = heading.group(1).strip() if heading else path.stem.replace("-", " ").title()
+        purpose = re.sub(r"\s+", " ", use.group(1)).strip() if use else f"Use for {title.lower()} work."
+        purpose = purpose.replace("`", "").replace("**", "")
+        preset = ROOT / "config" / "verify-presets" / f"{path.stem}.conf"
+        profiles.append(
+            {
+                "name": path.stem,
+                "purpose": purpose,
+                "work_types": [title],
+                "verification_preset": (
+                    f"config/verify-presets/{preset.name}" if preset.is_file() else "profile-defined manual gates"
+                ),
+            }
+        )
+    return profiles
+
+
+def profile_purpose(name: str) -> str:
+    match = next((item for item in profile_catalog() if item["name"] == name), None)
+    return match["purpose"] if match else "Profile source is unavailable; inspect the installation metadata."
+
+
+def status_capability(state: str, summary: str) -> dict[str, str]:
+    allowed = {"managed", "customized", "not-configured", "missing", "drifted", "unknown"}
+    return {"state": state if state in allowed else "unknown", "summary": summary}
+
+
+def status_instruction_chain(
+    target: Path,
+    project_installation: dict[str, Any] | None,
+    global_installation: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    agents: list[str] = []
+    for installation in (global_installation, project_installation):
+        if not isinstance(installation, dict):
+            continue
+        for agent_id in installation.get("agents", []):
+            if isinstance(agent_id, str) and agent_id in AGENT_IDS and agent_id not in agents:
+                agents.append(agent_id)
+    if not agents:
+        agents = ["codex"]
+
+    rows = {row["id"]: row for row in compatibility_rows(agents)}
+    discovered: dict[str, dict[str, Any]] = {}
+    source_agents: dict[str, set[str]] = {}
+    for agent_id in agents:
+        for source in instruction_chain(rows[agent_id], target)[0]:
+            key = str(Path(source["path"]).resolve())
+            discovered.setdefault(key, source)
+            source_agents.setdefault(key, set()).add(agent_id)
+    if "claude" in agents:
+        adapter = target / "CLAUDE.md"
+        if adapter.is_file():
+            key = str(adapter.resolve())
+            discovered[key] = instruction_source(adapter.resolve(), "generated-adapter")
+            source_agents.setdefault(key, set()).add("claude")
+
+    expected_profiles: dict[str, list[str]] = {}
+    expected_core: dict[str, bool] = {}
+    if isinstance(global_installation, dict):
+        for source in discovered.values():
+            if source["scope"] == "global":
+                expected_profiles[source["path"]] = [
+                    value for value in global_installation.get("profiles", []) if isinstance(value, str)
+                ]
+                expected_core[source["path"]] = bool(global_installation.get("include_core", True))
+    if isinstance(project_installation, dict):
+        for source in discovered.values():
+            if source["scope"] in {"project", "nested", "generated-adapter"}:
+                expected_profiles[source["path"]] = [
+                    value for value in project_installation.get("profiles", []) if isinstance(value, str)
+                ]
+                expected_core[source["path"]] = bool(project_installation.get("include_core", True))
+
+    duplicate_paths: set[str] = set()
+    for agent_id in agents:
+        full_cores = [
+            source["path"]
+            for key, source in discovered.items()
+            if agent_id in source_agents.get(key, set())
+            and source["exists"]
+            and source["generated_core"] is True
+        ]
+        if len(full_cores) > 1:
+            duplicate_paths.update(full_cores)
+    warnings: list[dict[str, str]] = []
+    result: list[dict[str, Any]] = []
+    scope_order = {"global": 0, "project": 1, "nested": 2, "generated-adapter": 3}
+    for source in sorted(discovered.values(), key=lambda item: (scope_order[item["scope"]], item["path"])):
+        state = source["managed_status"]
+        if source["path"] in duplicate_paths:
+            state = "duplicated"
+        elif source["managed"] and source["path"] in expected_profiles and (
+            source["profiles"] != expected_profiles[source["path"]]
+            or source["generated_core"] != expected_core[source["path"]]
+        ):
+            state = "drifted"
+        if state == "unmanaged":
+            state = "unmanaged"
+        elif state not in {"managed", "missing", "drifted", "duplicated", "malformed"}:
+            state = "malformed"
+        result.append(
+            {
+                "scope": source["scope"],
+                "path": str(Path(source["path"]).resolve()),
+                "state": state,
+                "profiles": list(source["profiles"]),
+                "includes_core": source["generated_core"],
+            }
+        )
+    if duplicate_paths:
+        warnings.append(
+            doctor_warning(
+                "duplicate-managed-core",
+                "More than one active instruction source contains the full managed core.",
+                "Keep the project self-contained or switch it to profile-only after confirming the global layer is available.",
+            )
+        )
+    for source in result:
+        if source["state"] in {"drifted", "malformed"}:
+            warnings.append(
+                doctor_warning(
+                    "instruction-drift",
+                    f"Instruction source does not match its installation record: {source['path']}",
+                    "Review foreign content, then re-run the matching install or profile switch.",
+                )
+            )
+    return result, warnings
+
+
+def status_verification(target: Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    config = safe_update_path(target, ".harness/verify.conf")
+    try:
+        plan = build_verification_plan(target)
+    except CliError as exc:
+        empty = {category: {"state": "missing", "evidence": []} for category in VERIFICATION_CATEGORIES}
+        return (
+            {
+                "config_path": str(config),
+                "configured_phases": [],
+                "coverage": empty,
+                "gaps": ["Verification discovery could not inspect this target."],
+            },
+            [doctor_warning("verification-unavailable", str(exc), "Run verify discover after resolving the path or configuration problem.")],
+        )
+    phases = [
+        {
+            "label": phase["label"],
+            "command": phase["command"],
+            "source": "agentsmith" if phase["origin"] == "agentsmith-placeholder" else "user",
+        }
+        for phase in plan["existing_phases"]
+    ]
+    coverage = {
+        name: {"state": cell["state"], "evidence": list(cell["evidence"])}
+        for name, cell in plan["coverage"].items()
+    }
+    gaps = sorted(
+        {
+            cell["gap"]
+            for cell in plan["coverage"].values()
+            if isinstance(cell.get("gap"), str) and cell["gap"]
+        }
+    )
+    warnings = [doctor_warning(item["code"], item["message"], "") for item in plan["warnings"]]
+    warnings.extend(doctor_warning(item["code"], item["message"], "Review verify discover output.") for item in plan["unresolved"])
+    return {
+        "config_path": str(config),
+        "configured_phases": phases,
+        "coverage": coverage,
+        "gaps": gaps,
+    }, warnings
+
+
+def build_status(target: Path) -> dict[str, Any]:
+    target = target.expanduser().resolve()
+    if not target.is_dir():
+        raise CliError(f"Status target is not a directory: {target}")
+    project_state = load_state(target)
+    global_state = load_state(home_dir().resolve())
+    project_installation = project_state.get("installation")
+    global_installation = global_state.get("installation")
+    project_installation = project_installation if isinstance(project_installation, dict) else None
+    global_installation = global_installation if isinstance(global_installation, dict) else None
+    chain, warnings = status_instruction_chain(target, project_installation, global_installation)
+
+    if project_installation and bool(project_installation.get("include_core", True)):
+        topology_kind = "self-contained-project"
+        topology_summary = "The project carries its own managed core and work profile instructions."
+        topology_source = str(state_path(target).resolve())
+    elif project_installation and global_installation:
+        topology_kind = "layered"
+        topology_summary = "A global managed core is combined with project profile instructions."
+        topology_source = f"{state_path(home_dir().resolve()).resolve()} -> {state_path(target).resolve()}"
+    elif project_installation:
+        topology_kind = "incomplete"
+        topology_summary = "The project expects a global layer, but no global installation record is available."
+        topology_source = str(state_path(target).resolve())
+    elif global_installation:
+        topology_kind = "global-only"
+        topology_summary = "Only the global AgentSmith installation record applies to this target."
+        topology_source = str(state_path(home_dir().resolve()).resolve())
+    elif any(source["state"] in {"managed", "drifted", "duplicated", "malformed"} for source in chain):
+        topology_kind = "legacy"
+        topology_summary = "Managed instructions exist without a current installation record."
+        topology_source = next(source["path"] for source in chain if source["state"] != "missing")
+    else:
+        topology_kind = "unmanaged"
+        topology_summary = "No managed AgentSmith installation was found for this target."
+        topology_source = str(target)
+
+    active_installation = project_installation or global_installation or {}
+    profile_source = "project" if project_installation else "global" if global_installation else "unknown"
+    active_profiles = [
+        {"name": name, "source": profile_source, "purpose": profile_purpose(name)}
+        for name in active_installation.get("profiles", [])
+        if isinstance(name, str)
+    ]
+    if not active_profiles:
+        legacy_profiles = next((source["profiles"] for source in reversed(chain) if source["profiles"]), [])
+        active_profiles = [
+            {"name": name, "source": "legacy", "purpose": profile_purpose(name)} for name in legacy_profiles
+        ]
+
+    installations = [item for item in (global_installation, project_installation) if isinstance(item, dict)]
+    capabilities: dict[str, Any] = {
+        "skills": False,
+        "mcp": [],
+        "hooks": False,
+        "handoff_hooks": False,
+        "ui_design_hook": False,
+    }
+    safety: dict[str, Any] = {}
+    managed_files: list[Any] = []
+    for installation in installations:
+        installation_safety = installation.get("safety", {})
+        if isinstance(installation_safety, dict):
+            safety.update(installation_safety)
+        installed_capabilities = installation.get("capabilities", {})
+        if isinstance(installed_capabilities, dict):
+            capabilities["skills"] = bool(capabilities["skills"] or installed_capabilities.get("skills"))
+            for name in ("hooks", "handoff_hooks", "ui_design_hook"):
+                capabilities[name] = bool(capabilities[name] or installed_capabilities.get(name))
+            installed_mcp = installed_capabilities.get("mcp", [])
+            if isinstance(installed_mcp, list):
+                capabilities["mcp"] = list(dict.fromkeys([*capabilities["mcp"], *installed_mcp]))
+        installed_files = installation.get("managed_files", [])
+        if isinstance(installed_files, list):
+            managed_files.extend(installed_files)
+    runtime_candidates: list[Path] = []
+    if project_installation:
+        runtime_candidates.append(target / ".agentsmith" / "agentsmith.py")
+    if global_installation:
+        runtime_candidates.append(home_dir().resolve() / ".agentsmith" / "agentsmith.py")
+    runtime = next(
+        (path for path in runtime_candidates if path.is_file()),
+        runtime_candidates[0] if runtime_candidates else target / ".agentsmith" / "agentsmith.py",
+    )
+    managed_capabilities = {
+        "safety": status_capability("managed" if safety else "not-configured", f"{len(safety)} managed agent safety setting(s)." if safety else "No managed native safety setting is recorded."),
+        "skills": status_capability("managed" if capabilities.get("skills") else "not-configured", "Managed skills are installed." if capabilities.get("skills") else "Managed skills are not enabled."),
+        "mcp": status_capability("managed" if capabilities.get("mcp") else "not-configured", f"{len(capabilities.get('mcp', []))} managed MCP server(s)." if isinstance(capabilities.get("mcp"), list) and capabilities.get("mcp") else "Managed MCP servers are not enabled."),
+        "hooks": status_capability("managed" if any(capabilities.get(name) for name in ("hooks", "handoff_hooks", "ui_design_hook")) else "not-configured", "Managed hooks are enabled." if any(capabilities.get(name) for name in ("hooks", "handoff_hooks", "ui_design_hook")) else "Managed hooks are not enabled."),
+        "runtime": status_capability("managed" if runtime.is_file() else "missing", f"Runtime present at {runtime}." if runtime.is_file() else "No project-local AgentSmith runtime was found."),
+        "owned_files": status_capability("managed" if managed_files else "not-configured", f"{len(managed_files)} managed file(s) are recorded." if managed_files else "No additional managed-file inventory is recorded."),
+    }
+    verification, verification_warnings = status_verification(target)
+    warnings.extend(verification_warnings)
+
+    if topology_kind == "unmanaged":
+        next_action = {
+            "command": native_command("agentsmith", "profiles", "recommend", "--target", str(target)),
+            "reason": "Choose an evidence-backed work profile before installing managed instructions.",
+        }
+    elif any(source["state"] in {"drifted", "malformed"} for source in chain):
+        next_action = {
+            "command": native_command("agentsmith", "doctor", "--target", str(target)),
+            "reason": "Resolve instruction drift before changing the active profile.",
+        }
+    else:
+        next_action = {
+            "command": native_command("agentsmith", "verify", "discover", "--target", str(target)),
+            "reason": "Review configured and uncovered evidence before running the project checks.",
+        }
+    return {
+        "schema_version": 1,
+        "target": str(target),
+        "topology": {"kind": topology_kind, "source": topology_source, "summary": topology_summary},
+        "active_profiles": active_profiles,
+        "instruction_chain": chain,
+        "managed_capabilities": managed_capabilities,
+        "verification": verification,
+        "warnings": warnings,
+        "next_action": next_action,
+    }
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    status = build_status(Path(args.target or os.getcwd()))
+    if args.json:
+        print(json.dumps(status, indent=2, ensure_ascii=False))
+        return 0
+    print(f"Topology: {status['topology']['kind']}")
+    print(f"  {status['topology']['summary']}")
+    print("Active profiles:")
+    if status["active_profiles"]:
+        for profile in status["active_profiles"]:
+            print(f"  {profile['name']} ({profile['source']}): {profile['purpose']}")
+    else:
+        print("  none")
+    print("Instruction chain:")
+    for source in status["instruction_chain"]:
+        print(f"  {source['scope']}: {source['state']} — {source['path']}")
+    print("Managed capabilities:")
+    for name, capability in status["managed_capabilities"].items():
+        print(f"  {name}: {capability['state']} — {capability['summary']}")
+    print("Verification:")
+    print(f"  config: {status['verification']['config_path']}")
+    for name, cell in status["verification"]["coverage"].items():
+        print(f"  {name.replace('_', ' ')}: {cell['state']}")
+    for warning in status["warnings"]:
+        suffix = f" {warning['recommendation']}" if warning["recommendation"] else ""
+        print(f"WARNING [{warning['code']}]: {warning['message']}{suffix}")
+    print(f"Next action: {status['next_action']['reason']}")
+    print(f"  {status['next_action']['command']}")
+    return 0
+
+
+def cmd_profiles_list(args: argparse.Namespace) -> int:
+    payload = {"schema_version": 1, "profiles": profile_catalog()}
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+    for profile in payload["profiles"]:
+        print(f"{profile['name']}: {profile['purpose']}")
+        print(f"  Verification preset: {profile['verification_preset']}")
+    return 0
+
+
+def profile_recommendation(target: Path) -> dict[str, Any]:
+    target = target.expanduser().resolve()
+    plan = build_verification_plan(target)
+    signals: list[dict[str, str]] = []
+    profile_names: list[str] = []
+    stack_profiles = {
+        "python": "software-dev",
+        "node": "software-dev",
+        "go": "software-dev",
+        "rust": "software-dev",
+        "shell": "devops-setup",
+        "documentation": "document-creation",
+    }
+    for stack in plan["detected_stacks"]:
+        profile = stack_profiles[stack["name"]]
+        if profile not in profile_names:
+            profile_names.append(profile)
+        for source in stack["evidence_paths"]:
+            signals.append(
+                {
+                    "kind": f"{stack['name']}-evidence",
+                    "source_path": source,
+                    "detail": f"{stack['name'].title()} work signal under repository root {stack['root']}.",
+                }
+            )
+    if not profile_names:
+        inferred = detect_profile(target)
+        profile_names.append(inferred)
+        signals.append(
+            {
+                "kind": "repository-shape",
+                "source_path": str(target),
+                "detail": f"The repository shape maps to the {inferred} profile.",
+            }
+        )
+    profile_names = profile_names[:2]
+    gaps = [
+        name.replace("_", " ")
+        for name, cell in plan["coverage"].items()
+        if cell["state"] != "configured"
+    ]
+    recommendations = [
+        {
+            "rank": index,
+            "profile": name,
+            "reason": f"Repository evidence matches {name} work and its verification model.",
+            "tradeoffs": [
+                "The profile changes the active quality gates, not the project files or verification commands.",
+                "Review uncovered verification cells after switching.",
+            ],
+            "coverage_gaps": gaps,
+        }
+        for index, name in enumerate(profile_names, 1)
+    ]
+    command = native_command(
+        "agentsmith", "profiles", "switch", "--target", str(target), "--profile", profile_names[0], "--dry-run"
+    )
+    return {
+        "schema_version": 1,
+        "target": str(target),
+        "signals": sorted(signals, key=lambda item: (item["source_path"], item["kind"])),
+        "recommendations": recommendations,
+        "ambiguous": len(profile_names) > 1 or bool(plan["unresolved"]),
+        "next_action": {
+            "command": command,
+            "reason": "Preview the managed instruction changes before switching profiles.",
+        },
+    }
+
+
+def cmd_profiles_recommend(args: argparse.Namespace) -> int:
+    payload = profile_recommendation(Path(args.target or os.getcwd()))
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+    for signal in payload["signals"]:
+        print(f"Evidence: {signal['detail']} ({signal['source_path']})")
+    for recommendation in payload["recommendations"]:
+        print(f"{recommendation['rank']}. {recommendation['profile']}: {recommendation['reason']}")
+    print(f"Next action: {payload['next_action']['reason']}")
+    print(f"  {payload['next_action']['command']}")
+    return 0
+
+
+def render_profile_switch_document(path: Path, block: str, *, force: bool = False) -> tuple[bytes, bytes]:
+    old = path.read_bytes() if path.exists() else b""
+    try:
+        text = old.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise CliError(f"Managed instruction reconciliation cannot preserve non-UTF-8 file {path}: {exc}") from exc
+    newline = "\r\n" if b"\r\n" in old else "\n"
+    replacement = block.replace("\r\n", "\n").replace("\n", newline).rstrip("\r\n")
+    markers = validated_managed_markers(text, path)
+    if markers:
+        begin, end = markers
+        pattern = re.compile(re.escape(begin) + r".*?" + re.escape(end), re.DOTALL)
+        rendered, count = pattern.subn(replacement, text, count=1)
+        if count != 1:
+            raise CliError(f"Managed instruction reconciliation refused malformed markers in {path}")
+    elif text and not force:
+        separator = "" if text.endswith(newline * 2) else newline if text.endswith(newline) else newline * 2
+        rendered = text + separator + replacement + newline
+    else:
+        rendered = replacement + newline
+    return old, rendered.encode("utf-8")
+
+
+def profile_switch_args(installation: dict[str, Any]) -> argparse.Namespace:
+    operator = installation.get("operator", {})
+    operator = operator if isinstance(operator, dict) else {}
+    tracker = installation.get("tracker", {})
+    tracker = tracker if isinstance(tracker, dict) else {}
+    return argparse.Namespace(
+        operator_name=operator.get("name"),
+        operator_role=operator.get("role"),
+        operator_bio=operator.get("bio"),
+        tracker=tracker.get("name"),
+        tracker_writes=tracker.get("writes"),
+    )
+
+
+def cmd_profiles_switch(args: argparse.Namespace) -> int:
+    target = Path(args.target).expanduser().resolve()
+    if not target.is_dir():
+        raise CliError(f"Profile switch target is not a directory: {target}")
+    state_file = safe_update_path(target, ".agentsmith/state.json")
+    if not state_file.is_file():
+        raise CliError("Profile switch requires an existing project installation manifest; run install first")
+    try:
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise CliError(f"Cannot read project installation manifest {state_file}: {exc}") from exc
+    if not isinstance(state, dict):
+        raise CliError("Profile switch requires a valid project-scoped installation manifest")
+    installation = validate_installation_manifest(state)
+    if installation.get("scope") != "project":
+        raise CliError("Profile switch requires a valid project-scoped installation manifest")
+    profiles = csv(args.profile)
+    if not profiles:
+        raise CliError("Profile switch requires --profile NAME[,NAME...]")
+    if len(profiles) != len(set(profiles)):
+        raise CliError("Profile switch profile names must be unique")
+    available = {item["name"] for item in profile_catalog()}
+    missing = [name for name in profiles if name not in available]
+    if missing:
+        raise CliError(f"Unknown profile(s): {', '.join(missing)}. Run 'agentsmith profiles list'.")
+    agents = installation.get("agents", [])
+    if not isinstance(agents, list) or not agents or any(agent not in AGENT_IDS for agent in agents):
+        raise CliError("Project installation manifest has no valid managed agent selection")
+
+    canonical, generated = instruction_paths(target, agents, False)
+    destinations = [safe_update_path(target, path.relative_to(target)) for path in (*canonical, *generated)]
+    for path in destinations:
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        validated_managed_markers(text, path)
+    switch_args = profile_switch_args(installation)
+    recovery = {
+        "operator_name": str(switch_args.operator_name or ""),
+        "operator_role": str(switch_args.operator_role or ""),
+        "operator_bio": str(switch_args.operator_bio or ""),
+        "tracker": str(switch_args.tracker or ""),
+        "tracker_writes": str(switch_args.tracker_writes or "ask"),
+    }
+    block = build_instructions(
+        switch_args,
+        profiles,
+        bool(installation.get("include_core", True)),
+        recovery,
+    )
+    line_count = len(block.splitlines())
+    token_estimate = len(block) // 4
+    if line_count > 600 or token_estimate > 10000:
+        raise CliError(
+            f"Profile stack exceeds the static-context budget ({line_count} lines, ~{token_estimate} tokens); "
+            "switch between dominant profiles instead of stacking them"
+        )
+    rendered = [(path, *render_profile_switch_document(path, block)) for path in destinations]
+    verification = build_verification_plan(target)
+    config = safe_update_path(target, ".harness/verify.conf")
+    gaps = [name.replace("_", " ") for name, cell in verification["coverage"].items() if cell["state"] != "configured"]
+    next_state = json.loads(json.dumps(state))
+    next_state["installation"]["profiles"] = profiles
+    next_state_text = json.dumps(next_state, indent=2, ensure_ascii=False) + "\n"
+    original_state_bytes = state_file.read_bytes()
+
+    if args.dry_run:
+        print("Profile switch dry run — no files changed.")
+        for path, old, new in rendered:
+            if old != new:
+                print(f"Would update managed instructions in {path}")
+            text = old.decode("utf-8") if old else ""
+            block_text = managed_block(text)
+            if (text.replace(block_text, "", 1) if block_text else text).strip():
+                print(f"Preserve foreign content byte-for-byte in {path}")
+        if state_file.read_text(encoding="utf-8") != next_state_text:
+            print(f"Would update active profiles in {state_file}")
+        print(f"Preserve every non-profile installation field in {state_file}")
+        print(f"Preserve the hand-written verification configuration byte-for-byte: {config}")
+        print("Unrepresented profile gates: " + (", ".join(gaps) if gaps else "none detected"))
+        return 0
+
+    changed = [(path, old, new) for path, old, new in rendered if old != new]
+    for path, old, _ in changed:
+        if not path.is_file() or path.read_bytes() != old:
+            raise CliError(f"Profile switch is stale: instruction file changed during preflight: {path}")
+    if state_file.read_bytes() != original_state_bytes:
+        raise CliError("Profile switch is stale: installation manifest changed during preflight")
+    backups: list[Path] = []
+    try:
+        for path, old, _ in changed:
+            if old:
+                backups.append(backup_file_exclusive(path, old, "Instruction"))
+    except Exception:
+        for created in backups:
+            created.unlink(missing_ok=True)
+        raise
+    modes = {path: path.stat().st_mode & 0o777 if path.is_file() else None for path, _, _ in changed}
+    try:
+        for path, _, new in changed:
+            atomic_write_bytes(path, new, mode=modes[path])
+        if state_file.read_text(encoding="utf-8") != next_state_text:
+            state_mode = state_file.stat().st_mode & 0o777
+            atomic_write_bytes(state_file, next_state_text.encode("utf-8"), mode=state_mode)
+    except Exception as exc:
+        for path, old, _ in changed:
+            try:
+                atomic_write_bytes(path, old, mode=modes[path])
+            except Exception:
+                pass
+        raise CliError(f"Profile switch failed and restored the original instruction bytes: {exc}") from exc
+    ok(f"switched active project profile(s) to {', '.join(profiles)}")
+    for path in backups:
+        say(f"instruction backup: {path}")
+    say(f"preserved verification configuration: {config}")
+    say("unrepresented profile gates: " + (", ".join(gaps) if gaps else "none detected"))
+    return 0
+
+
 def parse_verify_conf(path: Path) -> list[tuple[str, str]]:
     phases = []
     for raw in path.read_text(encoding="utf-8").splitlines():
@@ -4429,6 +5081,959 @@ def parse_verify_conf(path: Path) -> list[tuple[str, str]]:
         if command.strip():
             phases.append((label.strip(), command.strip()))
     return phases
+
+
+VERIFICATION_CATEGORIES = (
+    "build",
+    "type_check",
+    "lint_static_analysis",
+    "unit_integration_tests",
+    "dependency_risk",
+    "secret_scan",
+    "real_path_exercise",
+    "judgment_evaluation",
+)
+VERIFICATION_STATES = {"configured", "recommended", "manual", "missing", "not-applicable"}
+VERIFICATION_PLACEHOLDERS = {
+    "python3 -c \"raise SystemExit('configure .harness/verify.conf')\"",
+    'echo "wire real verification phases in .harness/verify.conf" && exit 1',
+}
+VERIFICATION_SCAN_SKIPS = {
+    ".git", ".hg", ".svn", ".tox", ".venv", "__pycache__", "coverage", "dist", "node_modules",
+    "target", "vendor", "venv",
+}
+
+
+def verification_is_placeholder(label: str, command: str) -> bool:
+    return label == "unwired" and command in VERIFICATION_PLACEHOLDERS
+
+
+def verification_relative_path(value: str, context: str, *, allow_dot: bool = False) -> Path:
+    if not isinstance(value, str) or not value or "\0" in value:
+        raise CliError(f"Verification plan {context} must be a non-empty relative path")
+    path = Path(value)
+    if value == "." and allow_dot:
+        return path
+    if path.is_absolute() or ".." in path.parts or not path.parts or value == ".":
+        raise CliError(f"Verification plan {context} escapes the target: {value!r}")
+    return path
+
+
+def verification_repository_files(target: Path) -> list[Path]:
+    """Return only files whose names can provide discovery evidence; never follow links."""
+    selected: list[Path] = []
+    manifest_names = {
+        "Cargo.toml", "Makefile", "go.mod", "package.json", "pyproject.toml", "requirements.txt",
+        "setup.cfg", "setup.py",
+    }
+    for directory, names, files in os.walk(target, followlinks=False):
+        current = Path(directory)
+        names[:] = sorted(
+            name for name in names
+            if name not in VERIFICATION_SCAN_SKIPS and not (current / name).is_symlink()
+        )
+        relative_directory = current.relative_to(target)
+        for name in sorted(files):
+            path = current / name
+            if path.is_symlink() or not path.is_file():
+                continue
+            relative = path.relative_to(target)
+            parts = relative.parts
+            in_ci = len(parts) >= 3 and parts[:2] == (".github", "workflows") and path.suffix in {".yml", ".yaml"}
+            in_tests = "tests" in parts[:-1] and (
+                path.suffix in {".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs"}
+                or ".test." in name or ".spec." in name
+            )
+            root_readme = relative_directory == Path() and name.lower() in {"readme.md", "readme.rst"}
+            docs_source = parts and parts[0] in {"doc", "docs"} and path.suffix.lower() in {".md", ".rst"}
+            if name in manifest_names or name.startswith("requirements") and name.endswith(".txt"):
+                selected.append(path)
+            elif in_ci or in_tests or path.suffix == ".sh" or root_readme or docs_source:
+                selected.append(path)
+    configuration = safe_update_path(target, ".harness/verify.conf")
+    if configuration.is_file() and not configuration.is_symlink() and configuration not in selected:
+        selected.append(configuration)
+    return sorted(set(selected), key=lambda path: path.relative_to(target).as_posix())
+
+
+def verification_stack_root(target: Path, path: Path, roots: list[Path]) -> Path:
+    containing = [root for root in roots if path == root or root in path.parents]
+    return max(containing, key=lambda item: len(item.parts), default=target)
+
+
+def verification_phase_categories(label: str, command: str) -> list[str]:
+    label_tokens = set(re.findall(r"[a-z0-9]+", label.lower()))
+    try:
+        arguments = [item.strip('"').lower() for item in shlex.split(command, posix=os.name != "nt")]
+    except ValueError:
+        arguments = []
+    executable = arguments[0] if arguments else ""
+    tail = arguments[1:]
+    python_module = tail[1] if executable in {"python", "python3", "py"} and len(tail) >= 2 and tail[0] == "-m" else ""
+    categories: list[str] = []
+    if label_tokens & {"build", "compile"} or (
+        executable in {"go", "cargo"} and tail[:1] == ["build"]
+    ) or (executable == "npm" and tail[:2] == ["run", "build"]):
+        categories.append("build")
+    if label_tokens & {"typecheck", "typing", "types"} or executable in {"mypy", "pyright", "tsc"} or python_module in {"mypy", "pyright"} or (
+        executable == "npm" and tail[:2] == ["run", "typecheck"]
+    ):
+        categories.append("type_check")
+    if label_tokens & {"lint", "static", "syntax"} or executable in {"ruff", "flake8", "shellcheck"} or python_module in {"ruff", "flake8"} or (
+        executable == "cargo" and tail[:1] == ["clippy"]
+    ) or (executable == "go" and tail[:1] == ["vet"]) or (executable == "bash" and tail[:1] == ["-n"]):
+        categories.append("lint_static_analysis")
+    if label_tokens & {"test", "tests", "unit", "integration"} or executable == "pytest" or python_module in {"unittest", "pytest"} or (
+        executable in {"npm", "go", "cargo"} and tail[:1] == ["test"]
+    ):
+        categories.append("unit_integration_tests")
+    if label_tokens & {"audit", "vulnerability", "vulnerabilities", "dependency", "dependencies"} or executable in {"pip-audit", "govulncheck"} or python_module == "pip_audit" or (
+        executable in {"cargo", "npm"} and tail[:1] == ["audit"]
+    ):
+        categories.append("dependency_risk")
+    if label_tokens & {"secret", "secrets"} or executable in {"gitleaks", "trufflehog"} or (
+        executable == "agentsmith" and tail[:1] == ["secret-scan"]
+    ):
+        categories.append("secret_scan")
+    if label_tokens & {"exercise", "e2e", "smoke"} or "end-to-end" in label.lower():
+        categories.append("real_path_exercise")
+    if label_tokens & {"evaluation", "rubric", "review", "judgment"}:
+        categories.append("judgment_evaluation")
+    return categories
+
+
+def verification_command_tool(command: str) -> str | None:
+    try:
+        arguments = shlex.split(command, posix=os.name != "nt")
+    except ValueError:
+        return None
+    while arguments and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", arguments[0]):
+        arguments.pop(0)
+    if arguments and arguments[0].lower() == "env":
+        arguments.pop(0)
+        while arguments and (arguments[0].startswith("-") or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", arguments[0])):
+            arguments.pop(0)
+    if not arguments:
+        return None
+    executable = arguments[0].strip('"')
+    shell_builtins = {"!", ".", ":", "[", "case", "cd", "echo", "exit", "false", "for", "if", "printf", "set", "test", "true", "while", "{"}
+    return None if executable.lower() in shell_builtins else executable
+
+
+def verification_command_is_noop(command: str) -> bool:
+    """Identify direct success/output stubs that cannot prove a verification claim."""
+    try:
+        lexer = shlex.shlex(command, posix=os.name != "nt", punctuation_chars=";&|")
+        lexer.whitespace_split = True
+        arguments = list(lexer)
+    except ValueError:
+        return False
+    operators = {"&&", "||", ";", "|", "&"}
+    segments: list[list[str]] = [[]]
+    joins: list[str] = []
+    for argument in arguments:
+        if argument in operators:
+            joins.append(argument)
+            segments.append([])
+        else:
+            segments[-1].append(argument)
+    if not segments or any(not segment for segment in segments) or len(joins) != len(segments) - 1:
+        return False
+    if "&" in joins:
+        return True
+
+    def classify(segment: list[str]) -> tuple[bool, bool | None, bool]:
+        words = list(segment)
+        while words and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0]):
+            words.pop(0)
+        if words and words[0].strip('"').lower() == "env":
+            words.pop(0)
+            while words and (words[0].startswith("-") or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0])):
+                words.pop(0)
+        if not words:
+            return False, False, False
+        executable = words[0].strip('"').lower().replace("\\", "/").rsplit("/", 1)[-1]
+        tail = [item.strip('"') for item in words[1:]]
+        if executable in {"echo", "printf"}:
+            return True, True, False
+        if executable in {":", "true"}:
+            return True, True, False
+        if executable == "false":
+            return True, False, False
+        if executable == "cd":
+            return True, None, False
+        if executable == "exit" and (not tail or len(tail) == 1 and re.fullmatch(r"\d+", tail[0])):
+            return True, not tail or tail == ["0"], True
+        return False, False, False
+
+    status: bool | None = None
+    for index, segment in enumerate(segments):
+        join = joins[index - 1] if index else None
+        should_execute = index == 0 or join in {";", "|"} or join == "&&" and status is not False or join == "||" and status is not True
+        if not should_execute:
+            continue
+        no_op, status, terminates = classify(segment)
+        if not no_op:
+            return False
+        if terminates:
+            return True
+    return True
+
+
+def verification_proposal(
+    category: str,
+    label: str,
+    command: str,
+    detector: str,
+    source_path: str,
+    reason: str,
+    *,
+    confidence: str = "high",
+    requires_review: bool = False,
+) -> dict[str, Any]:
+    return {
+        "category": category,
+        "label": label,
+        "command": command,
+        "detector": detector,
+        "source_path": source_path,
+        "reason": reason,
+        "confidence_class": confidence,
+        "requires_review": requires_review,
+    }
+
+
+def verification_python_metadata(path: Path, warnings: list[dict[str, str]]) -> dict[str, Any]:
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+        warnings.append({
+            "code": "unreadable-python-manifest",
+            "message": f"Could not inspect {path.name} as TOML: {exc}",
+        })
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def build_verification_plan(target: Path) -> dict[str, Any]:
+    target = target.expanduser().resolve()
+    if not target.is_dir():
+        raise CliError(f"Verification discovery target is not a directory: {target}")
+    files = verification_repository_files(target)
+    relative = {path: path.relative_to(target).as_posix() for path in files}
+    warnings: list[dict[str, str]] = []
+
+    manifest_stacks = {
+        "pyproject.toml": "python", "requirements.txt": "python", "setup.cfg": "python", "setup.py": "python",
+        "package.json": "node", "go.mod": "go", "Cargo.toml": "rust",
+    }
+    stack_evidence: dict[tuple[str, Path], set[str]] = {}
+    roots_by_stack: dict[str, list[Path]] = {name: [] for name in ("python", "node", "go", "rust")}
+    for path in files:
+        name = path.name
+        stack = manifest_stacks.get(name)
+        if stack is None and name.startswith("requirements") and name.endswith(".txt"):
+            stack = "python"
+        if stack is None:
+            continue
+        root = path.parent
+        roots_by_stack[stack].append(root)
+        stack_evidence.setdefault((stack, root), set()).add(relative[path])
+
+    python_roots = roots_by_stack["python"]
+    for path in files:
+        rel = relative[path]
+        if "tests" in path.relative_to(target).parts[:-1] and path.suffix == ".py":
+            root = verification_stack_root(target, path, python_roots)
+            stack_evidence.setdefault(("python", root), set()).add(rel)
+    has_primary_stacks = bool(stack_evidence)
+    if not has_primary_stacks:
+        shell_files = [path for path in files if path.suffix == ".sh"]
+        documentation = [
+            path for path in files
+            if path.name.lower() in {"readme.md", "readme.rst"}
+            or path.relative_to(target).parts[0] in {"doc", "docs"}
+        ]
+        if shell_files:
+            stack_evidence[("shell", target)] = {relative[path] for path in shell_files}
+        if documentation and not shell_files:
+            stack_evidence[("documentation", target)] = {relative[path] for path in documentation}
+
+    detected_stacks = [
+        {
+            "name": name,
+            "root": "." if root == target else root.relative_to(target).as_posix(),
+            "evidence_paths": sorted(paths),
+        }
+        for (name, root), paths in sorted(
+            stack_evidence.items(), key=lambda item: (item[0][1].relative_to(target).as_posix(), item[0][0])
+        )
+    ]
+
+    configuration = safe_update_path(target, ".harness/verify.conf")
+    existing_phases: list[dict[str, Any]] = []
+    existing_runtime: list[tuple[dict[str, Any], str, str, bool]] = []
+    if configuration.is_file() and not configuration.is_symlink():
+        try:
+            configuration.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise CliError(f"Cannot read verification config {configuration}: {exc}") from exc
+        for label, command in parse_verify_conf(configuration):
+            categories = verification_phase_categories(label, command)
+            safe_label, _ = redact_secret_text(label)
+            safe_command, _ = redact_secret_text(command)
+            phase = {
+                "label": safe_label,
+                "command": safe_command,
+                "categories": categories,
+                "origin": "agentsmith-placeholder" if verification_is_placeholder(label, command) else "user",
+            }
+            existing_phases.append(phase)
+            existing_runtime.append((phase, label, command, verification_command_is_noop(command)))
+
+    evidence: list[dict[str, str]] = []
+    manifests = [path for path in files if any(relative[path] in item["evidence_paths"] for item in detected_stacks)
+                 and path.name in manifest_stacks]
+    for path in manifests:
+        details = {
+            "pyproject.toml": "Python project metadata",
+            "package.json": "Node.js project metadata; package-script bodies remain untrusted",
+            "go.mod": "Go module metadata",
+            "Cargo.toml": "Rust package metadata",
+            "setup.cfg": "Python project configuration",
+            "setup.py": "Python project metadata",
+            "requirements.txt": "Python dependency declaration",
+        }
+        evidence.append({"kind": "manifest", "path": relative[path], "detail": details.get(path.name, "Project metadata")})
+
+    test_files: list[Path] = []
+    for path in files:
+        parts = path.relative_to(target).parts
+        if "tests" not in parts[:-1]:
+            continue
+        test_files.append(path)
+        detail = "test source"
+        if path.suffix == ".py":
+            try:
+                source = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeError):
+                source = ""
+            detail = "standard-library unittest module" if re.search(r"(?:^|\n)\s*(?:import|from)\s+unittest\b", source) else "Python test module"
+        evidence.append({"kind": "test", "path": relative[path], "detail": detail})
+
+    if configuration.is_file() and not configuration.is_symlink():
+        phases = parse_verify_conf(configuration)
+        detail = (
+            "untouched generated unwired placeholder"
+            if len(phases) == 1 and verification_is_placeholder(*phases[0])
+            else "existing project verification configuration"
+        )
+        evidence.append({"kind": "configuration", "path": ".harness/verify.conf", "detail": detail})
+    ci_files = [
+        path for path in files
+        if len(path.relative_to(target).parts) >= 3 and path.relative_to(target).parts[:2] == (".github", "workflows")
+    ]
+    for path in ci_files:
+        evidence.append({
+            "kind": "ci-hint",
+            "path": relative[path],
+            "detail": "untrusted command hint; never executed or copied into a proposal",
+        })
+    task_files = [path for path in files if path.name == "Makefile"]
+    for path in task_files:
+        evidence.append({
+            "kind": "task-runner-hint",
+            "path": relative[path],
+            "detail": "untrusted recipe hint; never executed or copied into a proposal",
+        })
+    if not has_primary_stacks:
+        for path in files:
+            if path.suffix == ".sh":
+                evidence.append({"kind": "source", "path": relative[path], "detail": "shell source file"})
+
+    unresolved: list[dict[str, Any]] = []
+    software_stacks = [item for item in detected_stacks if item["name"] in {"python", "node", "go", "rust"}]
+    stack_names = {item["name"] for item in software_stacks}
+    stack_roots = {item["root"] for item in software_stacks}
+    nested_stack_roots = sorted(root for root in stack_roots if root != ".")
+    if len(stack_roots) > 1 or nested_stack_roots:
+        unresolved.append({
+            "code": "monorepo-ambiguity",
+            "message": (
+                "Software metadata was detected below the target root; review each root before composing "
+                "one verification configuration."
+            ),
+            "paths": sorted(stack_roots),
+        })
+    if len(stack_names) > 1:
+        unresolved.append({
+            "code": "mixed-stack-ambiguity",
+            "message": "Several software stacks were detected; discovery will not silently choose one toolchain.",
+            "paths": sorted({path for item in software_stacks for path in item["evidence_paths"]}),
+        })
+    ambiguous = bool(unresolved)
+    proposed: list[dict[str, Any]] = []
+
+    if not ambiguous:
+        for stack in detected_stacks:
+            name = stack["name"]
+            root = stack["root"]
+            sources = stack["evidence_paths"]
+            if name == "python":
+                pyproject_rel = next((item for item in sources if item.endswith("pyproject.toml")), None)
+                metadata: dict[str, Any] = {}
+                if pyproject_rel:
+                    metadata = verification_python_metadata(target / pyproject_rel, warnings)
+                    if isinstance(metadata.get("build-system"), dict):
+                        proposed.append(verification_proposal(
+                            "build", "build", "python3 -m build", "python-build-system", pyproject_rel,
+                            "pyproject.toml declares a build backend.", requires_review=True,
+                        ))
+                    tool = metadata.get("tool", {})
+                    if isinstance(tool, dict) and "mypy" in tool:
+                        proposed.append(verification_proposal(
+                            "type_check", "typecheck", "python3 -m mypy .", "python-mypy", pyproject_rel,
+                            "pyproject.toml configures mypy.", requires_review=True,
+                        ))
+                    if isinstance(tool, dict) and "ruff" in tool:
+                        proposed.append(verification_proposal(
+                            "lint_static_analysis", "lint", "python3 -m ruff check .", "python-ruff", pyproject_rel,
+                            "pyproject.toml configures Ruff.", requires_review=True,
+                        ))
+                python_tests = [path for path in test_files if relative[path] in sources]
+                unittest_source = next(
+                    (
+                        relative[path] for path in python_tests
+                        if "unittest" in path.read_text(encoding="utf-8", errors="replace")
+                    ),
+                    None,
+                )
+                if unittest_source:
+                    proposed.append(verification_proposal(
+                        "unit_integration_tests", "tests", "python3 -m unittest discover -s tests",
+                        "python-stdlib-unittest", unittest_source,
+                        "A unittest module is present under tests/.",
+                    ))
+                elif python_tests:
+                    proposed.append(verification_proposal(
+                        "unit_integration_tests", "tests", "python3 -m pytest", "python-pytest",
+                        relative[python_tests[0]], "Python test modules are present under tests/.",
+                        requires_review=True,
+                    ))
+            elif name == "node":
+                package_rel = next(item for item in sources if item.endswith("package.json"))
+                try:
+                    package = json.loads((target / package_rel).read_text(encoding="utf-8"))
+                except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                    warnings.append({"code": "unreadable-node-manifest", "message": f"Could not inspect {package_rel}: {exc}"})
+                    package = {}
+                scripts = package.get("scripts", {}) if isinstance(package, dict) else {}
+                scripts = scripts if isinstance(scripts, dict) else {}
+                node_commands = {
+                    "build": ("build", "build", "npm run build"),
+                    "typecheck": ("type_check", "typecheck", "npm run typecheck"),
+                    "lint": ("lint_static_analysis", "lint", "npm run lint"),
+                    "test": ("unit_integration_tests", "tests", "npm test"),
+                }
+                for script, (category, label, command) in node_commands.items():
+                    if script in scripts:
+                        proposed.append(verification_proposal(
+                            category, label, command, f"node-package-{script}", package_rel,
+                            f"package.json declares a {script} script; its body remains untrusted.",
+                            requires_review=True,
+                        ))
+            elif name == "go":
+                source = next(item for item in sources if item.endswith("go.mod"))
+                proposed.extend((
+                    verification_proposal("build", "build", "go build ./...", "go-module", source, "A Go module is present."),
+                    verification_proposal("lint_static_analysis", "static-analysis", "go vet ./...", "go-module", source, "A Go module is present."),
+                    verification_proposal("unit_integration_tests", "tests", "go test ./...", "go-module", source, "A Go module is present."),
+                ))
+            elif name == "rust":
+                source = next(item for item in sources if item.endswith("Cargo.toml"))
+                proposed.extend((
+                    verification_proposal("build", "build", "cargo build", "rust-cargo", source, "A Cargo package is present."),
+                    verification_proposal("lint_static_analysis", "lint", "cargo clippy --all-targets --all-features", "rust-cargo", source, "A Cargo package is present."),
+                    verification_proposal("unit_integration_tests", "tests", "cargo test", "rust-cargo", source, "A Cargo package is present."),
+                ))
+            elif name == "shell":
+                shell_sources = sorted(path for path in sources if path.endswith(".sh"))
+                if shell_sources:
+                    command = native_command("bash", "-n", *shell_sources)
+                    proposed.append(verification_proposal(
+                        "lint_static_analysis", "shell-syntax", command, "shell-bash-syntax", shell_sources[0],
+                        "Shell source files can be parsed without executing them.",
+                    ))
+
+    proposed.sort(key=lambda item: (VERIFICATION_CATEGORIES.index(item["category"]), item["label"], item["source_path"]))
+    existing_commands = {label: command for _, label, command, _ in existing_runtime}
+    colliding_labels = sorted({
+        phase["label"] for phase in proposed
+        if phase["label"] in existing_commands and existing_commands[phase["label"]] != phase["command"]
+    })
+    if colliding_labels:
+        unresolved.append({
+            "code": "phase-label-collision",
+            "message": (
+                "Proposed phase labels conflict with different existing commands: "
+                + ", ".join(colliding_labels)
+                + ". Resolve the labels explicitly before apply."
+            ),
+            "paths": [".harness/verify.conf"],
+        })
+    configured_by_category: dict[str, list[str]] = {category: [] for category in VERIFICATION_CATEGORIES}
+    unavailable_by_category: dict[str, set[str]] = {category: set() for category in VERIFICATION_CATEGORIES}
+    unavailable_warnings: set[tuple[str, str]] = set()
+    for phase, _, command, is_noop in existing_runtime:
+        if is_noop:
+            warnings.append({
+                "code": "no-op-phase",
+                "message": f"Existing phase '{phase['label']}' is a no-op and does not prove its claimed coverage.",
+            })
+            continue
+        tool = verification_command_tool(command)
+        available = tool is None or shutil.which(tool) is not None
+        for category in phase["categories"]:
+            if available:
+                configured_by_category[category].append(phase["label"])
+            else:
+                unavailable_by_category[category].add(tool)
+                unavailable_warnings.add((tool, phase["label"]))
+    for phase in proposed:
+        tool = verification_command_tool(phase["command"])
+        if tool is not None and shutil.which(tool) is None:
+            unavailable_by_category[phase["category"]].add(tool)
+            unavailable_warnings.add((tool, phase["label"]))
+    for tool, label in sorted(unavailable_warnings):
+        warnings.append({
+            "code": "tool-unavailable",
+            "message": f"Tool '{tool}' required by phase '{label}' is not available on PATH; the phase remains unverified.",
+        })
+    proposed_by_category = {
+        category: [phase["source_path"] for phase in proposed if phase["category"] == category]
+        for category in VERIFICATION_CATEGORIES
+    }
+    coverage: dict[str, dict[str, Any]] = {}
+    gap_messages = {
+        "build": "No allow-listed build configuration was detected.",
+        "type_check": "No allow-listed type checker configuration was detected.",
+        "lint_static_analysis": "No allow-listed linter configuration was detected.",
+        "unit_integration_tests": "No allow-listed test configuration was detected.",
+        "dependency_risk": "No allow-listed dependency-risk check was detected.",
+        "secret_scan": "No project secret-scan phase is configured.",
+    }
+    for category in VERIFICATION_CATEGORIES:
+        if configured_by_category[category]:
+            coverage[category] = {"state": "configured", "evidence": configured_by_category[category], "gap": None}
+        elif proposed_by_category[category]:
+            missing_tools = sorted(unavailable_by_category[category])
+            gap = f"Required tool is not available on PATH: {', '.join(missing_tools)}." if missing_tools else None
+            coverage[category] = {"state": "recommended", "evidence": proposed_by_category[category], "gap": gap}
+        elif category == "real_path_exercise":
+            source = "readiness.py accepts a checks fixture" if (target / "readiness.py").is_file() else ""
+            coverage[category] = {
+                "state": "manual", "evidence": [source] if source else [],
+                "gap": "Discovery cannot prove the visible command result.",
+            }
+        elif category == "judgment_evaluation":
+            coverage[category] = {
+                "state": "manual", "evidence": [],
+                "gap": "A human or independent rubric must judge explanation quality.",
+            }
+        else:
+            coverage[category] = {"state": "missing", "evidence": [], "gap": gap_messages[category]}
+
+    python_metadata = {}
+    root_pyproject = target / "pyproject.toml"
+    if root_pyproject.is_file() and not root_pyproject.is_symlink():
+        python_metadata = verification_python_metadata(root_pyproject, [])
+    if {item["name"] for item in detected_stacks} == {"python"}:
+        if not isinstance(python_metadata.get("build-system"), dict) and coverage["build"]["state"] == "missing":
+            coverage["build"] = {
+                "state": "not-applicable", "evidence": ["pyproject.toml has no build backend"], "gap": None,
+            }
+        project = python_metadata.get("project", {}) if isinstance(python_metadata, dict) else {}
+        dependencies = project.get("dependencies") if isinstance(project, dict) else None
+        if dependencies == [] and coverage["dependency_risk"]["state"] == "missing":
+            coverage["dependency_risk"] = {
+                "state": "not-applicable", "evidence": ["The fixture declares no third-party dependencies."], "gap": None,
+            }
+    if {item["name"] for item in detected_stacks} <= {"shell", "documentation"} and detected_stacks:
+        if coverage["build"]["state"] == "missing":
+            coverage["build"] = {"state": "not-applicable", "evidence": ["No build artifact was detected."], "gap": None}
+
+    input_paths = sorted({item["path"] for item in evidence})
+    fingerprint_files = [
+        {"path": path, "sha256": file_sha256(safe_update_path(target, path))}
+        for path in input_paths
+    ]
+    canonical = json.dumps(fingerprint_files, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return {
+        "schema_version": 1,
+        "target": str(target),
+        "generated_at": verify_timestamp(),
+        "input_fingerprint": {
+            "algorithm": "sha256",
+            "value": hashlib.sha256(canonical).hexdigest(),
+            "files": fingerprint_files,
+        },
+        "detected_stacks": detected_stacks,
+        "evidence": evidence,
+        "existing_phases": existing_phases,
+        "proposed_phases": proposed,
+        "coverage": coverage,
+        "unresolved": unresolved,
+        "warnings": warnings,
+    }
+
+
+def verification_exact_fields(value: Any, fields: set[str], context: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != fields:
+        unknown = sorted(set(value) - fields) if isinstance(value, dict) else []
+        missing = sorted(fields - set(value)) if isinstance(value, dict) else sorted(fields)
+        raise CliError(f"Verification plan {context} fields are malformed (missing={missing}, unknown={unknown})")
+    return value
+
+
+def verification_nonempty_string(value: Any, context: str, *, single_line: bool = False) -> str:
+    if not isinstance(value, str) or not value:
+        raise CliError(f"Verification plan {context} must be a non-empty string")
+    if single_line and any(character in value for character in "\r\n"):
+        raise CliError(f"Verification plan {context} must stay on one line")
+    return value
+
+
+def validate_verification_plan(plan: Any) -> dict[str, Any]:
+    top = verification_exact_fields(plan, {
+        "schema_version", "target", "generated_at", "input_fingerprint", "detected_stacks", "evidence",
+        "existing_phases", "proposed_phases", "coverage", "unresolved", "warnings",
+    }, "top-level")
+    if type(top["schema_version"]) is not int or top["schema_version"] != 1:
+        raise CliError("Verification plan schema version is not supported")
+    target = verification_nonempty_string(top["target"], "target")
+    if not Path(target).is_absolute():
+        raise CliError("Verification plan target must be absolute")
+    generated = verification_nonempty_string(top["generated_at"], "generated_at")
+    try:
+        parsed_generated = dt.datetime.fromisoformat(generated.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise CliError("Verification plan generated_at is not a valid date-time") from exc
+    if parsed_generated.tzinfo is None:
+        raise CliError("Verification plan generated_at must include a timezone")
+
+    fingerprint = verification_exact_fields(top["input_fingerprint"], {"algorithm", "value", "files"}, "input_fingerprint")
+    if fingerprint["algorithm"] != "sha256" or not isinstance(fingerprint["value"], str) or not re.fullmatch(r"[0-9a-f]{64}", fingerprint["value"]):
+        raise CliError("Verification plan input fingerprint is malformed")
+    if not isinstance(fingerprint["files"], list):
+        raise CliError("Verification plan fingerprint files must be a list")
+    fingerprint_paths: list[str] = []
+    for index, raw in enumerate(fingerprint["files"]):
+        item = verification_exact_fields(raw, {"path", "sha256"}, f"input_fingerprint.files[{index}]")
+        path = verification_nonempty_string(item["path"], f"input_fingerprint.files[{index}].path")
+        verification_relative_path(path, f"input_fingerprint.files[{index}].path")
+        if not isinstance(item["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", item["sha256"]):
+            raise CliError("Verification plan contains a malformed input hash")
+        fingerprint_paths.append(path)
+    if fingerprint_paths != sorted(set(fingerprint_paths)):
+        raise CliError("Verification plan fingerprint paths must be unique and sorted")
+
+    if not isinstance(top["detected_stacks"], list):
+        raise CliError("Verification plan detected_stacks must be a list")
+    for index, raw in enumerate(top["detected_stacks"]):
+        item = verification_exact_fields(raw, {"name", "root", "evidence_paths"}, f"detected_stacks[{index}]")
+        if item["name"] not in {"python", "node", "go", "rust", "shell", "documentation"}:
+            raise CliError("Verification plan contains an unsupported detected stack")
+        verification_relative_path(item["root"], f"detected_stacks[{index}].root", allow_dot=True)
+        if not isinstance(item["evidence_paths"], list) or not item["evidence_paths"]:
+            raise CliError("Verification plan stack evidence must be a non-empty list")
+        for path in item["evidence_paths"]:
+            verification_relative_path(path, f"detected_stacks[{index}].evidence_paths")
+        if len(item["evidence_paths"]) != len(set(item["evidence_paths"])):
+            raise CliError("Verification plan stack evidence paths must be unique")
+
+    if not isinstance(top["evidence"], list):
+        raise CliError("Verification plan evidence must be a list")
+    for index, raw in enumerate(top["evidence"]):
+        item = verification_exact_fields(raw, {"kind", "path", "detail"}, f"evidence[{index}]")
+        if item["kind"] not in {"manifest", "source", "test", "configuration", "ci-hint", "task-runner-hint"}:
+            raise CliError("Verification plan contains an unsupported evidence kind")
+        verification_relative_path(item["path"], f"evidence[{index}].path")
+        verification_nonempty_string(item["detail"], f"evidence[{index}].detail")
+
+    if not isinstance(top["existing_phases"], list):
+        raise CliError("Verification plan existing_phases must be a list")
+    for index, raw in enumerate(top["existing_phases"]):
+        item = verification_exact_fields(raw, {"label", "command", "categories", "origin"}, f"existing_phases[{index}]")
+        verification_nonempty_string(item["label"], f"existing_phases[{index}].label", single_line=True)
+        verification_nonempty_string(item["command"], f"existing_phases[{index}].command", single_line=True)
+        if not isinstance(item["categories"], list) or len(item["categories"]) != len(set(item["categories"])) or not set(item["categories"]) <= set(VERIFICATION_CATEGORIES):
+            raise CliError("Verification plan existing phase categories are malformed")
+        if item["origin"] not in {"user", "agentsmith-placeholder", "agentsmith"}:
+            raise CliError("Verification plan existing phase origin is malformed")
+
+    if not isinstance(top["proposed_phases"], list):
+        raise CliError("Verification plan proposed_phases must be a list")
+    for index, raw in enumerate(top["proposed_phases"]):
+        item = verification_exact_fields(raw, {
+            "category", "label", "command", "detector", "source_path", "reason", "confidence_class", "requires_review",
+        }, f"proposed_phases[{index}]")
+        if item["category"] not in VERIFICATION_CATEGORIES:
+            raise CliError("Verification plan proposal category is malformed")
+        for key in ("label", "command", "detector", "source_path", "reason"):
+            verification_nonempty_string(item[key], f"proposed_phases[{index}].{key}", single_line=True)
+        if "::" in item["label"]:
+            raise CliError("Verification plan proposal label contains the phase delimiter")
+        verification_relative_path(item["source_path"], f"proposed_phases[{index}].source_path")
+        if item["confidence_class"] not in {"high", "medium", "low"} or not isinstance(item["requires_review"], bool):
+            raise CliError("Verification plan proposal confidence or review flag is malformed")
+    proposal_labels = [item["label"] for item in top["proposed_phases"]]
+    if len(proposal_labels) != len(set(proposal_labels)):
+        raise CliError("Verification plan contains a duplicate proposed phase label")
+
+    coverage = verification_exact_fields(top["coverage"], set(VERIFICATION_CATEGORIES), "coverage")
+    for category in VERIFICATION_CATEGORIES:
+        cell = verification_exact_fields(coverage[category], {"state", "evidence", "gap"}, f"coverage.{category}")
+        if cell["state"] not in VERIFICATION_STATES or not isinstance(cell["evidence"], list):
+            raise CliError(f"Verification plan coverage.{category} is malformed")
+        if not all(isinstance(item, str) for item in cell["evidence"]):
+            raise CliError(f"Verification plan coverage.{category}.evidence is malformed")
+        if cell["gap"] is not None and not isinstance(cell["gap"], str):
+            raise CliError(f"Verification plan coverage.{category}.gap is malformed")
+
+    for collection, fields in (("unresolved", {"code", "message", "paths"}), ("warnings", {"code", "message"})):
+        if not isinstance(top[collection], list):
+            raise CliError(f"Verification plan {collection} must be a list")
+        for index, raw in enumerate(top[collection]):
+            item = verification_exact_fields(raw, fields, f"{collection}[{index}]")
+            verification_nonempty_string(item["code"], f"{collection}[{index}].code")
+            verification_nonempty_string(item["message"], f"{collection}[{index}].message")
+            if collection == "unresolved":
+                if not isinstance(item["paths"], list) or len(item["paths"]) != len(set(item["paths"])):
+                    raise CliError("Verification plan unresolved paths are malformed")
+                for path in item["paths"]:
+                    verification_relative_path(path, f"{collection}[{index}].paths", allow_dot=True)
+    return top
+
+
+def load_verification_plan(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise CliError(f"Cannot read verification plan {path}: {exc}") from exc
+    return validate_verification_plan(payload)
+
+
+def recheck_verification_fingerprint(plan: dict[str, Any], target: Path) -> None:
+    files = plan["input_fingerprint"]["files"]
+    canonical = json.dumps(files, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    if hashlib.sha256(canonical).hexdigest() != plan["input_fingerprint"]["value"]:
+        raise CliError("Verification plan fingerprint integrity failed; create a fresh discovery plan")
+    for item in files:
+        try:
+            path = safe_update_path(target, item["path"])
+        except CliError as exc:
+            raise CliError(f"Verification plan symbolic-link safety check failed: {exc}") from exc
+        if not path.is_file() or file_sha256(path) != item["sha256"]:
+            raise CliError(f"Verification plan is stale: {item['path']} changed after discovery")
+
+
+def validate_trusted_verification_proposals(plan: dict[str, Any], target: Path) -> None:
+    fresh = build_verification_plan(target)
+    if plan["input_fingerprint"] != fresh["input_fingerprint"]:
+        raise CliError(
+            "Verification plan is stale: its discovery-input set is incomplete or no longer current; "
+            "create a fresh discovery plan"
+        )
+    if plan["proposed_phases"] and not any(
+        item["path"] == ".harness/verify.conf" for item in plan["input_fingerprint"]["files"]
+    ):
+        raise CliError(
+            "Verification apply requires an existing fingerprinted .harness/verify.conf; install the harness first"
+        )
+    if plan["proposed_phases"] != fresh["proposed_phases"]:
+        raise CliError(
+            "Verification plan proposals are not the current trusted detector results; "
+            "create and review a fresh discovery plan"
+        )
+    semantic_fields = (
+        "detected_stacks", "evidence", "existing_phases", "coverage", "unresolved", "warnings",
+    )
+    if any(plan[field] != fresh[field] for field in semantic_fields):
+        raise CliError(
+            "Verification plan is stale: discovery evidence or coverage changed; create a fresh discovery plan"
+        )
+
+
+def render_verification_apply(plan: dict[str, Any], target: Path) -> tuple[Path, bytes, bytes]:
+    configuration = safe_update_path(target, ".harness/verify.conf")
+    if configuration.exists() and not configuration.is_file():
+        raise CliError(f"Verification config is not a regular file: {configuration}")
+    before = configuration.read_bytes() if configuration.is_file() else b""
+    try:
+        text = before.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise CliError(f"Verification config is not UTF-8: {configuration}") from exc
+    existing = parse_verify_conf(configuration) if configuration.is_file() else []
+    labels: dict[str, str] = {}
+    for label, command in existing:
+        if label in labels and labels[label] != command:
+            safe_label, _ = redact_secret_text(label)
+            raise CliError(f"Verification phase label collision already exists for '{safe_label}'")
+        labels[label] = command
+    for proposal in plan["proposed_phases"]:
+        prior = labels.get(proposal["label"])
+        if prior is not None and prior != proposal["command"]:
+            raise CliError(
+                f"Verification phase label collision for '{proposal['label']}'; resolve it explicitly before apply"
+            )
+
+    newline = "\r\n" if b"\r\n" in before and b"\n" not in before.replace(b"\r\n", b"") else "\n"
+    lines = text.splitlines(keepends=True)
+    if plan["proposed_phases"]:
+        kept: list[str] = []
+        for line in lines:
+            body = line.rstrip("\r\n")
+            if "::" in body:
+                label, command = body.split("::", 1)
+                if verification_is_placeholder(label.strip(), command.strip()):
+                    continue
+            kept.append(line)
+        lines = kept
+    rendered = "".join(lines)
+    additions: list[str] = []
+    for proposal in plan["proposed_phases"]:
+        if labels.get(proposal["label"]) == proposal["command"]:
+            continue
+        additions.extend((
+            f"# AgentSmith proposal: {proposal['detector']} from {proposal['source_path']} — {proposal['reason']}",
+            f"{proposal['label']} :: {proposal['command']}",
+        ))
+    if additions:
+        if rendered and not rendered.endswith(("\n", "\r")):
+            rendered += newline
+        rendered += newline.join(additions) + newline
+    return configuration, before, rendered.encode("utf-8")
+
+
+def backup_file_exclusive(path: Path, content: bytes, kind: str) -> Path:
+    """Create an adjacent backup exclusively, without following a pre-planted link."""
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    counter = 0
+    while True:
+        suffix = stamp if counter == 0 else f"{stamp}.{counter}"
+        candidate = path.with_name(f"{path.name}.bak.{suffix}")
+        if candidate.is_symlink():
+            raise CliError(f"{kind} backup refused symbolic link {candidate}")
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        try:
+            descriptor = os.open(candidate, flags, 0o600)
+        except FileExistsError:
+            if candidate.is_symlink():
+                raise CliError(f"{kind} backup refused symbolic link {candidate}")
+            counter += 1
+            continue
+        except OSError as exc:
+            raise CliError(f"Cannot create {kind.lower()} backup {candidate}: {exc}") from exc
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            candidate.chmod(path.stat().st_mode & 0o777)
+        except Exception:
+            candidate.unlink(missing_ok=True)
+            raise
+        return candidate
+
+
+def backup_verification_config(path: Path, content: bytes) -> Path:
+    return backup_file_exclusive(path, content, "Verification")
+
+
+def cmd_verify_discover(args: argparse.Namespace) -> int:
+    target = Path(args.target or os.getcwd()).expanduser().resolve()
+    plan = build_verification_plan(target)
+    rendered = json.dumps(plan, indent=2, ensure_ascii=False) + "\n"
+    if args.save:
+        destination = Path(args.save).expanduser()
+        if not destination.is_absolute():
+            destination = Path.cwd() / destination
+        destination = destination.resolve()
+        if destination.exists():
+            raise CliError(f"Refusing to overwrite existing verification plan {destination}")
+        atomic_write_bytes(destination, rendered.encode("utf-8"))
+    if args.json:
+        print(rendered, end="")
+        return 0
+    print(f"Verification discovery for {target}")
+    stacks = ", ".join(item["name"] for item in plan["detected_stacks"]) or "none"
+    print(f"Detected stacks: {stacks}")
+    for category in VERIFICATION_CATEGORIES:
+        cell = plan["coverage"][category]
+        print(f"  {category.replace('_', ' ')}: {cell['state']}")
+    if plan["proposed_phases"]:
+        print("Recommended phases (review before apply):")
+        for phase in plan["proposed_phases"]:
+            print(f"  Why: {phase['reason']}")
+            print(f"  Add: {phase['label']} :: {phase['command']}")
+    else:
+        print("No automatic phase proposal is safe for this repository yet.")
+    if plan["unresolved"]:
+        for item in plan["unresolved"]:
+            print(f"Unresolved [{item['code']}]: {item['message']}")
+    print("Discovery did not run repository commands and does not prove the configured checks pass.")
+    if args.save:
+        print(f"Saved the reviewable plan to {destination}")
+    return 0
+
+
+def cmd_verify_apply(args: argparse.Namespace) -> int:
+    plan_path = Path(args.plan).expanduser().resolve()
+    plan = load_verification_plan(plan_path)
+    target = Path(args.target or plan["target"]).expanduser().resolve()
+    if str(target) != plan["target"]:
+        raise CliError(
+            f"Verification plan target {plan['target']} does not match requested target {target}; no files changed"
+        )
+    if not target.is_dir():
+        raise CliError(f"Verification apply target is not a directory: {target}")
+    recheck_verification_fingerprint(plan, target)
+    validate_trusted_verification_proposals(plan, target)
+    configuration, before, after = render_verification_apply(plan, target)
+    if args.dry_run:
+        before_text = before.decode("utf-8").splitlines(keepends=True)
+        after_text = after.decode("utf-8").splitlines(keepends=True)
+        context = max(len(before_text), len(after_text), 3)
+        diff = difflib.unified_diff(
+            before_text,
+            after_text,
+            fromfile=str(configuration),
+            tofile=f"{configuration} (proposed)",
+            n=context,
+        )
+        rendered_diff = "".join(diff)
+        rendered_diff, _ = redact_secret_text(rendered_diff)
+        print(rendered_diff if rendered_diff else f"No changes proposed for {configuration}", end="" if rendered_diff else "\n")
+        return 0
+    if before == after:
+        ok(f"verification configuration already matches the reviewed plan at {configuration}")
+        return 0
+    if configuration.is_file() and file_sha256(configuration) != hashlib.sha256(before).hexdigest():
+        raise CliError("Verification plan is stale: .harness/verify.conf changed during apply")
+    backup_path = backup_verification_config(configuration, before) if configuration.is_file() else None
+    if backup_path is not None and backup_path.read_bytes() != before:
+        raise CliError(f"Verification backup did not preserve the original bytes: {backup_path}")
+    mode = configuration.stat().st_mode & 0o777 if configuration.is_file() else None
+    atomic_write_bytes(configuration, after, mode=mode)
+    suffix = f" (backup: {backup_path.name})" if backup_path else ""
+    ok(f"applied reviewed verification plan to {configuration}{suffix}")
+    return 0
 
 
 def verify_timestamp() -> str:
@@ -4629,6 +6234,27 @@ def recorded_verify_phase(command: str, root: Path, stdout_path: Path,
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
+    action = getattr(args, "verify_action", None)
+    if action == "discover":
+        incompatible = any(
+            getattr(args, name, None)
+            for name in ("only", "list", "record", "tree_class", "plan", "dry_run")
+        )
+        if incompatible:
+            raise CliError("verify discover accepts only --target, --json, and --save")
+        return cmd_verify_discover(args)
+    if action == "apply":
+        incompatible = any(
+            getattr(args, name, None)
+            for name in ("only", "list", "record", "tree_class", "json", "save")
+        )
+        if incompatible:
+            raise CliError("verify apply accepts only --plan, --target, and --dry-run")
+        if not getattr(args, "plan", None):
+            raise CliError("verify apply requires --plan PLAN")
+        return cmd_verify_apply(args)
+    if any(getattr(args, name, None) for name in ("json", "save", "plan", "dry_run")):
+        raise CliError("verify execution does not accept discovery/apply options")
     root = Path(args.target or os.getcwd()).resolve()
     tree_class = getattr(args, "tree_class", None)
     conf = root / ".harness" / "verify.conf"
@@ -4772,6 +6398,450 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
 def slug(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-") or "item"
+
+
+HANDOFF_SECTIONS = (
+    "Recovery checkpoint",
+    "What shipped this session",
+    "What is still pending",
+    "Deviations from the plan / decisions made (don't re-litigate)",
+    "Exact next step",
+    "Gotchas a fresh session would otherwise re-derive",
+    "Kickoff prompt for a fresh chat",
+)
+HANDOFF_RECOVERY_FIELDS = (
+    "Exact objective",
+    "Repository / worktree",
+    "Protected-state hashes",
+    "Branch / commit",
+    "External identifiers",
+    "Completed verification",
+    "Active external operation",
+    "Next read-only recovery command",
+    "Remaining authorized writes",
+    "Stop conditions",
+    "Skipped validation",
+)
+
+
+def path_has_symlink_below(root: Path, candidate: Path) -> bool:
+    """Check the selected boundary and descendants without rejecting OS-level parent links."""
+    lexical_root = root.expanduser().absolute()
+    lexical_candidate = candidate.expanduser().absolute()
+    try:
+        relative = lexical_candidate.relative_to(lexical_root)
+    except ValueError:
+        return True
+    current = lexical_root
+    if current.is_symlink():
+        return True
+    for part in relative.parts:
+        current /= part
+        if current.is_symlink():
+            return True
+    return False
+
+
+def demo_template_path() -> Path:
+    source = ROOT / "templates" / "first-loop"
+    observed = {
+        path.relative_to(source).as_posix()
+        for path in source.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    } if source.is_dir() and not source.is_symlink() else set()
+    if observed != set(DEMO_TEMPLATE_FILES):
+        raise CliError("Bundled first-loop template is missing, incomplete, or contains unexpected files")
+    if any(path_has_symlink_below(ROOT, source / relative) for relative in DEMO_TEMPLATE_FILES):
+        raise CliError("Bundled first-loop template contains a symbolic link")
+    return source
+
+
+def cmd_demo_first_loop(args: argparse.Namespace) -> int:
+    lexical_target = Path(args.target).expanduser().absolute()
+    if lexical_target.is_symlink():
+        raise CliError(f"First-loop demo target must not be a symbolic link: {lexical_target}")
+    target = lexical_target.resolve(strict=False)
+    broad_targets = {Path(target.anchor), Path.cwd().resolve(), ROOT.resolve(), home_dir().resolve()}
+    if target in broad_targets:
+        raise CliError(f"Refusing broad first-loop demo target: {target}")
+    parent = target.parent
+    if not parent.exists() or not parent.is_dir():
+        raise CliError(f"First-loop demo target parent must already exist: {parent}")
+    if target.exists():
+        if not target.is_dir() or any(target.iterdir()):
+            raise CliError(f"First-loop demo target must be new or empty; found non-empty target: {target}")
+    probe = target if target.exists() else parent
+    if shutil.which("git"):
+        repository = subprocess.run(
+            ["git", "-C", str(probe), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        if repository.returncode == 0 and repository.stdout.strip():
+            if target == Path(repository.stdout.strip()).resolve():
+                raise CliError(f"Refusing to initialize a demo over a repository root: {target}")
+
+    source = demo_template_path()
+    target_existed = target.exists()
+    staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.agentsmith-", dir=parent))
+    try:
+        staging.rmdir()
+        shutil.copytree(source, staging, copy_function=shutil.copyfile)
+        if target_existed:
+            if not target.is_dir() or any(target.iterdir()):
+                raise CliError(f"First-loop demo target became non-empty before installation: {target}")
+            target.rmdir()
+        staging.replace(target)
+    except Exception:
+        if staging.exists():
+            shutil.rmtree(staging)
+        if target_existed and not target.exists():
+            target.mkdir()
+        raise
+
+    rendered_target = native_command(str(target))
+    ok(f"created deterministic first-loop demo in {target}")
+    print("Next three steps:")
+    print(f"1. agentsmith status --target {rendered_target}")
+    print(f"2. agentsmith verify --target {rendered_target}")
+    print(f"3. agentsmith handoff first-verified-loop --target {rendered_target}")
+    print(f"Rollback boundary: delete only this demo directory: {target}")
+    return 0
+
+
+def handoff_section(text: str, heading: str) -> str | None:
+    match = re.search(
+        rf"(?ms)^## {re.escape(heading)}\s*\n(.*?)(?=^## |\Z)",
+        text,
+    )
+    return match.group(1).strip() if match else None
+
+
+def nullable_recorded_value(value: str | None) -> str | None:
+    cleaned = (value or "").strip()
+    return None if not cleaned or cleaned.lower() in {"n/a", "none", "unknown"} else cleaned
+
+
+def recorded_handoff_git(text: str) -> dict[str, Any]:
+    summary = re.search(
+        r"(?m)^\*\*Branch:\*\*\s*(.*?)\s+\*\*HEAD:\*\*\s*(\S+)"
+        r"(?:\s+\*\*Uncommitted files:\*\*\s*(\d+))?\s*$",
+        text,
+    )
+    branch = nullable_recorded_value(summary.group(1)) if summary else None
+    commit = nullable_recorded_value(summary.group(2)) if summary else None
+    uncommitted = int(summary.group(3)) if summary and summary.group(3) is not None else None
+    if branch is None or commit is None:
+        recovery = re.search(
+            r"(?m)^- \*\*Branch / commit:\*\*\s*(.*?)\s+/\s+(\S+)\s*$",
+            text,
+        )
+        if recovery:
+            branch = branch or nullable_recorded_value(recovery.group(1))
+            commit = commit or nullable_recorded_value(recovery.group(2))
+    return {"branch": branch, "commit": commit, "uncommitted_files": uncommitted}
+
+
+def current_resume_git(target: Path) -> dict[str, Any]:
+    unavailable = {"available": False, "branch": None, "commit": None, "dirty": None}
+    if not shutil.which("git"):
+        return unavailable
+    git_environment = {
+        **os.environ,
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+    inside = subprocess.run(
+        ["git", "-C", str(target), "rev-parse", "--is-inside-work-tree"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        env=git_environment,
+    )
+    if inside.returncode or inside.stdout.strip() != "true":
+        return unavailable
+
+    def value(*arguments: str) -> str | None:
+        result = subprocess.run(
+            ["git", "-C", str(target), *arguments],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            env=git_environment,
+        )
+        observed = result.stdout.strip()
+        return observed if result.returncode == 0 and observed else None
+
+    status = subprocess.run(
+        ["git", "-C", str(target), "status", "--porcelain=v1", "--untracked-files=all"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        env=git_environment,
+    )
+    return {
+        "available": True,
+        "branch": value("symbolic-ref", "--quiet", "--short", "HEAD"),
+        "commit": value("rev-parse", "HEAD"),
+        "dirty": bool(status.stdout) if status.returncode == 0 else None,
+    }
+
+
+def redacted_output_path(path: Path) -> str:
+    return redact_secret_text(str(path))[0]
+
+
+def select_handoff(target: Path, requested: str | None) -> tuple[Path, str]:
+    handoff_root = Path(os.path.abspath(target / ".harness" / "handoffs"))
+    if path_has_symlink_below(target, handoff_root):
+        raise CliError(f"Handoff path must not contain a symbolic link: {redacted_output_path(handoff_root)}")
+    if requested:
+        raw = Path(requested).expanduser()
+        if raw.is_absolute():
+            candidate = Path(os.path.abspath(raw))
+        elif len(raw.parts) == 1:
+            candidate = Path(os.path.abspath(handoff_root / raw))
+        else:
+            candidate = Path(os.path.abspath(target / raw))
+        selected_by = "explicit"
+    else:
+        if not handoff_root.is_dir():
+            raise CliError(f"No handoff directory at {redacted_output_path(handoff_root)}")
+        choices = sorted(
+            (handoff_root / entry.name for entry in os.scandir(handoff_root)
+             if entry.name.startswith("handoff-") and entry.name.endswith(".md")),
+            key=lambda path: path.name,
+        )
+        if not choices:
+            raise CliError(f"No handoff notes found in {redacted_output_path(handoff_root)}")
+        candidate = choices[-1]
+        selected_by = "newest"
+
+    try:
+        candidate.relative_to(handoff_root)
+    except ValueError as exc:
+        raise CliError(f"Handoff file must stay inside {redacted_output_path(handoff_root)}") from exc
+    if candidate.parent != handoff_root:
+        raise CliError(f"Handoff file must be directly inside {redacted_output_path(handoff_root)}")
+    if candidate.is_symlink():
+        raise CliError(f"Handoff path must not contain a symbolic link: {redacted_output_path(candidate)}")
+    resolved_root = handoff_root.resolve(strict=False)
+    resolved = candidate.resolve(strict=False)
+    try:
+        resolved.relative_to(resolved_root)
+    except ValueError as exc:
+        raise CliError(f"Handoff file must stay inside {redacted_output_path(resolved_root)}") from exc
+    return candidate, selected_by
+
+
+def read_handoff_no_follow(target: Path, path: Path) -> str:
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    directory_flag = getattr(os, "O_DIRECTORY", 0)
+    descriptor = -1
+    directories: list[int] = []
+    try:
+        if no_follow and directory_flag and os.open in os.supports_dir_fd:
+            directory_flags = os.O_RDONLY | directory_flag | no_follow
+            root_descriptor = os.open(target, directory_flags)
+            directories.append(root_descriptor)
+            harness_descriptor = os.open(".harness", directory_flags, dir_fd=root_descriptor)
+            directories.append(harness_descriptor)
+            handoffs_descriptor = os.open("handoffs", directory_flags, dir_fd=harness_descriptor)
+            directories.append(handoffs_descriptor)
+            descriptor = os.open(path.name, os.O_RDONLY | no_follow, dir_fd=handoffs_descriptor)
+        else:
+            # Windows lacks POSIX directory descriptors. The prior component and final-link checks
+            # remain fail-closed, and the opened descriptor pins the selected file against later swaps.
+            descriptor = os.open(path, os.O_RDONLY | no_follow)
+        details = os.fstat(descriptor)
+        if not stat.S_ISREG(details.st_mode):
+            raise CliError(f"Handoff path is not a regular file: {redacted_output_path(path)}")
+        with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+            descriptor = -1
+            return handle.read()
+    except FileNotFoundError as exc:
+        raise CliError(f"Handoff file does not exist: {redacted_output_path(path)}") from exc
+    except OSError as exc:
+        safe_error = redact_secret_text(str(exc))[0]
+        raise CliError(f"Cannot safely open handoff {redacted_output_path(path)}: {safe_error}") from exc
+    except UnicodeDecodeError as exc:
+        raise CliError(f"Cannot read UTF-8 handoff {redacted_output_path(path)}") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        for opened_directory in reversed(directories):
+            os.close(opened_directory)
+
+
+def read_only_recovery_command(command: str, target: Path) -> bool:
+    if not command or re.search(r"[\n\r;&|><`]", command):
+        return False
+    try:
+        arguments = shlex.split(command, posix=os.name != "nt")
+    except ValueError:
+        return False
+    if len(arguments) < 2:
+        return False
+    executable = arguments[0].strip('"').lower()
+    if executable not in {"agentsmith", "agentsmith.cmd"} or arguments[1] != "status":
+        return False
+    index = 2
+    saw_json = False
+    saw_target = False
+    while index < len(arguments):
+        if arguments[index] == "--json":
+            if saw_json:
+                return False
+            saw_json = True
+            index += 1
+            continue
+        if arguments[index] == "--target" and index + 1 < len(arguments):
+            if saw_target:
+                return False
+            supplied = Path(arguments[index + 1].strip('"')).expanduser()
+            if not supplied.is_absolute():
+                supplied = target / supplied
+            expected = os.path.normcase(os.path.abspath(target))
+            actual = os.path.normcase(os.path.abspath(supplied))
+            if actual != expected:
+                return False
+            saw_target = True
+            index += 2
+            continue
+        return False
+    return True
+
+
+def build_resume_payload(target: Path, handoff: Path, selected_by: str, text: str) -> dict[str, Any]:
+    missing_sections = [heading for heading in HANDOFF_SECTIONS if handoff_section(text, heading) is None]
+    placeholders: list[str] = []
+    for heading in HANDOFF_SECTIONS:
+        body = handoff_section(text, heading)
+        if body == "":
+            placeholders.append(f"empty section: {heading}")
+    for field in HANDOFF_RECOVERY_FIELDS:
+        field_match = re.search(rf"(?m)^- \*\*{re.escape(field)}:\*\*\s*(.*)$", text)
+        if field_match is None:
+            placeholders.append(f"missing field: {field}")
+        elif not field_match.group(1).strip():
+            placeholders.append(f"empty field: {field}")
+    if re.search(r"(?i)(?:\[(?:todo|tbd|fill[^\]]*)\]|\bUNTRACKED\b|<placeholder>)", text):
+        placeholders.append("placeholder marker")
+    placeholders = list(dict.fromkeys(placeholders))
+
+    recorded = recorded_handoff_git(text)
+    current = current_resume_git(target)
+    drift: dict[str, bool | None] = {"branch": None, "commit": None, "uncommitted_state": None}
+    if current["available"]:
+        if recorded["branch"] is not None and current["branch"] is not None:
+            drift["branch"] = recorded["branch"] != current["branch"]
+        if recorded["commit"] is not None and current["commit"] is not None:
+            drift["commit"] = recorded["commit"] != current["commit"]
+        if recorded["uncommitted_files"] is not None and current["dirty"] is not None:
+            drift["uncommitted_state"] = (recorded["uncommitted_files"] > 0) != current["dirty"]
+
+    recovery_match = re.search(
+        r"(?m)^- \*\*Next read-only recovery command:\*\*\s*(?:`([^`]*)`|(.*))$",
+        text,
+    )
+    next_command = ""
+    if recovery_match:
+        next_command = (recovery_match.group(1) or recovery_match.group(2) or "").strip()
+    if not next_command:
+        placeholders.append("empty field: Next read-only recovery command")
+
+    kickoff_section = handoff_section(text, "Kickoff prompt for a fresh chat") or ""
+    kickoff_match = re.search(r"(?ms)```(?:text)?\s*\n(.*?)\n```", kickoff_section)
+    if not kickoff_match or not kickoff_match.group(1).strip():
+        placeholders.append("missing kickoff prompt")
+    recovery_is_safe = read_only_recovery_command(next_command, target)
+    recovery_arguments = (
+        shlex.split(next_command, posix=os.name != "nt") if recovery_is_safe else []
+    )
+    if not recovery_is_safe:
+        placeholders.append("unsafe recovery command")
+    next_command = f"agentsmith status --target {native_command(str(target))}"
+    if "--json" in recovery_arguments:
+        next_command += " --json"
+    redaction_categories: list[str] = []
+    for values, keys in ((recorded, ("branch", "commit")), (current, ("branch", "commit"))):
+        for key in keys:
+            if isinstance(values[key], str):
+                values[key], categories = redact_secret_text(values[key])
+                redaction_categories.extend(categories)
+    rendered_target, target_redactions = redact_secret_text(str(target))
+    rendered_handoff, handoff_redactions = redact_secret_text(str(handoff))
+    redaction_categories.extend(target_redactions)
+    redaction_categories.extend(handoff_redactions)
+    kickoff_prompt = (
+        f"Resume from {rendered_handoff}. Read the handoff first, inspect reported drift, and run "
+        f"only this validated read-only recovery command: {next_command}. Do not change files or Git state."
+    )
+
+    warnings: list[dict[str, str]] = []
+    if missing_sections:
+        warnings.append({"code": "missing-sections", "message": "Required handoff sections are missing."})
+    if placeholders:
+        warnings.append({"code": "placeholders", "message": "The handoff still contains unfilled fields or placeholders."})
+    if not current["available"]:
+        warnings.append({"code": "git-unavailable", "message": "The target is not an available Git worktree; Git drift was not compared."})
+    for field in ("branch", "commit", "uncommitted_state"):
+        if drift[field] is True:
+            warnings.append({"code": f"{field.replace('_', '-')}-drift", "message": f"Recorded {field.replace('_', ' ')} differs from current Git state."})
+    if redaction_categories:
+        warnings.append({"code": "secret-redacted", "message": "Potential secret material was redacted from resume output."})
+
+    return {
+        "schema_version": 1,
+        "target": rendered_target,
+        "handoff_path": rendered_handoff,
+        "selected_by": selected_by,
+        "status": "incomplete" if missing_sections or placeholders else "ready",
+        "missing_sections": missing_sections,
+        "placeholders": list(dict.fromkeys(placeholders)),
+        "recorded_git": recorded,
+        "current_git": current,
+        "drift": drift,
+        "next_read_only_recovery_command": next_command,
+        "kickoff_prompt": kickoff_prompt,
+        "warnings": warnings,
+    }
+
+
+def cmd_resume(args: argparse.Namespace) -> int:
+    lexical_target = Path(os.path.abspath(Path(args.target or os.getcwd()).expanduser()))
+    if lexical_target.is_symlink():
+        raise CliError(f"Resume target must not be a symbolic link: {redacted_output_path(lexical_target)}")
+    target = lexical_target
+    if not target.is_dir():
+        raise CliError(f"Resume target is not a directory: {redacted_output_path(target)}")
+    handoff, selected_by = select_handoff(target, args.handoff_file)
+    text = read_handoff_no_follow(target, handoff)
+    payload = build_resume_payload(target, handoff, selected_by, text)
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+    say(f"Resume checkpoint: {payload['status']}")
+    print(f"Handoff: {payload['handoff_path']}")
+    print(f"Next read-only recovery command: {payload['next_read_only_recovery_command']}")
+    for missing in payload["missing_sections"]:
+        print(f"Missing section: {missing}")
+    for placeholder in payload["placeholders"]:
+        print(f"Incomplete: {placeholder}")
+    for warning in payload["warnings"]:
+        warn(warning["message"])
+    print("\nKickoff prompt for a fresh chat:")
+    print("```\n" + payload["kickoff_prompt"] + "\n```")
+    return 0
 
 
 def cmd_scaffold(kind: str, args: argparse.Namespace) -> int:
@@ -5213,14 +7283,36 @@ def parser() -> argparse.ArgumentParser:
     doctor.add_argument("--target")
     doctor.add_argument("--json", action="store_true")
     doctor.add_argument("--strict", action="store_true")
+    status = sub.add_parser("status", help="explain the effective AgentSmith setup and one next action")
+    status.add_argument("--target")
+    status.add_argument("--json", action="store_true")
+    profiles = sub.add_parser("profiles", help="list, recommend, or switch work profiles")
+    profile_sub = profiles.add_subparsers(dest="profiles_command", required=True)
+    profile_list = profile_sub.add_parser("list", help="list available work profiles")
+    profile_list.add_argument("--json", action="store_true")
+    profile_recommend = profile_sub.add_parser("recommend", help="recommend profiles from repository evidence")
+    profile_recommend.add_argument("--target")
+    profile_recommend.add_argument("--json", action="store_true")
+    profile_switch = profile_sub.add_parser("switch", help="switch an existing project's managed profiles")
+    profile_switch.add_argument("--target", required=True)
+    profile_switch.add_argument("--profile", action="append", required=True)
+    profile_switch.add_argument("--dry-run", action="store_true")
     compatibility = sub.add_parser("compatibility", help="print the evidence-backed compatibility matrix")
     compatibility.add_argument("--agent", action="append")
     compatibility.add_argument("--json", action="store_true")
-    verify = sub.add_parser("verify")
+    verify = sub.add_parser(
+        "verify",
+        help="run configured checks, discover coverage, or apply a reviewed discovery plan",
+    )
+    verify.add_argument("verify_action", nargs="?", choices=("discover", "apply"))
     verify.add_argument("--target")
     verify.add_argument("--only")
     verify.add_argument("--list", action="store_true")
     verify.add_argument("--record", metavar="DIRECTORY")
+    verify.add_argument("--json", action="store_true", help="emit verification discovery as schema-v1 JSON")
+    verify.add_argument("--save", metavar="PLAN", help="save verification discovery to a new plan file")
+    verify.add_argument("--plan", metavar="PLAN", help="reviewed schema-v1 discovery plan to apply")
+    verify.add_argument("--dry-run", action="store_true", help="show the verification-config diff without writing")
     verify.add_argument(
         "--tree-class",
         choices=("clean-clone", "disposable-fixture", "linked-worktree", "operator-worktree"),
@@ -5232,6 +7324,14 @@ def parser() -> argparse.ArgumentParser:
     )
     integration.add_argument("--checkpoint", required=True)
     integration.add_argument("--debug", action="store_true", help="print only redacted structural diagnostics")
+    demo = sub.add_parser("demo", help="create a disposable guided demonstration")
+    demo_sub = demo.add_subparsers(dest="demo_command", required=True)
+    first_loop = demo_sub.add_parser("first-loop", help="create the deterministic launch-readiness scenario")
+    first_loop.add_argument("--target", required=True)
+    resume = sub.add_parser("resume", help="inspect and validate a handoff without changing repository or Git state")
+    resume.add_argument("handoff_file", nargs="?")
+    resume.add_argument("--target")
+    resume.add_argument("--json", action="store_true")
     for name in ("handoff", "new-feedback", "new-research"):
         scaffold = sub.add_parser(name)
         scaffold.add_argument("name", nargs="?")
@@ -5261,7 +7361,7 @@ def parser() -> argparse.ArgumentParser:
 def normalize_legacy_argv(argv: list[str]) -> list[str]:
     if not argv:
         return ["install", "--wizard"]
-    commands = {"install", "update", "agents", "doctor", "compatibility", "verify", "validate-integration", "handoff", "new-feedback", "new-research", "secret-scan", "hook", "evaluate"}
+    commands = {"install", "update", "agents", "doctor", "status", "profiles", "compatibility", "verify", "validate-integration", "demo", "resume", "handoff", "new-feedback", "new-research", "secret-scan", "hook", "evaluate"}
     if argv[0] in commands or argv[0] in {"-h", "--help", "--version"}:
         return argv
     if "--doctor" in argv:
@@ -5286,7 +7386,11 @@ def apply_wizard_answers(args: argparse.Namespace, input_fn: Any = input) -> Non
 def run(argv: list[str] | None = None) -> int:
     require_python()
     args = parser().parse_args(normalize_legacy_argv(list(argv if argv is not None else sys.argv[1:])))
-    if args.command not in {"update", "validate-integration"}:
+    verification_plan_operation = (
+        args.command == "verify" and getattr(args, "verify_action", None) in {"discover", "apply"}
+    )
+    profile_operation = args.command == "profiles"
+    if args.command not in {"update", "validate-integration", "status", "demo", "resume"} and not verification_plan_operation and not profile_operation:
         maybe_report_automatic_update()
     if args.command == "install":
         if args.wizard:
@@ -5312,12 +7416,28 @@ def run(argv: list[str] | None = None) -> int:
         return cmd_agents_list(args)
     if args.command == "doctor":
         return cmd_doctor(args)
+    if args.command == "status":
+        return cmd_status(args)
+    if args.command == "profiles":
+        if args.profiles_command == "list":
+            return cmd_profiles_list(args)
+        if args.profiles_command == "recommend":
+            return cmd_profiles_recommend(args)
+        if args.profiles_command == "switch":
+            return cmd_profiles_switch(args)
+        raise CliError(f"Unknown profiles command: {args.profiles_command}")
     if args.command == "compatibility":
         return cmd_compatibility(args)
     if args.command == "verify":
         return cmd_verify(args)
     if args.command == "validate-integration":
         return cmd_validate_integration(args)
+    if args.command == "demo":
+        if args.demo_command == "first-loop":
+            return cmd_demo_first_loop(args)
+        raise CliError(f"Unknown demo command: {args.demo_command}")
+    if args.command == "resume":
+        return cmd_resume(args)
     if args.command in {"handoff", "new-feedback", "new-research"}:
         if args.command != "handoff" and not args.name:
             raise CliError(f"{args.command} requires a topic/symptom")

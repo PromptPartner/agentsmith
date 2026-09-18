@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentsmith.dev/schemas/resume-v1.json",
+  "title": "AgentSmith handoff resume v1",
+  "type": "object",
+  "required": ["schema_version", "target", "handoff_path", "selected_by", "status", "missing_sections", "placeholders", "recorded_git", "current_git", "drift", "next_read_only_recovery_command", "kickoff_prompt", "warnings"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "target": {"type": "string", "minLength": 1},
+    "handoff_path": {"type": "string", "minLength": 1},
+    "selected_by": {"enum": ["newest", "explicit"]},
+    "status": {"enum": ["ready", "incomplete"]},
+    "missing_sections": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "placeholders": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "recorded_git": {
+      "type": "object",
+      "required": ["branch", "commit", "uncommitted_files"],
+      "properties": {
+        "branch": {"type": ["string", "null"]},
+        "commit": {"type": ["string", "null"]},
+        "uncommitted_files": {"type": ["integer", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "current_git": {
+      "type": "object",
+      "required": ["available", "branch", "commit", "dirty"],
+      "properties": {
+        "available": {"type": "boolean"},
+        "branch": {"type": ["string", "null"]},
+        "commit": {"type": ["string", "null"]},
+        "dirty": {"type": ["boolean", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "drift": {
+      "type": "object",
+      "required": ["branch", "commit", "uncommitted_state"],
+      "properties": {
+        "branch": {"type": ["boolean", "null"]},
+        "commit": {"type": ["boolean", "null"]},
+        "uncommitted_state": {"type": ["boolean", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "next_read_only_recovery_command": {"type": "string", "minLength": 1},
+    "kickoff_prompt": {"type": "string", "minLength": 1},
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["code", "message"],
+        "properties": {
+          "code": {"type": "string", "minLength": 1},
+          "message": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

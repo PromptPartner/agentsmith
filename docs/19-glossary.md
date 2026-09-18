@@ -82,6 +82,21 @@ an expert developer, most of the friction here is words — clear that, and the 
 
 ## Verification
 
+- **First Verified Loop** — the attended product journey from status and profile choice through
+  configured checks, one bounded change, deterministic and real-path evidence, a receipt, and a
+  clean continuation point. → [`demos/first-verified-loop/`](demos/first-verified-loop/README.md)
+- **Status** — the read-only short mental model of effective instructions, profiles, capabilities,
+  verification coverage, drift, and one reasoned next action.
+- **Verification discovery plan** — a schema-versioned, target-bound proposal built from allow-listed
+  repository evidence without executing repository code. Applying it is a separate approval boundary.
+- **Coverage state** — `configured`, `missing`, `unknown`, or `not_applicable` for one verification
+  category; missing and unknown remain visible rather than being treated as passing.
+- **First-loop demo** — the disposable dependency-free readiness fixture with one intentional `any`
+  versus `all` defect. It is a teaching and proof surface, not a benchmark.
+- **Resume** — read-only validation of a handoff's structure and Git drift. It emits a synthesized,
+  project-bound status command and never echoes stored kickoff prose.
+- **Claim map** — a table binding each public statement to evidence, support level, and the boundary
+  beyond which the wording would mislead.
 - **Evidence** — an artifact a check produced (failing→passing test, wire response, rendered
   page). The opposite of a claim. → [`03-verify-means-evidence.md`](03-verify-means-evidence.md)
 - **Test vs eval** — tests prove the deterministic part (input → output); evals judge the part

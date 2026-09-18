@@ -697,7 +697,7 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
         update_project = update_root / "project"
         seed.mkdir(parents=True)
         update_project.mkdir()
-        for directory in ("core", "profiles", "config"):
+        for directory in ("core", "profiles", "config", "templates"):
             shutil.copytree(ROOT / directory, seed / directory)
         shutil.copy2(CORE_PATH, seed / "agentsmith.py")
         git_steps = [

@@ -1,0 +1,28 @@
+{
+  "current_git": {
+    "available": true,
+    "branch": "proof/first-loop",
+    "commit": "<git-commit>",
+    "dirty": true
+  },
+  "drift": {
+    "branch": false,
+    "commit": false,
+    "uncommitted_state": false
+  },
+  "handoff_path": "$DEMO/.harness/handoffs/handoff-<handoff-time>.md",
+  "kickoff_prompt": "Resume from $DEMO/.harness/handoffs/handoff-<handoff-time>.md. Read the handoff first, inspect reported drift, and run only this validated read-only recovery command: agentsmith status --target $DEMO. Do not change files or Git state.",
+  "missing_sections": [],
+  "next_read_only_recovery_command": "agentsmith status --target $DEMO",
+  "placeholders": [],
+  "recorded_git": {
+    "branch": "proof/first-loop",
+    "commit": "<git-commit>",
+    "uncommitted_files": 12
+  },
+  "schema_version": 1,
+  "selected_by": "explicit",
+  "status": "ready",
+  "target": "$DEMO",
+  "warnings": []
+}
