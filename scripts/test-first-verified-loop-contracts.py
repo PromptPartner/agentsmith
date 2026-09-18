@@ -9,6 +9,7 @@ FVL-05 implement the frozen interfaces.
 from __future__ import annotations
 
 import datetime as dt
+import difflib
 import hashlib
 import html
 import importlib.util
@@ -1610,8 +1611,8 @@ class FVL07DocumentationContracts(unittest.TestCase):
         windows_root = r"C:\proof workspace\demo"
         replacements = {windows_root: "$DEMO"}
         windows_output = (
-            f'File "{windows_root}\\test_readiness.py"\r\n'
-            f'agentsmith status --target "{windows_root}"\r\n'
+            f'File "{windows_root.lower()}\\test_readiness.py"\r\n'
+            f'agentsmith status --target "{windows_root.lower()}"\r\n'
             "Ran 2 tests in 0.321s\r\n"
         )
         portable_output = (
@@ -1756,7 +1757,35 @@ class FVL07DocumentationContracts(unittest.TestCase):
             generated_snapshot = snapshot(generated)
             published_snapshot = snapshot(PUBLIC_PROOF)
             differences = changed_paths(generated_snapshot, published_snapshot)
-            self.assertEqual(differences, set(), f"public proof changed: {sorted(differences)}")
+            if differences:
+                diagnostics: list[str] = []
+                temporary_variants = {
+                    str(temporary_root),
+                    str(temporary_root.resolve()),
+                }
+                for relative in sorted(differences):
+                    generated_path = generated / relative
+                    published_path = PUBLIC_PROOF / relative
+                    if not generated_path.is_file() or not published_path.is_file():
+                        diagnostics.append(relative)
+                        continue
+                    generated_source = generated_path.read_text(encoding="utf-8", errors="replace")
+                    published_source = published_path.read_text(encoding="utf-8", errors="replace")
+                    for actual in temporary_variants:
+                        for variant in {actual, actual.replace("\\", "/"), actual.replace("/", "\\")}:
+                            generated_source = generated_source.replace(variant, "$TEMP")
+                    diagnostics.extend(
+                        difflib.unified_diff(
+                            published_source.splitlines(),
+                            generated_source.splitlines(),
+                            fromfile=f"published/{relative}",
+                            tofile=f"generated/{relative}",
+                            lineterm="",
+                        )
+                    )
+                self.fail(
+                    f"public proof changed: {sorted(differences)}\n" + "\n".join(diagnostics[:200])
+                )
             self.assertEqual(generated_snapshot, published_snapshot)
 
     def test_public_documentation_links_and_fences_resolve(self) -> None:
