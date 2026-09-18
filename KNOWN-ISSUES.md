@@ -192,6 +192,10 @@ recorded here because no external tracker write has been authorized.
   compared exact bytes, allowing Windows to produce a different compatibility artifact. The generator
   now writes UTF-8 LF bytes, Git pins the complete published proof tree to LF, and a regression checks
   both the effective attribute and every published file.
+- [x] 2026-09-18 — Windows public-proof artifacts retained native separators and quoting after temporary
+  paths became placeholders, while receipt hashes still bound unsanitized host output. Sanitization now
+  canonicalizes placeholder paths and hashes the sanitized LF phase output, retaining outcomes and
+  meaningful receipt integrity without making the public bundle host-dependent.
 - [ ] 2026-09-18 — The frozen First Verified Loop specification still calls the repository gate a
   24-phase gate, while `.harness/verify.conf` now contains 25 phases. The protected specification was
   intentionally not edited during FVL-08; release-facing documentation uses the observed count.

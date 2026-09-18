@@ -126,11 +126,18 @@ def normalize_text(text: str, replacements: dict[str, str]) -> str:
         text = text.replace(actual, replacement)
         text = text.replace(actual.replace("\\", "/"), replacement)
         text = text.replace(actual.replace("/", "\\"), replacement)
+    text = re.sub(r"(\$(?:SOURCE|DEMO|WORKSPACE|HOME))[/\\\\]+", r"\1/", text)
+    text = re.sub(r'''["'](\$(?:SOURCE|DEMO|WORKSPACE|HOME))["']''', r"\1", text)
     text = re.sub(r"\b[0-9a-f]{40}\b", "<git-commit>", text)
     text = re.sub(r"\b\d{8}-\d{4}\b", "<handoff-time>", text)
     text = re.sub(r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b", "<recorded-at>", text)
     text = re.sub(r"\bin \d+(?:\.\d+)?s\b", "in <elapsed>s", text)
-    return text.replace("\r\n", "\n")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def normalized_output_hash(path: Path, replacements: dict[str, str]) -> str:
+    normalized = normalize_text(path.read_text(encoding="utf-8", errors="replace"), replacements)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def normalize_value(value: Any, replacements: dict[str, str]) -> Any:
@@ -265,6 +272,12 @@ def build_loop_artifacts(source: Path, workspace: Path, output: Path) -> dict[st
     )
     receipt_path = demo / ".harness/evidence/public-proof/receipt.json"
     receipt = normalize_value(json.loads(receipt_path.read_text(encoding="utf-8")), replacements)
+    for phase in receipt["phases"]:
+        for stream, relative_path in phase["output_paths"].items():
+            phase["output_hashes"][stream] = normalized_output_hash(
+                receipt_path.parent / relative_path,
+                replacements,
+            )
     write_json(output / "artifacts/receipt.json", receipt)
 
     real_path = run(
@@ -650,6 +663,7 @@ No commit, push, workflow trigger, publish, merge, or deployment is implied by t
                 "receipt timestamps",
                 "receipt hostname and platform fields",
                 "receipt phase durations",
+                "receipt output hashes after path, elapsed-time, and line-ending sanitization",
                 "test elapsed times",
                 "line endings",
             ],
@@ -657,7 +671,7 @@ No commit, push, workflow trigger, publish, merge, or deployment is implied by t
                 "exit codes",
                 "test names and pass/fail outcomes",
                 "verification phase labels",
-                "receipt status and output hashes",
+                "receipt status",
                 "Git dirty-state booleans",
                 "installation ownership and preservation results",
                 "compatibility capability and evidence values",

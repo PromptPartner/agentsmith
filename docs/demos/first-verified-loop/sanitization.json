@@ -10,6 +10,7 @@
     "receipt timestamps",
     "receipt hostname and platform fields",
     "receipt phase durations",
+    "receipt output hashes after path, elapsed-time, and line-ending sanitization",
     "test elapsed times",
     "line endings"
   ],
@@ -17,7 +18,7 @@
     "exit codes",
     "test names and pass/fail outcomes",
     "verification phase labels",
-    "receipt status and output hashes",
+    "receipt status",
     "Git dirty-state booleans",
     "installation ownership and preservation results",
     "compatibility capability and evidence values"
