@@ -1,0 +1,25 @@
+$ agentsmith verify --target $DEMO
+exit: 1
+--- stdout ---
+[1/3] syntax
+  python3 -m py_compile readiness.py exercise.py test_readiness.py
+[2/3] tests
+  python3 -m unittest -v test_readiness.py
+--- stderr ---
+test_all_checks_pass_is_ready (test_readiness.ReadinessTests.test_all_checks_pass_is_ready) ... ok
+test_partial_checks_are_not_ready (test_readiness.ReadinessTests.test_partial_checks_are_not_ready) ... FAIL
+
+======================================================================
+FAIL: test_partial_checks_are_not_ready (test_readiness.ReadinessTests.test_partial_checks_are_not_ready)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "$DEMO/test_readiness.py", line 11, in test_partial_checks_are_not_ready
+    self.assertFalse(is_ready({"tests": True, "security_review": False}))
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: True is not false
+
+----------------------------------------------------------------------
+Ran 2 tests in <elapsed>s
+
+FAILED (failures=1)
+  ! verification phase 'tests' failed with exit 1

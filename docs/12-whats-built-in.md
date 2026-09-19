@@ -44,9 +44,17 @@ emulate hooks or MCP to make matrix cells green.
 
 | Command | Purpose |
 |---|---|
+| `agentsmith demo first-loop --target <new-path>` | Copy the deterministic dependency-free launch-readiness exercise into a new or empty explicit target; refuse broad, non-empty, or symbolic targets. |
+| `agentsmith status [--target <path>] [--json]` | Explain effective topology, profiles, instruction sources, managed capabilities, verification coverage, and one reasoned next action without changing state. |
+| `agentsmith profiles list [--json]` | List the shipped work profiles from their source files and name each verification preset. |
+| `agentsmith profiles recommend [--target <path>] [--json]` | Rank deterministic profile choices from repository evidence without calling a model or changing files. |
+| `agentsmith profiles switch --target <path> --profile <name[,name...]> [--dry-run]` | Preview or update only managed instructions and the existing profile selection; preserve foreign instruction bytes and custom verification. |
 | `agentsmith verify [--record <directory> --tree-class <class>]` | Run `.harness/verify.conf`; optionally retain a redacted receipt naming the tested tree class. |
+| `agentsmith verify discover [--target <path>] [--json] [--save <plan>]` | Build a read-only, schema-v1 coverage plan from allow-listed detectors; repository commands and hint bodies are never run. |
+| `agentsmith verify apply --plan <plan> [--target <path>] [--dry-run]` | Preview or apply a current target-bound plan, preserving foreign config and backing up changed bytes. |
 | `agentsmith validate-integration --checkpoint <file>` | Validate a structured integration checkpoint without installing or launching packages. |
 | `agentsmith handoff` | Scaffold durable session memory with branch/HEAD/dirty facts. |
+| `agentsmith resume [handoff-file] [--target <path>] [--json]` | Validate the newest or named handoff, allow only a bounded status recovery command, compare Git drift without optional locks, and synthesize a safe kickoff without echoing stored prose or changing state. |
 | `agentsmith new-research` | Create a durable research note that is archived, never silently deleted. |
 | `agentsmith new-feedback` | Create the five-stage post-incident record. |
 | `agentsmith secret-scan [--all|FILE...|-]` | Scan staged additions by default, or the tracked tree/files/stdin, with redacted findings. |
@@ -54,10 +62,16 @@ emulate hooks or MCP to make matrix cells green.
 | `agentsmith compatibility` | Render the registry and static-context measurement without overstating evidence. |
 | `agentsmith evaluate --agent claude\|codex\|native` | Dry-run or execute the nine isolated, budgeted native-client behavior scenarios. |
 
+The [First Verified Loop public proof](demos/first-verified-loop/README.md) exercises the portable
+status, verification, receipt, handoff, and resume commands together. Its lifecycle artifacts also
+show a clean install and an existing-config install without turning fixture evidence into a
+real-client compatibility claim.
+
 ## Skills
 
 The bundled skills are dynamic context: handoff, verify, harness-doctor, harness-help,
-new-research, new-feedback, writing-rules, wayfinder, autonomous-run, and the example skill.
+new-research, new-feedback, writing-rules, grill-with-docs, wayfinder, autonomous-run, and the
+example skill.
 Every `SKILL.md` declares compatibility metadata. Runtime-specific behavior uses explicit context,
 not the directory in which a skill happened to be installed.
 
@@ -75,6 +89,13 @@ foreign config, idempotence, and uninstall ownership:
 ```bash
 python3 scripts/test-agent-conformance.py --strict
 python3 compatibility/test_registry.py
+python3 scripts/test-first-verified-loop-contracts.py --fvl02
+python3 scripts/test-first-verified-loop-contracts.py --fvl03
+python3 scripts/test-first-verified-loop-contracts.py --fvl04
+python3 scripts/test-first-verified-loop-contracts.py --fvl05
+python3 scripts/test-first-verified-loop-contracts.py --fvl06
+python3 scripts/test-first-verified-loop-contracts.py --fvl07
+python3 scripts/test-first-verified-loop-contracts.py --fvl08
 python3 scripts/test-evaluate.py
 python3 scripts/test-statusline.py
 ```
@@ -82,3 +103,5 @@ python3 scripts/test-statusline.py
 CI runs those checks and the fake-client evaluation harness natively on Ubuntu, macOS, and Windows.
 The fixture harness proves runner behavior, not Claude or Codex behavior. Existing POSIX-only
 guardrail tests remain a separate Ubuntu job; they do not stand in for Windows runtime evidence.
+The FVL-08 reporter reruns the native release subset from a clean checkout, writes hashed-output
+receipts, and aggregates only three reports with one matching commit and Git tree.

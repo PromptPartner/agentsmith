@@ -1,0 +1,1339 @@
+{
+  "agents": [
+    {
+      "adapter": "native",
+      "certification": "passed",
+      "evidence": [
+        {
+          "artifact": null,
+          "client_version": null,
+          "scope": "registry and managed-lifecycle contract",
+          "type": "fixture",
+          "verified_at": null
+        },
+        {
+          "artifact": "compatibility/evaluations/20260827T074935Z-93e576e2a2-claude-instruction-sentinel.json",
+          "client_version": "2.1.247 (Claude Code)",
+          "scope": "macOS foundation behavior: instruction-sentinel",
+          "type": "observed",
+          "verified_at": "2026-08-27"
+        },
+        {
+          "artifact": "compatibility/evaluations/20260827T074935Z-93e576e2a2-claude-authorized-simulated-write.json",
+          "client_version": "2.1.247 (Claude Code)",
+          "scope": "macOS foundation behavior: authorized-simulated-write",
+          "type": "observed",
+          "verified_at": "2026-08-27"
+        },
+        {
+          "artifact": "compatibility/evaluations/20260827T074935Z-93e576e2a2-claude-unauthorized-simulated-write.json",
+          "client_version": "2.1.247 (Claude Code)",
+          "scope": "macOS foundation behavior: unauthorized-simulated-write",
+          "type": "observed",
+          "verified_at": "2026-08-27"
+        },
+        {
+          "artifact": "compatibility/evaluations/20260827T074935Z-93e576e2a2-claude-source-survives-cleanup.json",
+          "client_version": "2.1.247 (Claude Code)",
+          "scope": "macOS foundation behavior: source-survives-cleanup",
+          "type": "observed",
+          "verified_at": "2026-08-27"
+        },
+        {
+          "artifact": "compatibility/evaluations/20260827T074935Z-93e576e2a2-claude-secret-not-exposed.json",
+          "client_version": "2.1.247 (Claude Code)",
+          "scope": "macOS foundation behavior: secret-not-exposed",
+          "type": "observed",
+          "verified_at": "2026-08-27"
+        },
+        {
+          "artifact": "compatibility/evaluations/20260827T125050Z-64aa1fa49c-claude-denied-action-no-retry.json",
+          "client_version": "2.1.247 (Claude Code)",
+          "scope": "macOS foundation behavior: denied-action-no-retry",
+          "type": "observed",
+          "verified_at": "2026-08-27"
+        },
+        {
+          "artifact": "compatibility/evaluations/20260827T125050Z-64aa1fa49c-claude-failing-verification-blocks-done.json",
+          "client_version": "2.1.247 (Claude Code)",
+          "scope": "macOS foundation behavior: failing-verification-blocks-done",
+          "type": "observed",
+          "verified_at": "2026-08-27"
+        },
+        {
+          "artifact": "compatibility/evaluations/20260827T125050Z-64aa1fa49c-claude-passing-verification-permits-done.json",
+          "client_version": "2.1.247 (Claude Code)",
+          "scope": "macOS foundation behavior: passing-verification-permits-done",
+          "type": "observed",
+          "verified_at": "2026-08-27"
+        }
+      ],
+      "id": "claude",
+      "instructions": {
+        "adapter_config_paths": [],
+        "discovery": "generated-copy",
+        "global_paths": [
+          "~/.claude/CLAUDE.md"
+        ],
+        "nesting": "supported",
+        "project_paths": [
+          "CLAUDE.md",
+          "AGENTS.md"
+        ]
+      },
+      "local_models": {
+        "client_support": "unsupported",
+        "notes": "No local-provider certification is planned for this client.",
+        "providers": []
+      },
+      "name": "Claude Code",
+      "native_runtime": {
+        "doctor": {
+          "agentsmith_management": "native",
+          "client_support": "supported",
+          "notes": "Effective instructions and installed capabilities are inspected separately."
+        },
+        "hooks": {
+          "agentsmith_management": "native",
+          "client_support": "supported",
+          "notes": "Only documented stable hook events are managed."
+        },
+        "lifecycle": {
+          "agentsmith_management": "native",
+          "client_support": "supported",
+          "notes": "Install, update, dry-run, backup, and uninstall are native-tier responsibilities."
+        }
+      },
+      "operating_systems": {
+        "constraints": [
+          "Python 3.11+ is required by the shared runtime design."
+        ],
+        "targets": [
+          "macos",
+          "linux",
+          "windows"
+        ]
+      },
+      "skills_tools": {
+        "agent_skills": {
+          "agentsmith_management": "native",
+          "client_support": "supported",
+          "notes": "Canonical skills live in .agents/skills; Claude receives its required .claude/skills adapter."
+        },
+        "managed_skill_directories": [
+          "~/.agents/skills",
+          "~/.claude/skills",
+          ".agents/skills",
+          ".claude/skills"
+        ],
+        "mcp": {
+          "agentsmith_management": "native",
+          "client_support": "supported",
+          "notes": "Only AgentSmith-owned configuration is reconciled."
+        },
+        "skill_directories": [
+          "~/.claude/skills",
+          ".claude/skills"
+        ]
+      },
+      "target_tier": "native"
+    },
+    {
+      "adapter": "native",
+      "certification": "passed",
+      "evidence": [
+        {
+          "artifact": null,
+          "client_version": null,
+          "scope": "registry and managed-lifecycle contract",
+          "type": "fixture",
+          "verified_at": null
+        },
+        {
+          "artifact": "compatibility/evaluations/20260827T074935Z-93e576e2a2-codex-instruction-sentinel.json",
+          "client_version": "codex-cli 0.149.0",
+          "scope": "macOS foundation behavior: instruction-sentinel",
+          "type": "observed",
+          "verified_at": "2026-08-27"
+        },
+        {
+          "artifact": "compatibility/evaluations/20260827T074935Z-93e576e2a2-codex-authorized-simulated-write.json",
+          "client_version": "codex-cli 0.149.0",
+          "scope": "macOS foundation behavior: authorized-simulated-write",
+          "type": "observed",
+          "verified_at": "2026-08-27"
+        },
+        {
+          "artifact": "compatibility/evaluations/20260827T074935Z-93e576e2a2-codex-unauthorized-simulated-write.json",
+          "client_version": "codex-cli 0.149.0",
+          "scope": "macOS foundation behavior: unauthorized-simulated-write",
+          "type": "observed",
+          "verified_at": "2026-08-27"
+        },
+        {
+          "artifact": "compatibility/evaluations/20260827T074935Z-93e576e2a2-codex-source-survives-cleanup.json",
+          "client_version": "codex-cli 0.149.0",
+          "scope": "macOS foundation behavior: source-survives-cleanup",
+          "type": "observed",
+          "verified_at": "2026-08-27"
+        },
+        {
+          "artifact": "compatibility/evaluations/20260827T074935Z-93e576e2a2-codex-secret-not-exposed.json",
+          "client_version": "codex-cli 0.149.0",
+          "scope": "macOS foundation behavior: secret-not-exposed",
+          "type": "observed",
+          "verified_at": "2026-08-27"
+        },
+        {
+          "artifact": "compatibility/evaluations/20260827T125050Z-64aa1fa49c-codex-denied-action-no-retry.json",
+          "client_version": "codex-cli 0.149.0",
+          "scope": "macOS foundation behavior: denied-action-no-retry",
+          "type": "observed",
+          "verified_at": "2026-08-27"
+        },
+        {
+          "artifact": "compatibility/evaluations/20260827T125050Z-64aa1fa49c-codex-failing-verification-blocks-done.json",
+          "client_version": "codex-cli 0.149.0",
+          "scope": "macOS foundation behavior: failing-verification-blocks-done",
+          "type": "observed",
+          "verified_at": "2026-08-27"
+        },
+        {
+          "artifact": "compatibility/evaluations/20260827T125050Z-64aa1fa49c-codex-passing-verification-permits-done.json",
+          "client_version": "codex-cli 0.149.0",
+          "scope": "macOS foundation behavior: passing-verification-permits-done",
+          "type": "observed",
+          "verified_at": "2026-08-27"
+        }
+      ],
+      "id": "codex",
+      "instructions": {
+        "adapter_config_paths": [
+          "$CODEX_HOME/config.toml",
+          ".codex/config.toml"
+        ],
+        "discovery": "direct",
+        "global_paths": [
+          "$CODEX_HOME/AGENTS.md"
+        ],
+        "nesting": "supported",
+        "project_paths": [
+          "AGENTS.md"
+        ]
+      },
+      "local_models": {
+        "client_support": "supported",
+        "notes": "Certification belongs to a client-plus-provider scenario, never the provider alone.",
+        "providers": [
+          "ollama",
+          "lm-studio"
+        ]
+      },
+      "name": "Codex",
+      "native_runtime": {
+        "doctor": {
+          "agentsmith_management": "native",
+          "client_support": "supported",
+          "notes": "Effective instructions and installed capabilities are inspected separately."
+        },
+        "hooks": {
+          "agentsmith_management": "native",
+          "client_support": "supported",
+          "notes": "Only documented stable hook events are managed."
+        },
+        "lifecycle": {
+          "agentsmith_management": "native",
+          "client_support": "supported",
+          "notes": "Install, update, dry-run, backup, and uninstall are native-tier responsibilities."
+        }
+      },
+      "operating_systems": {
+        "constraints": [
+          "Python 3.11+ is required by the shared runtime design."
+        ],
+        "targets": [
+          "macos",
+          "linux",
+          "windows"
+        ]
+      },
+      "skills_tools": {
+        "agent_skills": {
+          "agentsmith_management": "native",
+          "client_support": "supported",
+          "notes": "Uses the shared Agent Skills destination directly."
+        },
+        "mcp": {
+          "agentsmith_management": "native",
+          "client_support": "supported",
+          "notes": "Only AgentSmith-owned TOML blocks are reconciled."
+        },
+        "skill_directories": [
+          "~/.agents/skills",
+          ".agents/skills"
+        ]
+      },
+      "target_tier": "native"
+    },
+    {
+      "adapter": "direct",
+      "certification": "pending",
+      "evidence": [
+        {
+          "artifact": null,
+          "client_version": null,
+          "scope": "registry contract only",
+          "type": "fixture",
+          "verified_at": null
+        }
+      ],
+      "id": "github-copilot",
+      "instructions": {
+        "adapter_config_paths": [],
+        "discovery": "direct",
+        "global_paths": [],
+        "nesting": "supported",
+        "project_paths": [
+          "AGENTS.md"
+        ]
+      },
+      "local_models": {
+        "client_support": "unverified",
+        "notes": "No local-provider claim.",
+        "providers": []
+      },
+      "name": "GitHub Copilot",
+      "native_runtime": {
+        "doctor": {
+          "agentsmith_management": "native",
+          "client_support": "supported",
+          "notes": "Instruction and standard capability state is inspected from disk."
+        },
+        "hooks": {
+          "agentsmith_management": "none",
+          "client_support": "unverified",
+          "notes": "No hook integration is claimed."
+        },
+        "lifecycle": {
+          "agentsmith_management": "planned",
+          "client_support": "supported",
+          "notes": "Direct AGENTS.md adapter."
+        }
+      },
+      "operating_systems": {
+        "constraints": [
+          "Closed IDE and cloud surfaces may require manual evidence."
+        ],
+        "targets": [
+          "macos",
+          "linux",
+          "windows",
+          "cloud"
+        ]
+      },
+      "skills_tools": {
+        "agent_skills": {
+          "agentsmith_management": "none",
+          "client_support": "unverified",
+          "notes": "No Agent Skills claim until a client smoke test exists."
+        },
+        "mcp": {
+          "agentsmith_management": "none",
+          "client_support": "supported",
+          "notes": "Client support is tracked separately from AgentSmith management."
+        },
+        "skill_directories": [
+          ".agents/skills"
+        ]
+      },
+      "target_tier": "certified"
+    },
+    {
+      "adapter": "direct",
+      "certification": "pending",
+      "evidence": [
+        {
+          "artifact": null,
+          "client_version": null,
+          "scope": "registry contract only",
+          "type": "fixture",
+          "verified_at": null
+        }
+      ],
+      "id": "cursor",
+      "instructions": {
+        "adapter_config_paths": [],
+        "discovery": "direct",
+        "global_paths": [],
+        "nesting": "unverified",
+        "project_paths": [
+          "AGENTS.md"
+        ]
+      },
+      "local_models": {
+        "client_support": "unverified",
+        "notes": "No local-provider claim.",
+        "providers": []
+      },
+      "name": "Cursor",
+      "native_runtime": {
+        "doctor": {
+          "agentsmith_management": "native",
+          "client_support": "supported",
+          "notes": "Instruction and standard capability state is inspected from disk."
+        },
+        "hooks": {
+          "agentsmith_management": "none",
+          "client_support": "unverified",
+          "notes": "No stable hook integration is claimed."
+        },
+        "lifecycle": {
+          "agentsmith_management": "planned",
+          "client_support": "supported",
+          "notes": "Direct AGENTS.md adapter."
+        }
+      },
+      "operating_systems": {
+        "constraints": [
+          "Closed IDE surfaces may require manual evidence."
+        ],
+        "targets": [
+          "macos",
+          "linux",
+          "windows"
+        ]
+      },
+      "skills_tools": {
+        "agent_skills": {
+          "agentsmith_management": "none",
+          "client_support": "unverified",
+          "notes": "Canonical skills remain available without a native-load claim."
+        },
+        "mcp": {
+          "agentsmith_management": "none",
+          "client_support": "supported",
+          "notes": "No managed MCP claim until adapter coverage lands."
+        },
+        "skill_directories": [
+          ".agents/skills"
+        ]
+      },
+      "target_tier": "certified"
+    },
+    {
+      "adapter": "configured",
+      "certification": "pending",
+      "evidence": [
+        {
+          "artifact": null,
+          "client_version": null,
+          "scope": "registry contract only",
+          "type": "fixture",
+          "verified_at": null
+        }
+      ],
+      "id": "gemini-cli",
+      "instructions": {
+        "adapter_config_paths": [
+          "~/.gemini/settings.json",
+          ".gemini/settings.json"
+        ],
+        "discovery": "configured",
+        "global_paths": [
+          "~/.gemini/AGENTS.md"
+        ],
+        "nesting": "configured",
+        "project_paths": [
+          "AGENTS.md"
+        ]
+      },
+      "local_models": {
+        "client_support": "unverified",
+        "notes": "No local-provider claim.",
+        "providers": []
+      },
+      "name": "Gemini CLI",
+      "native_runtime": {
+        "doctor": {
+          "agentsmith_management": "native",
+          "client_support": "supported",
+          "notes": "Configured discovery and standard capability state is inspected from disk."
+        },
+        "hooks": {
+          "agentsmith_management": "none",
+          "client_support": "unverified",
+          "notes": "No stable hook integration is claimed."
+        },
+        "lifecycle": {
+          "agentsmith_management": "planned",
+          "client_support": "supported",
+          "notes": "Thin settings adapter points to canonical AGENTS.md."
+        }
+      },
+      "operating_systems": {
+        "constraints": [
+          "Python 3.11+ is required by the shared AgentSmith runtime design."
+        ],
+        "targets": [
+          "macos",
+          "linux",
+          "windows"
+        ]
+      },
+      "skills_tools": {
+        "agent_skills": {
+          "agentsmith_management": "planned",
+          "client_support": "supported",
+          "notes": "Uses the canonical .agents/skills pack when the adapter is implemented."
+        },
+        "mcp": {
+          "agentsmith_management": "planned",
+          "client_support": "supported",
+          "notes": "Managed keys must preserve foreign configuration."
+        },
+        "skill_directories": [
+          "~/.agents/skills",
+          ".agents/skills"
+        ]
+      },
+      "target_tier": "certified"
+    },
+    {
+      "adapter": "direct",
+      "certification": "pending",
+      "evidence": [
+        {
+          "artifact": null,
+          "client_version": null,
+          "scope": "registry contract only",
+          "type": "fixture",
+          "verified_at": null
+        }
+      ],
+      "id": "windsurf-devin",
+      "instructions": {
+        "adapter_config_paths": [],
+        "discovery": "direct",
+        "global_paths": [],
+        "nesting": "unverified",
+        "project_paths": [
+          "AGENTS.md"
+        ]
+      },
+      "local_models": {
+        "client_support": "unverified",
+        "notes": "No local-provider claim.",
+        "providers": []
+      },
+      "name": "Windsurf / Devin",
+      "native_runtime": {
+        "doctor": {
+          "agentsmith_management": "native",
+          "client_support": "supported",
+          "notes": "Each product variant is reported independently where behavior differs."
+        },
+        "hooks": {
+          "agentsmith_management": "none",
+          "client_support": "unverified",
+          "notes": "No hook integration is claimed."
+        },
+        "lifecycle": {
+          "agentsmith_management": "planned",
+          "client_support": "supported",
+          "notes": "Direct AGENTS.md adapter."
+        }
+      },
+      "operating_systems": {
+        "constraints": [
+          "Windsurf and Devin require separate live evidence even though they share one matrix target."
+        ],
+        "targets": [
+          "macos",
+          "linux",
+          "windows",
+          "cloud"
+        ]
+      },
+      "skills_tools": {
+        "agent_skills": {
+          "agentsmith_management": "none",
+          "client_support": "unverified",
+          "notes": "No Agent Skills claim."
+        },
+        "mcp": {
+          "agentsmith_management": "none",
+          "client_support": "unverified",
+          "notes": "Capabilities must be certified per product variant."
+        },
+        "skill_directories": [
+          ".agents/skills"
+        ]
+      },
+      "target_tier": "certified"
+    },
+    {
+      "adapter": "direct",
+      "certification": "pending",
+      "evidence": [
+        {
+          "artifact": null,
+          "client_version": null,
+          "scope": "registry contract only",
+          "type": "fixture",
+          "verified_at": null
+        }
+      ],
+      "id": "cline",
+      "instructions": {
+        "adapter_config_paths": [],
+        "discovery": "direct",
+        "global_paths": [],
+        "nesting": "unverified",
+        "project_paths": [
+          "AGENTS.md"
+        ]
+      },
+      "local_models": {
+        "client_support": "supported",
+        "notes": "Pinned client-plus-model evaluation is required for certification.",
+        "providers": [
+          "ollama",
+          "lm-studio",
+          "other-openai-compatible"
+        ]
+      },
+      "name": "Cline",
+      "native_runtime": {
+        "doctor": {
+          "agentsmith_management": "native",
+          "client_support": "supported",
+          "notes": "Instruction and MCP checks are independent."
+        },
+        "hooks": {
+          "agentsmith_management": "none",
+          "client_support": "unsupported",
+          "notes": "No hook emulation is planned."
+        },
+        "lifecycle": {
+          "agentsmith_management": "planned",
+          "client_support": "supported",
+          "notes": "Direct AGENTS.md adapter."
+        }
+      },
+      "operating_systems": {
+        "constraints": [
+          "IDE automation may require an observed or manual run."
+        ],
+        "targets": [
+          "macos",
+          "linux",
+          "windows"
+        ]
+      },
+      "skills_tools": {
+        "agent_skills": {
+          "agentsmith_management": "none",
+          "client_support": "unverified",
+          "notes": "Relevant-skill activation requires live evidence."
+        },
+        "mcp": {
+          "agentsmith_management": "none",
+          "client_support": "supported",
+          "notes": "Harmless tool-call certification is required before a passed claim."
+        },
+        "skill_directories": [
+          ".agents/skills"
+        ]
+      },
+      "target_tier": "certified"
+    },
+    {
+      "adapter": "direct",
+      "certification": "pending",
+      "evidence": [
+        {
+          "artifact": null,
+          "client_version": null,
+          "scope": "registry contract only",
+          "type": "fixture",
+          "verified_at": null
+        }
+      ],
+      "id": "roo-code",
+      "instructions": {
+        "adapter_config_paths": [],
+        "discovery": "direct",
+        "global_paths": [],
+        "nesting": "unverified",
+        "project_paths": [
+          "AGENTS.md"
+        ]
+      },
+      "local_models": {
+        "client_support": "supported",
+        "notes": "Pinned client-plus-model evaluation is required for certification.",
+        "providers": [
+          "ollama",
+          "lm-studio",
+          "other-openai-compatible"
+        ]
+      },
+      "name": "Roo Code",
+      "native_runtime": {
+        "doctor": {
+          "agentsmith_management": "native",
+          "client_support": "supported",
+          "notes": "Instruction and MCP checks are independent."
+        },
+        "hooks": {
+          "agentsmith_management": "none",
+          "client_support": "unsupported",
+          "notes": "No hook emulation is planned."
+        },
+        "lifecycle": {
+          "agentsmith_management": "planned",
+          "client_support": "supported",
+          "notes": "Direct AGENTS.md adapter."
+        }
+      },
+      "operating_systems": {
+        "constraints": [
+          "IDE automation may require an observed or manual run."
+        ],
+        "targets": [
+          "macos",
+          "linux",
+          "windows"
+        ]
+      },
+      "skills_tools": {
+        "agent_skills": {
+          "agentsmith_management": "none",
+          "client_support": "unverified",
+          "notes": "Relevant-skill activation requires live evidence."
+        },
+        "mcp": {
+          "agentsmith_management": "none",
+          "client_support": "supported",
+          "notes": "Harmless tool-call certification is required before a passed claim."
+        },
+        "skill_directories": [
+          ".agents/skills"
+        ]
+      },
+      "target_tier": "certified"
+    },
+    {
+      "adapter": "configured",
+      "certification": "pending",
+      "evidence": [
+        {
+          "artifact": null,
+          "client_version": null,
+          "scope": "registry contract only",
+          "type": "fixture",
+          "verified_at": null
+        }
+      ],
+      "id": "aider",
+      "instructions": {
+        "adapter_config_paths": [
+          "~/.aider.conf.yml",
+          ".aider.conf.yml"
+        ],
+        "discovery": "configured",
+        "global_paths": [],
+        "nesting": "unsupported",
+        "project_paths": [
+          "AGENTS.md"
+        ]
+      },
+      "local_models": {
+        "client_support": "supported",
+        "notes": "The lower-bound content scenario uses a pinned local model and three runs.",
+        "providers": [
+          "ollama",
+          "lm-studio",
+          "other-openai-compatible"
+        ]
+      },
+      "name": "Aider",
+      "native_runtime": {
+        "doctor": {
+          "agentsmith_management": "native",
+          "client_support": "supported",
+          "notes": "Configured instruction discovery is inspected from disk."
+        },
+        "hooks": {
+          "agentsmith_management": "none",
+          "client_support": "unsupported",
+          "notes": "No hook emulation is planned."
+        },
+        "lifecycle": {
+          "agentsmith_management": "planned",
+          "client_support": "supported",
+          "notes": "Managed config points Aider to AGENTS.md."
+        }
+      },
+      "operating_systems": {
+        "constraints": [
+          "Python 3.11+ satisfies both the shared runtime design and the adapter test floor."
+        ],
+        "targets": [
+          "macos",
+          "linux",
+          "windows"
+        ]
+      },
+      "skills_tools": {
+        "agent_skills": {
+          "agentsmith_management": "none",
+          "client_support": "unsupported",
+          "notes": "The adapter reads canonical instructions; it does not claim Agent Skills support."
+        },
+        "mcp": {
+          "agentsmith_management": "none",
+          "client_support": "unsupported",
+          "notes": "No MCP emulation is planned."
+        },
+        "skill_directories": [
+          ".agents/skills"
+        ]
+      },
+      "target_tier": "certified"
+    },
+    {
+      "adapter": "configured",
+      "certification": "pending",
+      "evidence": [
+        {
+          "artifact": null,
+          "client_version": null,
+          "scope": "registry contract only",
+          "type": "fixture",
+          "verified_at": null
+        }
+      ],
+      "id": "continue",
+      "instructions": {
+        "adapter_config_paths": [
+          "~/.continue/config.yaml",
+          ".continue/config.yaml"
+        ],
+        "discovery": "configured",
+        "global_paths": [],
+        "nesting": "unsupported",
+        "project_paths": [
+          "AGENTS.md"
+        ]
+      },
+      "local_models": {
+        "client_support": "supported",
+        "notes": "Certification belongs to the complete client-plus-provider scenario.",
+        "providers": [
+          "ollama",
+          "lm-studio",
+          "other-openai-compatible"
+        ]
+      },
+      "name": "Continue",
+      "native_runtime": {
+        "doctor": {
+          "agentsmith_management": "native",
+          "client_support": "supported",
+          "notes": "Configured instruction discovery and capability state are inspected from disk."
+        },
+        "hooks": {
+          "agentsmith_management": "none",
+          "client_support": "unsupported",
+          "notes": "No hook emulation is planned."
+        },
+        "lifecycle": {
+          "agentsmith_management": "planned",
+          "client_support": "supported",
+          "notes": "Minimal managed configuration points to AGENTS.md."
+        }
+      },
+      "operating_systems": {
+        "constraints": [
+          "IDE automation may require an observed or manual run."
+        ],
+        "targets": [
+          "macos",
+          "linux",
+          "windows"
+        ]
+      },
+      "skills_tools": {
+        "agent_skills": {
+          "agentsmith_management": "none",
+          "client_support": "unverified",
+          "notes": "No Agent Skills claim until observed."
+        },
+        "mcp": {
+          "agentsmith_management": "none",
+          "client_support": "supported",
+          "notes": "No managed MCP claim until adapter coverage lands."
+        },
+        "skill_directories": [
+          ".agents/skills"
+        ]
+      },
+      "target_tier": "certified"
+    },
+    {
+      "adapter": "direct",
+      "certification": "pending",
+      "evidence": [
+        {
+          "artifact": null,
+          "client_version": null,
+          "scope": "registry contract only",
+          "type": "fixture",
+          "verified_at": null
+        }
+      ],
+      "id": "openhands",
+      "instructions": {
+        "adapter_config_paths": [],
+        "discovery": "direct",
+        "global_paths": [],
+        "nesting": "unverified",
+        "project_paths": [
+          "AGENTS.md"
+        ]
+      },
+      "local_models": {
+        "client_support": "supported",
+        "notes": "Multi-step local-model evaluation uses a pinned digest and three runs.",
+        "providers": [
+          "ollama",
+          "lm-studio",
+          "other-openai-compatible"
+        ]
+      },
+      "name": "OpenHands",
+      "native_runtime": {
+        "doctor": {
+          "agentsmith_management": "native",
+          "client_support": "supported",
+          "notes": "Instruction and MCP checks are independent."
+        },
+        "hooks": {
+          "agentsmith_management": "none",
+          "client_support": "unsupported",
+          "notes": "No hook emulation is planned."
+        },
+        "lifecycle": {
+          "agentsmith_management": "planned",
+          "client_support": "supported",
+          "notes": "Direct AGENTS.md adapter."
+        }
+      },
+      "operating_systems": {
+        "constraints": [
+          "Container/runtime prerequisites belong in dated evidence records."
+        ],
+        "targets": [
+          "macos",
+          "linux",
+          "windows",
+          "cloud"
+        ]
+      },
+      "skills_tools": {
+        "agent_skills": {
+          "agentsmith_management": "none",
+          "client_support": "unverified",
+          "notes": "No Agent Skills claim until observed."
+        },
+        "mcp": {
+          "agentsmith_management": "none",
+          "client_support": "supported",
+          "notes": "Harmless tool-call certification is required before a passed claim."
+        },
+        "skill_directories": [
+          ".agents/skills"
+        ]
+      },
+      "target_tier": "certified"
+    },
+    {
+      "adapter": "configured",
+      "certification": "pending",
+      "evidence": [
+        {
+          "artifact": null,
+          "client_version": null,
+          "scope": "registry contract only",
+          "type": "fixture",
+          "verified_at": null
+        }
+      ],
+      "id": "goose",
+      "instructions": {
+        "adapter_config_paths": [
+          "~/.config/goose/config.yaml",
+          ".goose/config.yaml"
+        ],
+        "discovery": "configured",
+        "global_paths": [],
+        "nesting": "unsupported",
+        "project_paths": [
+          "AGENTS.md"
+        ]
+      },
+      "local_models": {
+        "client_support": "supported",
+        "notes": "Certification belongs to the complete client-plus-provider scenario.",
+        "providers": [
+          "ollama",
+          "lm-studio",
+          "other-openai-compatible"
+        ]
+      },
+      "name": "Goose",
+      "native_runtime": {
+        "doctor": {
+          "agentsmith_management": "native",
+          "client_support": "supported",
+          "notes": "Configured discovery and MCP state are inspected from disk."
+        },
+        "hooks": {
+          "agentsmith_management": "none",
+          "client_support": "unsupported",
+          "notes": "No hook emulation is planned."
+        },
+        "lifecycle": {
+          "agentsmith_management": "planned",
+          "client_support": "supported",
+          "notes": "Minimal managed configuration points to AGENTS.md."
+        }
+      },
+      "operating_systems": {
+        "constraints": [
+          "Python 3.11+ is required by the shared AgentSmith runtime design."
+        ],
+        "targets": [
+          "macos",
+          "linux",
+          "windows"
+        ]
+      },
+      "skills_tools": {
+        "agent_skills": {
+          "agentsmith_management": "none",
+          "client_support": "unverified",
+          "notes": "No Agent Skills claim until observed."
+        },
+        "mcp": {
+          "agentsmith_management": "planned",
+          "client_support": "supported",
+          "notes": "Managed keys must preserve foreign configuration."
+        },
+        "skill_directories": [
+          ".agents/skills"
+        ]
+      },
+      "target_tier": "certified"
+    },
+    {
+      "adapter": "direct",
+      "certification": "pending",
+      "evidence": [
+        {
+          "artifact": null,
+          "client_version": null,
+          "scope": "registry contract only",
+          "type": "fixture",
+          "verified_at": null
+        }
+      ],
+      "id": "opencode",
+      "instructions": {
+        "adapter_config_paths": [
+          "~/.config/opencode/opencode.json",
+          "opencode.json"
+        ],
+        "discovery": "direct",
+        "global_paths": [
+          "~/.config/opencode/AGENTS.md"
+        ],
+        "nesting": "unverified",
+        "project_paths": [
+          "AGENTS.md"
+        ]
+      },
+      "local_models": {
+        "client_support": "supported",
+        "notes": "Tools-and-skills evaluation uses a pinned client-plus-model scenario.",
+        "providers": [
+          "ollama",
+          "lm-studio",
+          "other-openai-compatible"
+        ]
+      },
+      "name": "OpenCode",
+      "native_runtime": {
+        "doctor": {
+          "agentsmith_management": "native",
+          "client_support": "supported",
+          "notes": "Instructions, skills, and MCP are reported independently."
+        },
+        "hooks": {
+          "agentsmith_management": "none",
+          "client_support": "unverified",
+          "notes": "No stable hook integration is claimed."
+        },
+        "lifecycle": {
+          "agentsmith_management": "planned",
+          "client_support": "supported",
+          "notes": "Direct AGENTS.md adapter plus standard capability config."
+        }
+      },
+      "operating_systems": {
+        "constraints": [
+          "Python 3.11+ is required by the shared AgentSmith runtime design."
+        ],
+        "targets": [
+          "macos",
+          "linux",
+          "windows"
+        ]
+      },
+      "skills_tools": {
+        "agent_skills": {
+          "agentsmith_management": "planned",
+          "client_support": "supported",
+          "notes": "Uses the canonical .agents/skills pack."
+        },
+        "mcp": {
+          "agentsmith_management": "planned",
+          "client_support": "supported",
+          "notes": "Managed keys must preserve foreign configuration."
+        },
+        "skill_directories": [
+          "~/.agents/skills",
+          ".agents/skills"
+        ]
+      },
+      "target_tier": "certified"
+    },
+    {
+      "adapter": "direct",
+      "certification": "pending",
+      "evidence": [
+        {
+          "artifact": null,
+          "client_version": null,
+          "scope": "registry contract only",
+          "type": "fixture",
+          "verified_at": null
+        }
+      ],
+      "id": "jetbrains-junie",
+      "instructions": {
+        "adapter_config_paths": [],
+        "discovery": "direct",
+        "global_paths": [],
+        "nesting": "unverified",
+        "project_paths": [
+          "AGENTS.md"
+        ]
+      },
+      "local_models": {
+        "client_support": "unverified",
+        "notes": "No local-provider claim.",
+        "providers": []
+      },
+      "name": "JetBrains Junie",
+      "native_runtime": {
+        "doctor": {
+          "agentsmith_management": "native",
+          "client_support": "supported",
+          "notes": "Instruction discovery and evidenced capability state are inspected from disk."
+        },
+        "hooks": {
+          "agentsmith_management": "none",
+          "client_support": "unsupported",
+          "notes": "No hook emulation is planned."
+        },
+        "lifecycle": {
+          "agentsmith_management": "planned",
+          "client_support": "supported",
+          "notes": "Direct AGENTS.md adapter."
+        }
+      },
+      "operating_systems": {
+        "constraints": [
+          "Closed IDE surfaces require manual or observed evidence."
+        ],
+        "targets": [
+          "macos",
+          "linux",
+          "windows"
+        ]
+      },
+      "skills_tools": {
+        "agent_skills": {
+          "agentsmith_management": "none",
+          "client_support": "unverified",
+          "notes": "No Agent Skills claim."
+        },
+        "mcp": {
+          "agentsmith_management": "none",
+          "client_support": "unverified",
+          "notes": "No MCP claim until a client smoke test exists."
+        },
+        "skill_directories": [
+          ".agents/skills"
+        ]
+      },
+      "target_tier": "certified"
+    },
+    {
+      "adapter": "direct",
+      "certification": "pending",
+      "evidence": [
+        {
+          "artifact": null,
+          "client_version": null,
+          "scope": "registry contract only",
+          "type": "fixture",
+          "verified_at": null
+        }
+      ],
+      "id": "zed",
+      "instructions": {
+        "adapter_config_paths": [],
+        "discovery": "direct",
+        "global_paths": [],
+        "nesting": "unverified",
+        "project_paths": [
+          "AGENTS.md"
+        ]
+      },
+      "local_models": {
+        "client_support": "unverified",
+        "notes": "No local-provider claim.",
+        "providers": []
+      },
+      "name": "Zed",
+      "native_runtime": {
+        "doctor": {
+          "agentsmith_management": "native",
+          "client_support": "supported",
+          "notes": "Instruction and MCP checks are independent."
+        },
+        "hooks": {
+          "agentsmith_management": "none",
+          "client_support": "unsupported",
+          "notes": "No hook emulation is planned."
+        },
+        "lifecycle": {
+          "agentsmith_management": "planned",
+          "client_support": "supported",
+          "notes": "Direct AGENTS.md adapter."
+        }
+      },
+      "operating_systems": {
+        "constraints": [
+          "Client OS availability and closed-editor behavior must be captured in dated evidence."
+        ],
+        "targets": [
+          "macos",
+          "linux"
+        ]
+      },
+      "skills_tools": {
+        "agent_skills": {
+          "agentsmith_management": "none",
+          "client_support": "unverified",
+          "notes": "No Agent Skills claim."
+        },
+        "mcp": {
+          "agentsmith_management": "none",
+          "client_support": "supported",
+          "notes": "No managed MCP claim until adapter coverage lands."
+        },
+        "skill_directories": [
+          ".agents/skills"
+        ]
+      },
+      "target_tier": "certified"
+    },
+    {
+      "adapter": "direct",
+      "certification": "pending",
+      "evidence": [
+        {
+          "artifact": null,
+          "client_version": null,
+          "scope": "registry contract only",
+          "type": "fixture",
+          "verified_at": null
+        }
+      ],
+      "id": "jules",
+      "instructions": {
+        "adapter_config_paths": [],
+        "discovery": "direct",
+        "global_paths": [],
+        "nesting": "unverified",
+        "project_paths": [
+          "AGENTS.md"
+        ]
+      },
+      "local_models": {
+        "client_support": "unsupported",
+        "notes": "Cloud service; local-provider certification does not apply.",
+        "providers": []
+      },
+      "name": "Jules",
+      "native_runtime": {
+        "doctor": {
+          "agentsmith_management": "native",
+          "client_support": "supported",
+          "notes": "Repository instruction state is inspected locally; cloud behavior still requires manual verification."
+        },
+        "hooks": {
+          "agentsmith_management": "none",
+          "client_support": "unsupported",
+          "notes": "No hook emulation is planned."
+        },
+        "lifecycle": {
+          "agentsmith_management": "planned",
+          "client_support": "supported",
+          "notes": "Direct repository AGENTS.md adapter."
+        }
+      },
+      "operating_systems": {
+        "constraints": [
+          "Cloud-only behavior requires manual evidence and has no local lifecycle surface."
+        ],
+        "targets": [
+          "cloud"
+        ]
+      },
+      "skills_tools": {
+        "agent_skills": {
+          "agentsmith_management": "none",
+          "client_support": "unsupported",
+          "notes": "No Agent Skills claim for the cloud surface."
+        },
+        "mcp": {
+          "agentsmith_management": "none",
+          "client_support": "unsupported",
+          "notes": "No MCP integration is claimed."
+        },
+        "skill_directories": [
+          ".agents/skills"
+        ]
+      },
+      "target_tier": "certified"
+    }
+  ],
+  "contract_version": 1,
+  "instruction_tokens": 8841,
+  "python": ">=3.11"
+}

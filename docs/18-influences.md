@@ -123,8 +123,9 @@ and **LLM-as-judge** for foundation-model apps; a grounding text for the evidenc
 harness leans on (the `code-review` + `codex` review gates are this idea in practice).
 → [AI Engineering](https://www.oreilly.com/library/view/ai-engineering/9781098166298/)
 
-**Matt Pocock — *writing-for-agents* and *wayfinder*** (MIT, 2026) — the source for the
-`writing-rules` skill and the decision-map concepts in `wayfinder`. This
+**Matt Pocock — *writing-for-agents*, *grill-with-docs*, and *wayfinder*** (MIT, 2026) — the source
+for `writing-rules`, the repository-grilling workflow, and the decision-map concepts in
+`wayfinder`. This
 harness's entire product is prose an agent reads, and this is the reference for writing it. Its
 central idea is the **two loads**: *context load*, what always-loaded material costs the agent's
 window every turn, versus *cognitive load*, what it costs the human to remember which document
@@ -140,6 +141,12 @@ told to "streamline" optimises for length because length is what it can see. The
 behavioural. Applying it to `core/60` found two adjacent bullets stating one meaning, and the merge
 paid for the new pointer.
 → [mattpocock/skills](https://github.com/mattpocock/skills) · [the reference](https://github.com/mattpocock/skills/blob/main/skills/productivity/writing-for-agents/SKILL.md)
+
+His `grill-with-docs` combines a frontier-based interview with live glossary and ADR updates for a
+change that can be settled in one session. Agentsmith collapses its two runtime skill dependencies
+into one portable skill and closes the documented paper-trail gap by carrying every settled answer
+into the repository plan before the next question round.
+→ [the upstream skill](https://github.com/mattpocock/skills/blob/main/skills/engineering/grill-with-docs/SKILL.md) · [the upstream workflow notes](https://github.com/mattpocock/skills/blob/main/docs/engineering/grill-with-docs.md)
 
 His `wayfinder` contributes destination, frontier, fog, and decision-index concepts for work too
 large or uncertain to plan in one pass. Agentsmith adapts those concepts to a repository-native

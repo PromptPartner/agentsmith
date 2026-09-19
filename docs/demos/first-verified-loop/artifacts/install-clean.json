@@ -1,0 +1,17 @@
+{
+  "client_safety_configuration_retained": true,
+  "fixture": "clean",
+  "foreign_client_config_preserved": true,
+  "foreign_client_prefix_sha256": null,
+  "foreign_project_content_preserved": true,
+  "foreign_project_sha256": null,
+  "idempotent": true,
+  "install_exit": 0,
+  "managed_project_instructions_removed": true,
+  "rerun_exit": 0,
+  "runtime_scaffolding_retained": true,
+  "schema_version": 1,
+  "source_tree_clean": true,
+  "status_exit": 0,
+  "uninstall_exit": 0
+}

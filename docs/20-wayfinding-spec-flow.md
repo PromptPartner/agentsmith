@@ -2,6 +2,8 @@
 
 Use Wayfinder when you know the destination but cannot yet write a decision-complete plan. It keeps
 planning work auditable without turning the tracker into a premature implementation backlog.
+For a fuzzy repository change that can be settled in one session, use `grill-with-docs` instead;
+it produces a handoff-ready plan without the multi-session decision map.
 
 Invoke `/wayfinder` in Claude Code or `$wayfinder` in Codex. The skill creates a living draft under
 `docs/specs/` from [`templates/wayfinder-spec.md`](../templates/wayfinder-spec.md). Repository storage

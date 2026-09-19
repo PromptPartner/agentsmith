@@ -28,8 +28,10 @@ class DoctorTests(unittest.TestCase):
                 "USERPROFILE": str(self.root / "home with spaces"),
                 "CODEX_HOME": str(self.root / "custom codex ü"),
                 # Keep Windows on its locale decoder so Unicode Git paths exercise
-                # doctor's explicit UTF-8 subprocess contract.
+                # doctor's explicit UTF-8 subprocess contract. Keep stdio UTF-8
+                # so a UTF-8 parent can decode this locale-mode child reliably.
                 "PYTHONUTF8": "0",
+                "PYTHONIOENCODING": "utf-8",
             }
         )
 
@@ -39,7 +41,7 @@ class DoctorTests(unittest.TestCase):
     def run_core(self, *arguments: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, str(CORE), *arguments], cwd=ROOT, env=self.env,
-            text=True, capture_output=True, check=False,
+            text=True, encoding="utf-8", errors="replace", capture_output=True, check=False,
         )
 
     def install(self, target: Path, *arguments: str) -> subprocess.CompletedProcess[str]:

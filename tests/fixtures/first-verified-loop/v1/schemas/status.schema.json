@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentsmith.dev/schemas/status-v1.json",
+  "title": "AgentSmith status v1",
+  "type": "object",
+  "required": ["schema_version", "target", "topology", "active_profiles", "instruction_chain", "managed_capabilities", "verification", "warnings", "next_action"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "target": {"type": "string", "minLength": 1},
+    "topology": {
+      "type": "object",
+      "required": ["kind", "source", "summary"],
+      "properties": {
+        "kind": {"enum": ["self-contained-project", "layered", "global-only", "incomplete", "legacy", "unmanaged"]},
+        "source": {"type": "string", "minLength": 1},
+        "summary": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "active_profiles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "source", "purpose"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "source": {"enum": ["project", "global", "legacy", "unknown"]},
+          "purpose": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": false
+      }
+    },
+    "instruction_chain": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["scope", "path", "state", "profiles", "includes_core"],
+        "properties": {
+          "scope": {"enum": ["global", "project", "generated-adapter", "nested"]},
+          "path": {"type": "string", "minLength": 1},
+          "state": {"enum": ["managed", "unmanaged", "missing", "drifted", "duplicated", "malformed"]},
+          "profiles": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+          "includes_core": {"type": ["boolean", "null"]}
+        },
+        "additionalProperties": false
+      }
+    },
+    "managed_capabilities": {
+      "type": "object",
+      "required": ["safety", "skills", "mcp", "hooks", "runtime", "owned_files"],
+      "properties": {
+        "safety": {"$ref": "#/$defs/capability"},
+        "skills": {"$ref": "#/$defs/capability"},
+        "mcp": {"$ref": "#/$defs/capability"},
+        "hooks": {"$ref": "#/$defs/capability"},
+        "runtime": {"$ref": "#/$defs/capability"},
+        "owned_files": {"$ref": "#/$defs/capability"}
+      },
+      "additionalProperties": false
+    },
+    "verification": {
+      "type": "object",
+      "required": ["config_path", "configured_phases", "coverage", "gaps"],
+      "properties": {
+        "config_path": {"type": "string", "minLength": 1},
+        "configured_phases": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["label", "command", "source"],
+            "properties": {
+              "label": {"type": "string", "minLength": 1},
+              "command": {"type": "string", "minLength": 1},
+              "source": {"enum": ["user", "agentsmith"]}
+            },
+            "additionalProperties": false
+          }
+        },
+        "coverage": {"$ref": "#/$defs/coverage"},
+        "gaps": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+      },
+      "additionalProperties": false
+    },
+    "warnings": {"type": "array", "items": {"$ref": "#/$defs/warning"}},
+    "next_action": {
+      "type": "object",
+      "required": ["command", "reason"],
+      "properties": {
+        "command": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "capability": {
+      "type": "object",
+      "required": ["state", "summary"],
+      "properties": {
+        "state": {"enum": ["managed", "customized", "not-configured", "missing", "drifted", "unknown"]},
+        "summary": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "coverageCell": {
+      "type": "object",
+      "required": ["state", "evidence"],
+      "properties": {
+        "state": {"enum": ["configured", "recommended", "manual", "missing", "not-applicable"]},
+        "evidence": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "coverage": {
+      "type": "object",
+      "required": ["build", "type_check", "lint_static_analysis", "unit_integration_tests", "dependency_risk", "secret_scan", "real_path_exercise", "judgment_evaluation"],
+      "properties": {
+        "build": {"$ref": "#/$defs/coverageCell"},
+        "type_check": {"$ref": "#/$defs/coverageCell"},
+        "lint_static_analysis": {"$ref": "#/$defs/coverageCell"},
+        "unit_integration_tests": {"$ref": "#/$defs/coverageCell"},
+        "dependency_risk": {"$ref": "#/$defs/coverageCell"},
+        "secret_scan": {"$ref": "#/$defs/coverageCell"},
+        "real_path_exercise": {"$ref": "#/$defs/coverageCell"},
+        "judgment_evaluation": {"$ref": "#/$defs/coverageCell"}
+      },
+      "additionalProperties": false
+    },
+    "warning": {
+      "type": "object",
+      "required": ["code", "message", "recommendation"],
+      "properties": {
+        "code": {"type": "string", "minLength": 1},
+        "message": {"type": "string", "minLength": 1},
+        "recommendation": {"type": "string"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

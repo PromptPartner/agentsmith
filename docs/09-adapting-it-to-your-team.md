@@ -50,7 +50,9 @@ default of 70% used, then copied across six files. The instance-fix would be one
 *system* fix, which is what shipped: a single source of truth for the threshold, and the
 direction ("used", not "left") plus the *reason* stated everywhere the number appears — so the
 class of error (a magic number duplicated in prose and code, with no check tying it to intent)
-got harder, not just this case.
+got harder, not just this case. A later evidence review removed the universal default altogether:
+the number was a local observation, not a model-independent quality boundary. The current hook
+acts only when an operator supplies a threshold calibrated on their own work.
 
 ## Where a new rule goes — the decision that keeps it lean
 

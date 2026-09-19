@@ -275,7 +275,7 @@ else:
             while time.monotonic() < deadline:
                 try:
                     receipt = self.read_receipt(directory)
-                except (FileNotFoundError, json.JSONDecodeError):
+                except (FileNotFoundError, PermissionError, json.JSONDecodeError):
                     time.sleep(0.05)
                     continue
                 statuses = [phase["status"] for phase in receipt.get("phases", [])]

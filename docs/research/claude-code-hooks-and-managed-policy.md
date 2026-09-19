@@ -5,6 +5,11 @@
 > against the official Claude Code docs (code.claude.com/docs). Underpins roadmap
 > items #3 (context/handoff trigger), #5 (guardrail hooks), #9 (org-policy variant).
 
+> **Threshold policy superseded 2026-09-17:** the runtime-mechanics findings remain useful, but the
+> 25–30% "sweet spot" references below are historical. Later independent research supported
+> model/task-dependent degradation, not one occupancy boundary. The current percentage hook is
+> disabled until an operator supplies a threshold calibrated on their own work.
+
 ## Question / scope
 
 Can a hook/skill/plugin **see the live context-window usage** and auto-trigger a

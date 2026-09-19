@@ -1,0 +1,126 @@
+{
+  "active_profiles": [],
+  "instruction_chain": [
+    {
+      "includes_core": null,
+      "path": "$HOME/.codex/AGENTS.md",
+      "profiles": [],
+      "scope": "global",
+      "state": "missing"
+    },
+    {
+      "includes_core": null,
+      "path": "$DEMO/AGENTS.md",
+      "profiles": [],
+      "scope": "project",
+      "state": "missing"
+    }
+  ],
+  "managed_capabilities": {
+    "hooks": {
+      "state": "not-configured",
+      "summary": "Managed hooks are not enabled."
+    },
+    "mcp": {
+      "state": "not-configured",
+      "summary": "Managed MCP servers are not enabled."
+    },
+    "owned_files": {
+      "state": "not-configured",
+      "summary": "No additional managed-file inventory is recorded."
+    },
+    "runtime": {
+      "state": "missing",
+      "summary": "No project-local AgentSmith runtime was found."
+    },
+    "safety": {
+      "state": "not-configured",
+      "summary": "No managed native safety setting is recorded."
+    },
+    "skills": {
+      "state": "not-configured",
+      "summary": "Managed skills are not enabled."
+    }
+  },
+  "next_action": {
+    "command": "agentsmith profiles recommend --target $DEMO",
+    "reason": "Choose an evidence-backed work profile before installing managed instructions."
+  },
+  "schema_version": 1,
+  "target": "$DEMO",
+  "topology": {
+    "kind": "unmanaged",
+    "source": "$DEMO",
+    "summary": "No managed AgentSmith installation was found for this target."
+  },
+  "verification": {
+    "config_path": "$DEMO/.harness/verify.conf",
+    "configured_phases": [
+      {
+        "command": "python3 -m py_compile readiness.py exercise.py test_readiness.py",
+        "label": "syntax",
+        "source": "user"
+      },
+      {
+        "command": "python3 -m unittest -v test_readiness.py",
+        "label": "tests",
+        "source": "user"
+      },
+      {
+        "command": "python3 exercise.py",
+        "label": "real-path",
+        "source": "user"
+      }
+    ],
+    "coverage": {
+      "build": {
+        "evidence": [
+          "No build artifact was detected."
+        ],
+        "state": "not-applicable"
+      },
+      "dependency_risk": {
+        "evidence": [],
+        "state": "missing"
+      },
+      "judgment_evaluation": {
+        "evidence": [],
+        "state": "manual"
+      },
+      "lint_static_analysis": {
+        "evidence": [
+          "syntax"
+        ],
+        "state": "configured"
+      },
+      "real_path_exercise": {
+        "evidence": [
+          "readiness.py accepts a checks fixture"
+        ],
+        "state": "manual"
+      },
+      "secret_scan": {
+        "evidence": [],
+        "state": "missing"
+      },
+      "type_check": {
+        "evidence": [],
+        "state": "missing"
+      },
+      "unit_integration_tests": {
+        "evidence": [
+          "tests"
+        ],
+        "state": "configured"
+      }
+    },
+    "gaps": [
+      "A human or independent rubric must judge explanation quality.",
+      "Discovery cannot prove the visible command result.",
+      "No allow-listed dependency-risk check was detected.",
+      "No allow-listed type checker configuration was detected.",
+      "No project secret-scan phase is configured."
+    ]
+  },
+  "warnings": []
+}

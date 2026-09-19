@@ -9,8 +9,9 @@ an expert developer, most of the friction here is words — clear that, and the 
   orchestration, feedback loops. The ~90% of agent behavior you control. The model is the ~10%
   you don't. → [`01-harness-philosophy.md`](01-harness-philosophy.md)
 - **Agent** — the model *plus* the harness, running with autonomy. Not a chatbot with tools.
-- **Context window** — the model's working memory for a session. Finite, and quality degrades as
-  it fills — which is why sessions hand off early (~25–30% used), not when full.
+- **Context window** — the model's finite working memory for a session. Accepted capacity is not
+  the same as reliable capacity: results vary by model, task, information position, and history.
+  The usage gauge is a load signal, not a universal quality score.
 - **Static context** — what's loaded *every turn* and paid for every turn: canonical `AGENTS.md`
   (or Claude's generated copy). Rationed hard (600 lines / ~10k tokens here). → [`04-why-your-agent-ignored-the-rule.md`](04-why-your-agent-ignored-the-rule.md)
 - **Dynamic context** — loaded only on demand: skills, docs, memory, tool results. Free until used.
@@ -81,6 +82,21 @@ an expert developer, most of the friction here is words — clear that, and the 
 
 ## Verification
 
+- **First Verified Loop** — the attended product journey from status and profile choice through
+  configured checks, one bounded change, deterministic and real-path evidence, a receipt, and a
+  clean continuation point. → [`demos/first-verified-loop/`](demos/first-verified-loop/README.md)
+- **Status** — the read-only short mental model of effective instructions, profiles, capabilities,
+  verification coverage, drift, and one reasoned next action.
+- **Verification discovery plan** — a schema-versioned, target-bound proposal built from allow-listed
+  repository evidence without executing repository code. Applying it is a separate approval boundary.
+- **Coverage state** — `configured`, `missing`, `unknown`, or `not_applicable` for one verification
+  category; missing and unknown remain visible rather than being treated as passing.
+- **First-loop demo** — the disposable dependency-free readiness fixture with one intentional `any`
+  versus `all` defect. It is a teaching and proof surface, not a benchmark.
+- **Resume** — read-only validation of a handoff's structure and Git drift. It emits a synthesized,
+  project-bound status command and never echoes stored kickoff prose.
+- **Claim map** — a table binding each public statement to evidence, support level, and the boundary
+  beyond which the wording would mislead.
 - **Evidence** — an artifact a check produced (failing→passing test, wire response, rendered
   page). The opposite of a claim. → [`03-verify-means-evidence.md`](03-verify-means-evidence.md)
 - **Test vs eval** — tests prove the deterministic part (input → output); evals judge the part
