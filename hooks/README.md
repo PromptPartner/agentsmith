@@ -44,13 +44,17 @@ the prompt text, which the hook always receives. This is the recommended primary
 Claude Code only. This hook is not installed for Codex because it depends on Claude's status line;
 Codex therefore gets the reliable keyword hook, but no percentage-triggered handoff.
 
-When context **used** crosses a threshold (default **30%**, set `HANDOFF_PCT_THRESHOLD` to an
-integer from 1–100), it nudges **once per session** toward a handoff. The default is deliberately
-*low* — the cue is to hand off
-**early**, when the window is ~25–30% used, not when it's nearly full: model quality degrades as
-context fills (Opus 4.8's sweet spot is ~25–40% used, so you hand off near the bottom of the band).
-When a valid threshold signal exists, the Stop response is an enforced cue: it blocks that stop and
-returns the handoff reason to the agent. It still does not execute or verify the handoff itself.
+Percentage automation is **disabled by default** because no occupancy percentage is a reliable
+quality boundary across models and tasks. Set `HANDOFF_PCT_THRESHOLD` to an integer from 1–100 to
+enable a user-calibrated cue. When context **used** reaches that value, the hook nudges **once per
+session** toward a handoff. Treat the value as a personal workflow heuristic: calibrate it on the
+models, tasks, and conversation histories you actually use. When a valid threshold signal exists,
+the Stop response blocks that stop once and returns the handoff reason to the agent. It still does
+not execute or verify the handoff itself.
+
+Existing installations that relied on the former implicit 30% value become silent after updating
+unless `HANDOFF_PCT_THRESHOLD` is explicitly set. The status-line gauge and reliable keyword hook
+continue to work without that variable.
 
 > **Honest caveat.** No Claude Code hook receives the live context-% — only the **statusline**
 > does. So this hook reads the % that AgentSmith's installed `agentsmith-statusline.py` writes to a temp file
@@ -82,6 +86,8 @@ If you'd rather edit `settings.json` yourself instead of `--with-handoff-hooks`:
 ```
 
 Keep only the `UserPromptSubmit` entry if you want the reliable half without the experimental one.
+To enable the experimental hook, export a calibrated `HANDOFF_PCT_THRESHOLD` before starting Claude
+Code; an unset or invalid value fails open and produces no cue.
 
 Codex uses the same event in `$CODEX_HOME/hooks.json`; setup writes an absolute, safely quoted
 command because `CODEX_HOME` may contain spaces. A minimal definition is:

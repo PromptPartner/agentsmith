@@ -29,8 +29,8 @@ resolve another one.
 
 1. Read the tracked item, existing plans/specs, and `docs/14-project-tracker-guide.md` when present.
    Determine the active tracker-write policy before any tracker action.
-2. Name the destination and non-goals. Stop if the effort is already small and decision-complete;
-   use the ordinary plan flow instead.
+2. Name the destination and non-goals. Route a small but still fuzzy, single-session change to
+   `grill-with-docs`; route decision-complete work to the ordinary plan flow.
 3. Create `docs/specs/<slug>.md` from `.harness/templates/wayfinder-spec.md` (or
    `templates/wayfinder-spec.md` in the harness source checkout); reproduce that shape only when
    neither is available. Initial status is always `draft`.

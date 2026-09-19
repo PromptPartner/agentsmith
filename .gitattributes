@@ -16,3 +16,12 @@
 # leak-gate.allow is read as anchored grep patterns; a stray CR corrupts the regex ($\r never
 # matches) and would SILENTLY break the README operator-credit exception. Force LF like above.
 .harness/leak-gate.allow text eol=lf
+
+# First Verified Loop fixture hashes bind exact bytes. Windows checkout conversion would otherwise
+# rewrite LF to CRLF, making a clean fixture look stale before any product behavior is exercised.
+templates/first-loop/** text eol=lf
+tests/fixtures/first-verified-loop/** text eol=lf
+
+# The public proof is byte-compared with a clean regeneration on every native CI runner. Pin its
+# checkout bytes as well as its source fixtures so Windows cannot rewrite the expected side to CRLF.
+docs/demos/first-verified-loop/** text eol=lf

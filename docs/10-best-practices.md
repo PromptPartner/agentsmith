@@ -5,13 +5,14 @@ production project it was distilled from — and each one names the guard that n
 of it. (The full post-incident write-ups follow the [`feedback/`](feedback/README.md) convention;
 the incidents are retold inline here so the lessons travel with the repo.)
 
-**Encode thresholds with their direction — and keep one source of truth.**
+**Do not turn a local observation into a universal threshold.**
 An operator asked for handoffs "when context *reaches* 25–30%." It shipped as 25–30% *left* —
 one misread word, silently compiled into a 70%-used default, then copied across six files, where
-it survived review because every copy agreed with every other copy. *Do:* keep a magic number in
-exactly one place, and state the direction and the *why* wherever it's mentioned ("~25–30%
-**used** — hand off early, while the model is in its quality band"). *Don't:* let prose restate
-what code defines.
+it survived review because every copy agreed with every other copy. A later evidence review found
+the deeper defect: no research supported one percentage across models and tasks. *Do:* distinguish
+measured local policy from universal product guidance, configure a threshold explicitly when your
+own evaluation supports it, and keep that value in one place. *Don't:* let a convenient number
+become a scientific claim through repetition.
 
 **Availability is not authorization.**
 Setup asked where the team tracks work. The assembler quietly compiled that *location* answer
@@ -57,8 +58,8 @@ same product told newcomers two incompatible safety stories. `0.2.0` resolved th
 same unit of work* (R6) — stale docs don't just lag, they actively misinform the people with the
 least context. The accurate permissions story lives in README → "Permissions and trusted mode."
 
-**The standing habits behind the stories** — context is the scarce resource (hand off at ~25–30%
-used; keep static rules lean and push knowledge into skills/docs — see
+**The standing habits behind the stories** — context is a scarce resource (watch load, use natural
+phase boundaries, and calibrate any automated cue on your own work; keep static rules lean and push knowledge into skills/docs — see
 [`04-why-your-agent-ignored-the-rule.md`](04-why-your-agent-ignored-the-rule.md)); keep the surface
 small (install plugins/skills per need, review third-party ones before installing — they run
 shell commands); match rigor to stakes (throwaway work can be loose; anything touching users,

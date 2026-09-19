@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "installation": {
+    "installed_version": "0.3.1",
+    "source": {"release": "v0.3.1", "commit": null},
+    "scope": "project",
+    "agents": ["codex"],
+    "profiles": ["general-admin"],
+    "include_core": true,
+    "assemble_only": true,
+    "safety": {},
+    "operator": {
+      "name": "the project lead",
+      "role": "owner / decision-maker",
+      "bio": "They decide direction and accept the risk."
+    },
+    "tracker": {
+      "name": "KNOWN-ISSUES.md",
+      "writes": "ask"
+    },
+    "capabilities": {
+      "handoff_hooks": false,
+      "hooks": false,
+      "mcp": [],
+      "skills": false,
+      "ui_design_hook": false
+    },
+    "managed_files": []
+  }
+}

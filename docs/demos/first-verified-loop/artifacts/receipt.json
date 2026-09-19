@@ -1,0 +1,80 @@
+{
+  "completed_at": "<recorded-at>",
+  "configuration": {
+    "path": "$DEMO/.harness/verify.conf",
+    "sha256": "df86e001b403021b871d2385fcf00150e28d2d929b7f5cafe2a80b4a97659af8"
+  },
+  "git": {
+    "available": true,
+    "branch": "proof/first-loop",
+    "dirty": true,
+    "head": "<git-commit>"
+  },
+  "only": null,
+  "phases": [
+    {
+      "command": "python3 -m py_compile readiness.py exercise.py test_readiness.py",
+      "completed_at": "<recorded-at>",
+      "duration_seconds": "<elapsed-seconds>",
+      "exit_code": 0,
+      "index": 1,
+      "label": "syntax",
+      "output_hashes": {
+        "stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "output_paths": {
+        "stderr": "phase-001.stderr.txt",
+        "stdout": "phase-001.stdout.txt"
+      },
+      "redactions": [],
+      "started_at": "<recorded-at>",
+      "status": "passed"
+    },
+    {
+      "command": "python3 -m unittest -v test_readiness.py",
+      "completed_at": "<recorded-at>",
+      "duration_seconds": "<elapsed-seconds>",
+      "exit_code": 0,
+      "index": 2,
+      "label": "tests",
+      "output_hashes": {
+        "stderr": "e8b60be6ef504770e5d7bf4759db776889687747344061ce903fdb1adc31a93d",
+        "stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "output_paths": {
+        "stderr": "phase-002.stderr.txt",
+        "stdout": "phase-002.stdout.txt"
+      },
+      "redactions": [],
+      "started_at": "<recorded-at>",
+      "status": "passed"
+    },
+    {
+      "command": "python3 exercise.py",
+      "completed_at": "<recorded-at>",
+      "duration_seconds": "<elapsed-seconds>",
+      "exit_code": 0,
+      "index": 3,
+      "label": "real-path",
+      "output_hashes": {
+        "stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout": "19bd4c816385a2c9da7dbf5c1cf9cde7fe0d092003c5368e9e6b41ac473b4bd9"
+      },
+      "output_paths": {
+        "stderr": "phase-003.stderr.txt",
+        "stdout": "phase-003.stdout.txt"
+      },
+      "redactions": [],
+      "started_at": "<recorded-at>",
+      "status": "passed"
+    }
+  ],
+  "platform": "<platform>",
+  "schema_version": 1,
+  "started_at": "<recorded-at>",
+  "status": "passed",
+  "target": "$DEMO",
+  "tree_class": "disposable-fixture",
+  "updated_at": "<recorded-at>"
+}

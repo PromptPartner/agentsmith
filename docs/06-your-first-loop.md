@@ -1,15 +1,94 @@
-# Your first loop
+# Your first verified loop
 
-[`02-your-first-hour.md`](02-your-first-hour.md) walked a session end to end. This is its
-counterpart for the other mode: standing up a loop — a harness that runs on a schedule, with
-nobody watching each step — without it being the reckless thing that phrase makes it sound.
-[`05-operating-modes.md`](05-operating-modes.md) is the *why* and *when*; this is the *how*, in
-order. The rules a loop must obey live in `profiles/autonomous-loops.md` (they're loaded when you
-assemble that profile) — this doc points at them rather than repeating them, and adds the
-operation the profile doesn't carry.
+[`02-your-first-hour.md`](02-your-first-hour.md) introduces the files and commands. This guide runs
+one value through the complete attended loop before discussing automation. That order matters: an
+unattended loop should be a trusted attended shape plus scheduling and isolation, not an unfamiliar
+task with the human removed.
 
-The one-line version: **a loop is a session you've run so many times you trust the shape, plus a
-schedule, a durable state file, and a checker the maker can't fool.** Build it in that order.
+## Part 1 — complete the attended proof loop
+
+### 1. Create the disposable project
+
+From the AgentSmith source checkout, choose a new or empty directory:
+
+```bash
+python3 agentsmith.py demo first-loop --target /tmp/agentsmith-first-loop
+cd /tmp/agentsmith-first-loop
+```
+
+The initializer uses no network and installs no dependency. It refuses broad, non-empty, and
+symbolic-link targets. Read `ACCEPTED_TASK.md`: the outcome is narrow, the non-goals are explicit,
+and only `readiness.py` plus its test are in scope.
+
+### 2. Understand the active setup before editing
+
+```bash
+agentsmith status --target .
+```
+
+Status should name the three configured verification phases—syntax, tests, and real path—and show
+unit/integration coverage as configured. In a normal repository, this is also where you would run
+`agentsmith profiles recommend --target .` and preview a profile switch if the active work type is
+wrong. The demo already has its bounded verification configuration, so no switch is needed.
+
+### 3. Produce the red evidence
+
+```bash
+agentsmith verify --target .
+```
+
+The partial-check test must fail. This is intentional: `checks.json` has one true and one false
+check, while `readiness.py` incorrectly accepts `any(checks.values())`. A failure with a different
+test or reason is not the expected baseline—diagnose it before editing.
+
+### 4. Make only the accepted change
+
+Change `return any(checks.values())` to `return all(checks.values())`. Do not change the fixture,
+remove a check, or add a dependency. This is the smallest change that makes the accepted behavior
+true: readiness requires every named check.
+
+### 5. Retain deterministic and real-path proof
+
+```bash
+agentsmith verify --target . \
+  --record .harness/evidence/first-loop \
+  --tree-class disposable-fixture
+python3 readiness.py checks.json
+```
+
+Verification must pass syntax, tests, and the exercise script. The visible command must print
+`NOT READY` and exit 1 because `security_review` is still false; that non-zero exit is the correct
+user-visible result, not a failed fix. Inspect `.harness/evidence/first-loop/receipt.json` to see
+which tree, configuration, phases, exits, and output hashes produced the claim.
+
+### 6. Save and validate the continuation point
+
+```bash
+agentsmith handoff first-verified-loop --target .
+agentsmith resume --target . --json
+```
+
+Fill the generated handoff with the actual branch, commit, dirty state, receipt, remaining authority,
+and next read-only status command. Resume must then report `ready` with no unexpected drift. It
+validates and synthesizes safe output; it does not check out, commit, stash, reset, or edit the note.
+
+### 7. Inspect the reference proof
+
+The [public proof bundle](demos/first-verified-loop/README.md) retains this exact red→green→real-path
+chain, plus clean and existing-config installation lifecycle fixtures, a flow diagram, claim map,
+sanitization record, and limitations. Its generator reruns every command from a temporary clean Git
+copy and the contract byte-compares the normalized result.
+
+## Part 2 — only then consider an unattended loop
+
+The rest of this guide covers the other mode: a harness that runs on a schedule with nobody watching
+each step. [`05-operating-modes.md`](05-operating-modes.md) is the *why* and *when*. The rules live
+in `profiles/autonomous-loops.md`; this guide points at them rather than repeating them and adds the
+operation the profile does not carry.
+
+The one-line version: **an unattended loop is an attended session you've run enough times to trust
+the shape, plus a schedule, a durable state file, and a checker the maker cannot fool.** Build it in
+that order.
 
 ## Before you automate anything: you've already done L1
 

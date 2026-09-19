@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import errno
 import importlib.util
 import json
 import os
@@ -125,16 +126,20 @@ class AutonomousStateTests(unittest.TestCase):
 
     def test_json_read_retries_a_transient_windows_sharing_denial(self) -> None:
         path = Path("state.json")
-        denial = PermissionError("destination is momentarily shared")
-        denial.winerror = 32
+        denial = PermissionError(errno.EACCES, "destination is momentarily shared")
         with (
             mock.patch.object(CONTROLLER.os, "name", "nt"),
-            mock.patch.object(Path, "read_text", side_effect=[denial, '{"ready": true}']) as read,
+            mock.patch.object(
+                Path,
+                "read_text",
+                side_effect=[denial] * 150 + ['{"ready": true}'],
+            ) as read,
             mock.patch.object(CONTROLLER.time, "sleep") as pause,
         ):
             self.assertEqual(CONTROLLER.load_json(path), {"ready": True})
-        self.assertEqual(read.call_count, 2)
-        pause.assert_called_once_with(0.01)
+        self.assertEqual(read.call_count, 151)
+        self.assertEqual(pause.call_count, 150)
+        pause.assert_called_with(0.01)
 
     def test_process_liveness_recognizes_current_and_missing_processes(self) -> None:
         self.assertTrue(CONTROLLER.process_is_live(os.getpid()))

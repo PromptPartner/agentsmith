@@ -1,8 +1,16 @@
-# AgentSmith — clear working rules for coding agents
+# AgentSmith — proof before done
 
-AgentSmith gives coding agents a shared set of working rules. You choose the universal rules and a
-profile for the kind of work you do. AgentSmith combines them into one `AGENTS.md` file in your
-project. Claude Code receives the same rules in a generated `CLAUDE.md` file.
+**Your AI agent is capable. Prove the result.**
+
+**Proof before done.**
+
+AgentSmith gives coding agents project-owned rules, work-specific quality gates, and one visible
+evidence loop: understand the setup, choose the right profile, configure real checks, make a bounded
+change, exercise the real path, retain the proof, and hand off cleanly.
+
+[Inspect the complete public proof](docs/demos/first-verified-loop/README.md), including the named
+red test, green verification, real-path output, receipt, handoff/resume, reversible installation
+fixtures, claim boundaries, and current limitations.
 
 Support is reported separately for three things: whether an agent reads the rules, whether optional
 skills and external tool connections work, and whether AgentSmith can configure the agent directly.
@@ -30,7 +38,25 @@ agent applications, so they need a separate test for each agent and model provid
 The launchers only locate Python and delegate identical arguments to `agentsmith.py`. Native
 Windows setup, helpers, and managed hooks require neither Git Bash nor WSL.
 
-## Quick start
+## Guided path
+
+Learn the complete loop in a disposable, dependency-free project before touching a valuable
+repository:
+
+```bash
+git clone https://github.com/PromptPartner/agentsmith.git ~/tools/agentsmith
+cd ~/tools/agentsmith
+python3 agentsmith.py demo first-loop --target /tmp/agentsmith-first-loop
+```
+
+The command refuses a non-empty or symbolic-link target and prints the next three steps plus the
+exact delete boundary. The baseline is intentionally wrong: one passing check hides one failed
+check. Follow [`docs/02-your-first-hour.md`](docs/02-your-first-hour.md), or compare your run with
+the [reproducible evidence bundle](docs/demos/first-verified-loop/README.md).
+
+## Experienced path
+
+Install directly into a project when you already know which work profile and client targets apply:
 
 ```bash
 git clone https://github.com/PromptPartner/agentsmith.git ~/tools/agentsmith
@@ -63,6 +89,10 @@ technical terms in common words and describe the effect and risk before commands
 `--operator-bio` to state what you already know and where you want more detail. An explicit request
 to answer in another language always wins. See the copy-ready bios in [INSTALL.md](INSTALL.md#3-set-responsibility-background-and-external-write-consent).
 
+The experienced path uses the same contract as the guided demo: checks are inspectable, gaps remain
+visible, and evidence precedes a completion claim. Use `agentsmith status --target .` immediately
+after installation to see the effective setup and the single safest next action.
+
 ## Permissions and trusted mode
 
 Omitting `--safety` is the cautious path for fresh installs and ordinary updates. The wizard asks
@@ -85,6 +115,10 @@ in place.
 python3 agentsmith.py agents list
 python3 agentsmith.py compatibility
 python3 agentsmith.py doctor --agent all --target /path/to/project
+python3 agentsmith.py status --target /path/to/project
+python3 agentsmith.py profiles list
+python3 agentsmith.py profiles recommend --target /path/to/project
+python3 agentsmith.py profiles switch --target /path/to/project --profile software-dev --dry-run
 python3 agentsmith.py evaluate --agent native --dry-run --claude-max-usd 10 --codex-max-tokens 100000
 
 agentsmith update check --json
@@ -95,8 +129,14 @@ agentsmith update apply --plan /tmp/agentsmith-update.json
 ./setup.sh --agent all --uninstall --target /path/to/project
 ```
 
-When installed as a command, the public forms are `agentsmith agents list`, `agentsmith
-compatibility`, and `agentsmith doctor ...`. Doctor resolves the selected client's effective
+When installed as a command, omit `python3 agentsmith.py`. `status` is the short, read-only mental
+model: it reports topology, active profiles, the instruction chain, managed capabilities,
+verification coverage, and exactly one reasoned next action. `profiles recommend` is also read-only
+and uses repository evidence without calling a model. `profiles switch --dry-run` previews every
+managed instruction and manifest change; the actual switch preserves `.harness/verify.conf`
+byte-for-byte, creates instruction backups, and reports profile gates that remain unrepresented.
+
+`doctor` remains the detailed diagnostic surface. It resolves the selected client's effective
 global, project, and nested instruction chain, including fingerprints, generator metadata, and
 combined/duplicate token estimates. It separately inspects actual safety, skills, MCP, hooks,
 scanner commands, and installed runtime ownership. Duplicate full cores are warnings, not automatic
@@ -158,11 +198,16 @@ Claude-only `--org-policy` manages the OS policy directory with backup/restore o
 ## Cross-platform helpers
 
 ```bash
+agentsmith verify discover --target . --save .harness/verification-plan.json
+agentsmith verify apply --target . --plan .harness/verification-plan.json --dry-run
+agentsmith verify apply --target . --plan .harness/verification-plan.json
 agentsmith verify --list
 agentsmith verify
 agentsmith verify --record .harness/receipts/my-check --tree-class operator-worktree
 agentsmith validate-integration --checkpoint .planning/integration-checkpoint.json
 agentsmith handoff ITEM-123
+agentsmith resume --target .
+agentsmith resume .harness/handoffs/handoff-YYYYMMDD-HHMM.md --target . --json
 agentsmith new-research "topic"
 agentsmith new-feedback "observed failure"
 agentsmith secret-scan
@@ -178,6 +223,13 @@ local, durable `receipt.json` and redacted stdout/stderr sidecars; `clean-clone`
 state, and every mode refuses an existing destination. `validate-integration` reads the structured
 checkpoint described by `.harness/templates/integration-checkpoint.md`; it never installs or starts
 the configured package.
+
+`resume` selects the newest handoff unless a file is named. It validates required sections and
+unfilled scaffold fields, compares recorded Git facts with current read-only observations, and
+prints a validated recovery command plus a paste-ready kickoff. The command is limited to
+`agentsmith status`; stored kickoff prose is never echoed, and the CLI synthesizes a bounded prompt
+from the validated handoff path and command. Resume disables optional Git locks and never checks
+out, resets, stashes, commits, or edits the note.
 
 The default secret scan examines only added lines in the staged Git diff, which is the pre-commit
 contract. `--all` scans the tracked working tree; file arguments and `-` select explicit files or
@@ -200,15 +252,22 @@ silently substitute a weaker “local model” ruleset.
 ```bash
 python3 scripts/test-agent-conformance.py --strict
 python3 compatibility/test_registry.py
+python3 scripts/test-first-verified-loop-contracts.py --fvl07
+python3 scripts/test-first-verified-loop-contracts.py --fvl08
 python3 -m py_compile agentsmith.py
 ```
 
 Strict conformance covers all 16 registry entries, selector groups, Unicode paths, CRLF foreign
 configuration, idempotent reruns, owned uninstall, canonical instruction selection, skill
 metadata, and Bash-free hook commands. CI runs it natively on Ubuntu, macOS, and Windows.
+FVL-08 records a machine-readable report on each native runner and accepts release evidence only
+when Linux, macOS, and Windows bind to the same clean Git commit and tree.
 
 ## Documentation
 
+- [First Verified Loop public proof](docs/demos/first-verified-loop/README.md)
+- [Guided first hour](docs/02-your-first-hour.md)
+- [First loop and unattended-loop progression](docs/06-your-first-loop.md)
 - [Installation and migration](INSTALL.md)
 - [Compatibility contract](docs/22-compatibility-contract.md)
 - [Harness philosophy](docs/01-harness-philosophy.md)

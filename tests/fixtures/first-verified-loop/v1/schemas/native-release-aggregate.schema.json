@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentsmith.dev/schemas/native-release-aggregate-v1.json",
+  "title": "AgentSmith native First Verified Loop release aggregate v1",
+  "type": "object",
+  "required": ["schema_version", "evidence_kind", "status", "git_commit", "git_tree", "platforms", "phase_labels", "security_coverage", "report_sha256", "recorded_at", "native_evidence_complete", "network_used", "external_write_used"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "evidence_kind": {"const": "agentsmith-first-verified-loop-native-aggregate"},
+    "status": {"const": "passed"},
+    "git_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "git_tree": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "platforms": {"type": "array", "minItems": 3, "uniqueItems": true, "items": {"enum": ["linux", "macos", "windows"]}},
+    "phase_labels": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "security_coverage": {
+      "type": "array",
+      "minItems": 7,
+      "uniqueItems": true,
+      "items": {"enum": ["command-injection", "path-traversal", "symlink-escape", "plan-tampering", "secret-redaction", "foreign-file-preservation", "git-state-safety"]}
+    },
+    "report_sha256": {
+      "type": "object",
+      "required": ["linux", "macos", "windows"],
+      "properties": {
+        "linux": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "macos": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "windows": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "recorded_at": {"type": "string", "format": "date-time"},
+    "native_evidence_complete": {"const": true},
+    "network_used": {"const": false},
+    "external_write_used": {"const": false}
+  },
+  "additionalProperties": false
+}

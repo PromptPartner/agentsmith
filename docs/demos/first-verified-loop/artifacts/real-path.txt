@@ -1,0 +1,6 @@
+$ python3 readiness.py checks.json
+exit: 1
+--- stdout ---
+NOT READY
+--- stderr ---
+<empty>

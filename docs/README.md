@@ -16,7 +16,7 @@ is a harness" to "make it your team's own," with the glossary as the appendix:
 | [`03-verify-means-evidence.md`](03-verify-means-evidence.md) | The most load-bearing concept: what counts as proof, per kind of work. |
 | [`04-why-your-agent-ignored-the-rule.md`](04-why-your-agent-ignored-the-rule.md) | The economics of rules, the four ways they fail, and the guard for each. |
 | [`05-operating-modes.md`](05-operating-modes.md) | Attended sessions vs autonomous loops, and which model for which phase. |
-| [`06-your-first-loop.md`](06-your-first-loop.md) | The concrete recipe for standing up an unattended loop — safely, in order. |
+| [`06-your-first-loop.md`](06-your-first-loop.md) | Complete the bounded First Verified Loop, then understand when that attended shape is ready for unattended operation. |
 | [`07-how-to-pick-a-profile.md`](07-how-to-pick-a-profile.md) | The ten profiles and how to choose (or stack) them. |
 | [`08-how-to-add-a-profile.md`](08-how-to-add-a-profile.md) | Extending the harness to work it doesn't cover yet. |
 | [`09-adapting-it-to-your-team.md`](09-adapting-it-to-your-team.md) | Earning your own rules, and retrofitting onto an existing project. |
@@ -34,6 +34,7 @@ is a harness" to "make it your team's own," with the glossary as the appendix:
 | [`21-autonomous-runs.md`](21-autonomous-runs.md) | Run one accepted coding ticket overnight through a local maker/checker controller. |
 | [`22-compatibility-contract.md`](22-compatibility-contract.md) | Support tiers, evidence vocabulary, canonical instructions, and certification rules. |
 | [`23-updating-existing-installations.md`](23-updating-existing-installations.md) | Bootstrap staged updates safely, preserve local evolution, and check known legacy blockers. |
+| [`demos/first-verified-loop/`](demos/first-verified-loop/README.md) | Reproducible public red→green→real-path→receipt→handoff proof, lifecycle fixtures, claim map, and limitations. |
 | [`feedback/README.md`](feedback/README.md) | The post-incident log: how lessons become system changes. |
 | [`research/`](research/) | Source research the docs above were distilled from. |
 
@@ -44,9 +45,9 @@ new bit. Read [`01`](01-harness-philosophy.md), skim [the glossary](19-glossary.
 [`04`](04-why-your-agent-ignored-the-rule.md) — the doc to read *before* a rule fails on you.
 
 **"I just installed it."** Start with [`02`](02-your-first-hour.md),
-[`03`](03-verify-means-evidence.md), and
-[`05`](05-operating-modes.md) — and [`06`](06-your-first-loop.md) when you want to run something
-unattended.
+[`03`](03-verify-means-evidence.md), and [`06`](06-your-first-loop.md). Inspect the
+[public proof](demos/first-verified-loop/README.md) when you want the exact evidence chain; use
+[`05`](05-operating-modes.md) before moving from attended work to an unattended loop.
 
 **"Should I trust this on my machine?"** [`15-safety-model.md`](15-safety-model.md) is the whole
 posture in one place — what it can do, what's opt-in, and how to lock it down. That's blast radius;
