@@ -60,5 +60,8 @@ duplicate inherited entries. Microsoft's [automatic inheritance rules](https://l
 explain why an inheritable ACL edit can propagate through an existing tree. The launcher now
 saves each allowed root's DACL and restores it with
 [`SetFileSecurityW`](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-setfilesecurityw)
-after removing the package grant; that API does not propagate the restored DACL to children.
-The native test also checks two existing child files for ACL drift.
+after removing the package grant. Run `35617685307` showed the root was restored, but `.git`
+changed from explicit to inherited ACEs. The launcher now uses documented
+[`icacls /save` and `/restore`](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/icacls)
+on the full allowed trees, including existing children. The native test compares the root,
+`.git`, and two existing child files before and after cleanup.
