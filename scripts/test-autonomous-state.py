@@ -28,6 +28,42 @@ SPEC.loader.exec_module(CONTROLLER)
 
 
 class AutonomousStateTests(unittest.TestCase):
+    def test_coordination_lock_acquire_retries_windows_sharing_denial(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith coordination acquire ") as temporary:
+            root = Path(temporary)
+            lock = root / "coordination.lock"
+            open_file = os.open
+            attempts = 0
+
+            def transient_open(path: str | os.PathLike[str], flags: int, mode: int = 0o777) -> int:
+                nonlocal attempts
+                if os.fspath(path) == os.fspath(lock):
+                    attempts += 1
+                    if attempts <= 2:
+                        error = PermissionError(errno.EACCES, "another controller is deleting the lock")
+                        error.winerror = 32
+                        raise error
+                return open_file(path, flags, mode)
+
+            with mock.patch.object(CONTROLLER.os, "name", "nt"), mock.patch.object(CONTROLLER.os, "open", transient_open):
+                with CONTROLLER.coordination_lock(root):
+                    self.assertTrue(lock.is_file())
+            self.assertEqual(attempts, 3)
+            self.assertFalse(lock.exists())
+
+    def test_coordination_lock_acquire_fails_closed_after_persistent_windows_denial(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith coordination timeout ") as temporary:
+            root = Path(temporary)
+            denial = PermissionError(errno.EACCES, "persistent sharing denial")
+            denial.winerror = 32
+            with (mock.patch.object(CONTROLLER.os, "name", "nt"),
+                  mock.patch.object(CONTROLLER.os, "open", side_effect=denial) as open_file,
+                  mock.patch.object(CONTROLLER.time, "monotonic", side_effect=[0.0, 61.0])):
+                with self.assertRaisesRegex(CONTROLLER.RunError, "cannot acquire repository coordination lock"):
+                    with CONTROLLER.coordination_lock(root):
+                        self.fail("lock unexpectedly acquired")
+            self.assertEqual(open_file.call_count, 1)
+
     def test_coordination_lock_release_retries_windows_reader_sharing_denial(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith coordination release ") as temporary:
             root = Path(temporary)

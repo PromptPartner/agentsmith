@@ -96,7 +96,11 @@ been authorized, so the entries are kept here.
   the 60-second coordination wait on live process `3484`, while `b` exited at `prepared` without
   a terminal reason. A simulated Windows sharing denial on coordination-lock release failed
   before a bounded unlink retry and passed after it; the exact hosted exception was not
-  captured. Failed runs do not produce a passing aggregate.
+  captured. Push run `35652909610` then identified `PermissionError` at the exclusive
+  coordination-lock creation call in a different Windows fixture. Bounded Windows sharing
+  retries now cover acquisition and release; targeted tests fail before each fix and pass
+  after. A same-tree native rerun is the release gate. Failed runs do not produce a passing
+  aggregate.
 - [ ] 2026-09-21 — A stop request arriving after a fake maker has committed but before its receipt
   is reconciled can leave an interrupted run whose resume replays the maker, producing a clean
   worktree with nothing new to commit. A local graph stop/resume test exposed this under heavy

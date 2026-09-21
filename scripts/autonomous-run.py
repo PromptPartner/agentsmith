@@ -313,6 +313,14 @@ def coordination_lock(root: Path):
     while True:
         try:
             descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except PermissionError as exc:
+            transient = os.name == "nt" and (
+                getattr(exc, "winerror", None) in {5, 32} or exc.errno == errno.EACCES
+            )
+            if not transient or time.monotonic() >= deadline:
+                raise RunError(f"cannot acquire repository coordination lock {path}: {exc}") from exc
+            time.sleep(0.02)
+            continue
         except FileExistsError:
             existing = read_coordination_lock(root)
             if existing is None:
