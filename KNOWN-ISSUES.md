@@ -24,6 +24,9 @@ been authorized, so the entries are kept here.
   the controller will include changed object paths in the next native failure for diagnosis.
   Eight repeated local stop/resume runs passed after that diagnostic change; the macOS
   compatibility lifecycle also passed on `4b42582` and again in both push and PR CI on `2cca50e`.
+  Manual run `35646692896` passed both macOS paths on `b331612`, but the original
+  failure artifact records only the test name and output hash, so its assertion and root cause
+  remain unknown.
 - [ ] 2026-09-21 — PR run `35641860248` exposed a macOS false negative in the new Git
   text-conversion regression: `git status` sometimes trusted cached index metadata immediately
   after the test changed `core.autocrlf`, so it reported a clean worktree even though the
@@ -77,8 +80,14 @@ been authorized, so the entries are kept here.
   native reports on commit `f41c4cf`, tree `dd4f9f3`, but its separate Windows compatibility
   lifecycle intermittently left two child controllers at `checking` after a verifier exit of 0.
   The graph had rendered their failure reason as the string `None`, hiding the child process
-  error. Failure events now retain a bounded, secret-free exit/exception/source-line signature;
-  the next native run will show where those unexpected exits occur if they recur.
+  error. Failure events now retain a bounded, secret-free exit/exception/source-line signature.
+  Manual run `35645070119` on `b331612` passed all three native reports, but its Windows
+  compatibility copy again observed a child controller gone before terminal state: node `b`
+  was `interrupted`, independent node `a` completed, and dependent `c` stayed blocked. The
+  expected-nonzero test path did not print its graph event or child stderr, so the exit cause
+  remains unknown. Same-commit rerun `35646692896` passed all nine jobs, including Windows
+  compatibility and the hosted strict aggregate. This remains an open reliability defect.
+  Failed runs do not produce a passing aggregate.
 - [ ] 2026-09-21 — A stop request arriving after a fake maker has committed but before its receipt
   is reconciled can leave an interrupted run whose resume replays the maker, producing a clean
   worktree with nothing new to commit. A local graph stop/resume test exposed this under heavy
