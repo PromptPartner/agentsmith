@@ -21,7 +21,8 @@ been authorized, so the entries are kept here.
   sibling-write denial, and loopback denial; its exact ACL assertion found duplicated inherited
   system entries after recursive `icacls`. Run `35616698843` showed that removing recursion did
   not prevent root DACL drift. Run `35617685307` restored the root, but `.git` inherited ACEs
-  changed. Full-tree ACL save/restore needs a native rerun.
+  changed. Run `35618648705` showed `icacls /restore` also left root ACL drift. Per-file DACL
+  restoration needs a native rerun.
   See `docs/research/windows-verifier-sandbox.md`.
 - [ ] 2026-09-21 — Hosted macOS native lifecycle intermittently failed its cleanup-preview test
   in run `35607452415`, although the same suite passed in that run's compatibility job and in

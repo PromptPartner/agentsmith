@@ -9,13 +9,13 @@ from __future__ import annotations
 
 import ctypes
 from ctypes import wintypes
+import itertools
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
-import tempfile
 import uuid
 
 
@@ -82,20 +82,22 @@ def _acl(path: Path, sid: str, rights: str, *, remove: bool = False) -> None:
                            f"{(result.stderr or result.stdout).strip()[:300]}")
 
 
-def _backup_acl_tree(path: Path, backup: Path) -> None:
-    result = subprocess.run(["icacls", str(path), "/save", str(backup), "/T", "/L"],
-                            capture_output=True, text=True, check=False)
-    if result.returncode:
-        raise SandboxError(f"ACL backup failed on {path}: "
-                           f"{(result.stderr or result.stdout).strip()[:300]}")
+def _original_dacl(path: Path, advapi: ctypes.WinDLL) -> bytes:
+    needed = wintypes.DWORD()
+    advapi.GetFileSecurityW(str(path), 4, None, 0, ctypes.byref(needed))
+    if not needed.value:
+        raise _win32_error(f"GetFileSecurityW size for {path}")
+    descriptor = ctypes.create_string_buffer(needed.value)
+    if not advapi.GetFileSecurityW(str(path), 4, descriptor, needed.value,
+                                  ctypes.byref(needed)):
+        raise _win32_error(f"GetFileSecurityW for {path}")
+    return descriptor.raw
 
 
-def _restore_acl_tree(path: Path, backup: Path) -> None:
-    result = subprocess.run(["icacls", str(path.parent), "/restore", str(backup), "/L"],
-                            capture_output=True, text=True, check=False)
-    if result.returncode:
-        raise SandboxError(f"ACL restoration failed on {path}: "
-                           f"{(result.stderr or result.stdout).strip()[:300]}")
+def _restore_dacl(path: Path, descriptor: bytes, advapi: ctypes.WinDLL) -> None:
+    # SetFileSecurity does not propagate the restored DACL to existing children.
+    if not advapi.SetFileSecurityW(str(path), 4, ctypes.create_string_buffer(descriptor)):
+        raise _win32_error(f"SetFileSecurityW for {path}")
 
 
 def run_verifier(command: str, cwd: Path, common: Path, timeout: int,
@@ -147,6 +149,11 @@ def run_verifier(command: str, cwd: Path, common: Path, timeout: int,
     advapi.ConvertSidToStringSidW.restype = wintypes.BOOL
     advapi.FreeSid.argtypes = [ctypes.c_void_p]
     advapi.FreeSid.restype = ctypes.c_void_p
+    advapi.GetFileSecurityW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p,
+                                       wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+    advapi.GetFileSecurityW.restype = wintypes.BOOL
+    advapi.SetFileSecurityW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
+    advapi.SetFileSecurityW.restype = wintypes.BOOL
 
     cwd, common = cwd.resolve(), common.resolve()
     name = "AgentSmith.Verifier." + uuid.uuid4().hex
@@ -160,13 +167,12 @@ def run_verifier(command: str, cwd: Path, common: Path, timeout: int,
     attributes = None
     attributes_ready = False
     job = process = thread = None
-    grants: list[tuple[Path, Path]] = []
-    backup_dir: Path | None = None
+    grants: list[Path] = []
+    original_dacls: dict[Path, bytes] = {}
     profile_created = False
     outcome = subprocess.CompletedProcess([command], 126, "", "verifier sandbox did not start")
     cleanup_errors: list[str] = []
     try:
-        backup_dir = Path(tempfile.mkdtemp(prefix="agentsmith-verifier-acls-"))
         # A fresh identity makes ACL removal unambiguous even after a failed run.
         result = userenv.CreateAppContainerProfile(name, name, "Temporary verifier",
                                                     None, 0, ctypes.byref(sid_pointer))
@@ -201,11 +207,15 @@ def run_verifier(command: str, cwd: Path, common: Path, timeout: int,
         git = shutil.which("git")
         if git:
             allowed.append((Path(git).resolve().parent.parent, "RX"))
+        # Snapshot before the first grant: icacls can rewrite inherited ACEs on
+        # existing descendants, and its own /restore also propagates those edits.
+        for root, _ in allowed:
+            for path in itertools.chain((root,), root.rglob("*")):
+                if path not in original_dacls:
+                    original_dacls[path] = _original_dacl(path, advapi)
         for path, rights in allowed:
-            if path not in (granted for granted, _ in grants):
-                backup = backup_dir / f"{len(grants)}.acl"
-                _backup_acl_tree(path, backup)
-                grants.append((path, backup))
+            if path not in grants:
+                grants.append(path)
                 _acl(path, sid, rights)
 
         size = ctypes.c_size_t()
@@ -283,20 +293,20 @@ def run_verifier(command: str, cwd: Path, common: Path, timeout: int,
             kernel.CloseHandle(process)
         if attributes_ready:
             kernel.DeleteProcThreadAttributeList(attributes)
-        for path, backup in reversed(grants):
+        for path in reversed(grants):
             try:
                 _acl(path, sid_text.value, "", remove=True)
             except (OSError, SandboxError) as exc:
                 cleanup_errors.append(str(exc))
-            try:
-                _restore_acl_tree(path, backup)
-            except (OSError, SandboxError) as exc:
-                cleanup_errors.append(str(exc))
-        if backup_dir is not None:
-            try:
-                shutil.rmtree(backup_dir)
-            except OSError as exc:
-                cleanup_errors.append(str(exc))
+        if grants:
+            for path, descriptor in sorted(original_dacls.items(),
+                                           key=lambda item: len(item[0].parts), reverse=True):
+                if not any(path == root or path.is_relative_to(root) for root in grants):
+                    continue
+                try:
+                    _restore_dacl(path, descriptor, advapi)
+                except (OSError, SandboxError) as exc:
+                    cleanup_errors.append(str(exc))
         for path in (script, request_path, result_path):
             try:
                 path.unlink(missing_ok=True)
