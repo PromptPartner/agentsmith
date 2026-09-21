@@ -48,7 +48,12 @@ The first hosted Windows boundary test reached `CreateProcessW` after profile an
 returned Windows error 203 (`ERROR_ENVVAR_NOT_FOUND`) on run `35613620432`. The next revision
 supplies the profile's `LOCALAPPDATA` path from Microsoft's
 [`GetAppContainerFolderPath` API](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-getappcontainerfolderpath)
-and
-explicit user-profile path variables in the child environment. That is a diagnosis-driven
-attempt, not passing boundary evidence; the next native test determines whether the host can
-launch the confined process.
+and explicit user-profile path variables in the child environment. Run `35614813369` then
+launched the confined process on the hosted Windows runner.
+
+The next hosted run `35614813369` launched the confined command. It read and wrote in the
+worktree, while sibling and loopback probes failed. The exact ACL text comparison failed: the
+AppContainer package grant was removed, but recursive `icacls /T` had materialized duplicate
+inherited system/admin/owner entries. The launcher now grants inheritance on each allowed root
+without recursively editing every child ACL. The unchanged exact-ACL assertion remains the
+cleanup gate for the next native run.

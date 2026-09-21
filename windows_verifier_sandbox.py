@@ -74,7 +74,7 @@ def _win32_error(label: str) -> SandboxError:
 
 def _acl(path: Path, sid: str, rights: str, *, remove: bool = False) -> None:
     action = ["/remove:g", f"*{sid}"] if remove else ["/grant", f"*{sid}:(OI)(CI)({rights})"]
-    result = subprocess.run(["icacls", str(path), *action, "/T", "/L"],
+    result = subprocess.run(["icacls", str(path), *action, "/L"],
                             capture_output=True, text=True, check=False)
     if result.returncode:
         raise SandboxError(f"ACL {'cleanup' if remove else 'grant'} failed on {path}: "
@@ -175,7 +175,8 @@ def run_verifier(command: str, cwd: Path, common: Path, timeout: int,
         )
         request_path.write_text(json.dumps({"command": command, "timeout": timeout}), encoding="utf-8")
 
-        # icacls grants inherited rights to existing files and future children. The
+        # Inheritable ACLs cover existing files and future children without rewriting
+        # every descendant's DACL. The
         # common Git store is read-only; only the disposable checker worktree is writable.
         allowed: list[tuple[Path, str]] = [(cwd, "M"), (common, "RX"),
                                            (Path(sys.prefix).resolve(), "RX")]

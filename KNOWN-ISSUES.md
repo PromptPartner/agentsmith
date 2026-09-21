@@ -17,12 +17,10 @@ been authorized, so the entries are kept here.
 - [ ] 2026-09-21 — The Windows finite-run verifier now has a classic AppContainer launcher, but
   its native file/network boundary and full graph lifecycle have not yet passed. The
   same-commit three-platform aggregate remains blocked. The launcher returns 126 when it cannot
-  establish or clean up the boundary. The first hosted boundary test reached `CreateProcessW` but
-  failed with Windows error 203; profile environment paths have been added and need a native rerun.
+  establish or clean up the boundary. Run `35614813369` passed the allowed worktree write,
+  sibling-write denial, and loopback denial; its exact ACL assertion found duplicated inherited
+  system entries after recursive `icacls`. Non-recursive inherited grants need a native rerun.
   See `docs/research/windows-verifier-sandbox.md`.
-- [ ] 2026-09-21 — A Windows graph status fixture wrote platform line endings, so its working
-  graph bytes differed from the committed contract on run `35613620432`. It now writes exact
-  UTF-8 bytes with LF, as the manifest fixture already did; the native rerun remains pending.
 - [ ] 2026-09-21 — Hosted macOS native lifecycle intermittently failed its cleanup-preview test
   in run `35607452415`, although the same suite passed in that run's compatibility job and in
   five local targeted attempts. Run `35605909782` had passed both paths. The exact failing
@@ -36,6 +34,10 @@ been authorized, so the entries are kept here.
   mid-maker stop; the late-stop reconciliation path still needs a bounded controller fix.
 ## Resolved during W2-06
 
+- [x] 2026-09-21 — A Windows graph status fixture wrote platform line endings, so its working
+  graph bytes differed from the committed contract on run `35613620432`. It now writes exact
+  UTF-8 bytes with LF, as the manifest fixture already did; run `35614813369` passed the graph
+  contract step on native Windows.
 - [x] 2026-09-21 — Hosted macOS graph dispatch sometimes treated a change to Git's
   `.git/info/refs` dumb-transport cache as an unauthorized maker metadata write during parallel
   work. The docs-only push run `35610061317` exposed the exact path. A linked-worktree
