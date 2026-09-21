@@ -204,8 +204,15 @@ class SecretScanTests(unittest.TestCase):
     if os.name == "nt":
         def test_windows_crlf_stdin_keeps_line_numbers_and_redacts(self) -> None:
             value = secret_shapes()[7][1]
-            result = run_scan("-", input_text="clean\r\n" + value + "\r\n")
-            combined = result.stdout + result.stderr
+            result = subprocess.run(
+                [sys.executable, str(CORE), "secret-scan", "-"],
+                cwd=ROOT,
+                input=("clean\r\n" + value + "\r\n").encode("utf-8"),
+                capture_output=True,
+                check=False,
+                timeout=20,
+            )
+            combined = (result.stdout + result.stderr).decode("utf-8", errors="replace")
             self.assertEqual(result.returncode, 1, combined)
             self.assertIn("<stdin>:2", combined)
             self.assertIn("Google API key", combined)
