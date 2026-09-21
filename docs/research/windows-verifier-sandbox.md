@@ -69,4 +69,11 @@ and restores it with [`SetFileSecurityW`](https://learn.microsoft.com/en-us/wind
 which does not propagate the edit to children. Microsoft's
 [symbolic-link function table](https://learn.microsoft.com/en-us/windows/win32/fileio/symbolic-link-effects-on-file-systems-functions)
 also documents that these calls operate on a symbolic link itself. The native test compares the
-root, `.git`, and two existing child files before and after cleanup.
+worktree root, `.git`, two existing child files, the Python and Git installation roots, and both
+executables before and after cleanup.
+
+Hosted Windows compatibility run `35619728991` passed that boundary test on `4b42582`:
+the AppContainer read and wrote inside its worktree, the sibling write and loopback connection
+were denied, and the four then-compared worktree ACLs matched their pre-run values. The expanded
+installation ACL comparisons still need a native rerun. Full native graph lifecycle
+and same-tree aggregate evidence remain pending.

@@ -181,8 +181,9 @@ fixture or aggregate.
 ### Current release boundary
 
 The Windows finite-run verifier now has a classic AppContainer launcher with temporary package-SID
-ACL grants and no network capability. The native Windows boundary and full lifecycle have not yet
-passed, so no complete Wave 2 native aggregate exists. The workflow is manual-only while this gate
-is open. The macOS fixture uses `sandbox-exec`; Linux needs `bubblewrap` and permission to create its
+ACL grants and no network capability. The native Windows file, network, and ACL cleanup boundary
+passed in the compatibility matrix on `4b42582`; the full lifecycle and same-tree aggregate are
+still pending. The workflow is manual-only while this gate is open. The macOS fixture uses
+`sandbox-exec`; Linux needs `bubblewrap` and permission to create its
 namespaces. A missing sandbox is a failing report, never a skipped test or a portability claim.
 See [the security review](24-parallel-work-graphs-security.md) for the named threat checks.

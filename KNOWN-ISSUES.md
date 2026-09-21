@@ -14,15 +14,16 @@ been authorized, so the entries are kept here.
 - [ ] `agentsmith verify discover --help` and `verify apply --help` currently show the shared
   verification parser's execution-only options; incompatible combinations fail clearly, but the
   subcommand help should expose only each operation's valid flags.
-- [ ] 2026-09-21 — The Windows finite-run verifier now has a classic AppContainer launcher, but
-  its native file/network boundary and full graph lifecycle have not yet passed. The
-  same-commit three-platform aggregate remains blocked. The launcher returns 126 when it cannot
+- [ ] 2026-09-21 — The Windows finite-run verifier now has a classic AppContainer launcher. Its
+  native file/network/ACL boundary passed on run `35619728991`, but full graph lifecycle and the
+  same-commit three-platform aggregate remain blocked. The launcher returns 126 when it cannot
   establish or clean up the boundary. Run `35614813369` passed the allowed worktree write,
   sibling-write denial, and loopback denial; its exact ACL assertion found duplicated inherited
   system entries after recursive `icacls`. Run `35616698843` showed that removing recursion did
   not prevent root DACL drift. Run `35617685307` restored the root, but `.git` inherited ACEs
   changed. Run `35618648705` showed `icacls /restore` also left root ACL drift. Per-file DACL
-  restoration needs a native rerun.
+  restoration passed the exact four-path ACL comparison on native Windows `4b42582`; Python and
+  Git installation ACL comparisons have been added for the next native rerun.
   See `docs/research/windows-verifier-sandbox.md`.
 - [ ] 2026-09-21 — Hosted macOS native lifecycle intermittently failed its cleanup-preview test
   in run `35607452415`, although the same suite passed in that run's compatibility job and in
@@ -32,6 +33,12 @@ been authorized, so the entries are kept here.
   its pull-request copy passed. Run `35616698843` failed the stop/resume test because a maker
   reported changed existing Git objects. The test now prints child reasons and graph events, and
   the controller will include changed object paths in the next native failure for diagnosis.
+  Eight repeated local stop/resume runs passed after that diagnostic change; the macOS
+  compatibility lifecycle also passed on `4b42582`.
+- [ ] 2026-09-21 — A Linux verifier mount fixture patches `sys.platform` to select the Linux
+  command, but the controller selected Windows first using `os.name`. Native Windows run
+  `35619728991` passed the AppContainer boundary and then failed this fixture. Platform routing
+  now uses `sys.platform`; the Windows rerun is pending.
 - [ ] 2026-09-21 — A stop request arriving after a fake maker has committed but before its receipt
   is reconciled can leave an interrupted run whose resume replays the maker, producing a clean
   worktree with nothing new to commit. A local graph stop/resume test exposed this under heavy

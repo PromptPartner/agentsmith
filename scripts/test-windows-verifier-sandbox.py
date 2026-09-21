@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import os
 from pathlib import Path
+import shutil
 import socket
 import subprocess
 import sys
@@ -55,14 +56,16 @@ class WindowsVerifierSandboxTests(unittest.TestCase):
                 "        raise SystemExit('network connection succeeded')\n"
                 "print('boundary passed')\n", encoding="utf-8",
             )
-            before_repo = subprocess.run(["icacls", str(repo)], capture_output=True,
-                                         text=True, check=True).stdout
-            before_git = subprocess.run(["icacls", str(repo / ".git")], capture_output=True,
-                                        text=True, check=True).stdout
-            before_input = subprocess.run(["icacls", str(repo / "input.txt")], capture_output=True,
-                                          text=True, check=True).stdout
-            before_probe = subprocess.run(["icacls", str(probe)], capture_output=True,
-                                          text=True, check=True).stdout
+            git_command = shutil.which("git")
+            self.assertIsNotNone(git_command)
+            git_executable = Path(git_command).resolve()
+            acl_paths = (repo, repo / ".git", repo / "input.txt", probe,
+                         Path(sys.prefix).resolve(), Path(sys.executable).resolve(),
+                         git_executable.parent.parent, git_executable)
+            before_acls = {
+                path: subprocess.run(["icacls", str(path)], capture_output=True,
+                                     text=True, check=True).stdout for path in acl_paths
+            }
             with socket.socket() as listener:
                 listener.bind(("127.0.0.1", 0))
                 listener.listen(1)
@@ -72,14 +75,10 @@ class WindowsVerifierSandboxTests(unittest.TestCase):
             self.assertIn("boundary passed", result.stdout)
             self.assertEqual((repo / "inside.txt").read_text(encoding="utf-8"), "allowed")
             self.assertFalse(sibling.exists())
-            self.assertEqual(subprocess.run(["icacls", str(repo)], capture_output=True,
-                                            text=True, check=True).stdout, before_repo)
-            self.assertEqual(subprocess.run(["icacls", str(repo / ".git")], capture_output=True,
-                                            text=True, check=True).stdout, before_git)
-            self.assertEqual(subprocess.run(["icacls", str(repo / "input.txt")], capture_output=True,
-                                            text=True, check=True).stdout, before_input)
-            self.assertEqual(subprocess.run(["icacls", str(probe)], capture_output=True,
-                                            text=True, check=True).stdout, before_probe)
+            for path, before in before_acls.items():
+                with self.subTest(path=str(path)):
+                    self.assertEqual(subprocess.run(["icacls", str(path)], capture_output=True,
+                                                    text=True, check=True).stdout, before)
             self.assertEqual(list(repo.glob(".agentsmith-verifier-*")), [])
 
 
