@@ -96,8 +96,9 @@ Wayfinder spec flow remains available to every work type.
 lock is reclaimed only after its PID is demonstrably gone. While starting or resuming, the short
 repository coordination lock serializes the live-scope scan and lifecycle-state transition, then
 releases before model execution. A conflict names the other run and overlapping path prefix or
-resource. On Windows, lock release retries brief file-sharing denials from competing readers;
-a persistent denial still fails closed. Malformed live scope fails closed; a demonstrably dead
+resource. On Windows, lock acquisition and release retry brief file-sharing denials from
+competing readers; a persistent denial still fails closed. Malformed live scope fails closed;
+a demonstrably dead
 controller and a stopped run do
 not block new work. `stop <id>` atomically writes a stop
 request, signals the active controller and child, then waits up to five seconds for the controller
