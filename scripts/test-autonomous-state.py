@@ -251,6 +251,23 @@ class AutonomousStateTests(unittest.TestCase):
                 self.assertTrue(lock.exists())
             self.assertFalse(lock.exists())
 
+    def test_repository_coordination_lock_waits_for_owner_publication(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith lock publication ") as temporary:
+            root = Path(temporary)
+            lock = CONTROLLER.coordination_lock_path(root)
+            lock.write_text("", encoding="utf-8")
+            publish = threading.Timer(0.05, lambda: lock.write_text(
+                json.dumps({"pid": os.getpid(), "run_id": "coordination", "token": "published"}),
+                encoding="utf-8"))
+            publish.start()
+            try:
+                self.assertEqual(CONTROLLER.read_coordination_lock(root)["token"], "published")
+            finally:
+                publish.join()
+            lock.write_text("{malformed", encoding="utf-8")
+            with self.assertRaisesRegex(CONTROLLER.RunError, "cannot verify repository coordination lock"):
+                CONTROLLER.read_coordination_lock(root)
+
     def test_git_phase_allows_parallel_makers_but_checker_waits_for_both(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith git phase ") as temporary:
             repo = Path(temporary)
@@ -404,6 +421,7 @@ class AutonomousStateTests(unittest.TestCase):
             CONTROLLER.write_json(state_file, state)
             unverified = CONTROLLER.git_metadata(repo, known_peers=before["registered_peers"])
             self.assertIn("refs/heads/agentsmith/peer", " ".join(unverified["refs"]))
+            self.assertIn("refs/heads/agentsmith/peer", " ".join(CONTROLLER.git_metadata(repo)["refs"]))
 
     def test_maker_metadata_recognizes_peer_started_during_initial_snapshot(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith snapshot race ") as temporary:
@@ -486,6 +504,44 @@ class AutonomousStateTests(unittest.TestCase):
             main_head = CONTROLLER.git(repo, "rev-parse", "HEAD")
             with self.assertRaisesRegex(CONTROLLER.RunError, "Git refs outside"):
                 CONTROLLER.validate_git_transition(repo, before, changed, "main", main_head, main_head)
+
+    def test_maker_metadata_exempts_verified_terminal_peer_across_resume(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith terminal peer ") as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            (repo / "README.md").write_text("fixture\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "fixture"], check=True)
+            manifest = repo / "peer.json"
+            manifest.write_text('{"run_id":"peer"}\n', encoding="utf-8")
+            worktree = Path(temporary) / "peer-worktree"
+            subprocess.run(["git", "-C", str(repo), "worktree", "add", "-qb",
+                            "agentsmith/peer", str(worktree), "HEAD"], check=True)
+            run_dir = CONTROLLER.state_root(repo) / "peer"
+            run_dir.mkdir(parents=True)
+            CONTROLLER.write_json(run_dir / "state.json", {
+                "run_id": "peer", "branch": "agentsmith/peer", "repo": str(repo),
+                "manifest_path": str(manifest),
+                "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+                "worktree": str(worktree), "status": "interrupted",
+                "started_epoch": time.time() - 10,
+                "terminal_head": CONTROLLER.git(worktree, "rev-parse", "HEAD"),
+            })
+            before = CONTROLLER.git_metadata(repo)
+            self.assertNotIn("refs/heads/agentsmith/peer", " ".join(before["refs"]))
+            (worktree / "change.txt").write_text("resumed peer\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(worktree), "add", "change.txt"], check=True)
+            subprocess.run(["git", "-C", str(worktree), "commit", "-qm", "resumed peer"], check=True)
+            state = CONTROLLER.load_json(run_dir / "state.json")
+            state.update(status="accepted", resumed_epoch=time.time(),
+                         terminal_head=CONTROLLER.git(worktree, "rev-parse", "HEAD"))
+            CONTROLLER.write_json(run_dir / "state.json", state)
+            after = CONTROLLER.git_metadata(repo, known_peers=before["registered_peers"])
+            self.assertEqual(before["refs"], after["refs"])
+            self.assertEqual(before["protected_files"], after["protected_files"])
 
     def test_stop_request_creation_is_atomic_and_idempotent(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith stop ") as temporary:
