@@ -201,21 +201,30 @@ class SecretScanTests(unittest.TestCase):
             self.assertEqual(hook.read_bytes(), before)
             self.assertIn("foreign pre-commit hook preserved", install.stderr)
 
-    @unittest.skipIf(os.name == "nt", "POSIX compatibility launcher is not a native Windows surface")
-    def test_shell_compatibility_launcher_delegates_to_python(self) -> None:
-        value = secret_shapes()[7][1]
-        result = subprocess.run(
-            ["bash", str(SHELL_LAUNCHER), "-"],
-            cwd=ROOT,
-            input=value + "\n",
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        combined = result.stdout + result.stderr
-        self.assertEqual(result.returncode, 1, combined)
-        self.assertIn("Google API key", combined)
-        self.assertNotIn(value, combined)
+    if os.name == "nt":
+        def test_windows_crlf_stdin_keeps_line_numbers_and_redacts(self) -> None:
+            value = secret_shapes()[7][1]
+            result = run_scan("-", input_text="clean\r\n" + value + "\r\n")
+            combined = result.stdout + result.stderr
+            self.assertEqual(result.returncode, 1, combined)
+            self.assertIn("<stdin>:2", combined)
+            self.assertIn("Google API key", combined)
+            self.assertNotIn(value, combined)
+    else:
+        def test_shell_compatibility_launcher_delegates_to_python(self) -> None:
+            value = secret_shapes()[7][1]
+            result = subprocess.run(
+                ["bash", str(SHELL_LAUNCHER), "-"],
+                cwd=ROOT,
+                input=value + "\n",
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            combined = result.stdout + result.stderr
+            self.assertEqual(result.returncode, 1, combined)
+            self.assertIn("Google API key", combined)
+            self.assertNotIn(value, combined)
 
     def test_tracked_tree_scan_stays_within_pre_commit_speed_bound(self) -> None:
         started = time.monotonic()
