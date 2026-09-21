@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import tempfile
 import unittest
 from typing import Any
@@ -155,6 +156,13 @@ def set_pointer(value: Any, pointer: str, replacement: Any) -> None:
 
 
 class WorkGraphContractTests(unittest.TestCase):
+    def test_hashed_fixtures_keep_lf_on_windows_checkout(self) -> None:
+        for path in (FIXTURES / "work-graph.valid.json", *sorted((FIXTURES / "manifests").glob("*.json"))):
+            relative = path.relative_to(ROOT).as_posix()
+            result = subprocess.run(["git", "check-attr", "eol", "--", relative], cwd=ROOT,
+                                    capture_output=True, text=True, check=True)
+            self.assertEqual(result.stdout.strip(), f"{relative}: eol: lf")
+
     def test_schemas_are_closed_and_versioned(self) -> None:
         expected = {"work-graph", "local-state", "status", "event", "integration-candidate", "native-platform", "native-aggregate"}
         self.assertEqual({p.stem.removesuffix(".schema") for p in SCHEMAS.glob("*.schema.json")}, expected)
