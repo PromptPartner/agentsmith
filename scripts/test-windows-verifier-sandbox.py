@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 
 
@@ -144,6 +145,46 @@ class WindowsVerifierSandboxTests(unittest.TestCase):
                 with self.subTest(path=str(path)):
                     self.assertEqual(subprocess.run(["icacls", str(path)], capture_output=True,
                                                     text=True, check=True).stdout, before)
+
+    @unittest.skipUnless(os.name == "nt", "requires native Windows AppContainer")
+    def test_deleted_git_lock_does_not_fail_acl_cleanup(self) -> None:
+        spec = importlib.util.spec_from_file_location("agentsmith_transient_lock_verifier_test",
+                                                   ROOT / "scripts/autonomous-run.py")
+        assert spec and spec.loader
+        controller = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(controller)
+        with tempfile.TemporaryDirectory(prefix="agentsmith transient windows lock ") as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            lock = repo / ".git/agentsmith-runs/coordination.lock"
+            lock.parent.mkdir(parents=True)
+            lock.write_text("temporary owner", encoding="utf-8")
+            probe = repo / "probe.py"
+            probe.write_text(
+                "from pathlib import Path\n"
+                "import time\n"
+                "Path('verifier-started').write_text('yes', encoding='utf-8')\n"
+                "time.sleep(2)\n"
+                "print('transient lock passed')\n", encoding="utf-8",
+            )
+            before = subprocess.run(["icacls", str(repo / ".git")], capture_output=True,
+                                    text=True, check=True).stdout
+            command = f'"{sys.executable}" "{probe}"'
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(controller.sandboxed_verify, command, repo, 30,
+                                     controller.verifier_env())
+                deadline = time.monotonic() + 30
+                while time.monotonic() < deadline and not (repo / "verifier-started").is_file():
+                    time.sleep(0.05)
+                self.assertTrue((repo / "verifier-started").is_file(), "verifier did not start")
+                lock.unlink()
+                result = future.result(timeout=60)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("transient lock passed", result.stdout)
+            self.assertFalse(lock.exists())
+            self.assertEqual(subprocess.run(["icacls", str(repo / ".git")], capture_output=True,
+                                            text=True, check=True).stdout, before)
 
 
 if __name__ == "__main__":
