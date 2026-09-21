@@ -52,7 +52,9 @@ been authorized, so the entries are kept here.
   that exact environment in push run `35633073987` reproduced a live repository coordination
   owner outlasting the ten-second wait during parallel graph start. A simulated 11-second live
   owner failed before the timeout change and passed with a bounded 60-second wait; native rerun
-  remains pending. A local aggregate invocation with all three
+  Manual run `35634260887` reached maker validation but reported both fake maker worktrees dirty under the
+  release environment; the fixture now prints their exact Git status entries on failure.
+  Native rerun remains pending. A local aggregate invocation with all three
   earlier reports exited 2 and rejected the failed Windows report before writing an aggregate;
   same-tree native rerun remains pending.
 - [ ] 2026-09-21 — A stop request arriving after a fake maker has committed but before its receipt
