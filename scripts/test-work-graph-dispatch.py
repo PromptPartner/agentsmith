@@ -301,7 +301,13 @@ class GraphDispatchTests(unittest.TestCase):
         refused = self.invoke("resume")
         self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
         self.assertIn("contract", refused.stderr)
-        self.assertTrue((self.repo.parent / "repo-a").is_dir())
+        started_ids = {line.split()[0] for line in
+                       (self.fake_client.parent / "starts.log").read_text(encoding="utf-8").splitlines()
+                       if line.strip()}
+        self.assertTrue(started_ids, "the stop fixture must observe a started maker")
+        for run_id in started_ids:
+            self.assertTrue((self.repo.parent / f"repo-{run_id}").is_dir(),
+                            f"started maker {run_id} lost its source worktree")
 
     def test_explicit_cleanup_removes_only_clean_graph_worktree(self) -> None:
         started = self.invoke("start")
