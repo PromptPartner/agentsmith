@@ -2,10 +2,10 @@
 # Mechanism: see scripts/leak-gate.sh ("Tune with an optional .harness/leak-gate.allow file").
 # WARNING: every line here must be NON-BLANK. A blank line is an empty regex that matches EVERY
 #   finding and would silently disable the whole gate. Comment lines (#...) match no finding.
-# Intentional operator credit: the maintainer chose to be named in the README author section
-#   (and nowhere else). Every other tracked file is still scanned normally.
+# Intentional operator credit in README and immutable acceptance provenance in the Wave 2 spec.
+# All other tracked files and all other lines of the spec remain scanned normally.
 # The regex below uses a character class (L[u]kas) exactly like the gate's own TERMS list, so
-#   this file never trips the identity check on itself. It is anchored to README.md, so a name
-#   in any other tracked file still fails the gate. Proven by scripts/test-leak-gate.sh
-#   ("README operator-credit exception" block).
+#   this file never trips the identity check on itself. The paths and spec line numbers below
+#   are tested by scripts/test-leak-gate.sh; names elsewhere remain blocked.
 ^README\.md:[0-9]+:.*(L[u]kas|H[e]rtig)
+^docs/specs/parallel-development-and-integration-wave\.md:(4|437): (L[u]kas|H[e]rtig)( |$)
