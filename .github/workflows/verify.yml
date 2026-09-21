@@ -57,6 +57,9 @@ jobs:
       - name: Work-graph local lifecycle on native macOS
         if: runner.os == 'macOS'
         run: python scripts/test-work-graph-dispatch.py
+      - name: Work-graph local lifecycle on native Windows
+        if: runner.os == 'Windows'
+        run: python scripts/test-work-graph-dispatch.py
       - name: Windows verifier file and network boundary
         if: runner.os == 'Windows'
         run: python scripts/test-windows-verifier-sandbox.py
