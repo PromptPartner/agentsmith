@@ -21,13 +21,12 @@ been authorized, so the entries are kept here.
   Git worktree files changed classification during another maker's snapshot. Exact terminal-peer
   binding now applies at both snapshots; native macOS passed, while its separate compatibility
   lifecycle run remains under observation.
-- [ ] 2026-09-21 — Hosted Linux reaches the work-graph lifecycle but its verifier tests fail.
-  The CI job enabled unprivileged user namespaces and passed a basic Bubblewrap smoke test,
-  but eight lifecycle cases still failed. The next native run probes the controller's actual
-  verifier policy and retains the lifecycle report so the failure can be diagnosed.
-
 ## Resolved during W2-06
 
+- [x] 2026-09-21 — Hosted Linux hid graph fixture worktrees under a late `/tmp` tmpfs mount,
+  causing eight verifier-dependent lifecycle failures. The controller now mounts `/tmp` before
+  creating and binding those worktree paths. Run `35605909782` passed the actual verifier probe
+  and all seven native phases on commit `819d56b`, tree `176e14d`.
 - [x] 2026-09-21 — Windows checkout converted work-graph fixture JSON from LF to CRLF, invalidating
   the committed manifest and graph hashes. Git attributes now pin that fixture tree to LF; the
   contract suite failed in a simulated Windows checkout before the fix and passed after.
