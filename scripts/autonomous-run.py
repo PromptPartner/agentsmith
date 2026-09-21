@@ -1008,7 +1008,7 @@ def validate_git_unchanged(before: dict[str, Any], after: dict[str, Any], actor:
 def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     """Run the human-approved verifier with no network and no writes outside its worktree."""
     common = resolved_git_path(cwd, "--git-common-dir")
-    if os.name == "nt":
+    if sys.platform == "win32":
         from windows_verifier_sandbox import run_verifier
         return run_verifier(command, cwd, common, timeout, env)
     if sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").exists():
