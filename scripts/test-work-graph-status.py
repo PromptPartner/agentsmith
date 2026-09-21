@@ -71,7 +71,7 @@ class WorkGraphStatusTests(unittest.TestCase):
         git(self.repo, "commit", "-qm", "test: accepted graph fixture")
 
     def _write_graph(self) -> None:
-        self.graph_path.write_text(json.dumps(self.graph, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        self.graph_path.write_bytes((json.dumps(self.graph, indent=2, sort_keys=True) + "\n").encode())
 
     def test_validate_and_status_are_read_only(self) -> None:
         before_head = git(self.repo, "rev-parse", "HEAD")
