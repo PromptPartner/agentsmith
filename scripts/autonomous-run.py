@@ -771,7 +771,8 @@ def registered_run_git_artifacts(common: Path, active_ref: str) -> tuple[set[str
     return other_refs, branch_logs, worktree_admin
 
 
-def terminal_peer_git_artifacts(common: Path, active_ref: str, since_epoch: float
+def terminal_peer_git_artifacts(common: Path, active_ref: str, since_epoch: float,
+                                protected_refs: set[str]
                                 ) -> tuple[set[str], set[Path], set[Path]]:
     """Recognize a peer that started and finished during a maker snapshot window.
 
@@ -816,6 +817,10 @@ def terminal_peer_git_artifacts(common: Path, active_ref: str, since_epoch: floa
                     load_json(manifest_path).get("run_id") != run_id):
                 continue
             ref = f"refs/heads/agentsmith/{run_id}"
+            # A ref already visible in the first snapshot remains protected, even if
+            # its controller state becomes verifiable before the second snapshot.
+            if ref in protected_refs:
+                continue
             if (git(recorded_repo, "rev-parse", "--verify", ref, check=False) != terminal_head or
                     git(worktree, "symbolic-ref", "-q", "HEAD", check=False) != ref):
                 continue
@@ -836,6 +841,7 @@ def terminal_peer_git_artifacts(common: Path, active_ref: str, since_epoch: floa
 
 
 def _git_metadata_once(repo: Path, *, known_peers: dict[str, Any] | None = None) -> dict[str, Any]:
+    # Include peers that start during this scan in the terminal-peer window.
     snapshot_epoch = time.time()
     common = resolved_git_path(repo, "--git-common-dir")
     active = resolved_git_path(repo, "--git-dir")
@@ -844,6 +850,7 @@ def _git_metadata_once(repo: Path, *, known_peers: dict[str, Any] | None = None)
     other_run_refs, run_branch_logs, run_worktree_admin = registered_run_git_artifacts(
         common, branch_ref
     )
+    protected_refs = set(known_peers.get("protected_refs", [])) if known_peers else set()
     # A peer verified live before this maker started may finish (and release its
     # lifecycle lock) before our after-snapshot. Preserve that peer's exclusions.
     # A newly started peer is exempt only with an exact terminal-state binding.
@@ -852,11 +859,12 @@ def _git_metadata_once(repo: Path, *, known_peers: dict[str, Any] | None = None)
         run_branch_logs.update(Path(value) for value in known_peers["branch_logs"])
         run_worktree_admin.update(Path(value) for value in known_peers["worktree_admin"])
         terminal_refs, terminal_logs, terminal_admin = terminal_peer_git_artifacts(
-            common, branch_ref, float(known_peers["snapshot_epoch"])
+            common, branch_ref, float(known_peers["snapshot_epoch"]), protected_refs
         )
         other_run_refs.update(terminal_refs)
         run_branch_logs.update(terminal_logs)
         run_worktree_admin.update(terminal_admin)
+        other_run_refs.difference_update(protected_refs)
     hooks: list[tuple[str, str]] = []
     hooks_dir = common / "hooks"
     if hooks_dir.is_dir():
@@ -892,6 +900,7 @@ def _git_metadata_once(repo: Path, *, known_peers: dict[str, Any] | None = None)
         "existing_objects": objects,
         "registered_peers": {
             "refs": sorted(other_run_refs),
+            "protected_refs": sorted(line.split(" ", 1)[0] for line in refs),
             "branch_logs": sorted(path.as_posix() for path in run_branch_logs),
             "worktree_admin": sorted(path.as_posix() for path in run_worktree_admin),
             "snapshot_epoch": snapshot_epoch,
@@ -936,7 +945,14 @@ def validate_git_transition(worktree: Path, before: dict[str, Any], after: dict[
     before_other = [line for line in before["refs"] if not line.startswith(f"refs/heads/{branch} ")]
     after_other = [line for line in after["refs"] if not line.startswith(f"refs/heads/{branch} ")]
     if before_other != after_other or expected_ref not in after["refs"]:
-        raise RunError("runtime changed Git refs outside the active run branch")
+        before_refs = dict(line.split(" ", 1) for line in before_other)
+        after_refs = dict(line.split(" ", 1) for line in after_other)
+        changed = sorted(ref for ref in before_refs.keys() | after_refs.keys()
+                         if before_refs.get(ref) != after_refs.get(ref))
+        if expected_ref not in after["refs"]:
+            changed.append(f"refs/heads/{branch}")
+        raise RunError("runtime changed Git refs outside the active run branch: " +
+                       ", ".join(changed[:8]))
     for key in ("config", "config_worktree", "hooks", "protected_files"):
         if before[key] != after[key]:
             if key in {"hooks", "protected_files"}:
