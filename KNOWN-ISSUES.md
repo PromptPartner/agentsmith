@@ -21,9 +21,10 @@ been authorized, so the entries are kept here.
   in run `35607452415`, although the same suite passed in that run's compatibility job and in
   five local targeted attempts. Run `35605909782` had passed both paths. The exact failing
   assertion is not yet known; retain this as an open release-evidence flake.
-- [ ] 2026-09-21 — The Ubuntu guardrail job did not install Bubblewrap, so its verifier escape
-  test could stop after an unsupported-sandbox result instead of exercising isolation. The CI
-  job now installs and probes Bubblewrap; the next run must execute all guardrail cases.
+- [ ] 2026-09-21 — The Ubuntu guardrail previously ran without Bubblewrap and skipped its
+  verifier escape test. With Bubblewrap enabled, run `35607452415` caught a verifier accepting
+  a sibling write inside an isolated `/tmp` (no host artifact escaped). The verifier now remounts
+  `/tmp` read-only after preparing its worktree path; a native rerun must prove rejection.
 ## Resolved during W2-06
 
 - [x] 2026-09-21 — Hosted Linux hid graph fixture worktrees under a late `/tmp` tmpfs mount,

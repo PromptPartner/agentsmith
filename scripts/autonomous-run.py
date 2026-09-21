@@ -1018,6 +1018,9 @@ def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str])
                         directories.add(current)
         for directory in sorted(directories, key=lambda item: len(item.parts)):
             args += ["--dir", str(directory)]
+        args += ["--remount-ro", "/tmp"]
+        if not home.is_relative_to(temporary):
+            args += ["--remount-ro", str(home)]
         args += ["--bind", str(cwd), str(cwd), "--ro-bind", str(common), str(common),
                  "--dev", "/dev", "--proc", "/proc",
                  "--chdir", str(cwd), "/bin/bash", "-c", command]
