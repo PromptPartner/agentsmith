@@ -26,10 +26,11 @@ been authorized, so the entries are kept here.
 - [x] 2026-09-21 — Windows checkout converted work-graph fixture JSON from LF to CRLF, invalidating
   the committed manifest and graph hashes. Git attributes now pin that fixture tree to LF; the
   contract suite failed in a simulated Windows checkout before the fix and passed after.
-- [x] 2026-09-21 — A peer starting during the initial Git metadata scan could finish before the
-  next scan, then be misclassified as an unrelated ref because the first snapshot timestamp was
-  recorded too late. The snapshot now captures its start time before reading refs; a forced-order
-  regression fails before this change and passes after.
+- [x] 2026-09-21 — Parallel peer setup crossed the Git metadata snapshot in either order: a ref
+  could appear after the ref scan but before the timestamp, or the ref could exist before its
+  state file. The snapshot now starts its clock before scanning and keeps every ref it saw
+  protected on the next scan. Forced-order tests failed before each correction and pass after;
+  an altered peer ref still fails validation.
 
 ## Resolved during FVL-02
 
