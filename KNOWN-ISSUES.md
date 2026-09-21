@@ -58,10 +58,13 @@ been authorized, so the entries are kept here.
   native role's environment allowlist had dropped that isolation. Git for Windows then normalized
   the makers' CRLF files to LF on commit, and the controller's isolated clean check saw the CRLF
   worktree bytes as modifications. A local Git regression reproduced the mismatch and now passes
-  when the role receives the controller's effective `core.autocrlf` value. Native rerun remains
-  pending. A local aggregate invocation with all three
-  earlier reports exited 2 and rejected the failed Windows report before writing an aggregate;
-  same-tree native rerun remains pending.
+  when the role receives the controller's effective `core.autocrlf` value. Manual run
+  `35636764367` passed all three native reports on commit `56db8eb` and tree `d42ed99`, including
+  the Windows lifecycle and negative AppContainer boundary. A local strict aggregate accepted
+  those exact reports, but the hosted aggregate skipped because the separate Windows compatibility
+  job reached its 20-minute job timeout while recording First Verified Loop evidence after its
+  graph checks had passed. The compatibility budget now allows 30 minutes on Windows; the next
+  same-tree manual run must pass before this issue can close.
 - [ ] 2026-09-21 — A stop request arriving after a fake maker has committed but before its receipt
   is reconciled can leave an interrupted run whose resume replays the maker, producing a clean
   worktree with nothing new to commit. A local graph stop/resume test exposed this under heavy
