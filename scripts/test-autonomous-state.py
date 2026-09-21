@@ -28,6 +28,42 @@ SPEC.loader.exec_module(CONTROLLER)
 
 
 class AutonomousStateTests(unittest.TestCase):
+    def test_native_role_git_conversion_matches_controller_clean_check(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith role git config ") as temporary:
+            repo = Path(temporary)
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            (repo / "change.txt").write_bytes(b"changed\r\n")
+            controller_env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull,
+                              "GIT_CONFIG_NOSYSTEM": "1"}
+            for key in tuple(controller_env):
+                if key.startswith("GIT_CONFIG_COUNT") or key.startswith("GIT_CONFIG_KEY_") or key.startswith("GIT_CONFIG_VALUE_"):
+                    controller_env.pop(key)
+            maker_with_host_conversion = {**controller_env, "GIT_CONFIG_COUNT": "1",
+                                          "GIT_CONFIG_KEY_0": "core.autocrlf",
+                                          "GIT_CONFIG_VALUE_0": "true"}
+            subprocess.run(["git", "add", "change.txt"], cwd=repo, env=maker_with_host_conversion,
+                           check=True)
+            subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                            "commit", "-q", "-m", "fixture"], cwd=repo,
+                           env=maker_with_host_conversion, check=True)
+            dirty = subprocess.check_output(["git", "status", "--porcelain"], cwd=repo,
+                                            env=controller_env, text=True)
+            self.assertEqual(dirty.strip(), "M change.txt")
+
+            subprocess.run(["git", "rm", "--cached", "-q", "change.txt"], cwd=repo,
+                           env=controller_env, check=True)
+            with mock.patch.dict(os.environ, controller_env, clear=True):
+                with CONTROLLER.native_role_environment("claude", repo) as maker_env:
+                    self.assertEqual(maker_env["GIT_CONFIG_KEY_0"], "core.autocrlf")
+                    self.assertEqual(maker_env["GIT_CONFIG_VALUE_0"], "false")
+                    subprocess.run(["git", "add", "change.txt"], cwd=repo, env=maker_env, check=True)
+                    subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                                    "commit", "-q", "-m", "same conversion"], cwd=repo,
+                                   env=maker_env, check=True)
+            clean = subprocess.check_output(["git", "status", "--porcelain"], cwd=repo,
+                                            env=controller_env, text=True)
+            self.assertEqual(clean, "")
+
     def test_generated_server_info_refs_do_not_impersonate_protected_git_writes(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith server info ") as temporary:
             repo = Path(temporary) / "repo"

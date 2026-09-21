@@ -73,6 +73,10 @@ Both roles start fresh; their receipts, not conversational memory, are the hando
 The autonomous controller and `agentsmith evaluate` share the same immutable native-launch helper
 for command construction, structured-output parsing, usage extraction, sandbox settings, and the
 subprocess environment allowlist; neither runner imports the other's mutable state machine. Codex
+and Claude roles receive only the controller's effective `core.autocrlf` value as an explicit Git
+configuration override. This keeps their commits and the controller's clean-worktree check on the
+same text-conversion rule when the controller runs with isolated Git configuration.
+Codex
 invocations use a temporary client home containing a same-filesystem authentication bridge to the
 validated ChatGPT login plus minimal no-telemetry configuration. The bridge preserves one OAuth
 refresh state and is removed after the process exits; global instructions, user settings, hooks,
