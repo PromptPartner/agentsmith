@@ -132,7 +132,13 @@ jobs:
           python-version: '3.13'
       - name: Install Linux verifier sandbox
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          bwrap --unshare-net --ro-bind / / --tmpfs /tmp --dev /dev --proc /proc /bin/true
       - name: Record native work-graph lifecycle
         run: python scripts/work-graph-release-evidence.py record --expected-commit "${{ github.sha }}" --output-root "${{ runner.temp }}" --output "${{ runner.temp }}/work-graph-${{ runner.os }}.json"
       - name: Upload native work-graph report, including failure evidence
