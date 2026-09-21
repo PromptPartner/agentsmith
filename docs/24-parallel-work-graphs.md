@@ -134,7 +134,9 @@ The manual `verify` workflow runs this on macOS, Linux, and Windows, uploads eac
 when a phase fails, then accepts an aggregate only when all three reports passed on the exact
 workflow commit and Git tree. Output hashes and test counts are recorded; raw process output is
 not uploaded. A failed phase prints only bounded unittest names or a skip marker to CI logs.
-Linux installs `bubblewrap` for the verifier sandbox.
+Linux installs `bubblewrap`, enables unprivileged user namespaces if AppArmor restricts them,
+and probes the sandbox before recording evidence. This follows
+[Bubblewrap's own hosted CI setup](https://github.com/containers/bubblewrap/blob/main/ci/enable-userns.sh).
 
 The native aggregate is an evidence gate, not a delivery command. A successful local
 `integrate` leaves a candidate branch, its source commits, and a verification receipt under
