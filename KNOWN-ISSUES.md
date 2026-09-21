@@ -17,14 +17,15 @@ been authorized, so the entries are kept here.
 - [ ] 2026-09-21 — The Windows finite-run verifier has no supported fail-closed sandbox and returns
   126. The Windows work-graph lifecycle and same-commit three-platform aggregate remain blocked.
   See `docs/research/windows-verifier-sandbox.md` for the reviewed platform options.
+- [ ] 2026-09-21 — Hosted macOS native lifecycle intermittently failed its cleanup-preview test
+  in run `35607452415`, although the same suite passed in that run's compatibility job and in
+  five local targeted attempts. Run `35605909782` had passed both paths. The exact failing
+  assertion is not yet known; retain this as an open release-evidence flake.
 - [ ] 2026-09-21 — The Ubuntu guardrail job did not install Bubblewrap, so its verifier escape
   test could stop after an unsupported-sandbox result instead of exercising isolation. The CI
   job now installs and probes Bubblewrap; the next run must execute all guardrail cases.
 ## Resolved during W2-06
 
-- [x] 2026-09-21 — Hosted macOS compatibility intermittently misclassified a resumed peer's Git
-  worktree files during another maker's snapshot. Exact terminal-peer binding now applies at
-  both snapshots; the native macOS report and full compatibility job passed in run `35605909782`.
 - [x] 2026-09-21 — Hosted Linux hid graph fixture worktrees under a late `/tmp` tmpfs mount,
   causing eight verifier-dependent lifecycle failures. The controller now mounts `/tmp` before
   creating and binding those worktree paths. Run `35605909782` passed the actual verifier probe
