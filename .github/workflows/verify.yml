@@ -28,7 +28,7 @@ jobs:
         with:
           python-version: '3.13'
       - name: Python core compiles
-        run: python -m py_compile agentsmith.py work_graph.py native_launcher.py evaluate.py config/statusline.py scripts/autonomous-run.py scripts/first-loop-release-evidence.py scripts/generate-first-loop-proof.py scripts/test-agent-conformance.py scripts/test-autonomous-state.py scripts/test-autonomous-graph-base.py scripts/test-work-graph-contracts.py scripts/test-work-graph-status.py scripts/test-work-graph-dispatch.py scripts/test-work-graph-cli-surface.py scripts/test-doctor.py scripts/test-evaluate.py scripts/test-first-verified-loop-contracts.py scripts/test-secret-scan.py scripts/test-statusline.py scripts/test-tracker-consent.py scripts/test-update.py scripts/test-verify-receipts.py compatibility/test_registry.py
+        run: python -m py_compile agentsmith.py work_graph.py native_launcher.py evaluate.py config/statusline.py scripts/autonomous-run.py scripts/first-loop-release-evidence.py scripts/work-graph-release-evidence.py scripts/generate-first-loop-proof.py scripts/test-agent-conformance.py scripts/test-autonomous-state.py scripts/test-autonomous-graph-base.py scripts/test-work-graph-contracts.py scripts/test-work-graph-status.py scripts/test-work-graph-dispatch.py scripts/test-work-graph-cli-surface.py scripts/test-work-graph-release-evidence.py scripts/test-doctor.py scripts/test-evaluate.py scripts/test-first-verified-loop-contracts.py scripts/test-secret-scan.py scripts/test-statusline.py scripts/test-tracker-consent.py scripts/test-update.py scripts/test-verify-receipts.py compatibility/test_registry.py
       - name: Registry schema and contract
         run: python compatibility/test_registry.py
       - name: Strict cross-platform conformance
@@ -53,6 +53,7 @@ jobs:
           python scripts/test-work-graph-status.py
           python scripts/test-autonomous-graph-base.py
           python scripts/test-work-graph-cli-surface.py
+          python scripts/test-work-graph-release-evidence.py
       - name: Work-graph local lifecycle on native macOS
         if: runner.os == 'macOS'
         run: python scripts/test-work-graph-dispatch.py
@@ -113,6 +114,61 @@ jobs:
         with:
           name: fvl08-native-aggregate
           path: ${{ runner.temp }}/first-verified-loop-native-aggregate.json
+          retention-days: 14
+
+  w2-native-evidence:
+    name: native work-graph lifecycle (${{ matrix.os }})
+    if: github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install Linux verifier sandbox
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - name: Record native work-graph lifecycle
+        run: python scripts/work-graph-release-evidence.py record --expected-commit "${{ github.sha }}" --output-root "${{ runner.temp }}" --output "${{ runner.temp }}/work-graph-${{ runner.os }}.json"
+      - name: Upload native work-graph report, including failure evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: w2-native-${{ runner.os }}
+          path: ${{ runner.temp }}/work-graph-${{ runner.os }}.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  w2-native-aggregate:
+    name: aggregate native work-graph evidence
+    if: always() && github.event_name == 'workflow_dispatch' && needs.compatibility.result == 'success' && needs.posix-guardrails.result == 'success'
+    needs: [w2-native-evidence, compatibility, posix-guardrails]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Download native work-graph reports
+        uses: actions/download-artifact@v5
+        with:
+          pattern: w2-native-*
+          path: release-evidence
+          merge-multiple: true
+      - name: Aggregate matching native work-graph reports
+        run: python scripts/work-graph-release-evidence.py aggregate --expected-commit "${{ github.sha }}" --report release-evidence/work-graph-Linux.json --report release-evidence/work-graph-macOS.json --report release-evidence/work-graph-Windows.json --output-root "${{ runner.temp }}" --output "${{ runner.temp }}/work-graph-native-aggregate.json"
+      - name: Upload work-graph aggregate
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: w2-native-aggregate
+          path: ${{ runner.temp }}/work-graph-native-aggregate.json
           retention-days: 14
 
   posix-guardrails:

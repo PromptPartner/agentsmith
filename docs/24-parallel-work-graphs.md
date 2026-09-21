@@ -106,8 +106,79 @@ alias is not a pinned model version.
 | Stop/resume keeps limits and refuses drift | `test-work-graph-dispatch.py`, `test-autonomous-graph-base.py` | An interrupted child with missing state needs manual reconciliation. |
 | Local integration verifies the combined tree | `test-work-graph-dispatch.py` | Candidate verification does not authorize delivery. |
 | Existing finite-run guards still hold | `test-autonomous-state.py`, `test-autonomous-run.sh` | Scope keys coordinate cooperating runs, not untrusted processes. |
+| Three native reports describe the same commit and tree | `work-graph-release-evidence.py aggregate`, `test-work-graph-release-evidence.py` | A generated aggregate is required; fixture JSON is illustrative only. |
 
 This is local test evidence, not a claim that arbitrary mutually untrusted makers are isolated:
 worktrees share Git metadata and local resources, and declared scope keys coordinate cooperating
 runs rather than binding operating-system ports or services. Cross-platform native proof and a
 release aggregate must be collected before a Wave 2 portability claim.
+
+## Reproduce the lifecycle fixture
+
+The fixture in `scripts/test-work-graph-dispatch.py` creates a temporary repository with an
+accepted spec and three separate manifests. Tickets A and B write different files concurrently.
+Ticket C depends on both and checks that their files are present in its starting worktree. The
+test calls the shipped `agentsmith graph` CLI for inspection, start, stop, resume, integration,
+and cleanup preview. It also checks a conflicting pair, a dirty source, a failed combined
+verification, and retention of foreign notes. The fake clients exercise real Git processes and
+worktrees without model calls or a remote.
+
+```sh
+python3 scripts/test-work-graph-dispatch.py
+```
+
+On a committed clean checkout, the native recorder runs the graph contracts, read-only status,
+base lineage, CLI surface, coordination and secret-scanner checks, and ten lifecycle tests. It
+writes one JSON report outside the repo.
+The manual `verify` workflow runs this on macOS, Linux, and Windows, uploads each report even
+when a phase fails, then accepts an aggregate only when all three reports passed on the exact
+workflow commit and Git tree. Output hashes and test counts are recorded; raw process output is
+not uploaded. Linux installs `bubblewrap` for the verifier sandbox.
+
+The native aggregate is an evidence gate, not a delivery command. A successful local
+`integrate` leaves a candidate branch, its source commits, and a verification receipt under
+`.git/agentsmith-graphs/<graph_id>/`. A human then reviews the candidate and separately decides
+whether to push, open a PR, or merge. Observe the result after delivery and file a feedback
+entry if an invariant fails; the graph does not do either step automatically.
+
+### One feature through the fixture
+
+The fixture's concrete feature is a composed change set with three independently reviewed
+source files. Its accepted temporary spec names decision `DEC-1`. Separate manifests name
+`IMP-a`, `IMP-b`, and `IMP-c`; the committed graph gives A and B parallel slots and makes C
+depend on both. A writes `src/a/change.txt`, B writes `src/b/change.txt`, and C checks both
+inherited files before writing `src/c/change.txt`. The combined verifier requires all three.
+
+The test first calls `graph validate` and `graph status`, then `graph start`. It observes two
+overlapping maker starts, a dependency checkpoint, and C's inherited files. `graph integrate`
+creates a local candidate from the declared A → B → C order and a passing combined receipt. A
+separate test interrupts and resumes the same graph without resetting its limits. Another
+retains both accepted sources when integration conflicts. The fixture ends at the local
+candidate: a human delivery decision, downstream observation, and any feedback entry are
+explicit handoff steps, not events the fixture pretends happened.
+
+### Troubleshooting and release handoff
+
+| Observation | Safe next step |
+|---|---|
+| `status` says `conflicting` | Inspect the named overlapping path or resource; revise and recommit a new graph ID before starting. |
+| Child is `interrupted` or `resume` refuses drift | Read the child state and receipt under the Git common directory; retain worktrees and reconcile the exact missing or moved state. |
+| Candidate integration conflicts | Inspect the retained candidate worktree and both source refs; resolve in a new reviewed attempt. |
+| Candidate full verification fails | Read `verification-<attempt>/receipt.json`; keep the failed candidate as evidence and fix the source under a separate run. |
+| Native report is failed or absent | Inspect the report phase counts and exit code; do not create a release aggregate from partial evidence. |
+
+For release review, hand over the branch commit and tree OIDs, the three native JSON reports,
+their SHA-256 values in the aggregate, the full workflow result at that SHA, the local candidate
+receipt, and the named security review. The reviewer checks that all match, then requests a
+separate delivery decision. After an authorized delivery, observe the real downstream result
+and record any defect in the project tracker; that observation cannot be inferred from the
+fixture or aggregate.
+
+### Current release boundary
+
+The Windows finite-run verifier currently has no supported fail-closed sandbox. It returns 126
+without running the approved command. Consequently the Windows lifecycle report cannot pass,
+and no complete Wave 2 native aggregate exists. The workflow is manual-only while this gap is
+open. The macOS fixture uses `sandbox-exec`; Linux needs `bubblewrap` and permission to create its
+namespaces. A missing sandbox is a failing report, never a skipped test or a portability claim.
+See [the security review](24-parallel-work-graphs-security.md) for the named threat checks.
