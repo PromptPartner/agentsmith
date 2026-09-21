@@ -14,15 +14,28 @@ been authorized, so the entries are kept here.
 - [ ] `agentsmith verify discover --help` and `verify apply --help` currently show the shared
   verification parser's execution-only options; incompatible combinations fail clearly, but the
   subcommand help should expose only each operation's valid flags.
-- [ ] 2026-09-21 — The Windows finite-run verifier has no supported fail-closed sandbox and returns
-  126. The Windows work-graph lifecycle and same-commit three-platform aggregate remain blocked.
-  See `docs/research/windows-verifier-sandbox.md` for the reviewed platform options.
+- [ ] 2026-09-21 — The Windows finite-run verifier now has a classic AppContainer launcher, but
+  its native file/network boundary and full graph lifecycle have not yet passed. The
+  same-commit three-platform aggregate remains blocked. The launcher returns 126 when it cannot
+  establish or clean up the boundary. See `docs/research/windows-verifier-sandbox.md`.
 - [ ] 2026-09-21 — Hosted macOS native lifecycle intermittently failed its cleanup-preview test
   in run `35607452415`, although the same suite passed in that run's compatibility job and in
   five local targeted attempts. Run `35605909782` had passed both paths. The exact failing
-  assertion is not yet known; retain this as an open release-evidence flake.
+  assertion is not yet known. A later docs-only push run `35610061317` failed in the macOS
+  compatibility copy when graph `start` returned a failed state inside a different cleanup test;
+  its pull-request copy passed. The test now prints child reasons and graph events on failure.
+- [ ] 2026-09-21 — A stop request arriving after a fake maker has committed but before its receipt
+  is reconciled can leave an interrupted run whose resume replays the maker, producing a clean
+  worktree with nothing new to commit. A local graph stop/resume test exposed this under heavy
+  concurrent verification. The fixture now holds the maker before commit to test a deterministic
+  mid-maker stop; the late-stop reconciliation path still needs a bounded controller fix.
 ## Resolved during W2-06
 
+- [x] 2026-09-21 — Hosted macOS graph dispatch sometimes treated a change to Git's
+  `.git/info/refs` dumb-transport cache as an unauthorized maker metadata write during parallel
+  work. The docs-only push run `35610061317` exposed the exact path. A linked-worktree
+  regression failed before the change and passed after; malformed cache content still fails
+  the protected metadata check.
 - [x] 2026-09-21 — The Ubuntu guardrail previously skipped the active sandbox and missed a
   verifier command that accepted a sibling write inside isolated `/tmp`. The job now installs
   Bubblewrap and the controller remounts isolated `/tmp` and home read-only before binding the
