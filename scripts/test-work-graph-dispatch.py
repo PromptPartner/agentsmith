@@ -66,9 +66,10 @@ class GraphDispatchTests(unittest.TestCase):
                     raise SystemExit("configured fake maker failure")
                 if run_id == "c" and not (Path("src/a/change.txt").is_file() and Path("src/b/change.txt").is_file()):
                     raise SystemExit("dependent node did not inherit predecessors")
-                (Path(__file__).parent / "starts.log").open("a", encoding="utf-8").write(f"{run_id} {time.time()}\\n")
+                (Path(__file__).parent / "starts.log").open("a", encoding="utf-8").write(f"{run_id} {time.monotonic()}\\n")
                 delay = Path(__file__).parent / "sleep-seconds.txt"
-                time.sleep(float(delay.read_text(encoding="utf-8")) if delay.is_file() else 0.5)
+                time.sleep(float(delay.read_text(encoding="utf-8")) if delay.is_file() else 1.0)
+                (Path(__file__).parent / "finishes.log").open("a", encoding="utf-8").write(f"{run_id} {time.monotonic()}\\n")
                 path = Path(changed)
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(run_id + "\\n", encoding="utf-8")
@@ -153,8 +154,13 @@ class GraphDispatchTests(unittest.TestCase):
                 line.split() for line in (self.fake_client.parent / "starts.log").read_text().splitlines()
             )
         }
-        self.assertLess(abs(starts["a"] - starts["b"]), 0.4)
-        self.assertGreater(starts["c"], max(starts["a"], starts["b"]))
+        finishes = {
+            name: float(value) for name, value in (
+                line.split() for line in (self.fake_client.parent / "finishes.log").read_text().splitlines()
+            )
+        }
+        self.assertLess(max(starts["a"], starts["b"]), min(finishes["a"], finishes["b"]))
+        self.assertGreater(starts["c"], max(finishes["a"], finishes["b"]))
         self.assertEqual(git(self.repo, "status", "--porcelain"), "")
 
     def test_failed_node_blocks_descendant_but_not_independent_peer(self) -> None:
