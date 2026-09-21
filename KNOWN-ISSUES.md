@@ -24,6 +24,13 @@ been authorized, so the entries are kept here.
   the controller will include changed object paths in the next native failure for diagnosis.
   Eight repeated local stop/resume runs passed after that diagnostic change; the macOS
   compatibility lifecycle also passed on `4b42582`.
+- [ ] 2026-09-21 — Final-tree manual run `35623269366` passed Linux and macOS native work-graph
+  lifecycle but failed eight of ten Windows dispatch tests. The Windows report binds commit
+  `00461bf`, tree `8d0c00f`, and records a clean checkout; its lifecycle phase exited 1.
+  Compatibility previously tested the Windows boundary but did not expose dispatch test errors.
+  A Windows compatibility lifecycle step now captures the fake-client fixture traceback for
+  diagnosis. A local aggregate invocation with all three reports exited 2 and rejected the
+  failed Windows report before writing an aggregate.
 - [ ] 2026-09-21 — A stop request arriving after a fake maker has committed but before its receipt
   is reconciled can leave an interrupted run whose resume replays the maker, producing a clean
   worktree with nothing new to commit. A local graph stop/resume test exposed this under heavy
