@@ -59,6 +59,10 @@ class WindowsVerifierSandboxTests(unittest.TestCase):
                                          text=True, check=True).stdout
             before_git = subprocess.run(["icacls", str(repo / ".git")], capture_output=True,
                                         text=True, check=True).stdout
+            before_input = subprocess.run(["icacls", str(repo / "input.txt")], capture_output=True,
+                                          text=True, check=True).stdout
+            before_probe = subprocess.run(["icacls", str(probe)], capture_output=True,
+                                          text=True, check=True).stdout
             with socket.socket() as listener:
                 listener.bind(("127.0.0.1", 0))
                 listener.listen(1)
@@ -72,6 +76,10 @@ class WindowsVerifierSandboxTests(unittest.TestCase):
                                             text=True, check=True).stdout, before_repo)
             self.assertEqual(subprocess.run(["icacls", str(repo / ".git")], capture_output=True,
                                             text=True, check=True).stdout, before_git)
+            self.assertEqual(subprocess.run(["icacls", str(repo / "input.txt")], capture_output=True,
+                                            text=True, check=True).stdout, before_input)
+            self.assertEqual(subprocess.run(["icacls", str(probe)], capture_output=True,
+                                            text=True, check=True).stdout, before_probe)
             self.assertEqual(list(repo.glob(".agentsmith-verifier-*")), [])
 
 

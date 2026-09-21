@@ -55,5 +55,10 @@ The next hosted run `35614813369` launched the confined command. It read and wro
 worktree, while sibling and loopback probes failed. The exact ACL text comparison failed: the
 AppContainer package grant was removed, but recursive `icacls /T` had materialized duplicate
 inherited system/admin/owner entries. The launcher now grants inheritance on each allowed root
-without recursively editing every child ACL. The unchanged exact-ACL assertion remains the
-cleanup gate for the next native run.
+without recursively editing every child ACL. Run `35616698843` showed the root DACL still gained
+duplicate inherited entries. Microsoft's [automatic inheritance rules](https://learn.microsoft.com/en-us/windows/win32/secauthz/automatic-propagation-of-inheritable-aces)
+explain why an inheritable ACL edit can propagate through an existing tree. The launcher now
+saves each allowed root's DACL and restores it with
+[`SetFileSecurityW`](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-setfilesecurityw)
+after removing the package grant; that API does not propagate the restored DACL to children.
+The native test also checks two existing child files for ACL drift.
