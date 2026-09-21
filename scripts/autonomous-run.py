@@ -265,12 +265,20 @@ def coordination_lock_path(root: Path) -> Path:
 
 def read_coordination_lock(root: Path) -> dict[str, Any] | None:
     path = coordination_lock_path(root)
-    if not path.exists():
-        return None
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise RunError(f"cannot verify repository coordination lock {path}: {exc}") from exc
+    deadline = time.monotonic() + 0.5
+    while True:
+        try:
+            value = json.loads(read_text(path))
+            break
+        except FileNotFoundError:
+            return None
+        except json.JSONDecodeError as exc:
+            # O_EXCL publishes the lock name before its owner record is flushed.
+            if time.monotonic() >= deadline:
+                raise RunError(f"cannot verify repository coordination lock {path}: {exc}") from exc
+            time.sleep(0.01)
+        except OSError as exc:
+            raise RunError(f"cannot verify repository coordination lock {path}: {exc}") from exc
     if not isinstance(value, dict) or not isinstance(value.get("pid"), int):
         raise RunError(f"cannot verify repository coordination lock {path}: malformed owner metadata")
     return value
@@ -771,13 +779,13 @@ def registered_run_git_artifacts(common: Path, active_ref: str) -> tuple[set[str
     return other_refs, branch_logs, worktree_admin
 
 
-def terminal_peer_git_artifacts(common: Path, active_ref: str, since_epoch: float,
-                                protected_refs: set[str]
+def terminal_peer_git_artifacts(common: Path, active_ref: str, protected_refs: set[str]
                                 ) -> tuple[set[str], set[Path], set[Path]]:
-    """Recognize a peer that started and finished during a maker snapshot window.
+    """Recognize terminal controller-owned peers through exact Git and state binding.
 
-    The exemption is exact: controller state must bind the run's branch to the
-    recorded terminal OID and linked worktree. An arbitrary side ref is not a peer.
+    A peer may finish or resume during another maker's snapshot window. Its
+    state must bind the branch to the recorded terminal OID and linked worktree.
+    An arbitrary side ref is not a peer.
     """
     refs: set[str] = set()
     logs: set[Path] = set()
@@ -786,16 +794,9 @@ def terminal_peer_git_artifacts(common: Path, active_ref: str, since_epoch: floa
         try:
             state = load_json(state_file)
             run_id = state_file.parent.name
-            started_epoch = state.get("started_epoch")
-            resumed_epoch = state.get("resumed_epoch")
-            peer_active_since_snapshot = any(
-                isinstance(value, (int, float)) and value >= since_epoch
-                for value in (started_epoch, resumed_epoch)
-            )
             if (state.get("run_id") != run_id or
                     state.get("branch") != f"agentsmith/{run_id}" or
-                    state.get("status") not in {"accepted", "escalated", "interrupted"} or
-                    not peer_active_since_snapshot):
+                    state.get("status") not in {"accepted", "escalated", "interrupted"}):
                 continue
             repo_value = state.get("repo")
             manifest_value = state.get("manifest_path")
@@ -841,8 +842,6 @@ def terminal_peer_git_artifacts(common: Path, active_ref: str, since_epoch: floa
 
 
 def _git_metadata_once(repo: Path, *, known_peers: dict[str, Any] | None = None) -> dict[str, Any]:
-    # Include peers that start during this scan in the terminal-peer window.
-    snapshot_epoch = time.time()
     common = resolved_git_path(repo, "--git-common-dir")
     active = resolved_git_path(repo, "--git-dir")
     active_rel = active.relative_to(common) if active.is_relative_to(common) else None
@@ -851,20 +850,19 @@ def _git_metadata_once(repo: Path, *, known_peers: dict[str, Any] | None = None)
         common, branch_ref
     )
     protected_refs = set(known_peers.get("protected_refs", [])) if known_peers else set()
-    # A peer verified live before this maker started may finish (and release its
-    # lifecycle lock) before our after-snapshot. Preserve that peer's exclusions.
-    # A newly started peer is exempt only with an exact terminal-state binding.
+    # A peer verified live before this maker started may finish and release its
+    # lifecycle lock before the after-snapshot. Preserve its exact exclusions.
     if known_peers:
         other_run_refs.update(known_peers["refs"])
         run_branch_logs.update(Path(value) for value in known_peers["branch_logs"])
         run_worktree_admin.update(Path(value) for value in known_peers["worktree_admin"])
-        terminal_refs, terminal_logs, terminal_admin = terminal_peer_git_artifacts(
-            common, branch_ref, float(known_peers["snapshot_epoch"]), protected_refs
-        )
-        other_run_refs.update(terminal_refs)
-        run_branch_logs.update(terminal_logs)
-        run_worktree_admin.update(terminal_admin)
-        other_run_refs.difference_update(protected_refs)
+    terminal_refs, terminal_logs, terminal_admin = terminal_peer_git_artifacts(
+        common, branch_ref, protected_refs
+    )
+    other_run_refs.update(terminal_refs)
+    run_branch_logs.update(terminal_logs)
+    run_worktree_admin.update(terminal_admin)
+    other_run_refs.difference_update(protected_refs)
     hooks: list[tuple[str, str]] = []
     hooks_dir = common / "hooks"
     if hooks_dir.is_dir():
@@ -903,7 +901,6 @@ def _git_metadata_once(repo: Path, *, known_peers: dict[str, Any] | None = None)
             "protected_refs": sorted(line.split(" ", 1)[0] for line in refs),
             "branch_logs": sorted(path.as_posix() for path in run_branch_logs),
             "worktree_admin": sorted(path.as_posix() for path in run_worktree_admin),
-            "snapshot_epoch": snapshot_epoch,
         },
     }
 
