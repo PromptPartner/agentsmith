@@ -92,7 +92,11 @@ been authorized, so the entries are kept here.
   expected-nonzero test path did not print its graph event or child stderr, so the exit cause
   remains unknown. Same-commit rerun `35646692896` passed all nine jobs, including Windows
   compatibility and the hosted strict aggregate. This remains an open reliability defect.
-  Failed runs do not produce a passing aggregate.
+  Push run `35651017175` repeated the Windows failure in another fixture: node `a` exhausted
+  the 60-second coordination wait on live process `3484`, while `b` exited at `prepared` without
+  a terminal reason. A simulated Windows sharing denial on coordination-lock release failed
+  before a bounded unlink retry and passed after it; the exact hosted exception was not
+  captured. Failed runs do not produce a passing aggregate.
 - [ ] 2026-09-21 — A stop request arriving after a fake maker has committed but before its receipt
   is reconciled can leave an interrupted run whose resume replays the maker, producing a clean
   worktree with nothing new to commit. A local graph stop/resume test exposed this under heavy

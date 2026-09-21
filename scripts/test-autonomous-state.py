@@ -28,6 +28,41 @@ SPEC.loader.exec_module(CONTROLLER)
 
 
 class AutonomousStateTests(unittest.TestCase):
+    def test_coordination_lock_release_retries_windows_reader_sharing_denial(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith coordination release ") as temporary:
+            root = Path(temporary)
+            lock = root / "coordination.lock"
+            unlink = Path.unlink
+            attempts = 0
+
+            def transient_unlink(path: Path, *args: Any, **kwargs: Any) -> None:
+                nonlocal attempts
+                if path == lock:
+                    attempts += 1
+                    if attempts <= 2:
+                        error = PermissionError(errno.EACCES, "another controller is reading the lock")
+                        error.winerror = 32
+                        raise error
+                unlink(path, *args, **kwargs)
+
+            with mock.patch.object(CONTROLLER.os, "name", "nt"), mock.patch.object(Path, "unlink", transient_unlink):
+                with CONTROLLER.coordination_lock(root):
+                    self.assertTrue(lock.is_file())
+            self.assertEqual(attempts, 3)
+            self.assertFalse(lock.exists())
+
+    def test_coordination_lock_release_fails_closed_after_persistent_windows_denial(self) -> None:
+        lock = Path("coordination.lock")
+        denial = PermissionError(errno.EACCES, "persistent sharing denial")
+        denial.winerror = 32
+        with (mock.patch.object(CONTROLLER.os, "name", "nt"),
+              mock.patch.object(Path, "unlink", side_effect=denial) as unlink,
+              mock.patch.object(CONTROLLER.time, "sleep") as pause):
+            with self.assertRaisesRegex(CONTROLLER.RunError, "cannot remove repository coordination lock"):
+                CONTROLLER.unlink_coordination_lock(lock)
+        self.assertEqual(unlink.call_count, 500)
+        self.assertEqual(pause.call_count, 499)
+
     def test_native_role_disables_automatic_git_object_repacking(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith role git maintenance ") as temporary:
             repo = Path(temporary)

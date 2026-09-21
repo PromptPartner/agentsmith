@@ -263,6 +263,21 @@ def coordination_lock_path(root: Path) -> Path:
     return root / "coordination.lock"
 
 
+def unlink_coordination_lock(path: Path) -> None:
+    """Release a lock after brief Windows sharing denials from competing readers."""
+    for attempt in range(500):
+        try:
+            path.unlink(missing_ok=True)
+            return
+        except PermissionError as exc:
+            transient = os.name == "nt" and (
+                getattr(exc, "winerror", None) in {5, 32} or exc.errno == errno.EACCES
+            )
+            if not transient or attempt == 499:
+                raise RunError(f"cannot remove repository coordination lock {path}: {exc}") from exc
+            time.sleep(0.01)
+
+
 def read_coordination_lock(root: Path) -> dict[str, Any] | None:
     path = coordination_lock_path(root)
     deadline = time.monotonic() + 0.5
@@ -312,7 +327,7 @@ def coordination_lock(root: Path):
             try:
                 before = path.read_bytes()
                 if path.read_bytes() == before:
-                    path.unlink(missing_ok=True)
+                    unlink_coordination_lock(path)
             except FileNotFoundError:
                 pass
             continue
@@ -329,7 +344,7 @@ def coordination_lock(root: Path):
         except RunError:
             existing = None
         if existing and existing.get("token") == token:
-            path.unlink(missing_ok=True)
+            unlink_coordination_lock(path)
 
 
 @contextlib.contextmanager
