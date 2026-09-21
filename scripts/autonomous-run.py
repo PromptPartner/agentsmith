@@ -1008,6 +1008,9 @@ def validate_git_unchanged(before: dict[str, Any], after: dict[str, Any], actor:
 def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     """Run the human-approved verifier with no network and no writes outside its worktree."""
     common = resolved_git_path(cwd, "--git-common-dir")
+    if os.name == "nt":
+        from windows_verifier_sandbox import run_verifier
+        return run_verifier(command, cwd, common, timeout, env)
     if sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").exists():
         escaped = str(cwd).replace('"', '\\"')
         escaped_common = str(common).replace('"', '\\"')
@@ -1050,7 +1053,7 @@ def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str])
                  "--chdir", str(cwd), "/bin/bash", "-c", command]
         return run(args,
                    cwd, timeout=timeout, env=env)
-    return subprocess.CompletedProcess([], 126, "", "no supported fail-closed verifier sandbox (macOS sandbox-exec or Linux bubblewrap)")
+    return subprocess.CompletedProcess([], 126, "", "no supported fail-closed verifier sandbox")
 
 
 def path_allowed(path: str, manifest: dict[str, Any]) -> bool:

@@ -1,8 +1,8 @@
 # Windows verifier sandbox options — W2-06
 
 The finite-run verifier accepts an operator-approved command, then runs it with no network and
-no writes outside its worktree. The current Windows path returns 126 before executing the command.
-That is the correct fail-closed behavior until the same boundary can be enforced on Windows.
+no writes outside its worktree. The Windows branch now attempts a classic AppContainer and returns
+126 before the command if the boundary cannot be established. Native proof is still required.
 
 ## Platform evidence
 
@@ -27,11 +27,19 @@ That is the correct fail-closed behavior until the same boundary can be enforced
   manage and limit process groups. Their documented controls do not by themselves establish the
   required file and network boundary.
 
-## Next implementation gate
+## Implemented prototype and remaining gate
 
-Prototype a classic AppContainer launcher in an isolated Windows fixture. Scope its package SID
-and temporary file ACL grants to the verifier worktree and required read-only Git metadata;
-prove cleanup restores those grants. Prove that the approved verifier can read its inputs and
-write inside the worktree, while attempts to write a sibling path or use the network fail.
-Then run the full graph lifecycle and all native evidence phases on one committed tree. Until
-that proof exists, keep exit 126 and the W2-06 aggregate closed.
+`windows_verifier_sandbox.py` creates a unique AppContainer profile per verifier call, grants its
+package SID write access to the disposable checker worktree and read access to Git metadata and
+the Python/Git toolchains, then starts a Python wrapper with the security-capabilities process
+attribute. The wrapper invokes the approved command and writes a UTF-8 result inside the worktree.
+A kill-on-close Job Object contains descendants. Cleanup closes the job before removing the
+temporary ACL grants and profile. The native test runs an approved Python command that reads an
+input and writes inside the worktree while probing a sibling file and a local network listener;
+it compares the worktree and Git ACLs before and after. The Microsoft
+[launch guide](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer)
+defines the process attribute and capability model, and the
+[icacls reference](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/icacls)
+defines the scoped ACL operations. This description is of the implemented path, not a native
+passing claim. The next gate is a passing Windows negative test, full graph lifecycle, and
+same-commit/tree Linux, macOS, Windows aggregate.

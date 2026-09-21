@@ -83,6 +83,7 @@ RUNTIME_FILES = (
     ".agentsmith/config/agents.json",
     ".agentsmith/evaluate.py",
     ".agentsmith/native_launcher.py",
+    ".agentsmith/windows_verifier_sandbox.py",
     *(f".agentsmith/templates/first-loop/{path}" for path in DEMO_TEMPLATE_FILES),
 )
 SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -1398,7 +1399,8 @@ def copy_runtime(target: Path, *, dry_run: bool) -> Path:
         registry_destination = destination.parent / "config" / "agents.json"
         registry_destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(REGISTRY_PATH, registry_destination)
-        for helper_name in ("native_launcher.py", "evaluate.py", "work_graph.py"):
+        for helper_name in ("native_launcher.py", "evaluate.py", "work_graph.py",
+                            "windows_verifier_sandbox.py"):
             helper_source = ROOT / helper_name
             if helper_source.exists():
                 shutil.copy2(helper_source, destination.parent / helper_name)
