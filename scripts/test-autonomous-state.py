@@ -46,9 +46,13 @@ class AutonomousStateTests(unittest.TestCase):
             subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
                             "commit", "-q", "-m", "fixture"], cwd=repo,
                            env=maker_with_host_conversion, check=True)
-            dirty = subprocess.check_output(["git", "status", "--porcelain"], cwd=repo,
-                                            env=controller_env, text=True)
-            self.assertEqual(dirty.strip(), "M change.txt")
+            committed_blob = subprocess.check_output(["git", "rev-parse", "HEAD:change.txt"],
+                                                     cwd=repo, env=controller_env, text=True).strip()
+            controller_blob = subprocess.check_output(
+                ["git", "hash-object", "--path=change.txt", "change.txt"],
+                cwd=repo, env=controller_env, text=True,
+            ).strip()
+            self.assertNotEqual(controller_blob, committed_blob)
 
             subprocess.run(["git", "rm", "--cached", "-q", "change.txt"], cwd=repo,
                            env=controller_env, check=True)
@@ -63,6 +67,13 @@ class AutonomousStateTests(unittest.TestCase):
             clean = subprocess.check_output(["git", "status", "--porcelain"], cwd=repo,
                                             env=controller_env, text=True)
             self.assertEqual(clean, "")
+            committed_blob = subprocess.check_output(["git", "rev-parse", "HEAD:change.txt"],
+                                                     cwd=repo, env=controller_env, text=True).strip()
+            controller_blob = subprocess.check_output(
+                ["git", "hash-object", "--path=change.txt", "change.txt"],
+                cwd=repo, env=controller_env, text=True,
+            ).strip()
+            self.assertEqual(controller_blob, committed_blob)
 
     def test_generated_server_info_refs_do_not_impersonate_protected_git_writes(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith server info ") as temporary:

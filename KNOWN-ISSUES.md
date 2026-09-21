@@ -24,6 +24,11 @@ been authorized, so the entries are kept here.
   the controller will include changed object paths in the next native failure for diagnosis.
   Eight repeated local stop/resume runs passed after that diagnostic change; the macOS
   compatibility lifecycle also passed on `4b42582` and again in both push and PR CI on `2cca50e`.
+- [ ] 2026-09-21 — PR run `35641860248` exposed a macOS false negative in the new Git
+  text-conversion regression: `git status` sometimes trusted cached index metadata immediately
+  after the test changed `core.autocrlf`, so it reported a clean worktree even though the
+  controller would hash different bytes. The regression now compares the filtered worktree
+  blob with the committed blob directly; native confirmation remains pending.
 - [ ] 2026-09-21 — Final-tree manual run `35623269366` passed Linux and macOS native work-graph
   lifecycle but failed eight of ten Windows dispatch tests. The Windows report binds commit
   `00461bf`, tree `8d0c00f`, and records a clean checkout; its lifecycle phase exited 1.
