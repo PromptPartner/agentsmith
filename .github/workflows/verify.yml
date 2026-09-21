@@ -60,6 +60,9 @@ jobs:
       - name: Windows verifier file and network boundary
         if: runner.os == 'Windows'
         run: python scripts/test-windows-verifier-sandbox.py
+      - name: Work-graph lifecycle under native report environment on Windows
+        if: runner.os == 'Windows'
+        run: python -c 'import runpy, subprocess, sys; env = runpy.run_path("scripts/work-graph-release-evidence.py")["environment"](); raise SystemExit(subprocess.call([sys.executable, "scripts/test-work-graph-dispatch.py", "GraphDispatchTests.test_parallel_roots_and_dependent_checkpoint"], env=env))'
       - name: Work-graph local lifecycle on native Windows
         if: runner.os == 'Windows'
         run: python scripts/test-work-graph-dispatch.py
