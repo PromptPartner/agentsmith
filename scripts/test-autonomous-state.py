@@ -43,11 +43,19 @@ class AutonomousStateTests(unittest.TestCase):
             args = run.call_args.args[0]
             tmpfs_index = next(index for index in range(len(args) - 1)
                                if args[index:index + 2] == ["--tmpfs", "/tmp"])
+            remount_index = next(index for index in range(len(args) - 1)
+                                 if args[index:index + 2] == ["--remount-ro", "/tmp"])
             bind_index = args.index("--bind")
-            self.assertLess(tmpfs_index, bind_index)
+            self.assertLess(tmpfs_index, remount_index)
+            self.assertLess(remount_index, bind_index)
+            if not Path.home().resolve().is_relative_to(Path("/tmp")):
+                home_remount_index = next(index for index in range(len(args) - 1)
+                                          if args[index:index + 2] == ["--remount-ro", str(Path.home().resolve())])
+                self.assertLess(home_remount_index, bind_index)
             if repo.resolve().is_relative_to(Path("/tmp")):
-                self.assertIn(["--dir", str(repo)],
-                              [args[index:index + 2] for index in range(len(args) - 1)])
+                directory_index = next(index for index in range(len(args) - 1)
+                                       if args[index:index + 2] == ["--dir", str(repo)])
+                self.assertLess(directory_index, remount_index)
 
     def test_legacy_scope_defaults_to_no_coordinated_resources(self) -> None:
         scope = {"allowed_paths": ["src/**"], "denied_paths": []}
