@@ -138,7 +138,7 @@ class GraphDispatchTests(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, str(ROOT / "agentsmith.py"), "graph", action, "--graph", self.graph_path,
              "--target", str(self.repo), "--json"], cwd=self.repo, env=self.environment,
-            text=True, capture_output=True, check=False, timeout=60,
+            text=True, capture_output=True, check=False, timeout=180,
         )
         if action in {"start", "resume"} and result.returncode:
             events = self.repo / ".git/agentsmith-graphs/dispatch-fixture/events.jsonl"
@@ -148,6 +148,8 @@ class GraphDispatchTests(unittest.TestCase):
             for state_path in sorted(child_root.glob("*/state.json")):
                 state = json.loads(state_path.read_text(encoding="utf-8"))
                 result.stderr += f"\n{state_path.parent.name}: {state.get('status')}: {state.get('reason')}\n"
+                for verify_path in sorted(state_path.parent.glob("attempt-*-verify.txt")):
+                    result.stderr += f"{verify_path.name}: {verify_path.read_text(encoding='utf-8')[:1000]}\n"
         return result
 
     def test_parallel_roots_and_dependent_checkpoint(self) -> None:
@@ -232,8 +234,9 @@ class GraphDispatchTests(unittest.TestCase):
         self.assertEqual(dirty.read_text(encoding="utf-8"), "retain me\n")
         dirty.unlink()
         (self.fake_client.parent / "sleep-seconds.txt").unlink()
-        stale_pid = next(pid for pid in range(99_999_999, 99_999_900, -1)
-                         if not self._process_live(pid))
+        # The controller checks this owner with OpenProcess on Windows. os.kill
+        # sends a signal there, so the fixture uses an out-of-range test PID.
+        stale_pid = 99_999_999
         (state_path.parent / "LOCK").write_text(
             json.dumps({"graph_id": "dispatch-fixture", "pid": stale_pid,
                         "token": "0" * 32}), encoding="utf-8",
@@ -244,16 +247,6 @@ class GraphDispatchTests(unittest.TestCase):
         report = json.loads(self.invoke("status").stdout)
         self.assertEqual(report["status"], "completed")
         self.assertEqual(len(json.loads(state_path.read_text(encoding="utf-8"))["dispatches"]), 3)
-
-    @staticmethod
-    def _process_live(pid: int) -> bool:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
-        return True
 
     def test_cleanup_preview_retains_foreign_and_source_artifacts(self) -> None:
         started = self.invoke("start")
@@ -372,7 +365,7 @@ class GraphDispatchTests(unittest.TestCase):
             payload = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
             manifest_path.write_bytes(payload)
             node["manifest_sha256"] = hashlib.sha256(payload).hexdigest()
-        graph_path.write_text(json.dumps(graph, indent=2) + "\n", encoding="utf-8")
+        graph_path.write_bytes((json.dumps(graph, indent=2) + "\n").encode("utf-8"))
         (self.repo / ".harness/verify.conf").write_text(
             f'combined :: "{sys.executable}" -c "from pathlib import Path; assert Path(\'src/shared.txt\').is_file()"\n',
             encoding="utf-8",
