@@ -75,5 +75,6 @@ executables before and after cleanup.
 Hosted Windows compatibility run `35619728991` passed that boundary test on `4b42582`:
 the AppContainer read and wrote inside its worktree, the sibling write and loopback connection
 were denied, and the four then-compared worktree ACLs matched their pre-run values. The expanded
-installation ACL comparisons still need a native rerun. Full native graph lifecycle
-and same-tree aggregate evidence remain pending.
+installation ACL comparisons then passed on `3b44ae4` in compatibility run `35621523631`,
+along with the same file and network denials. Full native graph lifecycle and same-tree aggregate
+are separate release gates; PR #36 records their current evidence.

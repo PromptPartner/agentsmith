@@ -182,8 +182,9 @@ fixture or aggregate.
 
 The Windows finite-run verifier now has a classic AppContainer launcher with temporary package-SID
 ACL grants and no network capability. The native Windows file, network, and ACL cleanup boundary
-passed in the compatibility matrix on `4b42582`; the full lifecycle and same-tree aggregate are
-still pending. The workflow is manual-only while this gate is open. The macOS fixture uses
+passed in the compatibility matrix on `3b44ae4`. A full lifecycle report from each host and a
+same-tree aggregate are separate release gates; current results are recorded in PR #36. The
+work-graph evidence job is manual-only. The macOS fixture uses
 `sandbox-exec`; Linux needs `bubblewrap` and permission to create its
 namespaces. A missing sandbox is a failing report, never a skipped test or a portability claim.
 See [the security review](24-parallel-work-graphs-security.md) for the named threat checks.
