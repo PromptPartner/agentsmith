@@ -51,10 +51,15 @@ been authorized, so the entries are kept here.
   tree. The release recorder runs with a stripped Git/Python environment; a raw Windows case under
   that exact environment in push run `35633073987` reproduced a live repository coordination
   owner outlasting the ten-second wait during parallel graph start. A simulated 11-second live
-  owner failed before the timeout change and passed with a bounded 60-second wait; native rerun
-  Manual run `35634260887` reached maker validation but reported both fake maker worktrees dirty under the
-  release environment; the fixture now prints their exact Git status entries on failure.
-  Native rerun remains pending. A local aggregate invocation with all three
+  owner failed before the timeout change and passed with a bounded 60-second wait. Manual run
+  `35634260887` reached maker validation but reported both fake maker worktrees dirty under the
+  release environment. Push run `35635281371` identified `src/a/change.txt` and
+  `src/b/change.txt` as the modified files. The recorder isolates Git configuration, while the
+  native role's environment allowlist had dropped that isolation. Git for Windows then normalized
+  the makers' CRLF files to LF on commit, and the controller's isolated clean check saw the CRLF
+  worktree bytes as modifications. A local Git regression reproduced the mismatch and now passes
+  when the role receives the controller's effective `core.autocrlf` value. Native rerun remains
+  pending. A local aggregate invocation with all three
   earlier reports exited 2 and rejected the failed Windows report before writing an aggregate;
   same-tree native rerun remains pending.
 - [ ] 2026-09-21 — A stop request arriving after a fake maker has committed but before its receipt

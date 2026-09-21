@@ -1134,6 +1134,32 @@ def verifier_env() -> dict[str, str]:
     return env
 
 
+def effective_autocrlf(worktree: Path) -> str:
+    """Pin the Git text conversion seen by the controller for a native role."""
+    result = run(["git", "config", "--get", "core.autocrlf"], worktree)
+    if result.returncode not in {0, 1}:
+        raise RunError(f"cannot read core.autocrlf: {result.stderr.strip()}")
+    value = result.stdout.strip().casefold() if result.returncode == 0 else "false"
+    if value in {"true", "yes", "on", "1"}:
+        return "true"
+    if value in {"false", "no", "off", "0"}:
+        return "false"
+    if value == "input":
+        return value
+    raise RunError("core.autocrlf has an unsupported value")
+
+
+@contextlib.contextmanager
+def native_role_environment(runtime: str, worktree: Path):
+    with native_environment(runtime) as environment:
+        # The native-client allowlist strips arbitrary GIT_* variables. Pin only
+        # the controller's effective text conversion so maker commits and the
+        # controller's clean check interpret the same worktree bytes.
+        environment.update({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.autocrlf",
+                            "GIT_CONFIG_VALUE_0": effective_autocrlf(worktree)})
+        yield environment
+
+
 def usage_metrics(stdout: str) -> tuple[float, int]:
     """Extract conservative per-invocation usage totals from Claude/Codex JSON output."""
     return shared_usage_metrics(stdout)
@@ -1183,7 +1209,7 @@ def launch_role(state: dict[str, Any], manifest: dict[str, Any], role: str, prom
             claude_max_usd=max(0.0, remaining_budget),
         )
     event(state, "role_started", role=role, runtime=runtime, attempt=state["attempt"])
-    with native_environment(runtime) as environment:
+    with native_role_environment(runtime, worktree) as environment:
         process = subprocess.Popen(cmd, cwd=worktree, text=True, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, env=environment)
         if stop_file.exists():
