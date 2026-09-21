@@ -5,12 +5,15 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 import errno
+import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -246,6 +249,160 @@ class AutonomousStateTests(unittest.TestCase):
             with CONTROLLER.coordination_lock(root):
                 self.assertTrue(lock.exists())
             self.assertFalse(lock.exists())
+
+    def test_git_phase_allows_parallel_makers_but_checker_waits_for_both(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith git phase ") as temporary:
+            repo = Path(temporary)
+            makers_entered = threading.Barrier(3)
+            release_makers = threading.Event()
+            checker_entered = threading.Event()
+
+            def maker() -> None:
+                with CONTROLLER.git_phase(repo, "maker", timeout_seconds=3):
+                    makers_entered.wait(timeout=2)
+                    self.assertTrue(release_makers.wait(2))
+
+            def checker() -> None:
+                with CONTROLLER.git_phase(repo, "checker", timeout_seconds=3):
+                    checker_entered.set()
+
+            with mock.patch.object(CONTROLLER, "state_root", return_value=repo / "run-state"):
+                with ThreadPoolExecutor(max_workers=3) as pool:
+                    first = pool.submit(maker)
+                    second = pool.submit(maker)
+                    makers_entered.wait(timeout=2)
+                    third = pool.submit(checker)
+                    self.assertFalse(checker_entered.wait(0.1))
+                    release_makers.set()
+                    first.result()
+                    second.result()
+                    third.result()
+            self.assertTrue(checker_entered.is_set())
+
+    def test_git_phase_writer_waits_for_checker_and_reclaims_dead_owner(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith git phase ") as temporary:
+            repo = Path(temporary)
+            root = repo / "run-state"
+            with mock.patch.object(CONTROLLER, "state_root", return_value=root):
+                phase_dir = root / "git-phases"
+                phase_dir.mkdir(parents=True)
+                stale_pid = next(pid for pid in range(99_999_999, 99_999_900, -1)
+                                 if not CONTROLLER.process_is_live(pid))
+                (phase_dir / "stale.json").write_text(
+                    json.dumps({"pid": stale_pid, "token": "stale", "phase": "checker"}),
+                    encoding="utf-8",
+                )
+                with CONTROLLER.git_phase(repo, "writer", timeout_seconds=2):
+                    self.assertFalse((phase_dir / "stale.json").exists())
+                    with self.assertRaisesRegex(CONTROLLER.RunError, "git phase.*held"):
+                        with CONTROLLER.git_phase(repo, "checker", timeout_seconds=0.05):
+                            pass
+
+    def test_maker_metadata_keeps_only_previously_verified_peer_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith peer snapshot ") as temporary:
+            repo = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            (repo / "README.md").write_text("fixture\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "fixture"], check=True)
+            subprocess.run(["git", "-C", str(repo), "branch", "agentsmith/peer"], check=True)
+            subprocess.run(["git", "-C", str(repo), "branch", "arbitrary-side-ref"], check=True)
+            peer_ref = "refs/heads/agentsmith/peer"
+            peer_log = Path("logs") / peer_ref
+            with mock.patch.object(
+                CONTROLLER, "registered_run_git_artifacts",
+                side_effect=[({peer_ref}, {peer_log}, set()), (set(), set(), set())],
+            ):
+                before = CONTROLLER.git_metadata(repo)
+                after = CONTROLLER.git_metadata(repo, known_peers=before["registered_peers"])
+            self.assertEqual(before["refs"], after["refs"])
+            self.assertTrue(any(ref.startswith("refs/heads/arbitrary-side-ref ")
+                                for ref in after["refs"]))
+            self.assertNotIn(peer_ref, " ".join(after["refs"]))
+
+    def test_git_metadata_waits_for_transient_object_file_without_ignoring_persistent_one(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith transient object ") as temporary:
+            repo = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            objects = repo / ".git" / "objects" / "38"
+            objects.mkdir()
+            transient = objects / "tmp_obj_fixture"
+            transient.write_bytes(b"incomplete Git object")
+            clear = threading.Timer(0.15, transient.unlink)
+            clear.start()
+            try:
+                snapshot = CONTROLLER.git_metadata(repo)
+            finally:
+                clear.join()
+            self.assertFalse(any("tmp_obj_" in path for path, _ in snapshot["existing_objects"]))
+            transient.write_bytes(b"persistent unexpected file")
+            with self.assertRaisesRegex(CONTROLLER.RunError, "temporary Git object file did not settle"):
+                CONTROLLER.git_metadata(repo)
+            transient.unlink()
+            maintenance = repo / ".git" / "objects" / "maintenance.lock"
+            maintenance.write_bytes(b"Git auto-maintenance in progress")
+            clear_maintenance = threading.Timer(0.15, maintenance.unlink)
+            clear_maintenance.start()
+            try:
+                snapshot = CONTROLLER.git_metadata(repo)
+            finally:
+                clear_maintenance.join()
+            self.assertFalse(any(path == "objects/maintenance.lock"
+                                 for path, _ in snapshot["existing_objects"]))
+            maintenance.write_bytes(b"persistent unexpected lock")
+            with self.assertRaisesRegex(CONTROLLER.RunError, "temporary Git object file did not settle"):
+                CONTROLLER.git_metadata(repo)
+
+    def test_maker_metadata_recognizes_exact_peer_that_starts_and_ends_mid_window(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith peer window ") as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            (repo / "README.md").write_text("fixture\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "fixture"], check=True)
+            before = CONTROLLER.git_metadata(repo)
+
+            manifest = repo / "peer.json"
+            manifest.write_text('{"run_id":"peer"}\n', encoding="utf-8")
+            worktree = Path(temporary) / "peer-worktree"
+            subprocess.run(["git", "-C", str(repo), "worktree", "add", "-qb",
+                            "agentsmith/peer", str(worktree), "HEAD"], check=True)
+            run_dir = CONTROLLER.state_root(repo) / "peer"
+            run_dir.mkdir(parents=True)
+            head = CONTROLLER.git(worktree, "rev-parse", "HEAD")
+            CONTROLLER.write_json(run_dir / "state.json", {
+                "run_id": "peer", "branch": "agentsmith/peer", "repo": str(repo),
+                "manifest_path": str(manifest),
+                "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+                "worktree": str(worktree), "status": "escalated",
+                "started_epoch": time.time(), "terminal_head": head,
+            })
+            after = CONTROLLER.git_metadata(repo, known_peers=before["registered_peers"])
+            self.assertEqual(before["refs"], after["refs"])
+            self.assertEqual(before["protected_files"], after["protected_files"])
+
+            resumed_state = CONTROLLER.load_json(run_dir / "state.json")
+            resumed_state["started_epoch"] = time.time() - 100
+            resumed_state["resumed_epoch"] = time.time()
+            CONTROLLER.write_json(run_dir / "state.json", resumed_state)
+            resumed_peer = CONTROLLER.git_metadata(repo, known_peers=before["registered_peers"])
+            self.assertEqual(before["refs"], resumed_peer["refs"])
+
+            subprocess.run(["git", "-C", str(repo), "branch", "arbitrary-side-ref"], check=True)
+            tampered = CONTROLLER.git_metadata(repo, known_peers=before["registered_peers"])
+            with self.assertRaisesRegex(CONTROLLER.RunError, "Git refs outside"):
+                CONTROLLER.validate_git_transition(repo, before, tampered, "active", head, head)
+            state_file = run_dir / "state.json"
+            state = CONTROLLER.load_json(state_file)
+            state["terminal_head"] = "0" * len(head)
+            CONTROLLER.write_json(state_file, state)
+            unverified = CONTROLLER.git_metadata(repo, known_peers=before["registered_peers"])
+            self.assertIn("refs/heads/agentsmith/peer", " ".join(unverified["refs"]))
 
     def test_stop_request_creation_is_atomic_and_idempotent(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith stop ") as temporary:

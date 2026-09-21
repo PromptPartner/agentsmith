@@ -28,7 +28,7 @@ jobs:
         with:
           python-version: '3.13'
       - name: Python core compiles
-        run: python -m py_compile agentsmith.py native_launcher.py evaluate.py config/statusline.py scripts/autonomous-run.py scripts/first-loop-release-evidence.py scripts/generate-first-loop-proof.py scripts/test-agent-conformance.py scripts/test-autonomous-state.py scripts/test-doctor.py scripts/test-evaluate.py scripts/test-first-verified-loop-contracts.py scripts/test-secret-scan.py scripts/test-statusline.py scripts/test-tracker-consent.py scripts/test-update.py scripts/test-verify-receipts.py compatibility/test_registry.py
+        run: python -m py_compile agentsmith.py work_graph.py native_launcher.py evaluate.py config/statusline.py scripts/autonomous-run.py scripts/first-loop-release-evidence.py scripts/generate-first-loop-proof.py scripts/test-agent-conformance.py scripts/test-autonomous-state.py scripts/test-autonomous-graph-base.py scripts/test-work-graph-contracts.py scripts/test-work-graph-status.py scripts/test-work-graph-dispatch.py scripts/test-work-graph-cli-surface.py scripts/test-doctor.py scripts/test-evaluate.py scripts/test-first-verified-loop-contracts.py scripts/test-secret-scan.py scripts/test-statusline.py scripts/test-tracker-consent.py scripts/test-update.py scripts/test-verify-receipts.py compatibility/test_registry.py
       - name: Registry schema and contract
         run: python compatibility/test_registry.py
       - name: Strict cross-platform conformance
@@ -47,6 +47,15 @@ jobs:
         run: python scripts/test-first-verified-loop-contracts.py --fvl07
       - name: First Verified Loop release-evidence contracts
         run: python scripts/test-first-verified-loop-contracts.py --fvl08
+      - name: Work-graph contracts and read-only status
+        run: |
+          python scripts/test-work-graph-contracts.py
+          python scripts/test-work-graph-status.py
+          python scripts/test-autonomous-graph-base.py
+          python scripts/test-work-graph-cli-surface.py
+      - name: Work-graph local lifecycle on native macOS
+        if: runner.os == 'macOS'
+        run: python scripts/test-work-graph-dispatch.py
       - name: Stable release updater
         run: python scripts/test-update.py
       - name: Cross-platform secret scanner fixtures

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "graph_id": "sample_parallel_three",
+  "graph_sha256": "f37324d7e008ec153b66a12c2c587def7de3171423f3f57684595f391af0e931",
+  "contract_commit": "1111111111111111111111111111111111111111",
+  "status": "prepared",
+  "ready_set": ["sample_a", "sample_b"],
+  "nodes": [
+    {"run_id": "sample_a", "status": "ready", "reason": "All dependencies satisfied; no scope conflict", "effective_base_oid": "1111111111111111111111111111111111111111", "next_action": {"command": "agentsmith graph start", "reason": "Local execution requires an operator start"}},
+    {"run_id": "sample_b", "status": "ready", "reason": "All dependencies satisfied; no scope conflict", "effective_base_oid": "1111111111111111111111111111111111111111", "next_action": {"command": "agentsmith graph start", "reason": "Local execution requires an operator start"}},
+    {"run_id": "sample_c", "status": "waiting", "reason": "Waiting for accepted sample_a and sample_b and a verified checkpoint", "effective_base_oid": null, "next_action": {"command": "agentsmith graph status", "reason": "Inspect predecessor completion before dispatch"}}
+  ],
+  "next_action": {"command": "agentsmith graph start", "reason": "Two independent runs are ready for local execution"}
+}

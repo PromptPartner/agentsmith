@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentsmith.dev/schemas/work-graph-event-v1.json",
+  "title": "AgentSmith work graph event v1",
+  "type": "object",
+  "required": ["schema_version", "graph_id", "sequence", "at", "event", "run_id", "commit_oid", "reason"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "graph_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]+$"},
+    "sequence": {"type": "integer", "minimum": 1},
+    "at": {"type": "string", "format": "date-time"},
+    "event": {"enum": ["graph_prepared", "run_dispatched", "run_completed", "run_failed", "checkpoint_created", "stop_requested", "graph_stopped", "graph_resumed", "candidate_created", "candidate_failed", "graph_completed", "cleanup_previewed", "cleanup_completed"]},
+    "run_id": {"type": ["string", "null"], "pattern": "^[A-Za-z0-9_-]+$"},
+    "commit_oid": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
+    "reason": {"type": "string", "minLength": 1}
+  },
+  "additionalProperties": false
+}

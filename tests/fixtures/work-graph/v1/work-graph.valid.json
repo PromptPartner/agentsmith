@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "graph_id": "sample_parallel_three",
+  "max_parallel": 2,
+  "integration_order": ["sample_a", "sample_b", "sample_c"],
+  "nodes": [
+    {
+      "run_id": "sample_a",
+      "manifest_path": "tests/fixtures/work-graph/v1/manifests/sample_a.json",
+      "manifest_sha256": "5c921547c10980b504e404e9b7596f3e66af9243b3721dec1f3bea16d9b308c9",
+      "depends_on": []
+    },
+    {
+      "run_id": "sample_b",
+      "manifest_path": "tests/fixtures/work-graph/v1/manifests/sample_b.json",
+      "manifest_sha256": "36aaae28ae8ca60df549a214eb5da9e779984624b44b3bcfc5576b8e4b90110b",
+      "depends_on": []
+    },
+    {
+      "run_id": "sample_c",
+      "manifest_path": "tests/fixtures/work-graph/v1/manifests/sample_c.json",
+      "manifest_sha256": "c6e044eb9204769397f7c4bb7571225aed95bdcfec05fe5a810ef2e396e5c959",
+      "depends_on": ["sample_a", "sample_b"]
+    }
+  ]
+}

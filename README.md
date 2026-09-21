@@ -93,6 +93,11 @@ The experienced path uses the same contract as the guided demo: checks are inspe
 visible, and evidence precedes a completion claim. Use `agentsmith status --target .` immediately
 after installation to see the effective setup and the single safest next action.
 
+When Codex or Claude Code helps with setup, it can optionally check current official model guidance
+and local availability, then offer dated quality-versus-usage advice. The installer itself remains
+offline-capable and never changes a reviewed run's model or budget; see
+[parallel work graphs](docs/24-parallel-work-graphs.md#model-advice-at-agent-assisted-setup).
+
 ## Permissions and trusted mode
 
 Omitting `--safety` is the cautious path for fresh installs and ordinary updates. The wizard asks
