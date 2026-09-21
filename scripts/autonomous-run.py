@@ -291,7 +291,10 @@ def coordination_lock(root: Path):
     token = uuid.uuid4().hex
     record = {"pid": os.getpid(), "run_id": "coordination", "started_at": now(), "token": token}
     encoded = (json.dumps(record, sort_keys=True) + "\n").encode()
-    deadline = time.monotonic() + 10
+    # Native Windows release evidence observed a live owner outlast ten seconds
+    # during parallel graph start. Keep a bound while allowing that transition
+    # to finish before another controller reports a lock failure.
+    deadline = time.monotonic() + 60
     while True:
         try:
             descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

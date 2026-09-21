@@ -319,6 +319,30 @@ class AutonomousStateTests(unittest.TestCase):
             with self.assertRaisesRegex(CONTROLLER.RunError, "cannot verify repository coordination lock"):
                 CONTROLLER.read_coordination_lock(root)
 
+    def test_repository_coordination_lock_waits_for_slow_live_owner(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith slow coordination ") as temporary:
+            root = Path(temporary)
+            lock = CONTROLLER.coordination_lock_path(root)
+            lock.write_text(json.dumps({"pid": os.getpid(), "run_id": "coordination",
+                                        "token": "slow-owner"}) + "\n", encoding="utf-8")
+
+            class Clock:
+                elapsed = 0.0
+
+                def monotonic(self) -> float:
+                    return self.elapsed
+
+                def sleep(self, _: float) -> None:
+                    self.elapsed += 1.0
+                    if self.elapsed >= 11.0:
+                        lock.unlink(missing_ok=True)
+
+            clock = Clock()
+            with mock.patch.object(CONTROLLER, "time", clock):
+                with CONTROLLER.coordination_lock(root):
+                    self.assertGreaterEqual(clock.elapsed, 11.0)
+            self.assertFalse(lock.exists())
+
     def test_git_phase_allows_parallel_makers_but_checker_waits_for_both(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith git phase ") as temporary:
             repo = Path(temporary)
