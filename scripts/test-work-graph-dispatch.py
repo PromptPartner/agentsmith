@@ -150,6 +150,13 @@ class GraphDispatchTests(unittest.TestCase):
                 result.stderr += f"\n{state_path.parent.name}: {state.get('status')}: {state.get('reason')}\n"
                 for verify_path in sorted(state_path.parent.glob("attempt-*-verify.txt")):
                     result.stderr += f"{verify_path.name}: {verify_path.read_text(encoding='utf-8')[:1000]}\n"
+            for run_id in ("a", "b", "c"):
+                worktree = self.repo.parent / f"repo-{run_id}"
+                if worktree.is_dir():
+                    dirty = subprocess.run(["git", "status", "--porcelain=v1", "--untracked-files=all"],
+                                           cwd=worktree, env=self.environment, text=True,
+                                           capture_output=True, check=False)
+                    result.stderr += f"{run_id} Git status: {dirty.stdout[:1000]}{dirty.stderr[:300]}\n"
         return result
 
     def test_parallel_roots_and_dependent_checkpoint(self) -> None:
