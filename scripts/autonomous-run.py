@@ -12,6 +12,7 @@ import contextlib
 import errno
 import fnmatch
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -320,6 +321,59 @@ def coordination_lock(root: Path):
             path.unlink(missing_ok=True)
 
 
+@contextlib.contextmanager
+def git_phase(repo: Path, phase: str, *, timeout_seconds: float = 60):
+    """Coordinate shared Git metadata without serializing independent makers.
+
+    A checker must see a quiescent object store for its strict before/after check.
+    Graph-owned Git merges use the exclusive writer phase. These leases are only
+    coordination, never an exemption from the metadata tampering checks.
+    """
+    if phase not in {"maker", "checker", "writer"}:
+        raise RunError(f"unsupported git phase: {phase}")
+    root = state_root(repo)
+    phase_dir = root / "git-phases"
+    token = uuid.uuid4().hex
+    lease = phase_dir / f"{token}.json"
+    deadline = time.monotonic() + max(0, timeout_seconds)
+    while True:
+        with coordination_lock(root):
+            phase_dir.mkdir(exist_ok=True)
+            active: list[tuple[Path, dict[str, Any]]] = []
+            for path in sorted(phase_dir.glob("*.json")):
+                try:
+                    record = load_json(path)
+                except RunError as exc:
+                    raise RunError(f"cannot verify git phase lease {path}: {exc}") from exc
+                if (not isinstance(record.get("pid"), int)
+                        or not isinstance(record.get("token"), str)
+                        or record["token"] != path.stem
+                        or record.get("phase") not in {"maker", "checker", "writer"}):
+                    raise RunError(f"cannot verify git phase lease {path}: malformed owner metadata")
+                if not process_is_live(record["pid"]):
+                    path.unlink()
+                    continue
+                active.append((path, record))
+            conflict = next((record for _, record in active
+                             if phase != "maker" or record["phase"] != "maker"), None)
+            if conflict is None:
+                write_json(lease, {"pid": os.getpid(), "token": token,
+                                   "phase": phase, "started_at": now()})
+                break
+        if time.monotonic() >= deadline:
+            raise RunError(f"git phase {phase} is still held by live {conflict['phase']} process "
+                           f"{conflict['pid']}")
+        time.sleep(0.02)
+    try:
+        yield
+    finally:
+        with coordination_lock(root):
+            if lease.exists():
+                record = load_json(lease)
+                if record.get("token") == token and record.get("pid") == os.getpid():
+                    lease.unlink()
+
+
 def create_stop_request(run_dir: Path) -> None:
     path = run_dir / "STOP"
     try:
@@ -553,6 +607,65 @@ def validate_manifest(manifest: dict[str, Any], repo: Path) -> tuple[Path, str]:
     return spec_rel, digest
 
 
+def graph_validator_source() -> Path:
+    """Locate the managed graph validator in a checkout or installed runtime."""
+    controller_dir = Path(__file__).resolve().parent
+    source = ((controller_dir if controller_dir.name == ".agentsmith" else controller_dir.parent)
+              / "work_graph.py")
+    if not source.is_file():
+        raise RunError("work-graph contract validator is unavailable")
+    return source
+
+
+def graph_effective_base(repo: Path, graph_path: str, manifest_path: Path,
+                         manifest: dict[str, Any], spec_rel: Path, spec_hash: str,
+                         effective_base: str) -> dict[str, str]:
+    """Accept only the graph contract's exact root or verified dependency checkpoint."""
+    if not re.fullmatch(r"[0-9a-f]{40}", effective_base):
+        raise RunError("effective base must be a full lowercase 40-hex commit OID")
+    source = graph_validator_source()
+    module_spec = importlib.util.spec_from_file_location("agentsmith_work_graph_for_run", source)
+    if module_spec is None or module_spec.loader is None:
+        raise RunError("work-graph contract validator cannot be loaded")
+    graph_module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(graph_module)
+    try:
+        contract = graph_module.load_contract(repo, graph_path)
+        run_id = str(manifest["run_id"])
+        node = contract["nodes"].get(run_id)
+        if node is None:
+            raise RunError(f"run {run_id} is not a node in the graph contract")
+        try:
+            manifest_rel = manifest_path.relative_to(repo).as_posix()
+        except ValueError as exc:
+            raise RunError("graph run manifest must live inside the repository") from exc
+        if node["manifest_path"] != manifest_rel:
+            raise RunError("graph node manifest path does not match the requested run")
+        if node["manifest_sha256"] != hashlib.sha256(manifest_path.read_bytes()).hexdigest():
+            raise RunError("graph node manifest hash does not match the requested run")
+        expected = (graph_module._checkpoint_commit(contract, run_id)
+                    if node["depends_on"] else contract["contract_commit"])
+        if expected is None or effective_base != expected:
+            raise RunError("effective base does not match the pinned graph dependency checkpoint")
+        if git(repo, "cat-file", "-t", effective_base, check=False) != "commit":
+            raise RunError("effective base is not an available commit")
+        ancestor = run(["git", "merge-base", "--is-ancestor", contract["contract_commit"], effective_base], repo)
+        if ancestor.returncode:
+            raise RunError("effective base does not descend from the graph contract commit")
+        shown = git(repo, "show", f"{effective_base}:{spec_rel.as_posix()}", check=False)
+        if hashlib.sha256(shown.encode()).hexdigest() != spec_hash:
+            raise RunError("accepted spec bytes changed in the effective base")
+        return {
+            "graph_id": contract["graph_id"],
+            "graph_path": graph_path,
+            "graph_sha256": contract["graph_sha256"],
+            "contract_commit": contract["contract_commit"],
+            "effective_base_oid": effective_base,
+        }
+    except graph_module.GraphError as exc:
+        raise RunError(f"graph contract or checkpoint invalid: {exc}") from exc
+
+
 def prepare(args: argparse.Namespace) -> int:
     repo = repo_root(Path.cwd())
     if args.template:
@@ -658,7 +771,71 @@ def registered_run_git_artifacts(common: Path, active_ref: str) -> tuple[set[str
     return other_refs, branch_logs, worktree_admin
 
 
-def git_metadata(repo: Path) -> dict[str, Any]:
+def terminal_peer_git_artifacts(common: Path, active_ref: str, since_epoch: float
+                                ) -> tuple[set[str], set[Path], set[Path]]:
+    """Recognize a peer that started and finished during a maker snapshot window.
+
+    The exemption is exact: controller state must bind the run's branch to the
+    recorded terminal OID and linked worktree. An arbitrary side ref is not a peer.
+    """
+    refs: set[str] = set()
+    logs: set[Path] = set()
+    admins: set[Path] = set()
+    for state_file in (common / "agentsmith-runs").glob("*/state.json"):
+        try:
+            state = load_json(state_file)
+            run_id = state_file.parent.name
+            started_epoch = state.get("started_epoch")
+            resumed_epoch = state.get("resumed_epoch")
+            peer_active_since_snapshot = any(
+                isinstance(value, (int, float)) and value >= since_epoch
+                for value in (started_epoch, resumed_epoch)
+            )
+            if (state.get("run_id") != run_id or
+                    state.get("branch") != f"agentsmith/{run_id}" or
+                    state.get("status") not in {"accepted", "escalated", "interrupted"} or
+                    not peer_active_since_snapshot):
+                continue
+            repo_value = state.get("repo")
+            manifest_value = state.get("manifest_path")
+            manifest_hash = state.get("manifest_sha256")
+            terminal_head = state.get("terminal_head")
+            worktree_value = state.get("worktree")
+            if not all(isinstance(value, str) for value in
+                       (repo_value, manifest_value, manifest_hash, terminal_head, worktree_value)):
+                continue
+            recorded_repo = Path(repo_value).resolve()
+            manifest_path = Path(manifest_value).resolve()
+            worktree = Path(worktree_value).resolve()
+            if (state_root(recorded_repo).resolve() != (common / "agentsmith-runs").resolve() or
+                    not manifest_path.is_relative_to(recorded_repo) or
+                    not worktree.is_dir() or
+                    not re.fullmatch(r"[0-9a-f]{40,64}", terminal_head) or
+                    not re.fullmatch(r"[0-9a-f]{64}", manifest_hash) or
+                    hashlib.sha256(manifest_path.read_bytes()).hexdigest() != manifest_hash or
+                    load_json(manifest_path).get("run_id") != run_id):
+                continue
+            ref = f"refs/heads/agentsmith/{run_id}"
+            if (git(recorded_repo, "rev-parse", "--verify", ref, check=False) != terminal_head or
+                    git(worktree, "symbolic-ref", "-q", "HEAD", check=False) != ref):
+                continue
+            dot_git = worktree / ".git"
+            marker = dot_git.read_text(encoding="utf-8", errors="replace").strip()
+            if not marker.startswith("gitdir: "):
+                continue
+            admin = Path(marker[8:]).resolve()
+            if not admin.is_relative_to(common):
+                continue
+            if ref != active_ref:
+                refs.add(ref)
+                logs.add(Path("logs") / ref)
+            admins.add(admin.relative_to(common))
+        except (OSError, RunError, ValueError):
+            continue
+    return refs, logs, admins
+
+
+def _git_metadata_once(repo: Path, *, known_peers: dict[str, Any] | None = None) -> dict[str, Any]:
     common = resolved_git_path(repo, "--git-common-dir")
     active = resolved_git_path(repo, "--git-dir")
     active_rel = active.relative_to(common) if active.is_relative_to(common) else None
@@ -666,6 +843,19 @@ def git_metadata(repo: Path) -> dict[str, Any]:
     other_run_refs, run_branch_logs, run_worktree_admin = registered_run_git_artifacts(
         common, branch_ref
     )
+    # A peer verified live before this maker started may finish (and release its
+    # lifecycle lock) before our after-snapshot. Preserve that peer's exclusions.
+    # A newly started peer is exempt only with an exact terminal-state binding.
+    if known_peers:
+        other_run_refs.update(known_peers["refs"])
+        run_branch_logs.update(Path(value) for value in known_peers["branch_logs"])
+        run_worktree_admin.update(Path(value) for value in known_peers["worktree_admin"])
+        terminal_refs, terminal_logs, terminal_admin = terminal_peer_git_artifacts(
+            common, branch_ref, float(known_peers["snapshot_epoch"])
+        )
+        other_run_refs.update(terminal_refs)
+        run_branch_logs.update(terminal_logs)
+        run_worktree_admin.update(terminal_admin)
     hooks: list[tuple[str, str]] = []
     hooks_dir = common / "hooks"
     if hooks_dir.is_dir():
@@ -699,7 +889,39 @@ def git_metadata(repo: Path) -> dict[str, Any]:
         "hooks": hooks,
         "protected_files": protected,
         "existing_objects": objects,
+        "registered_peers": {
+            "refs": sorted(other_run_refs),
+            "branch_logs": sorted(path.as_posix() for path in run_branch_logs),
+            "worktree_admin": sorted(path.as_posix() for path in run_worktree_admin),
+            "snapshot_epoch": time.time(),
+        },
     }
+
+
+def git_metadata(repo: Path, *, known_peers: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Take a stable snapshot; never exempt a persistent non-object from tamper checks.
+
+    Parallel Git commits briefly create tmp_obj files and maintenance.lock in the
+    shared object store. Retry while those exact temporary names exist, then fail
+    closed if they do not settle. All committed objects and other Git metadata
+    remain compared.
+    """
+    deadline = time.monotonic() + 2
+    while True:
+        try:
+            snapshot = _git_metadata_once(repo, known_peers=known_peers)
+        except FileNotFoundError:
+            # A peer may have renamed its temporary object during the scan.
+            snapshot = None
+        if snapshot is not None:
+            temporary = [path for path, _ in snapshot["existing_objects"]
+                         if (path == "objects/maintenance.lock" or re.fullmatch(
+                             r"objects/(?:[0-9a-f]{2}|pack)/tmp_(?:obj|pack|idx|rev)_[^/]+", path))]
+            if not temporary:
+                return snapshot
+        if time.monotonic() >= deadline:
+            raise RunError("temporary Git object file did not settle before metadata validation")
+        time.sleep(0.02)
 
 
 def ignored_paths(worktree: Path) -> set[str]:
@@ -716,6 +938,12 @@ def validate_git_transition(worktree: Path, before: dict[str, Any], after: dict[
         raise RunError("runtime changed Git refs outside the active run branch")
     for key in ("config", "config_worktree", "hooks", "protected_files"):
         if before[key] != after[key]:
+            if key in {"hooks", "protected_files"}:
+                old_files = dict(before[key])
+                new_files = dict(after[key])
+                changed = sorted(path for path in old_files.keys() | new_files.keys()
+                                 if old_files.get(path) != new_files.get(path))
+                raise RunError(f"runtime changed protected Git metadata: {key}: {', '.join(changed[:8])}")
             raise RunError(f"runtime changed protected Git metadata: {key}")
     after_objects = dict(after["existing_objects"])
     altered_objects = [path for path, digest in before["existing_objects"]
@@ -984,6 +1212,34 @@ Inspect the committed diff from {base} to HEAD, rerun the real verification comm
 Use status accepted, rejected, or blocked."""
 
 
+@contextlib.contextmanager
+def checker_worktree_session(state: dict[str, Any], manifest: dict[str, Any],
+                             worktree: Path, checker_head: str, checker_worktree: Path):
+    """Keep shared worktree-admin writes and checker inspection in one exclusive phase."""
+    with git_phase(worktree, "checker", timeout_seconds=remaining_seconds(state, manifest)):
+        if checker_worktree.exists():
+            raise RunError(f"refusing to overwrite checker worktree {checker_worktree}")
+        state["checker_worktree"] = str(checker_worktree)
+        save_state(state)
+        added = run(["git", "worktree", "add", "--detach", str(checker_worktree), checker_head],
+                    Path(state["repo"]))
+        if added.returncode:
+            state.pop("checker_worktree", None)
+            save_state(state)
+            raise RunError(added.stderr.strip() or "checker worktree creation failed")
+        try:
+            yield checker_worktree
+        finally:
+            removed = run(["git", "worktree", "remove", "--force", str(checker_worktree)],
+                          Path(state["repo"]))
+            if removed.returncode:
+                event(state, "checker_worktree_cleanup_failed", path=str(checker_worktree),
+                      error=removed.stderr.strip())
+                raise RunError(f"could not remove disposable checker worktree: {removed.stderr.strip()}")
+            state.pop("checker_worktree", None)
+            save_state(state)
+
+
 def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
     worktree = Path(state["worktree"])
     max_attempts = int(manifest["limits"]["max_attempts"])
@@ -996,18 +1252,24 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
         state["attempt"] += 1
         state["status"] = "making"
         save_state(state, "attempt_started", attempt=state["attempt"])
-        before_head = git(worktree, "rev-parse", "HEAD")
-        before_meta = git_metadata(worktree)
-        before_ignored = ignored_paths(worktree)
-        maker_error: Exception | None = None
-        maker: dict[str, Any] | None = None
-        try:
-            maker = launch_role(state, manifest, "maker", role_prompt(state, manifest, "maker", prior))
-        except Exception as exc:
-            maker_error = exc
-        after_head = git(worktree, "rev-parse", "HEAD")
-        validate_git_transition(worktree, before_meta, git_metadata(worktree), state["branch"],
-                                before_head, after_head)
+        with git_phase(worktree, "maker", timeout_seconds=remaining_seconds(state, manifest)):
+            before_head = git(worktree, "rev-parse", "HEAD")
+            # Start holds this same short lock while creating a branch/worktree
+            # and publishing its state, so a snapshot cannot see half a peer.
+            with coordination_lock(state_root(worktree)):
+                before_meta = git_metadata(worktree)
+            before_ignored = ignored_paths(worktree)
+            maker_error: Exception | None = None
+            maker: dict[str, Any] | None = None
+            try:
+                maker = launch_role(state, manifest, "maker", role_prompt(state, manifest, "maker", prior))
+            except Exception as exc:
+                maker_error = exc
+            after_head = git(worktree, "rev-parse", "HEAD")
+            with coordination_lock(state_root(worktree)):
+                after_meta = git_metadata(worktree, known_peers=before_meta["registered_peers"])
+            validate_git_transition(worktree, before_meta, after_meta, state["branch"],
+                                    before_head, after_head)
         if maker_error:
             raise maker_error
         assert maker is not None
@@ -1031,17 +1293,7 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
         save_state(state)
         checker_head = git(worktree, "rev-parse", "HEAD")
         checker_worktree = worktree.with_name(f"{worktree.name}-check-{state['attempt']}")
-        if checker_worktree.exists():
-            raise RunError(f"refusing to overwrite checker worktree {checker_worktree}")
-        state["checker_worktree"] = str(checker_worktree)
-        save_state(state)
-        added = run(["git", "worktree", "add", "--detach", str(checker_worktree), checker_head],
-                    Path(state["repo"]))
-        if added.returncode:
-            state.pop("checker_worktree", None)
-            save_state(state)
-            raise RunError(added.stderr.strip() or "checker worktree creation failed")
-        try:
+        with checker_worktree_session(state, manifest, worktree, checker_head, checker_worktree):
             verify = sandboxed_verify(manifest["verify"]["command"], checker_worktree,
                                       remaining_seconds(state, manifest), verifier_env())
             verify_output = f"exit={verify.returncode}\nSTDOUT:\n{verify.stdout}\nSTDERR:\n{verify.stderr}"
@@ -1060,7 +1312,11 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
                                       role_worktree=checker_worktree)
             except Exception as exc:
                 checker_error = exc
-            validate_git_unchanged(checker_meta, git_metadata(checker_worktree), "checker")
+            validate_git_unchanged(
+                checker_meta,
+                git_metadata(checker_worktree, known_peers=checker_meta["registered_peers"]),
+                "checker",
+            )
             if (git(checker_worktree, "rev-parse", "HEAD") != checker_head or
                     git(checker_worktree, "status", "--porcelain") != checker_status or
                     ignored_paths(checker_worktree) != checker_ignored):
@@ -1070,15 +1326,6 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             assert checker is not None
             if checker["commit"] != checker_head or sorted(checker["changed_paths"]) != sorted(paths):
                 raise RunError("checker receipt does not match the committed Git state")
-        finally:
-            removed = run(["git", "worktree", "remove", "--force", str(checker_worktree)],
-                          Path(state["repo"]))
-            if removed.returncode:
-                event(state, "checker_worktree_cleanup_failed", path=str(checker_worktree),
-                      error=removed.stderr.strip())
-                raise RunError(f"could not remove disposable checker worktree: {removed.stderr.strip()}")
-            state.pop("checker_worktree", None)
-            save_state(state)
         if verify.returncode == 0 and checker["status"] == "accepted":
             state["status"] = "accepted"
             state["accepted_commit"] = checker_head
@@ -1128,6 +1375,11 @@ def run_controller(state: dict[str, Any], manifest: dict[str, Any]) -> int:
         print(f"escalated: {exc}", file=sys.stderr)
         return 2
     finally:
+        if state.get("status") in {"accepted", "escalated", "interrupted"}:
+            terminal_head = git(Path(state["worktree"]), "rev-parse", "HEAD", check=False)
+            if re.fullmatch(r"[0-9a-f]{40,64}", terminal_head):
+                state["terminal_head"] = terminal_head
+                save_state(state)
         signal.signal(signal.SIGTERM, previous)
 
 
@@ -1149,14 +1401,20 @@ def start(args: argparse.Namespace) -> int:
     path = state_path(repo, name)
     if path.exists():
         raise RunError(f"run {name} already exists; use resume or choose another run_id")
+    if bool(args.graph) != bool(args.effective_base):
+        raise RunError("--graph and --effective-base must be supplied together")
     token: str | None = None
     try:
-        with coordination_lock(state_root(repo)):
+        with git_phase(repo, "maker"), coordination_lock(state_root(repo)):
             token = acquire_lifecycle_lock(path.parent, name)
             if path.exists():
                 raise RunError(f"run {name} already exists; use resume or choose another run_id")
             assert_no_live_scope_conflicts(repo, name, manifest["scope"])
-            base_head = git(repo, "rev-parse", str(manifest["base_ref"]))
+            graph_context = (graph_effective_base(repo, args.graph, manifest_path, manifest,
+                                                   spec_rel, spec_hash, args.effective_base)
+                             if args.graph else {})
+            base_head = (graph_context["effective_base_oid"] if graph_context
+                         else git(repo, "rev-parse", str(manifest["base_ref"])))
             if (not git(repo, "config", "user.name", check=False)
                     or not git(repo, "config", "user.email", check=False)):
                 raise RunError("git user.name and user.email must be configured before local commits")
@@ -1177,6 +1435,7 @@ def start(args: argparse.Namespace) -> int:
                 "worktree": str(worktree),
                 "branch": branch,
                 "base_head": base_head,
+                **graph_context,
                 "spec_path": spec_rel.as_posix(),
                 "spec_sha256": spec_hash,
                 "manifest_path": str(manifest_path),
@@ -1271,7 +1530,18 @@ def resume(args: argparse.Namespace) -> int:
                 raise RunError("manifest run_id no longer matches the durable run state")
             if spec_rel.as_posix() != state["spec_path"] or spec_hash != state["spec_sha256"]:
                 raise RunError("spec changed since start; create a new run for a changed contract")
-            if git(repo, "rev-parse", str(manifest["base_ref"])) != state["base_head"]:
+            if state.get("graph_id") is not None:
+                graph_path = state.get("graph_path")
+                effective_base = state.get("effective_base_oid")
+                if not isinstance(graph_path, str) or not isinstance(effective_base, str):
+                    raise RunError("graph context is incomplete in child run state")
+                context = graph_effective_base(repo, graph_path, manifest_path, manifest,
+                                               spec_rel, spec_hash, effective_base)
+                if any(state.get(key) != value for key, value in context.items()):
+                    raise RunError("graph contract or effective base changed since start")
+                if state["base_head"] != effective_base:
+                    raise RunError("child base does not match its graph effective base")
+            elif git(repo, "rev-parse", str(manifest["base_ref"])) != state["base_head"]:
                 raise RunError("base_ref changed since start; create a new run for a changed contract")
             worktree = Path(state["worktree"])
             if not worktree.is_dir() or repo_root(worktree) != worktree.resolve():
@@ -1287,6 +1557,7 @@ def resume(args: argparse.Namespace) -> int:
                 stop_file.unlink()
             state["status"] = "resuming"
             state["reason"] = None
+            state["resumed_epoch"] = time.time()
             state["scope"] = normalized_scope(manifest["scope"])
             state["controller_pid"] = os.getpid()
             state["controller_token"] = token
@@ -1312,6 +1583,8 @@ def parser() -> argparse.ArgumentParser:
     prep.set_defaults(func=prepare)
     begin = sub.add_parser("start", help="explicitly authorize and run a committed manifest")
     begin.add_argument("manifest")
+    begin.add_argument("--graph", help="committed work-graph path authorizing a pinned effective base")
+    begin.add_argument("--effective-base", help="exact graph-owned root or dependency checkpoint commit OID")
     begin.set_defaults(func=start)
     for name, func in (("status", status_cmd), ("stop", stop), ("resume", resume)):
         item = sub.add_parser(name)

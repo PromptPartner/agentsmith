@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "evidence_kind": "agentsmith-work-graph-native-aggregate",
+  "status": "passed",
+  "git_commit": "1111111111111111111111111111111111111111",
+  "git_tree": "9999999999999999999999999999999999999999",
+  "platforms": ["macos", "linux", "windows"],
+  "report_sha256": {
+    "macos": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "linux": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "windows": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "security_coverage": ["command-injection", "path-traversal", "symlink-escape", "plan-state-tampering", "ref-mutation", "config-hook-mutation", "object-store-mutation", "secret-redaction", "foreign-file-preservation", "cross-worktree-interference", "source-retention", "authority-boundary"],
+  "recorded_at": "2026-09-21T10:40:31+02:00",
+  "external_write_used": false
+}

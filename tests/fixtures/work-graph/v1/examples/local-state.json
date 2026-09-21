@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "graph_id": "sample_parallel_three",
+  "graph_path": "tests/fixtures/work-graph/v1/work-graph.valid.json",
+  "graph_sha256": "f37324d7e008ec153b66a12c2c587def7de3171423f3f57684595f391af0e931",
+  "contract_commit": "1111111111111111111111111111111111111111",
+  "status": "running",
+  "created_at": "2026-09-21T10:20:31+02:00",
+  "updated_at": "2026-09-21T10:21:31+02:00",
+  "dispatches": [
+    {"run_id": "sample_a", "effective_base_oid": "1111111111111111111111111111111111111111", "checkpoint_oid": null, "child_state_path": "agentsmith-runs/sample_a/state.json", "started_at": "2026-09-21T10:21:00+02:00"},
+    {"run_id": "sample_c", "effective_base_oid": "4444444444444444444444444444444444444444", "checkpoint_oid": "4444444444444444444444444444444444444444", "child_state_path": "agentsmith-runs/sample_c/state.json", "started_at": "2026-09-21T10:21:31+02:00"}
+  ],
+  "checkpoints": [
+    {
+      "run_id": "sample_c",
+      "base_oid": "1111111111111111111111111111111111111111",
+      "checkpoint_oid": "4444444444444444444444444444444444444444",
+      "checkpoint_tree": "5555555555555555555555555555555555555555",
+      "sources": [
+        {"run_id": "sample_a", "accepted_commit": "2222222222222222222222222222222222222222", "receipt_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+        {"run_id": "sample_b", "accepted_commit": "3333333333333333333333333333333333333333", "receipt_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+      ],
+      "created_at": "2026-09-21T10:21:30+02:00"
+    }
+  ],
+  "candidate_path": null,
+  "stop_requested": false
+}

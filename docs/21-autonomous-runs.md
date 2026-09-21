@@ -105,5 +105,16 @@ An accepted run prints the branch, commit, worktree, and evidence for human revi
 run prints the exact boundary that stopped it. Nothing leaves the machine until the operator
 separately authorizes the relevant external action.
 
+## Parallel work graphs
+
+`agentsmith graph validate --graph <repository-relative-json>` checks a clean, committed graph and
+its exact manifest bytes. `agentsmith graph status --graph <repository-relative-json>` derives a
+stable ready set and explains each node's prerequisite, scope conflict, child state, or missing
+dependency checkpoint. Both commands are read-only. `start` dispatches local finite runs, `stop`
+and `resume` retain their original limits, `integrate` verifies a local combined candidate, and
+`cleanup --preview` inventories exact artifacts before `cleanup --apply` removes only clean
+graph-owned checkpoint worktrees. None of these commands pushes or merges to a protected branch.
+See [parallel work graphs](24-parallel-work-graphs.md) for the full lifecycle and failure gates.
+
 Before relying on this unattended, run one report-only fixture, observe one complete maker/checker
 cycle, and test `stop`. Autonomy is earned using the same ladder as the autonomous-loops profile.
