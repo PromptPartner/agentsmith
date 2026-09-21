@@ -22,8 +22,9 @@ been authorized, so the entries are kept here.
   binding now applies at both snapshots; native macOS passed, while its separate compatibility
   lifecycle run remains under observation.
 - [ ] 2026-09-21 — Hosted Linux reaches the work-graph lifecycle but its verifier tests fail.
-  The CI job now enables unprivileged user namespaces when AppArmor restricts them and probes
-  Bubblewrap before recording evidence; a native rerun must confirm this runner setup.
+  The CI job enabled unprivileged user namespaces and passed a basic Bubblewrap smoke test,
+  but eight lifecycle cases still failed. The next native run probes the controller's actual
+  verifier policy and retains the lifecycle report so the failure can be diagnosed.
 
 ## Resolved during W2-06
 
