@@ -56,6 +56,8 @@ def assert_schema(test: unittest.TestCase, value: Any, schema: dict[str, Any], r
     if isinstance(value, list):
         if "minItems" in schema:
             test.assertGreaterEqual(len(value), schema["minItems"])
+        if "maxItems" in schema:
+            test.assertLessEqual(len(value), schema["maxItems"])
         if schema.get("uniqueItems"):
             test.assertEqual(len(value), len({json.dumps(x, sort_keys=True) for x in value}))
         if "items" in schema:
@@ -154,7 +156,7 @@ def set_pointer(value: Any, pointer: str, replacement: Any) -> None:
 
 class WorkGraphContractTests(unittest.TestCase):
     def test_schemas_are_closed_and_versioned(self) -> None:
-        expected = {"work-graph", "local-state", "status", "event", "integration-candidate", "native-aggregate"}
+        expected = {"work-graph", "local-state", "status", "event", "integration-candidate", "native-platform", "native-aggregate"}
         self.assertEqual({p.stem.removesuffix(".schema") for p in SCHEMAS.glob("*.schema.json")}, expected)
         for name in expected:
             schema = read_json(SCHEMAS / f"{name}.schema.json")
@@ -197,7 +199,7 @@ class WorkGraphContractTests(unittest.TestCase):
                     self.assertEqual(contract_error(graph), case["reason"])
 
     def test_output_examples_match_versioned_schemas(self) -> None:
-        for name in ("local-state", "status", "event", "integration-candidate", "native-aggregate"):
+        for name in ("local-state", "status", "event", "integration-candidate", "native-platform", "native-aggregate"):
             with self.subTest(name=name):
                 schema = read_json(SCHEMAS / f"{name}.schema.json")
                 example = read_json(FIXTURES / "examples" / f"{name}.json")

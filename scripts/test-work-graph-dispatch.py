@@ -73,7 +73,10 @@ class GraphDispatchTests(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(run_id + "\\n", encoding="utf-8")
                 subprocess.run(["git", "add", changed], check=True)
-                subprocess.run(["git", "commit", "-qm", "test: fake maker"], check=True)
+                committed = subprocess.run(["git", "commit", "-qm", "test: fake maker"],
+                                           capture_output=True, text=True)
+                if committed.returncode:
+                    raise SystemExit("fake maker commit failed: " + (committed.stderr + committed.stdout).strip())
             commit = subprocess.run(["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
             status = "accepted" if checker else "completed"
             receipt = {"status": status, "summary": "fake role", "commit": commit,
@@ -96,7 +99,9 @@ class GraphDispatchTests(unittest.TestCase):
             manifest = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
             manifest.update(run_id=run_id, spec_path="docs/specs/accepted.md", implementation_ticket=f"IMP-{run_id}")
             manifest["scope"]["allowed_paths"] = [f"src/{run_id}/**"]
-            manifest["verify"]["command"] = f"test -f src/{run_id}/change.txt"
+            manifest["verify"]["command"] = (
+                f'"{sys.executable}" -c "from pathlib import Path; assert Path(\'src/{run_id}/change.txt\').is_file()"'
+            )
             manifest["limits"].update(wall_minutes=2, codex_goal_tokens=1000, claude_max_usd=1)
             path = self.repo / ".harness/runs" / f"{run_id}.json"
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -109,7 +114,7 @@ class GraphDispatchTests(unittest.TestCase):
         self.graph_path = ".harness/work-graph.json"
         (self.repo / self.graph_path).write_text(json.dumps(graph, indent=2) + "\n", encoding="utf-8")
         (self.repo / ".harness/verify.conf").write_text(
-            "combined :: test -f src/a/change.txt && test -f src/b/change.txt && test -f src/c/change.txt\n",
+            f"combined :: \"{sys.executable}\" -c \"from pathlib import Path; assert all(Path('src/' + node + '/change.txt').is_file() for node in ('a', 'b', 'c'))\"\n",
             encoding="utf-8",
         )
         git(self.repo, "add", ".")
@@ -344,12 +349,15 @@ class GraphDispatchTests(unittest.TestCase):
             manifest_path = self.repo / node["manifest_path"]
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["scope"]["allowed_paths"] = ["src/shared.txt"]
-            manifest["verify"]["command"] = "test -f src/shared.txt"
+            manifest["verify"]["command"] = f'"{sys.executable}" -c "from pathlib import Path; assert Path(\'src/shared.txt\').is_file()"'
             payload = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
             manifest_path.write_bytes(payload)
             node["manifest_sha256"] = hashlib.sha256(payload).hexdigest()
         graph_path.write_text(json.dumps(graph, indent=2) + "\n", encoding="utf-8")
-        (self.repo / ".harness/verify.conf").write_text("combined :: test -f src/shared.txt\n", encoding="utf-8")
+        (self.repo / ".harness/verify.conf").write_text(
+            f'combined :: "{sys.executable}" -c "from pathlib import Path; assert Path(\'src/shared.txt\').is_file()"\n',
+            encoding="utf-8",
+        )
         git(self.repo, "add", ".")
         git(self.repo, "commit", "-qm", "test: conflicting accepted scopes")
         started = self.invoke("start")

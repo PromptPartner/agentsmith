@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentsmith.dev/schemas/work-graph-native-platform-v1.json",
+  "title": "AgentSmith work graph native platform report v1",
+  "type": "object",
+  "required": ["schema_version", "evidence_kind", "status", "platform", "git_commit", "git_tree", "dirty_before", "dirty_after", "python_version", "recorded_at", "phases", "external_write_used"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "evidence_kind": {"const": "agentsmith-work-graph-native-platform"},
+    "status": {"enum": ["passed", "failed"]},
+    "platform": {"enum": ["macos", "linux", "windows"]},
+    "git_commit": {"$ref": "#/$defs/oid"},
+    "git_tree": {"$ref": "#/$defs/oid"},
+    "dirty_before": {"type": "boolean"},
+    "dirty_after": {"type": "boolean"},
+    "python_version": {"type": "string", "minLength": 1},
+    "recorded_at": {"type": "string", "format": "date-time"},
+    "phases": {"type": "array", "minItems": 7, "maxItems": 7, "items": {"$ref": "#/$defs/phase"}},
+    "external_write_used": {"type": "boolean"}
+  },
+  "$defs": {
+    "oid": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "phase": {
+      "type": "object",
+      "required": ["label", "command", "exit_code", "tests_run", "stdout_sha256", "stderr_sha256"],
+      "properties": {
+        "label": {"type": "string", "minLength": 1},
+        "command": {"type": "array", "minItems": 2, "items": {"type": "string"}},
+        "exit_code": {"type": "integer"},
+        "tests_run": {"type": "integer"},
+        "stdout_sha256": {"$ref": "#/$defs/sha256"},
+        "stderr_sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "evidence_kind": "agentsmith-work-graph-native-platform",
+  "status": "passed",
+  "platform": "macos",
+  "git_commit": "1111111111111111111111111111111111111111",
+  "git_tree": "9999999999999999999999999999999999999999",
+  "dirty_before": false,
+  "dirty_after": false,
+  "python_version": "3.13.0",
+  "recorded_at": "2026-09-21T10:40:31+02:00",
+  "phases": [
+    {"label": "contracts", "command": ["python", "scripts/test-work-graph-contracts.py"], "exit_code": 0, "tests_run": 6, "stdout_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "stderr_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+    {"label": "status", "command": ["python", "scripts/test-work-graph-status.py"], "exit_code": 0, "tests_run": 6, "stdout_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "stderr_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+    {"label": "base", "command": ["python", "scripts/test-autonomous-graph-base.py"], "exit_code": 0, "tests_run": 6, "stdout_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "stderr_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+    {"label": "cli", "command": ["python", "scripts/test-work-graph-cli-surface.py"], "exit_code": 0, "tests_run": 2, "stdout_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "stderr_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+    {"label": "coordination", "command": ["python", "scripts/test-autonomous-state.py"], "exit_code": 0, "tests_run": 20, "stdout_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "stderr_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+    {"label": "secret-scan", "command": ["python", "scripts/test-secret-scan.py"], "exit_code": 0, "tests_run": 10, "stdout_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "stderr_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+    {"label": "lifecycle", "command": ["python", "scripts/test-work-graph-dispatch.py"], "exit_code": 0, "tests_run": 10, "stdout_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "stderr_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+  ],
+  "external_write_used": false
+}
