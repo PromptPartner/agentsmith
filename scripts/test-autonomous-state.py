@@ -28,6 +28,28 @@ SPEC.loader.exec_module(CONTROLLER)
 
 
 class AutonomousStateTests(unittest.TestCase):
+    def test_generated_server_info_refs_do_not_impersonate_protected_git_writes(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith server info ") as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                            "commit", "-q", "--allow-empty", "-m", "fixture"], cwd=repo, check=True)
+            worktree = Path(temporary) / "peer"
+            subprocess.run(["git", "worktree", "add", "-q", "-b", "peer", str(worktree)],
+                           cwd=repo, check=True)
+            before = CONTROLLER.git_metadata(worktree)
+            ref = subprocess.check_output(["git", "symbolic-ref", "HEAD"], cwd=worktree,
+                                          text=True).strip()
+            oid = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=worktree,
+                                          text=True).strip()
+            info = repo / ".git/info/refs"
+            info.write_text(f"{oid}\t{ref}\n", encoding="ascii")
+            CONTROLLER.validate_git_unchanged(before, CONTROLLER.git_metadata(worktree), "maker")
+            info.write_text("unauthorized metadata\n", encoding="ascii")
+            with self.assertRaisesRegex(CONTROLLER.RunError, "protected_files"):
+                CONTROLLER.validate_git_unchanged(before, CONTROLLER.git_metadata(worktree), "maker")
+
     def test_linux_verifier_prepares_temp_worktree_after_tmpfs_mount(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith verifier mount ") as temporary:
             repo = Path(temporary) / "repo"

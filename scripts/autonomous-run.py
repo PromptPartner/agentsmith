@@ -841,6 +841,28 @@ def terminal_peer_git_artifacts(common: Path, active_ref: str, protected_refs: s
     return refs, logs, admins
 
 
+def generated_server_info_refs(path: Path) -> bool:
+    """Recognize Git's non-authoritative dumb-transport ref cache, not arbitrary edits."""
+    if path.is_symlink() or path.stat().st_size > 1024 * 1024:
+        return False
+    try:
+        lines = path.read_text(encoding="ascii").splitlines()
+    except (OSError, UnicodeError):
+        return False
+    seen: set[str] = set()
+    for line in lines:
+        fields = line.split("\t")
+        if len(fields) != 2 or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", fields[0]):
+            return False
+        ref = fields[1].removesuffix("^{}")
+        if (not ref.startswith("refs/") or fields[1] in seen or
+                any(part in {"", ".", ".."} or part.endswith(".lock") for part in ref.split("/")) or
+                re.search(r"[\x00-\x20~^:?*\\\[]", ref)):
+            return False
+        seen.add(fields[1])
+    return True
+
+
 def _git_metadata_once(repo: Path, *, known_peers: dict[str, Any] | None = None) -> dict[str, Any]:
     common = resolved_git_path(repo, "--git-common-dir")
     active = resolved_git_path(repo, "--git-dir")
@@ -877,6 +899,8 @@ def _git_metadata_once(repo: Path, *, known_peers: dict[str, Any] | None = None)
             continue
         if rel.parts[0] == "objects":
             objects.append((rel.as_posix(), file_digest(path)))
+            continue
+        if rel == Path("info/refs") and generated_server_info_refs(path):
             continue
         if rel.parts[0] == "refs" or (branch_log and rel == branch_log) or rel in run_branch_logs:
             continue
