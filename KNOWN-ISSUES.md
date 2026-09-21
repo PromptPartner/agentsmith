@@ -28,9 +28,11 @@ been authorized, so the entries are kept here.
   lifecycle but failed eight of ten Windows dispatch tests. The Windows report binds commit
   `00461bf`, tree `8d0c00f`, and records a clean checkout; its lifecycle phase exited 1.
   Compatibility previously tested the Windows boundary but did not expose dispatch test errors.
-  A Windows compatibility lifecycle step now captures the fake-client fixture traceback for
-  diagnosis. A local aggregate invocation with all three reports exited 2 and rejected the
-  failed Windows report before writing an aggregate.
+  The diagnostic run `35624368777` showed `graph differs from committed contract bytes` before
+  any child started. The fixture wrote graph JSON as platform text, so Windows CRLF bytes differed
+  from Git's normalized LF commit. It now writes exact LF bytes and asserts the working and
+  committed contract match. A local aggregate invocation with all three reports exited 2 and
+  rejected the failed Windows report before writing an aggregate; native rerun remains pending.
 - [ ] 2026-09-21 — A stop request arriving after a fake maker has committed but before its receipt
   is reconciled can leave an interrupted run whose resume replays the maker, producing a clean
   worktree with nothing new to commit. A local graph stop/resume test exposed this under heavy

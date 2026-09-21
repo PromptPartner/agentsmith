@@ -113,13 +113,17 @@ class GraphDispatchTests(unittest.TestCase):
         graph = {"schema_version": 1, "graph_id": "dispatch-fixture", "max_parallel": 2,
                  "integration_order": ["a", "b", "c"], "nodes": nodes}
         self.graph_path = ".harness/work-graph.json"
-        (self.repo / self.graph_path).write_text(json.dumps(graph, indent=2) + "\n", encoding="utf-8")
+        (self.repo / self.graph_path).write_bytes((json.dumps(graph, indent=2) + "\n").encode("utf-8"))
         (self.repo / ".harness/verify.conf").write_text(
             f"combined :: \"{sys.executable}\" -c \"from pathlib import Path; assert all(Path('src/' + node + '/change.txt').is_file() for node in ('a', 'b', 'c'))\"\n",
             encoding="utf-8",
         )
         git(self.repo, "add", ".")
         git(self.repo, "commit", "-qm", "test: accepted graph")
+        committed_graph = subprocess.run(["git", "show", f"HEAD:{self.graph_path}"],
+                                         cwd=self.repo, capture_output=True, check=True).stdout
+        self.assertEqual((self.repo / self.graph_path).read_bytes(), committed_graph,
+                         "fixture graph must match its committed contract bytes")
         self.addCleanup(self._remove_worktrees)
 
     def _remove_worktrees(self) -> None:
@@ -291,7 +295,7 @@ class GraphDispatchTests(unittest.TestCase):
         graph_path = self.repo / self.graph_path
         graph = json.loads(graph_path.read_text(encoding="utf-8"))
         graph["max_parallel"] = 1
-        graph_path.write_text(json.dumps(graph, indent=2) + "\n", encoding="utf-8")
+        graph_path.write_bytes((json.dumps(graph, indent=2) + "\n").encode("utf-8"))
         git(self.repo, "add", self.graph_path)
         git(self.repo, "commit", "-qm", "test: changed graph contract")
         refused = self.invoke("resume")
