@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentsmith.dev/schemas/work-graph-native-aggregate-v1.json",
+  "title": "AgentSmith work graph native release aggregate v1",
+  "type": "object",
+  "required": ["schema_version", "evidence_kind", "status", "git_commit", "git_tree", "platforms", "report_sha256", "security_coverage", "recorded_at", "external_write_used"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "evidence_kind": {"const": "agentsmith-work-graph-native-aggregate"},
+    "status": {"const": "passed"},
+    "git_commit": {"$ref": "#/$defs/oid"},
+    "git_tree": {"$ref": "#/$defs/oid"},
+    "platforms": {"type": "array", "minItems": 3, "uniqueItems": true, "items": {"enum": ["macos", "linux", "windows"]}},
+    "report_sha256": {
+      "type": "object",
+      "required": ["macos", "linux", "windows"],
+      "properties": {
+        "macos": {"$ref": "#/$defs/sha256"},
+        "linux": {"$ref": "#/$defs/sha256"},
+        "windows": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": false
+    },
+    "security_coverage": {
+      "type": "array",
+      "minItems": 12,
+      "uniqueItems": true,
+      "items": {"enum": ["command-injection", "path-traversal", "symlink-escape", "plan-state-tampering", "ref-mutation", "config-hook-mutation", "object-store-mutation", "secret-redaction", "foreign-file-preservation", "cross-worktree-interference", "source-retention", "authority-boundary"]}
+    },
+    "recorded_at": {"type": "string", "format": "date-time"},
+    "external_write_used": {"const": false}
+  },
+  "$defs": {
+    "oid": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false
+}

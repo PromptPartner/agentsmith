@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "graph_id": "sample_parallel_three",
+  "sequence": 4,
+  "at": "2026-09-21T10:21:30+02:00",
+  "event": "checkpoint_created",
+  "run_id": "sample_c",
+  "commit_oid": "4444444444444444444444444444444444444444",
+  "reason": "Accepted predecessor commits composed in integration order"
+}

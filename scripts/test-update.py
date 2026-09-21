@@ -78,7 +78,8 @@ class UpdateCheckTests(unittest.TestCase):
             destination = self.seed / directory
             if not destination.exists():
                 shutil.copytree(ROOT / directory, destination)
-        for helper in ("native_launcher.py", "evaluate.py"):
+        for helper in ("native_launcher.py", "evaluate.py", "work_graph.py",
+                       "windows_verifier_sandbox.py"):
             shutil.copy2(ROOT / helper, self.seed / helper)
         (self.seed / "VERSION").write_text(version + "\n", encoding="utf-8")
         runtime = CORE.read_text(encoding="utf-8")
@@ -141,7 +142,7 @@ class UpdateCheckTests(unittest.TestCase):
             self.commit_and_tag(version)
         self.git("tag", "not-a-release")
         cloned = subprocess.run(
-            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            ["git", "clone", "-q", "--no-local", "--bare", str(self.seed), str(self.remote)],
             text=True,
             capture_output=True,
             check=False,
@@ -205,7 +206,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.commit_and_tag(CURRENT_VERSION)
         self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
-            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            ["git", "clone", "-q", "--no-local", "--bare", str(self.seed), str(self.remote)],
             text=True,
             capture_output=True,
             check=False,
@@ -281,7 +282,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.commit_and_tag(CURRENT_VERSION)
         self.commit_and_tag(NEXT_VERSION, candidate_execution_probe=execution_probe)
         cloned = subprocess.run(
-            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            ["git", "clone", "-q", "--no-local", "--bare", str(self.seed), str(self.remote)],
             text=True,
             capture_output=True,
             check=False,
@@ -312,7 +313,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.commit_and_tag(CURRENT_VERSION)
         self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
-            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            ["git", "clone", "-q", "--no-local", "--bare", str(self.seed), str(self.remote)],
             text=True,
             capture_output=True,
             check=False,
@@ -396,7 +397,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.commit_and_tag(CURRENT_VERSION)
         self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
-            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            ["git", "clone", "-q", "--no-local", "--bare", str(self.seed), str(self.remote)],
             text=True,
             capture_output=True,
             check=False,
@@ -559,7 +560,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.commit_and_tag(CURRENT_VERSION)
         self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
-            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            ["git", "clone", "-q", "--no-local", "--bare", str(self.seed), str(self.remote)],
             text=True,
             capture_output=True,
             check=False,
@@ -632,7 +633,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.commit_and_tag(CURRENT_VERSION)
         self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
-            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            ["git", "clone", "-q", "--no-local", "--bare", str(self.seed), str(self.remote)],
             text=True,
             capture_output=True,
             check=False,
@@ -674,7 +675,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.commit_and_tag(CURRENT_VERSION)
         self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
-            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            ["git", "clone", "-q", "--no-local", "--bare", str(self.seed), str(self.remote)],
             text=True,
             capture_output=True,
             check=False,
@@ -783,7 +784,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.commit_and_tag(CURRENT_VERSION)
         self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
-            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            ["git", "clone", "-q", "--no-local", "--bare", str(self.seed), str(self.remote)],
             text=True,
             capture_output=True,
             check=False,
@@ -863,7 +864,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.commit_and_tag(CURRENT_VERSION)
         self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
-            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            ["git", "clone", "-q", "--no-local", "--bare", str(self.seed), str(self.remote)],
             text=True,
             capture_output=True,
             check=False,
@@ -1077,7 +1078,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.commit_and_tag(CURRENT_VERSION)
         self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
-            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            ["git", "clone", "-q", "--no-local", "--bare", str(self.seed), str(self.remote)],
             text=True,
             capture_output=True,
             check=False,
@@ -1134,7 +1135,7 @@ class UpdateCheckTests(unittest.TestCase):
     def test_assemble_only_migration_requires_unambiguous_native_ownership(self) -> None:
         self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
-            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            ["git", "clone", "-q", "--no-local", "--bare", str(self.seed), str(self.remote)],
             text=True,
             capture_output=True,
             check=False,
@@ -1264,7 +1265,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.commit_and_tag(CURRENT_VERSION)
         self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
-            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            ["git", "clone", "-q", "--no-local", "--bare", str(self.seed), str(self.remote)],
             text=True,
             capture_output=True,
             check=False,
@@ -1315,7 +1316,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.commit_and_tag(CURRENT_VERSION)
         self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
-            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            ["git", "clone", "-q", "--no-local", "--bare", str(self.seed), str(self.remote)],
             text=True,
             capture_output=True,
             check=False,
@@ -1371,7 +1372,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.commit_and_tag(CURRENT_VERSION)
         self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
-            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            ["git", "clone", "-q", "--no-local", "--bare", str(self.seed), str(self.remote)],
             text=True,
             capture_output=True,
             check=False,
@@ -1466,7 +1467,7 @@ class UpdateCheckTests(unittest.TestCase):
         future_source.write_text("# Candidate-owned version\n", encoding="utf-8")
         self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
-            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            ["git", "clone", "-q", "--no-local", "--bare", str(self.seed), str(self.remote)],
             text=True,
             capture_output=True,
             check=False,
@@ -1537,7 +1538,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.commit_and_tag(CURRENT_VERSION)
         self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
-            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            ["git", "clone", "-q", "--no-local", "--bare", str(self.seed), str(self.remote)],
             text=True,
             capture_output=True,
             check=False,
@@ -1671,7 +1672,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.commit_and_tag(CURRENT_VERSION)
         self.commit_and_tag(NEXT_VERSION, broken_doctor=True)
         cloned = subprocess.run(
-            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            ["git", "clone", "-q", "--no-local", "--bare", str(self.seed), str(self.remote)],
             text=True,
             capture_output=True,
             check=False,
@@ -1710,7 +1711,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.commit_and_tag(CURRENT_VERSION)
         self.commit_and_tag(NEXT_VERSION, broken_runtime_health=True)
         cloned = subprocess.run(
-            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            ["git", "clone", "-q", "--no-local", "--bare", str(self.seed), str(self.remote)],
             text=True,
             capture_output=True,
             check=False,
@@ -1747,7 +1748,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.commit_and_tag(CURRENT_VERSION)
         self.commit_and_tag(NEXT_VERSION, broken_runtime_health=True)
         cloned = subprocess.run(
-            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            ["git", "clone", "-q", "--no-local", "--bare", str(self.seed), str(self.remote)],
             text=True,
             capture_output=True,
             check=False,
@@ -1877,7 +1878,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.commit_and_tag(CURRENT_VERSION)
         self.commit_and_tag(NEXT_VERSION, statusline_probe=NEXT_STATUSLINE_PROBE)
         cloned = subprocess.run(
-            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            ["git", "clone", "-q", "--no-local", "--bare", str(self.seed), str(self.remote)],
             text=True,
             capture_output=True,
             check=False,
@@ -1949,7 +1950,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.commit_and_tag(CURRENT_VERSION)
         self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
-            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            ["git", "clone", "-q", "--no-local", "--bare", str(self.seed), str(self.remote)],
             text=True,
             capture_output=True,
             check=False,
@@ -2016,7 +2017,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.commit_and_tag(CURRENT_VERSION)
         self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
-            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            ["git", "clone", "-q", "--no-local", "--bare", str(self.seed), str(self.remote)],
             text=True,
             capture_output=True,
             check=False,
@@ -2058,7 +2059,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.commit_and_tag(CURRENT_VERSION)
         self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(
-            ["git", "clone", "-q", "--bare", str(self.seed), str(self.remote)],
+            ["git", "clone", "-q", "--no-local", "--bare", str(self.seed), str(self.remote)],
             text=True,
             capture_output=True,
             check=False,
