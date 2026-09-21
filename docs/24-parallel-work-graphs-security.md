@@ -21,8 +21,9 @@ aggregate remains unproven until the final committed tree has three passing host
 | Authority boundary | Integration creates a local candidate and receipt with `external_write_used: false`; the fixture checks there is no remote. | Push, PR, merge, and release require separate human authority. |
 
 **Named result:** the local mechanisms and regression checks above were inspected. The
-cross-platform release security claim is **open** because Windows lacks a verifier sandbox and
-no same-commit/tree native aggregate has been collected. The recorder rejects failed, dirty,
+cross-platform release security claim is **open** because the Windows AppContainer has passed its
+native file, network, and exact ACL cleanup test but no same-commit/tree native aggregate has been
+collected. The recorder rejects failed, dirty,
 partial, skipped, or mismatched reports; synthetic aggregate tests establish those rules, not
 native portability. In the aggregate, `security_coverage` names this review's categories and
 `external_write_used: false` is a declaration supported by the no-remote fixture check; neither
