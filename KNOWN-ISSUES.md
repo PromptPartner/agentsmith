@@ -35,15 +35,20 @@ been authorized, so the entries are kept here.
   60-second fixture timeout, a stale-PID probe that called `os.kill` on Windows, another CRLF
   contract write in the integration-conflict case, and two maker retries after verifier rejection.
   The fixture now allows a bounded 180-second graph call, uses an out-of-range stale PID, writes
-  the conflict graph as LF bytes, and prints verifier receipts on failure. The exact verifier
-  rejection still needs a native diagnostic run. Push run `35627080730` reduced the suite to
+  the conflict graph as LF bytes, and prints verifier receipts on failure. Push run
+  `35627080730` reduced the suite to
   three failures: a child controller disappeared before state reconciliation, a failed-node test
   observed the same interruption, and one graph timed out on a live coordination owner. One
   verifier receipt also showed Python executable-resolution stderr during parallel roots. Shared
   Python/Git toolchain ACL grants are now serialized with a Windows named mutex; a concurrent
-  negative test was added. Their native result is pending. A local aggregate invocation with all three
-  earlier reports exited 2 and rejected the failed Windows report before writing an aggregate;
-  same-tree native rerun remains pending.
+  negative test passed in compatibility on `6cc0833`. Manual run `35628932249` passed Linux and
+  macOS native reports, but Windows failed its lifecycle phase. Its compatibility traceback
+  identified transient `.git/agentsmith-runs/coordination.lock` removal during the sandbox's
+  per-file DACL snapshot/restore as the verifier exit-126 cause. The sandbox now skips only
+  disappeared paths on Windows errors 2 and 3, and a native test deletes the lock mid-verifier.
+  Its rerun is pending. A local aggregate invocation with all three earlier reports exited 2
+  and rejected the failed Windows report before writing an aggregate; same-tree native rerun
+  remains pending.
 - [ ] 2026-09-21 — A stop request arriving after a fake maker has committed but before its receipt
   is reconciled can leave an interrupted run whose resume replays the maker, producing a clean
   worktree with nothing new to commit. A local graph stop/resume test exposed this under heavy

@@ -82,14 +82,18 @@ def _acl(path: Path, sid: str, rights: str, *, remove: bool = False) -> None:
                            f"{(result.stderr or result.stdout).strip()[:300]}")
 
 
-def _original_dacl(path: Path, advapi: ctypes.WinDLL) -> bytes:
+def _original_dacl(path: Path, advapi: ctypes.WinDLL) -> bytes | None:
     needed = wintypes.DWORD()
     advapi.GetFileSecurityW(str(path), 4, None, 0, ctypes.byref(needed))
     if not needed.value:
+        if ctypes.get_last_error() in {2, 3}:  # File removed during snapshot.
+            return None
         raise _win32_error(f"GetFileSecurityW size for {path}")
     descriptor = ctypes.create_string_buffer(needed.value)
     if not advapi.GetFileSecurityW(str(path), 4, descriptor, needed.value,
                                   ctypes.byref(needed)):
+        if ctypes.get_last_error() in {2, 3}:
+            return None
         raise _win32_error(f"GetFileSecurityW for {path}")
     return descriptor.raw
 
@@ -97,6 +101,8 @@ def _original_dacl(path: Path, advapi: ctypes.WinDLL) -> bytes:
 def _restore_dacl(path: Path, descriptor: bytes, advapi: ctypes.WinDLL) -> None:
     # SetFileSecurity does not propagate the restored DACL to existing children.
     if not advapi.SetFileSecurityW(str(path), 4, ctypes.create_string_buffer(descriptor)):
+        if ctypes.get_last_error() in {2, 3}:  # Transient Git lock already removed.
+            return
         raise _win32_error(f"SetFileSecurityW for {path}")
 
 
@@ -232,7 +238,9 @@ def run_verifier(command: str, cwd: Path, common: Path, timeout: int,
         for root, _ in allowed:
             for path in itertools.chain((root,), root.rglob("*")):
                 if path not in original_dacls:
-                    original_dacls[path] = _original_dacl(path, advapi)
+                    descriptor = _original_dacl(path, advapi)
+                    if descriptor is not None:
+                        original_dacls[path] = descriptor
         for path, rights in allowed:
             if path not in grants:
                 grants.append(path)

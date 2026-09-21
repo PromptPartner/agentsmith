@@ -92,3 +92,12 @@ disappearing and another verifier emitting a Python executable-resolution error 
 roots ran in parallel. The shared ACL window above is a plausible cause; the mutex is intended
 to prevent that interaction. The next
 native run must prove the lifecycle and aggregate before portability is claimed.
+
+Manual run `35628932249` passed the concurrent AppContainer boundary in compatibility, while
+its Windows native lifecycle still failed. The compatibility traceback isolated a separate
+cleanup race: the sandbox had snapshotted a `.git/agentsmith-runs/coordination.lock` that a
+controller removed before DACL restoration. Windows returned file-not-found error 2, which the
+launcher treated as a cleanup failure and converted into verifier exit 126. Snapshot and
+restoration now tolerate only Windows file-not-found errors 2 and 3 for disappeared paths;
+other ACL errors still fail closed. A native test removes that exact Git lock after the confined
+verifier starts and checks a successful result plus the retained `.git` ACL.
