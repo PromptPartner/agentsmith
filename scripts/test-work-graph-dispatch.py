@@ -131,11 +131,20 @@ class GraphDispatchTests(unittest.TestCase):
                                capture_output=True, check=False)
 
     def invoke(self, action: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
+        result = subprocess.run(
             [sys.executable, str(ROOT / "agentsmith.py"), "graph", action, "--graph", self.graph_path,
              "--target", str(self.repo), "--json"], cwd=self.repo, env=self.environment,
             text=True, capture_output=True, check=False, timeout=60,
         )
+        if action in {"start", "resume"} and result.returncode:
+            events = self.repo / ".git/agentsmith-graphs/dispatch-fixture/events.jsonl"
+            if events.is_file():
+                result.stderr += "\nGraph events:\n" + events.read_text(encoding="utf-8")
+            child_root = self.repo / ".git/agentsmith-runs"
+            for state_path in sorted(child_root.glob("*/state.json")):
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+                result.stderr += f"\n{state_path.parent.name}: {state.get('status')}: {state.get('reason')}\n"
+        return result
 
     def test_parallel_roots_and_dependent_checkpoint(self) -> None:
         started = self.invoke("start")
@@ -173,7 +182,7 @@ class GraphDispatchTests(unittest.TestCase):
         self.assertFalse((self.repo.parent / "repo-c").exists())
 
     def test_stop_then_resume_preserves_partial_work_and_limits(self) -> None:
-        (self.fake_client.parent / "sleep-seconds.txt").write_text("4", encoding="utf-8")
+        (self.fake_client.parent / "sleep-seconds.txt").write_text("20", encoding="utf-8")
         running = subprocess.Popen(
             [sys.executable, str(ROOT / "agentsmith.py"), "graph", "start", "--graph", self.graph_path,
              "--target", str(self.repo), "--json"],
