@@ -49,7 +49,10 @@ been authorized, so the entries are kept here.
   Manual run `35630897623` passed that native negative test and all ten compatibility graph
   cases, but its separate Windows native report still failed eight graph cases on the same clean
   tree. The release recorder runs with a stripped Git/Python environment; a raw Windows case under
-  that exact environment is the next diagnostic. A local aggregate invocation with all three
+  that exact environment in push run `35633073987` reproduced a live repository coordination
+  owner outlasting the ten-second wait during parallel graph start. A simulated 11-second live
+  owner failed before the timeout change and passed with a bounded 60-second wait; native rerun
+  remains pending. A local aggregate invocation with all three
   earlier reports exited 2 and rejected the failed Windows report before writing an aggregate;
   same-tree native rerun remains pending.
 - [ ] 2026-09-21 — A stop request arriving after a fake maker has committed but before its receipt
