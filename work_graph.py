@@ -645,6 +645,29 @@ def start_graph(contract: dict[str, Any]) -> dict[str, Any]:
         return _run_graph(contract, state, directory)
 
 
+def child_failure_reason(child: dict[str, Any] | None, returncode: int, stderr: str) -> str:
+    """Keep a useful child crash signature without copying process output into graph evidence."""
+    known = child.get("reason") if child else None
+    if isinstance(known, str) and known.strip():
+        return known[:500]
+    status = child.get("status") if child else None
+    if status not in {"making", "checking", "retrying", "accepted", "escalated", "interrupted"}:
+        status = "unknown"
+    exception = "unknown"
+    for line in reversed(stderr.splitlines()):
+        match = re.match(r"^([A-Za-z_][A-Za-z0-9_.]{0,63})(?::|$)", line)
+        if match:
+            exception = match.group(1)
+            break
+    location = "unknown"
+    frames = re.findall(r'File "([^"\r\n]+)", line ([0-9]{1,6}), in [A-Za-z_][A-Za-z0-9_]*', stderr)
+    for path, line in reversed(frames):
+        if re.split(r"[\\/]", path)[-1] == "autonomous-run.py":
+            location = f"autonomous-run.py:{line}"
+            break
+    return f"child process exit={returncode} in {status}; exception={exception}; location={location}"
+
+
 def _run_graph(contract: dict[str, Any], state: dict[str, Any], directory: Path,
                resume_ids: list[str] | None = None) -> dict[str, Any]:
     repo = contract["repo"]
@@ -732,7 +755,7 @@ def _run_graph(contract: dict[str, Any], state: dict[str, Any], directory: Path,
                 pending_events.append(("run_completed", run_id, child.get("accepted_commit"),
                                        "child checker accepted"))
             else:
-                reason = str(child.get("reason")) if child else stderr.strip() or stdout.strip()
+                reason = child_failure_reason(child, process.returncode, stderr)
                 pending_events.append(("run_failed", run_id, None,
                                        reason[:500] or "child process exited without accepted evidence"))
         if not active and pending_events:

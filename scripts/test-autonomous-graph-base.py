@@ -18,6 +18,10 @@ SPEC = importlib.util.spec_from_file_location("agentsmith_graph_base_test", ROOT
 assert SPEC and SPEC.loader
 CONTROLLER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CONTROLLER)
+GRAPH_SPEC = importlib.util.spec_from_file_location("agentsmith_work_graph_failure", ROOT / "work_graph.py")
+assert GRAPH_SPEC and GRAPH_SPEC.loader
+GRAPH = importlib.util.module_from_spec(GRAPH_SPEC)
+GRAPH_SPEC.loader.exec_module(GRAPH)
 
 
 def git(repo: Path, *arguments: str) -> str:
@@ -26,6 +30,20 @@ def git(repo: Path, *arguments: str) -> str:
 
 
 class GraphBaseTests(unittest.TestCase):
+    def test_unhandled_child_failure_reports_safe_exception_location(self) -> None:
+        stderr = ('Traceback (most recent call last):\n'
+                  '  File "D:\\a\\agentsmith\\scripts\\autonomous-run.py", line 1382, in execute\n'
+                  '    read_sensitive_value()\n'
+                  'PermissionError: hidden-secret-value\n')
+        reason = GRAPH.child_failure_reason({"status": "checking", "reason": None}, 1, stderr)
+        self.assertIn("checking", reason)
+        self.assertIn("exit=1", reason)
+        self.assertIn("PermissionError", reason)
+        self.assertIn("autonomous-run.py:1382", reason)
+        self.assertNotIn("hidden-secret-value", reason)
+        self.assertNotIn("read_sensitive_value", reason)
+        self.assertNotIn("D:\\a", reason)
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="agentsmith graph base ")
         self.addCleanup(self.temporary.cleanup)

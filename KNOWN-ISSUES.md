@@ -64,7 +64,12 @@ been authorized, so the entries are kept here.
   those exact reports, but the hosted aggregate skipped because the separate Windows compatibility
   job reached its 20-minute job timeout while recording First Verified Loop evidence after its
   graph checks had passed. The compatibility budget now allows 30 minutes on Windows; the next
-  same-tree manual run must pass before this issue can close.
+  same-tree manual run must pass before this issue can close. Run `35639654255` passed all three
+  native reports on commit `f41c4cf`, tree `dd4f9f3`, but its separate Windows compatibility
+  lifecycle intermittently left two child controllers at `checking` after a verifier exit of 0.
+  The graph had rendered their failure reason as the string `None`, hiding the child process
+  error. Failure events now retain a bounded, secret-free exit/exception/source-line signature;
+  the next native run will show where those unexpected exits occur if they recur.
 - [ ] 2026-09-21 — A stop request arriving after a fake maker has committed but before its receipt
   is reconciled can leave an interrupted run whose resume replays the maker, producing a clean
   worktree with nothing new to commit. A local graph stop/resume test exposed this under heavy
