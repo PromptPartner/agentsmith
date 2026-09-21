@@ -28,6 +28,27 @@ SPEC.loader.exec_module(CONTROLLER)
 
 
 class AutonomousStateTests(unittest.TestCase):
+    def test_linux_verifier_prepares_temp_worktree_after_tmpfs_mount(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith verifier mount ") as temporary:
+            repo = Path(temporary) / "repo"
+            common = repo / ".git"
+            common.mkdir(parents=True)
+            with (
+                mock.patch.object(CONTROLLER.sys, "platform", "linux"),
+                mock.patch.object(CONTROLLER.shutil, "which", return_value="/usr/bin/bwrap"),
+                mock.patch.object(CONTROLLER, "resolved_git_path", return_value=common),
+                mock.patch.object(CONTROLLER, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run,
+            ):
+                CONTROLLER.sandboxed_verify("true", repo, 10, CONTROLLER.verifier_env())
+            args = run.call_args.args[0]
+            tmpfs_index = next(index for index in range(len(args) - 1)
+                               if args[index:index + 2] == ["--tmpfs", "/tmp"])
+            bind_index = args.index("--bind")
+            self.assertLess(tmpfs_index, bind_index)
+            if repo.resolve().is_relative_to(Path("/tmp")):
+                self.assertIn(["--dir", str(repo)],
+                              [args[index:index + 2] for index in range(len(args) - 1)])
+
     def test_legacy_scope_defaults_to_no_coordinated_resources(self) -> None:
         scope = {"allowed_paths": ["src/**"], "denied_paths": []}
         self.assertEqual(CONTROLLER.scope_resources(scope), [])

@@ -164,6 +164,7 @@ class WorkGraphReleaseEvidenceTests(unittest.TestCase):
         self.assertIn("needs.posix-guardrails.result == 'success'", workflow)
         self.assertIn("kernel.apparmor_restrict_unprivileged_userns", workflow)
         self.assertIn("bwrap --unshare-net --ro-bind / /", workflow)
+        self.assertIn("Probe actual Linux verifier policy", workflow)
         for host in ("Linux", "macOS", "Windows"):
             self.assertIn(f"release-evidence/work-graph-{host}.json", workflow)
 

@@ -139,6 +139,32 @@ jobs:
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
           bwrap --unshare-net --ro-bind / / --tmpfs /tmp --dev /dev --proc /proc /bin/true
+      - name: Probe actual Linux verifier policy
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        shell: bash
+        run: |
+          python - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          import subprocess
+          import tempfile
+
+          source = Path('scripts/autonomous-run.py').resolve()
+          spec = importlib.util.spec_from_file_location('agentsmith_verifier_probe', source)
+          assert spec and spec.loader
+          controller = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(controller)
+          with tempfile.TemporaryDirectory(prefix='agentsmith verifier probe ') as temporary:
+              repo = Path(temporary) / 'repo'
+              repo.mkdir()
+              subprocess.run(['git', 'init', '-q'], cwd=repo, check=True)
+              result = controller.sandboxed_verify('true', repo, 10, controller.verifier_env())
+              if result.returncode:
+                  print(f'verifier policy probe exit={result.returncode}; stderr={result.stderr[:300]!r}')
+                  raise SystemExit(1)
+          print('verifier policy probe passed')
+          PY
       - name: Record native work-graph lifecycle
         run: python scripts/work-graph-release-evidence.py record --expected-commit "${{ github.sha }}" --output-root "${{ runner.temp }}" --output "${{ runner.temp }}/work-graph-${{ runner.os }}.json"
       - name: Upload native work-graph report, including failure evidence
