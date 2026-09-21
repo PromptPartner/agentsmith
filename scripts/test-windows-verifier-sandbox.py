@@ -17,6 +17,8 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class WindowsVerifierSandboxTests(unittest.TestCase):
+    maxDiff = None
+
     @unittest.skipUnless(os.name == "nt", "requires native Windows AppContainer")
     def test_worktree_write_sibling_and_network_denial_and_acl_cleanup(self) -> None:
         spec = importlib.util.spec_from_file_location("agentsmith_verifier_test",
