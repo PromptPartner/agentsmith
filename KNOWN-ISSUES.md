@@ -28,7 +28,9 @@ been authorized, so the entries are kept here.
   five local targeted attempts. Run `35605909782` had passed both paths. The exact failing
   assertion is not yet known. A later docs-only push run `35610061317` failed in the macOS
   compatibility copy when graph `start` returned a failed state inside a different cleanup test;
-  its pull-request copy passed. The test now prints child reasons and graph events on failure.
+  its pull-request copy passed. Run `35616698843` failed the stop/resume test because a maker
+  reported changed existing Git objects. The test now prints child reasons and graph events, and
+  the controller will include changed object paths in the next native failure for diagnosis.
 - [ ] 2026-09-21 — A stop request arriving after a fake maker has committed but before its receipt
   is reconciled can leave an interrupted run whose resume replays the maker, producing a clean
   worktree with nothing new to commit. A local graph stop/resume test exposed this under heavy

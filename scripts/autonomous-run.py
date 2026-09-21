@@ -987,7 +987,7 @@ def validate_git_transition(worktree: Path, before: dict[str, Any], after: dict[
     altered_objects = [path for path, digest in before["existing_objects"]
                        if after_objects.get(path) != digest]
     if altered_objects:
-        raise RunError("runtime altered existing Git objects")
+        raise RunError("runtime altered existing Git objects: " + ", ".join(altered_objects[:8]))
     before_object_paths = {path for path, _ in before["existing_objects"]}
     new_objects = set(after_objects) - before_object_paths
     invalid_objects = sorted(path for path in new_objects
