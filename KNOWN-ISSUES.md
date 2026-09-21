@@ -26,7 +26,12 @@ been authorized, so the entries are kept here.
   compatibility lifecycle also passed on `4b42582` and again in both push and PR CI on `2cca50e`.
   Manual run `35646692896` passed both macOS paths on `b331612`, but the original
   failure artifact records only the test name and output hash, so its assertion and root cause
-  remain unknown.
+  remain unknown. Push run `35651017175` later failed the macOS stop/resume fixture: both
+  child controllers saw the same eight previously loose Git objects disappear while their
+  maker snapshots were active. Git can repack loose objects during automatic maintenance;
+  the role environment now disables both `gc.auto` and `maintenance.auto` without changing
+  repository config. A passing same-tree native rerun is the release gate for this mitigation;
+  the original cleanup-preview assertion remains unknown.
 - [ ] 2026-09-21 — PR run `35641860248` exposed a macOS false negative in the new Git
   text-conversion regression: `git status` sometimes trusted cached index metadata immediately
   after the test changed `core.autocrlf`, so it reported a clean worktree even though the
