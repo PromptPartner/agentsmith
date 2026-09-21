@@ -1,7 +1,7 @@
 # Known issues
 
-These defects are intentionally separate from the legacy global updater ownership fix. They are
-recorded here because no external tracker write has been authorized.
+This file records open defects and fixes found during verification. No external tracker write has
+been authorized, so the entries are kept here.
 
 - [ ] Project-scoped install writes Claude's user-global `permissions.defaultMode` through
   `install_native_config()`; the default `--safety cautious` therefore changes the user's global
@@ -14,6 +14,22 @@ recorded here because no external tracker write has been authorized.
 - [ ] `agentsmith verify discover --help` and `verify apply --help` currently show the shared
   verification parser's execution-only options; incompatible combinations fail clearly, but the
   subcommand help should expose only each operation's valid flags.
+- [ ] 2026-09-21 — The Windows finite-run verifier has no supported fail-closed sandbox and returns
+  126. The Windows work-graph lifecycle and same-commit three-platform aggregate remain blocked.
+  See `docs/research/windows-verifier-sandbox.md` for the reviewed platform options.
+- [ ] 2026-09-21 — The first hosted Linux W2-06 native report stopped in the coordination phase
+  (`test-autonomous-state.py`, 20 tests). The recorder retains only output hashes, so the exact
+  failing case is unknown. Recheck on the next native run before classifying its cause.
+
+## Resolved during W2-06
+
+- [x] 2026-09-21 — Windows checkout converted work-graph fixture JSON from LF to CRLF, invalidating
+  the committed manifest and graph hashes. Git attributes now pin that fixture tree to LF; the
+  contract suite failed in a simulated Windows checkout before the fix and passed after.
+- [x] 2026-09-21 — A peer starting during the initial Git metadata scan could finish before the
+  next scan, then be misclassified as an unrelated ref because the first snapshot timestamp was
+  recorded too late. The snapshot now captures its start time before reading refs; a forced-order
+  regression fails before this change and passes after.
 
 ## Resolved during FVL-02
 
