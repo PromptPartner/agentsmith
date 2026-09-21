@@ -43,3 +43,12 @@ defines the process attribute and capability model, and the
 defines the scoped ACL operations. This description is of the implemented path, not a native
 passing claim. The next gate is a passing Windows negative test, full graph lifecycle, and
 same-commit/tree Linux, macOS, Windows aggregate.
+
+The first hosted Windows boundary test reached `CreateProcessW` after profile and ACL setup but
+returned Windows error 203 (`ERROR_ENVVAR_NOT_FOUND`) on run `35613620432`. The next revision
+supplies the profile's `LOCALAPPDATA` path from Microsoft's
+[`GetAppContainerFolderPath` API](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-getappcontainerfolderpath)
+and
+explicit user-profile path variables in the child environment. That is a diagnosis-driven
+attempt, not passing boundary evidence; the next native test determines whether the host can
+launch the confined process.

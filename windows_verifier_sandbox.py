@@ -89,6 +89,8 @@ def run_verifier(command: str, cwd: Path, common: Path, timeout: int,
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     userenv = ctypes.WinDLL("userenv", use_last_error=True)
     advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    ole = ctypes.WinDLL("ole32", use_last_error=True)
+    ole.CoTaskMemFree.argtypes = [ctypes.c_void_p]
     kernel.InitializeProcThreadAttributeList.argtypes = [ctypes.c_void_p, wintypes.DWORD,
                                                          wintypes.DWORD, ctypes.POINTER(ctypes.c_size_t)]
     kernel.UpdateProcThreadAttribute.argtypes = [ctypes.c_void_p, wintypes.DWORD, ctypes.c_size_t,
@@ -121,6 +123,9 @@ def run_verifier(command: str, cwd: Path, common: Path, timeout: int,
     userenv.CreateAppContainerProfile.restype = ctypes.c_long
     userenv.DeleteAppContainerProfile.argtypes = [wintypes.LPCWSTR]
     userenv.DeleteAppContainerProfile.restype = ctypes.c_long
+    userenv.GetAppContainerFolderPath.argtypes = [wintypes.LPCWSTR,
+                                                  ctypes.POINTER(wintypes.LPWSTR)]
+    userenv.GetAppContainerFolderPath.restype = ctypes.c_long
     advapi.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)]
     advapi.ConvertSidToStringSidW.restype = wintypes.BOOL
     advapi.FreeSid.argtypes = [ctypes.c_void_p]
@@ -134,6 +139,7 @@ def run_verifier(command: str, cwd: Path, common: Path, timeout: int,
     result_path = cwd / f".agentsmith-verifier-{token}.result.json"
     sid_pointer = ctypes.c_void_p()
     sid_text = wintypes.LPWSTR()
+    folder_pointer = wintypes.LPWSTR()
     attributes = None
     attributes_ready = False
     job = process = thread = None
@@ -151,6 +157,8 @@ def run_verifier(command: str, cwd: Path, common: Path, timeout: int,
         if not advapi.ConvertSidToStringSidW(sid_pointer, ctypes.byref(sid_text)):
             raise _win32_error("ConvertSidToStringSidW")
         sid = sid_text.value
+        if userenv.GetAppContainerFolderPath(sid, ctypes.byref(folder_pointer)) != 0:
+            raise SandboxError("GetAppContainerFolderPath failed")
         script.write_text(
             "import json, subprocess, sys\n"
             "from pathlib import Path\n"
@@ -196,6 +204,9 @@ def run_verifier(command: str, cwd: Path, common: Path, timeout: int,
                         "WINDIR": os.environ["SystemRoot"],
                         "COMSPEC": str(Path(os.environ["SystemRoot"]) / "System32/cmd.exe"),
                         "PATHEXT": os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD"),
+                        "LOCALAPPDATA": folder_pointer.value, "APPDATA": str(cwd),
+                        "USERPROFILE": str(cwd), "HOMEDRIVE": cwd.drive,
+                        "HOMEPATH": str(cwd)[len(cwd.drive):],
                         "HOME": str(cwd), "TMP": str(cwd), "TEMP": str(cwd)}
         block = ctypes.create_unicode_buffer("\0".join(f"{key}={value}" for key, value in
                                                     sorted(creation_env.items(), key=lambda item: item[0].upper()))
@@ -263,6 +274,8 @@ def run_verifier(command: str, cwd: Path, common: Path, timeout: int,
                 cleanup_errors.append(str(exc))
         if sid_text:
             kernel.LocalFree(ctypes.cast(sid_text, ctypes.c_void_p))
+        if folder_pointer:
+            ole.CoTaskMemFree(ctypes.cast(folder_pointer, ctypes.c_void_p))
         if sid_pointer.value:
             advapi.FreeSid(sid_pointer)
         if profile_created:

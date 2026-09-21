@@ -17,7 +17,12 @@ been authorized, so the entries are kept here.
 - [ ] 2026-09-21 — The Windows finite-run verifier now has a classic AppContainer launcher, but
   its native file/network boundary and full graph lifecycle have not yet passed. The
   same-commit three-platform aggregate remains blocked. The launcher returns 126 when it cannot
-  establish or clean up the boundary. See `docs/research/windows-verifier-sandbox.md`.
+  establish or clean up the boundary. The first hosted boundary test reached `CreateProcessW` but
+  failed with Windows error 203; profile environment paths have been added and need a native rerun.
+  See `docs/research/windows-verifier-sandbox.md`.
+- [ ] 2026-09-21 — A Windows graph status fixture wrote platform line endings, so its working
+  graph bytes differed from the committed contract on run `35613620432`. It now writes exact
+  UTF-8 bytes with LF, as the manifest fixture already did; the native rerun remains pending.
 - [ ] 2026-09-21 — Hosted macOS native lifecycle intermittently failed its cleanup-preview test
   in run `35607452415`, although the same suite passed in that run's compatibility job and in
   five local targeted attempts. Run `35605909782` had passed both paths. The exact failing
