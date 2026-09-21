@@ -63,5 +63,10 @@ saves each allowed root's DACL and restores it with
 after removing the package grant. Run `35617685307` showed the root was restored, but `.git`
 changed from explicit to inherited ACEs. The launcher now uses documented
 [`icacls /save` and `/restore`](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/icacls)
-on the full allowed trees, including existing children. The native test compares the root,
-`.git`, and two existing child files before and after cleanup.
+on the full allowed trees, including existing children. Run `35618648705` showed `/restore`
+also left duplicate inherited ACEs on the root. The next revision snapshots each existing DACL
+and restores it with [`SetFileSecurityW`](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-setfilesecurityw),
+which does not propagate the edit to children. Microsoft's
+[symbolic-link function table](https://learn.microsoft.com/en-us/windows/win32/fileio/symbolic-link-effects-on-file-systems-functions)
+also documents that these calls operate on a symbolic link itself. The native test compares the
+root, `.git`, and two existing child files before and after cleanup.
