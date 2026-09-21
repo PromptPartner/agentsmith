@@ -44,6 +44,14 @@ defines the scoped ACL operations. This description is of the implemented path, 
 passing claim. The next gate is a passing Windows negative test, full graph lifecycle, and
 same-commit/tree Linux, macOS, Windows aggregate.
 
+Parallel graph children share the Python and Git installation trees. Their temporary inherited
+ACL grants therefore need one process-wide order across controllers: otherwise one verifier can
+restore a shared DACL while its peer still runs. A [named Windows mutex](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-createmutexw) now covers the complete
+snapshot, grant, execution, and restoration window. An abandoned owner fails closed because the
+previous ACL cleanup cannot be proven. This serializes Windows verifier commands while makers
+and graph dispatch can still run concurrently. The native negative suite launches two verifier
+calls together and checks both boundaries and the shared toolchain ACLs after both finish.
+
 The first hosted Windows boundary test reached `CreateProcessW` after profile and ACL setup but
 returned Windows error 203 (`ERROR_ENVVAR_NOT_FOUND`) on run `35613620432`. The next revision
 supplies the profile's `LOCALAPPDATA` path from Microsoft's
@@ -78,3 +86,9 @@ were denied, and the four then-compared worktree ACLs matched their pre-run valu
 installation ACL comparisons then passed on `3b44ae4` in compatibility run `35621523631`,
 along with the same file and network denials. Full native graph lifecycle and same-tree aggregate
 are separate release gates; PR #36 records their current evidence.
+
+Compatibility run `35627080730` then exposed a Windows graph failure with one child controller
+disappearing and another verifier emitting a Python executable-resolution error while two graph
+roots ran in parallel. The shared ACL window above is a plausible cause; the mutex is intended
+to prevent that interaction. The next
+native run must prove the lifecycle and aggregate before portability is claimed.

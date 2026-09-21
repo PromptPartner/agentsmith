@@ -23,7 +23,7 @@ been authorized, so the entries are kept here.
   reported changed existing Git objects. The test now prints child reasons and graph events, and
   the controller will include changed object paths in the next native failure for diagnosis.
   Eight repeated local stop/resume runs passed after that diagnostic change; the macOS
-  compatibility lifecycle also passed on `4b42582`.
+  compatibility lifecycle also passed on `4b42582` and again in both push and PR CI on `2cca50e`.
 - [ ] 2026-09-21 — Final-tree manual run `35623269366` passed Linux and macOS native work-graph
   lifecycle but failed eight of ten Windows dispatch tests. The Windows report binds commit
   `00461bf`, tree `8d0c00f`, and records a clean checkout; its lifecycle phase exited 1.
@@ -36,7 +36,12 @@ been authorized, so the entries are kept here.
   contract write in the integration-conflict case, and two maker retries after verifier rejection.
   The fixture now allows a bounded 180-second graph call, uses an out-of-range stale PID, writes
   the conflict graph as LF bytes, and prints verifier receipts on failure. The exact verifier
-  rejection still needs a native diagnostic run. A local aggregate invocation with all three
+  rejection still needs a native diagnostic run. Push run `35627080730` reduced the suite to
+  three failures: a child controller disappeared before state reconciliation, a failed-node test
+  observed the same interruption, and one graph timed out on a live coordination owner. One
+  verifier receipt also showed Python executable-resolution stderr during parallel roots. Shared
+  Python/Git toolchain ACL grants are now serialized with a Windows named mutex; a concurrent
+  negative test was added. Their native result is pending. A local aggregate invocation with all three
   earlier reports exited 2 and rejected the failed Windows report before writing an aggregate;
   same-tree native rerun remains pending.
 - [ ] 2026-09-21 — A stop request arriving after a fake maker has committed but before its receipt

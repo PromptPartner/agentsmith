@@ -122,6 +122,10 @@ def run_verifier(command: str, cwd: Path, common: Path, timeout: int,
     kernel.CreateProcessW.restype = wintypes.BOOL
     kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
     kernel.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel.CreateMutexW.restype = wintypes.HANDLE
+    kernel.ReleaseMutex.argtypes = [wintypes.HANDLE]
+    kernel.ReleaseMutex.restype = wintypes.BOOL
     kernel.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
                                                wintypes.DWORD]
     kernel.SetInformationJobObject.restype = wintypes.BOOL
@@ -166,13 +170,29 @@ def run_verifier(command: str, cwd: Path, common: Path, timeout: int,
     folder_pointer = wintypes.LPWSTR()
     attributes = None
     attributes_ready = False
-    job = process = thread = None
+    job = process = thread = mutex = None
+    mutex_acquired = False
     grants: list[Path] = []
     original_dacls: dict[Path, bytes] = {}
     profile_created = False
     outcome = subprocess.CompletedProcess([command], 126, "", "verifier sandbox did not start")
     cleanup_errors: list[str] = []
     try:
+        # The Python and Git installation roots are shared by parallel graph
+        # children. One verifier must finish restoring their DACLs before the
+        # next verifier snapshots or grants access to those same trees.
+        mutex = kernel.CreateMutexW(None, False, "Local\\AgentSmithVerifierAclV1")
+        if not mutex:
+            raise _win32_error("CreateMutexW")
+        ownership = kernel.WaitForSingleObject(mutex, max(1, timeout) * 1000)
+        if ownership == 0x00000080:  # WAIT_ABANDONED: prior cleanup is unproven.
+            mutex_acquired = True
+            raise SandboxError("verifier ACL owner exited before cleanup")
+        if ownership == 0x00000102:
+            raise SandboxError("timed out waiting for verifier ACL ownership")
+        if ownership != 0:
+            raise _win32_error("WaitForSingleObject for verifier ACL ownership")
+        mutex_acquired = True
         # A fresh identity makes ACL removal unambiguous even after a failed run.
         result = userenv.CreateAppContainerProfile(name, name, "Temporary verifier",
                                                     None, 0, ctypes.byref(sid_pointer))
@@ -321,6 +341,10 @@ def run_verifier(command: str, cwd: Path, common: Path, timeout: int,
         if profile_created:
             if userenv.DeleteAppContainerProfile(name) != 0:
                 cleanup_errors.append("could not delete AppContainer profile")
+        if mutex_acquired and not kernel.ReleaseMutex(mutex):
+            cleanup_errors.append("could not release verifier ACL ownership")
+        if mutex:
+            kernel.CloseHandle(mutex)
     if cleanup_errors:
         return subprocess.CompletedProcess([command], 126, "", "; ".join(cleanup_errors)[:500])
     return outcome
