@@ -29,6 +29,10 @@ been authorized, so the entries are kept here.
   after the test changed `core.autocrlf`, so it reported a clean worktree even though the
   controller would hash different bytes. The regression now compares the filtered worktree
   blob with the committed blob directly; native confirmation remains pending.
+- [ ] 2026-09-21 — The same PR run failed a Windows graph stop fixture because it waited for
+  any of two parallel makers to log a start but then required `repo-a` to exist. Maker `b` can
+  start first, so a stop before `a` creates its worktree is valid. The fixture now checks
+  retention for every maker that actually logged a start; native confirmation remains pending.
 - [ ] 2026-09-21 — Final-tree manual run `35623269366` passed Linux and macOS native work-graph
   lifecycle but failed eight of ten Windows dispatch tests. The Windows report binds commit
   `00461bf`, tree `8d0c00f`, and records a clean checkout; its lifecycle phase exited 1.
