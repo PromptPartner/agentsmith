@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from typing import Any
 import unittest
 from unittest import mock
 
@@ -403,6 +404,47 @@ class AutonomousStateTests(unittest.TestCase):
             CONTROLLER.write_json(state_file, state)
             unverified = CONTROLLER.git_metadata(repo, known_peers=before["registered_peers"])
             self.assertIn("refs/heads/agentsmith/peer", " ".join(unverified["refs"]))
+
+    def test_maker_metadata_recognizes_peer_started_during_initial_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith snapshot race ") as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            (repo / "README.md").write_text("fixture\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "fixture"], check=True)
+            manifest = repo / "peer.json"
+            manifest.write_text('{"run_id":"peer"}\n', encoding="utf-8")
+            worktree = Path(temporary) / "peer-worktree"
+            original_git = CONTROLLER.git
+            created = False
+
+            def create_peer_after_ref_read(path: Path, *args: str, **kwargs: Any) -> str:
+                nonlocal created
+                result = original_git(path, *args, **kwargs)
+                if args and args[0] == "for-each-ref" and not created:
+                    created = True
+                    subprocess.run(["git", "-C", str(repo), "worktree", "add", "-qb",
+                                    "agentsmith/peer", str(worktree), "HEAD"], check=True)
+                    run_dir = CONTROLLER.state_root(repo) / "peer"
+                    run_dir.mkdir(parents=True)
+                    CONTROLLER.write_json(run_dir / "state.json", {
+                        "run_id": "peer", "branch": "agentsmith/peer", "repo": str(repo),
+                        "manifest_path": str(manifest),
+                        "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+                        "worktree": str(worktree), "status": "accepted",
+                        "started_epoch": time.time(),
+                        "terminal_head": original_git(worktree, "rev-parse", "HEAD"),
+                    })
+                return result
+
+            with mock.patch.object(CONTROLLER, "git", side_effect=create_peer_after_ref_read):
+                before = CONTROLLER.git_metadata(repo)
+            self.assertTrue(created)
+            after = CONTROLLER.git_metadata(repo, known_peers=before["registered_peers"])
+            self.assertEqual(before["refs"], after["refs"])
 
     def test_stop_request_creation_is_atomic_and_idempotent(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith stop ") as temporary:
