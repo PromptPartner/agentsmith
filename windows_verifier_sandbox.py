@@ -81,6 +81,25 @@ def _acl(path: Path, sid: str, rights: str, *, remove: bool = False) -> None:
                            f"{(result.stderr or result.stdout).strip()[:300]}")
 
 
+def _original_dacl(path: Path, advapi: ctypes.WinDLL) -> bytes:
+    """Preserve the root DACL before icacls triggers inheritance propagation."""
+    needed = wintypes.DWORD()
+    advapi.GetFileSecurityW(str(path), 4, None, 0, ctypes.byref(needed))
+    if not needed.value:
+        raise _win32_error("GetFileSecurityW size")
+    descriptor = ctypes.create_string_buffer(needed.value)
+    if not advapi.GetFileSecurityW(str(path), 4, descriptor, needed.value,
+                                  ctypes.byref(needed)):
+        raise _win32_error("GetFileSecurityW")
+    return descriptor.raw
+
+
+def _restore_dacl(path: Path, descriptor: bytes, advapi: ctypes.WinDLL) -> None:
+    # Unlike SetNamedSecurityInfo, SetFileSecurity does not propagate to children.
+    if not advapi.SetFileSecurityW(str(path), 4, ctypes.create_string_buffer(descriptor)):
+        raise _win32_error("SetFileSecurityW")
+
+
 def run_verifier(command: str, cwd: Path, common: Path, timeout: int,
                  env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     """Return exit 126 if the operating-system boundary cannot be established."""
@@ -130,6 +149,11 @@ def run_verifier(command: str, cwd: Path, common: Path, timeout: int,
     advapi.ConvertSidToStringSidW.restype = wintypes.BOOL
     advapi.FreeSid.argtypes = [ctypes.c_void_p]
     advapi.FreeSid.restype = ctypes.c_void_p
+    advapi.GetFileSecurityW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p,
+                                       wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+    advapi.GetFileSecurityW.restype = wintypes.BOOL
+    advapi.SetFileSecurityW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
+    advapi.SetFileSecurityW.restype = wintypes.BOOL
 
     cwd, common = cwd.resolve(), common.resolve()
     name = "AgentSmith.Verifier." + uuid.uuid4().hex
@@ -143,7 +167,7 @@ def run_verifier(command: str, cwd: Path, common: Path, timeout: int,
     attributes = None
     attributes_ready = False
     job = process = thread = None
-    grants: list[Path] = []
+    grants: list[tuple[Path, bytes]] = []
     profile_created = False
     outcome = subprocess.CompletedProcess([command], 126, "", "verifier sandbox did not start")
     cleanup_errors: list[str] = []
@@ -175,17 +199,16 @@ def run_verifier(command: str, cwd: Path, common: Path, timeout: int,
         )
         request_path.write_text(json.dumps({"command": command, "timeout": timeout}), encoding="utf-8")
 
-        # Inheritable ACLs cover existing files and future children without rewriting
-        # every descendant's DACL. The
-        # common Git store is read-only; only the disposable checker worktree is writable.
+        # Inheritable ACLs cover existing files and future children. The common
+        # Git store is read-only; only the disposable checker worktree is writable.
         allowed: list[tuple[Path, str]] = [(cwd, "M"), (common, "RX"),
                                            (Path(sys.prefix).resolve(), "RX")]
         git = shutil.which("git")
         if git:
             allowed.append((Path(git).resolve().parent.parent, "RX"))
         for path, rights in allowed:
-            if path not in grants:
-                grants.append(path)
+            if path not in (granted for granted, _ in grants):
+                grants.append((path, _original_dacl(path, advapi)))
                 _acl(path, sid, rights)
 
         size = ctypes.c_size_t()
@@ -263,9 +286,13 @@ def run_verifier(command: str, cwd: Path, common: Path, timeout: int,
             kernel.CloseHandle(process)
         if attributes_ready:
             kernel.DeleteProcThreadAttributeList(attributes)
-        for path in reversed(grants):
+        for path, descriptor in reversed(grants):
             try:
                 _acl(path, sid_text.value, "", remove=True)
+            except (OSError, SandboxError) as exc:
+                cleanup_errors.append(str(exc))
+            try:
+                _restore_dacl(path, descriptor, advapi)
             except (OSError, SandboxError) as exc:
                 cleanup_errors.append(str(exc))
         for path in (script, request_path, result_path):
