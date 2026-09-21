@@ -184,6 +184,8 @@ The Windows finite-run verifier now has a classic AppContainer launcher with tem
 ACL grants and no network capability. The native Windows file, network, and ACL cleanup boundary
 passed in the compatibility matrix on `3b44ae4`. A full lifecycle report from each host and a
 same-tree aggregate are separate release gates; current results are recorded in PR #36. The
+Windows launcher serializes verifier calls while their shared Python and Git ACL grants are
+active; parallel makers and graph dispatch remain available. The
 work-graph evidence job is manual-only. The macOS fixture uses
 `sandbox-exec`; Linux needs `bubblewrap` and permission to create its
 namespaces. A missing sandbox is a failing report, never a skipped test or a portability claim.

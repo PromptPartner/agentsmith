@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 
 
@@ -80,6 +82,68 @@ class WindowsVerifierSandboxTests(unittest.TestCase):
                     self.assertEqual(subprocess.run(["icacls", str(path)], capture_output=True,
                                                     text=True, check=True).stdout, before)
             self.assertEqual(list(repo.glob(".agentsmith-verifier-*")), [])
+
+    @unittest.skipUnless(os.name == "nt", "requires native Windows AppContainer")
+    def test_parallel_verifiers_restore_shared_toolchain_acls(self) -> None:
+        spec = importlib.util.spec_from_file_location("agentsmith_parallel_verifier_test",
+                                                   ROOT / "scripts/autonomous-run.py")
+        assert spec and spec.loader
+        controller = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(controller)
+        with tempfile.TemporaryDirectory(prefix="agentsmith parallel windows verifiers ") as temporary:
+            root = Path(temporary)
+            repos = [root / name for name in ("repo-a", "repo-b")]
+            commands = []
+            for repo in repos:
+                repo.mkdir()
+                subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+                (repo / "input.txt").write_text("approved", encoding="utf-8")
+                probe = repo / "probe.py"
+                probe.write_text(
+                    "from pathlib import Path\n"
+                    "import sys, time\n"
+                    "assert Path('input.txt').read_text(encoding='utf-8') == 'approved'\n"
+                    "Path('inside.txt').write_text('allowed', encoding='utf-8')\n"
+                    "try:\n"
+                    "    Path(sys.argv[1]).write_text('escaped', encoding='utf-8')\n"
+                    "except OSError:\n"
+                    "    pass\n"
+                    "else:\n"
+                    "    raise SystemExit('sibling write succeeded')\n"
+                    "time.sleep(1)\n"
+                    "print('parallel boundary passed')\n", encoding="utf-8",
+                )
+                commands.append(f'"{sys.executable}" "{probe}" "{root / (repo.name + "-forbidden.txt")}"')
+            git_command = shutil.which("git")
+            self.assertIsNotNone(git_command)
+            git_executable = Path(git_command).resolve()
+            acl_paths = (Path(sys.prefix).resolve(), Path(sys.executable).resolve(),
+                         git_executable.parent.parent, git_executable, *repos)
+            before_acls = {
+                path: subprocess.run(["icacls", str(path)], capture_output=True,
+                                     text=True, check=True).stdout for path in acl_paths
+            }
+            barrier = threading.Barrier(2)
+
+            def verify(index: int) -> subprocess.CompletedProcess[str]:
+                barrier.wait(timeout=10)
+                return controller.sandboxed_verify(commands[index], repos[index], 90,
+                                                   controller.verifier_env())
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                futures = [pool.submit(verify, index) for index in range(2)]
+                results = [future.result(timeout=180) for future in futures]
+            for result in results:
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("parallel boundary passed", result.stdout)
+            for repo in repos:
+                self.assertEqual((repo / "inside.txt").read_text(encoding="utf-8"), "allowed")
+                self.assertFalse((root / (repo.name + "-forbidden.txt")).exists())
+                self.assertEqual(list(repo.glob(".agentsmith-verifier-*")), [])
+            for path, before in before_acls.items():
+                with self.subTest(path=str(path)):
+                    self.assertEqual(subprocess.run(["icacls", str(path)], capture_output=True,
+                                                    text=True, check=True).stdout, before)
 
 
 if __name__ == "__main__":
