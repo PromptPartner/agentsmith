@@ -175,12 +175,12 @@ else
   bad "rejects unexpected arguments with exit 2 — a typo'd flag would look like a pass"
 fi
 
-echo "test-leak-gate — the README operator-credit exception (.harness/leak-gate.allow)"
+echo "test-leak-gate — narrow provenance exceptions (.harness/leak-gate.allow)"
 
-# WHY: the maintainer chose to be named in the README author section (and only there). The gate
-# ships .harness/leak-gate.allow to permit exactly that. These cases prove the exception is real
-# yet tightly scoped: allowed in README, still caught everywhere else, and OFF by default — absent
-# the allow file even README is caught, so it is opt-in config, not a hole in the gate's code.
+# WHY: the maintainer chose to be named in the README author section. The immutable Wave 2
+# accepted-spec record also names the decision maker. These cases prove the exceptions are real
+# yet tightly scoped: other files and neighboring spec lines still fail, and without the allow
+# file even README is caught. This is opt-in config, not a hole in the gate's code.
 # The name is spliced at runtime ('Luk''as Hert''ig') so no literal ever lives in this tracked file.
 ALLOW_SRC="$ROOT_DIR/.harness/leak-gate.allow"
 NAME='**Luk''as Hert''ig** leads the project.'
@@ -207,7 +207,27 @@ else
   fi
   rm -f "$TMP/setup.sh"
 
-  # 3. remove the allow file — even README is caught again (the exception is opt-in, not baked in)
+  # 3. acceptance provenance is allowed only on its exact spec line, not a neighboring line
+  spec_path="$TMP/docs/specs/parallel-development-and-integration-wave.md"
+  mkdir -p "$(dirname "$spec_path")"
+  printf 'placeholder\nplaceholder\nplaceholder\naccepted_by: Luk''as Hert''ig\n' > "$spec_path"
+  git -C "$TMP" add -A >/dev/null 2>&1
+  if ( cd "$TMP" && bash scripts/leak-gate.sh >/dev/null 2>&1 ); then
+    ok "accepted-spec provenance line is allowed"
+  else
+    bad "accepted-spec provenance line should be allowed"
+  fi
+  printf 'Luk''as Hert''ig in unrelated text\n' >> "$spec_path"
+  git -C "$TMP" add -A >/dev/null 2>&1
+  if ( cd "$TMP" && bash scripts/leak-gate.sh >/dev/null 2>&1 ); then
+    bad "neighboring spec line slipped through the provenance exception"
+  else
+    ok "neighboring spec line is still flagged"
+  fi
+  rm -f "$spec_path"
+  git -C "$TMP" add -A >/dev/null 2>&1
+
+  # 4. remove the allow file — even README is caught again (the exception is opt-in, not baked in)
   rm -f "$TMP/.harness/leak-gate.allow"
   if scratch_file "README.md" "$NAME"; then
     bad "README name passed with NO allow file — the gate has a built-in exemption it must not have"

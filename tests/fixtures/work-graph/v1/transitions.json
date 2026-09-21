@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "graph": {
+    "prepared": ["running", "stopped", "blocked"],
+    "running": ["completed", "failed", "stopped", "blocked"],
+    "blocked": ["running", "failed", "stopped"],
+    "stopped": ["running"],
+    "completed": [],
+    "failed": []
+  },
+  "node": {
+    "ready": ["running", "conflicting", "blocked"],
+    "waiting": ["ready", "blocked"],
+    "conflicting": ["ready", "blocked"],
+    "running": ["completed", "failed", "interrupted"],
+    "interrupted": ["running", "failed", "blocked"],
+    "completed": [],
+    "failed": [],
+    "blocked": []
+  },
+  "quiescent": ["completed", "failed", "stopped"],
+  "absorbing": ["completed", "failed"]
+}

@@ -73,6 +73,13 @@ Both roles start fresh; their receipts, not conversational memory, are the hando
 The autonomous controller and `agentsmith evaluate` share the same immutable native-launch helper
 for command construction, structured-output parsing, usage extraction, sandbox settings, and the
 subprocess environment allowlist; neither runner imports the other's mutable state machine. Codex
+and Claude roles receive the controller's effective `core.autocrlf` value plus `gc.auto=0` and
+`maintenance.auto=false` as process-local Git overrides. This keeps their commits and the
+controller's clean-worktree check on the same text-conversion rule, while suppressing
+role-triggered automatic repacking between the controller's protected Git snapshots. Explicit or
+external maintenance may still trip the fail-closed object-store guard. Git documents
+[automatic maintenance after writing commands](https://git-scm.com/docs/git-maintenance#_description).
+Codex
 invocations use a temporary client home containing a same-filesystem authentication bridge to the
 validated ChatGPT login plus minimal no-telemetry configuration. The bridge preserves one OAuth
 refresh state and is removed after the process exits; global instructions, user settings, hooks,
@@ -89,7 +96,10 @@ Wayfinder spec flow remains available to every work type.
 lock is reclaimed only after its PID is demonstrably gone. While starting or resuming, the short
 repository coordination lock serializes the live-scope scan and lifecycle-state transition, then
 releases before model execution. A conflict names the other run and overlapping path prefix or
-resource. Malformed live scope fails closed; a demonstrably dead controller and a stopped run do
+resource. On Windows, lock acquisition and release retry brief file-sharing denials from
+competing readers; a persistent denial still fails closed. Malformed live scope fails closed;
+a demonstrably dead
+controller and a stopped run do
 not block new work. `stop <id>` atomically writes a stop
 request, signals the active controller and child, then waits up to five seconds for the controller
 to persist `interrupted`. It never writes `state.json` itself. If the controller has already died,
@@ -104,6 +114,17 @@ authoritative across every resume; pausing does not reset either budget.
 An accepted run prints the branch, commit, worktree, and evidence for human review. An escalated
 run prints the exact boundary that stopped it. Nothing leaves the machine until the operator
 separately authorizes the relevant external action.
+
+## Parallel work graphs
+
+`agentsmith graph validate --graph <repository-relative-json>` checks a clean, committed graph and
+its exact manifest bytes. `agentsmith graph status --graph <repository-relative-json>` derives a
+stable ready set and explains each node's prerequisite, scope conflict, child state, or missing
+dependency checkpoint. Both commands are read-only. `start` dispatches local finite runs, `stop`
+and `resume` retain their original limits, `integrate` verifies a local combined candidate, and
+`cleanup --preview` inventories exact artifacts before `cleanup --apply` removes only clean
+graph-owned checkpoint worktrees. None of these commands pushes or merges to a protected branch.
+See [parallel work graphs](24-parallel-work-graphs.md) for the full lifecycle and failure gates.
 
 Before relying on this unattended, run one report-only fixture, observe one complete maker/checker
 cycle, and test `stop`. Autonomy is earned using the same ladder as the autonomous-loops profile.

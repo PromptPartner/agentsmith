@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "run_id": "sample_c",
+  "spec_path": "docs/specs/parallel-development-and-integration-wave.md",
+  "implementation_ticket": "W2 sample C: use accepted libraries A and B",
+  "base_ref": "HEAD",
+  "roles": {
+    "maker": {"runtime": "codex", "model": "", "effort": "high"},
+    "checker": {"runtime": "claude", "model": "", "effort": "high"}
+  },
+  "scope": {"allowed_paths": ["sample/c/**"], "denied_paths": [".git/**", ".env*"], "resources": ["sample-c"]},
+  "verify": {"command": "./.agentsmith/agentsmith verify"},
+  "limits": {"max_attempts": 2, "wall_minutes": 90, "codex_goal_tokens": 30000, "claude_max_usd": 5},
+  "git": {"local_commits": true, "push": false, "merge": false, "history_rewrite": false},
+  "external_writes": false
+}

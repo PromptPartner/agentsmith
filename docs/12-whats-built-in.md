@@ -75,9 +75,12 @@ example skill.
 Every `SKILL.md` declares compatibility metadata. Runtime-specific behavior uses explicit context,
 not the directory in which a skill happened to be installed.
 
-The autonomous-run controller remains constrained to macOS/Linux because its isolation layer uses
-`sandbox-exec` or Bubblewrap. That limitation is declared rather than hidden behind a generic
-Windows compatibility claim. Concurrent local controllers also reserve conservative path prefixes
+The autonomous-run verifier uses `sandbox-exec` on macOS, Bubblewrap on Linux, and a classic
+AppContainer launcher on Windows. Windows support remains subject to the native file, network,
+cleanup, and lifecycle evidence gate; the file, network, and cleanup boundary passed on
+`3b44ae4`, while the complete native lifecycle and aggregate are separate release checks. An
+unavailable or incomplete boundary returns 126.
+Concurrent local controllers also reserve conservative path prefixes
 and optional manifest resource keys under a repository coordination lock before execution begins.
 
 ## Verification and CI

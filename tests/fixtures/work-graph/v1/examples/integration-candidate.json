@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "graph_id": "sample_parallel_three",
+  "graph_sha256": "f37324d7e008ec153b66a12c2c587def7de3171423f3f57684595f391af0e931",
+  "contract_commit": "1111111111111111111111111111111111111111",
+  "base_oid": "1111111111111111111111111111111111111111",
+  "candidate_branch": "agentsmith-graph/sample_parallel_three/candidate/001",
+  "candidate_commit": "6666666666666666666666666666666666666666",
+  "candidate_tree": "7777777777777777777777777777777777777777",
+  "sources": [
+    {"run_id": "sample_a", "accepted_commit": "2222222222222222222222222222222222222222", "receipt_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "already_included": false},
+    {"run_id": "sample_b", "accepted_commit": "3333333333333333333333333333333333333333", "receipt_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "already_included": false},
+    {"run_id": "sample_c", "accepted_commit": "8888888888888888888888888888888888888888", "receipt_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "already_included": false}
+  ],
+  "verification": {"command": "./.agentsmith/agentsmith verify", "exit_code": 0, "receipt_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},
+  "created_at": "2026-09-21T10:30:31+02:00",
+  "external_write_used": false,
+  "human_approval_required": true
+}

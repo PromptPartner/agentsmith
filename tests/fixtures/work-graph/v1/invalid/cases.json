@@ -1,0 +1,14 @@
+[
+  {"name": "unknown predecessor", "reason": "unknown-dependency", "graph_patches": [{"path": "/nodes/2/depends_on", "value": ["sample_a", "missing"]}]},
+  {"name": "dependency cycle", "reason": "dependency-cycle", "graph_patches": [{"path": "/nodes/0/depends_on", "value": ["sample_c"]}]},
+  {"name": "duplicate run identifier", "reason": "duplicate-run-id", "graph_patches": [{"path": "/nodes/1/run_id", "value": "sample_a"}]},
+  {"name": "ambiguous integration order", "reason": "integration-order", "graph_patches": [{"path": "/integration_order", "value": ["sample_a", "sample_c", "sample_b"]}]},
+  {"name": "unsafe manifest path", "reason": "unsafe-manifest-path", "graph_patches": [{"path": "/nodes/0/manifest_path", "value": "../outside.json"}]},
+  {"name": "manifest bytes changed", "reason": "manifest-hash", "graph_patches": [{"path": "/nodes/0/manifest_sha256", "value": "0000000000000000000000000000000000000000000000000000000000000000"}]},
+  {"name": "unsupported graph version", "reason": "unsupported-schema", "graph_patches": [{"path": "/schema_version", "value": 2}]},
+  {"name": "invalid concurrency ceiling", "reason": "invalid-concurrency", "graph_patches": [{"path": "/max_parallel", "value": 3}]},
+  {"name": "manifest run ID mismatch", "reason": "manifest-run-id", "manifest_patch": {"node_index": 0, "path": "/run_id", "value": "other"}},
+  {"name": "unsafe scope traversal", "reason": "unsafe-scope", "manifest_patch": {"node_index": 0, "path": "/scope/allowed_paths", "value": ["../outside/**"]}},
+  {"name": "duplicate resource declaration", "reason": "conflicting-resources", "manifest_patch": {"node_index": 0, "path": "/scope/resources", "value": ["same", "same"]}},
+  {"name": "invalid attempt budget", "reason": "invalid-budget", "manifest_patch": {"node_index": 0, "path": "/limits/max_attempts", "value": 0}}
+]

@@ -77,11 +77,13 @@ DEMO_TEMPLATE_FILES = (
 )
 RUNTIME_FILES = (
     ".agentsmith/agentsmith.py",
+    ".agentsmith/work_graph.py",
     ".agentsmith/agentsmith",
     ".agentsmith/agentsmith.cmd",
     ".agentsmith/config/agents.json",
     ".agentsmith/evaluate.py",
     ".agentsmith/native_launcher.py",
+    ".agentsmith/windows_verifier_sandbox.py",
     *(f".agentsmith/templates/first-loop/{path}" for path in DEMO_TEMPLATE_FILES),
 )
 SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -1137,6 +1139,48 @@ def cmd_validate_integration(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_graph(args: argparse.Namespace) -> int:
+    """Validate, inspect, or explicitly start a committed local work graph."""
+    import work_graph
+
+    try:
+        contract = work_graph.load_contract(args.target or os.getcwd(), args.graph)
+        if args.graph_command == "validate":
+            report = work_graph.validation_report(contract)
+        elif args.graph_command == "status":
+            report = work_graph.status(contract)
+        elif args.graph_command == "start":
+            report = work_graph.start_graph(contract)
+        elif args.graph_command == "stop":
+            report = work_graph.stop_graph(contract)
+        elif args.graph_command == "resume":
+            report = work_graph.resume_graph(contract)
+        elif args.graph_command == "integrate":
+            report = work_graph.integrate_graph(contract)
+        else:
+            report = work_graph.cleanup_graph(contract, preview=args.preview)
+    except work_graph.GraphError as exc:
+        raise CliError(str(exc)) from exc
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    elif args.graph_command == "validate":
+        ok(f"work graph {report['graph_id']} is valid at {report['contract_commit']}")
+        say(f"{report['node_count']} nodes; maximum {report['max_parallel']} parallel runs")
+    elif args.graph_command == "integrate":
+        ok(f"local candidate {report['candidate_branch']} verified at {report['candidate_commit']}")
+        say("push, PR, merge, release, and deployment still require separate operator authority")
+    elif args.graph_command == "cleanup":
+        say(f"work graph {report['graph_id']}: cleanup {'preview' if args.preview else 'applied'}")
+        for artifact in report["artifacts"]:
+            say(f"  {artifact['disposition']}: {artifact['kind']} {artifact['path']}")
+    else:
+        say(f"work graph {report['graph_id']}: {report['status']}")
+        for node in report["nodes"]:
+            say(f"  {node['run_id']}: {node['status']} — {node['reason']}")
+        say(f"next: {report['next_action']['command']}")
+    return 2 if args.graph_command in {"start", "resume"} and report["status"] != "completed" else 0
+
+
 def toml_value(value: Any) -> str:
     if isinstance(value, str):
         return json.dumps(value, ensure_ascii=False)
@@ -1355,7 +1399,8 @@ def copy_runtime(target: Path, *, dry_run: bool) -> Path:
         registry_destination = destination.parent / "config" / "agents.json"
         registry_destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(REGISTRY_PATH, registry_destination)
-        for helper_name in ("native_launcher.py", "evaluate.py"):
+        for helper_name in ("native_launcher.py", "evaluate.py", "work_graph.py",
+                            "windows_verifier_sandbox.py"):
             helper_source = ROOT / helper_name
             if helper_source.exists():
                 shutil.copy2(helper_source, destination.parent / helper_name)
@@ -7324,6 +7369,19 @@ def parser() -> argparse.ArgumentParser:
     )
     integration.add_argument("--checkpoint", required=True)
     integration.add_argument("--debug", action="store_true", help="print only redacted structural diagnostics")
+    graph = sub.add_parser("graph", help="inspect a committed local work graph")
+    graph_sub = graph.add_subparsers(dest="graph_command", required=True)
+    for graph_action in ("validate", "status", "start", "stop", "resume", "integrate", "cleanup"):
+        item = graph_sub.add_parser(graph_action)
+        item.add_argument("--graph", required=True, help="repository-relative committed graph JSON")
+        item.add_argument("--target", help="Git repository containing the graph (default: current directory)")
+        item.add_argument("--json", action="store_true")
+        if graph_action == "cleanup":
+            cleanup_mode = item.add_mutually_exclusive_group(required=True)
+            cleanup_mode.add_argument("--preview", action="store_true",
+                                      help="report owned and retained artifacts without deleting anything")
+            cleanup_mode.add_argument("--apply", action="store_true",
+                                      help="remove only verified clean graph-owned disposable worktrees")
     demo = sub.add_parser("demo", help="create a disposable guided demonstration")
     demo_sub = demo.add_subparsers(dest="demo_command", required=True)
     first_loop = demo_sub.add_parser("first-loop", help="create the deterministic launch-readiness scenario")
@@ -7361,7 +7419,7 @@ def parser() -> argparse.ArgumentParser:
 def normalize_legacy_argv(argv: list[str]) -> list[str]:
     if not argv:
         return ["install", "--wizard"]
-    commands = {"install", "update", "agents", "doctor", "status", "profiles", "compatibility", "verify", "validate-integration", "demo", "resume", "handoff", "new-feedback", "new-research", "secret-scan", "hook", "evaluate"}
+    commands = {"install", "update", "agents", "doctor", "status", "profiles", "compatibility", "verify", "validate-integration", "graph", "demo", "resume", "handoff", "new-feedback", "new-research", "secret-scan", "hook", "evaluate"}
     if argv[0] in commands or argv[0] in {"-h", "--help", "--version"}:
         return argv
     if "--doctor" in argv:
@@ -7390,7 +7448,7 @@ def run(argv: list[str] | None = None) -> int:
         args.command == "verify" and getattr(args, "verify_action", None) in {"discover", "apply"}
     )
     profile_operation = args.command == "profiles"
-    if args.command not in {"update", "validate-integration", "status", "demo", "resume"} and not verification_plan_operation and not profile_operation:
+    if args.command not in {"update", "validate-integration", "graph", "status", "demo", "resume"} and not verification_plan_operation and not profile_operation:
         maybe_report_automatic_update()
     if args.command == "install":
         if args.wizard:
@@ -7432,6 +7490,8 @@ def run(argv: list[str] | None = None) -> int:
         return cmd_verify(args)
     if args.command == "validate-integration":
         return cmd_validate_integration(args)
+    if args.command == "graph":
+        return cmd_graph(args)
     if args.command == "demo":
         if args.demo_command == "first-loop":
             return cmd_demo_first_loop(args)

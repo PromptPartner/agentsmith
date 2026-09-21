@@ -1,7 +1,7 @@
 # Known issues
 
-These defects are intentionally separate from the legacy global updater ownership fix. They are
-recorded here because no external tracker write has been authorized.
+This file records open defects and fixes found during verification. No external tracker write has
+been authorized, so the entries are kept here.
 
 - [ ] Project-scoped install writes Claude's user-global `permissions.defaultMode` through
   `install_native_config()`; the default `--safety cautious` therefore changes the user's global
@@ -14,6 +14,140 @@ recorded here because no external tracker write has been authorized.
 - [ ] `agentsmith verify discover --help` and `verify apply --help` currently show the shared
   verification parser's execution-only options; incompatible combinations fail clearly, but the
   subcommand help should expose only each operation's valid flags.
+- [ ] 2026-09-21 — Hosted macOS native lifecycle intermittently failed its cleanup-preview test
+  in run `35607452415`, although the same suite passed in that run's compatibility job and in
+  five local targeted attempts. Run `35605909782` had passed both paths. The exact failing
+  assertion is not yet known. A later docs-only push run `35610061317` failed in the macOS
+  compatibility copy when graph `start` returned a failed state inside a different cleanup test;
+  its pull-request copy passed. Run `35616698843` failed the stop/resume test because a maker
+  reported changed existing Git objects. The test now prints child reasons and graph events, and
+  the controller will include changed object paths in the next native failure for diagnosis.
+  Eight repeated local stop/resume runs passed after that diagnostic change; the macOS
+  compatibility lifecycle also passed on `4b42582` and again in both push and PR CI on `2cca50e`.
+  Manual run `35646692896` passed both macOS paths on `b331612`, but the original
+  failure artifact records only the test name and output hash, so its assertion and root cause
+  remain unknown. Push run `35651017175` later failed the macOS stop/resume fixture: both
+  child controllers saw the same eight previously loose Git objects disappear while their
+  maker snapshots were active. Git can repack loose objects during automatic maintenance;
+  the role environment now disables both `gc.auto` and `maintenance.auto` without changing
+  repository config. A passing same-tree native rerun is the release gate for this mitigation;
+  the original cleanup-preview assertion remains unknown.
+- [ ] 2026-09-21 — PR run `35641860248` exposed a macOS false negative in the new Git
+  text-conversion regression: `git status` sometimes trusted cached index metadata immediately
+  after the test changed `core.autocrlf`, so it reported a clean worktree even though the
+  controller would hash different bytes. The regression now compares the filtered worktree
+  blob with the committed blob directly; native confirmation remains pending.
+- [ ] 2026-09-21 — The same PR run failed a Windows graph stop fixture because it waited for
+  any of two parallel makers to log a start but then required `repo-a` to exist. Maker `b` can
+  start first, so a stop before `a` creates its worktree is valid. The fixture now checks
+  retention for every maker that actually logged a start; native confirmation remains pending.
+- [ ] 2026-09-21 — Final-tree manual run `35623269366` passed Linux and macOS native work-graph
+  lifecycle but failed eight of ten Windows dispatch tests. The Windows report binds commit
+  `00461bf`, tree `8d0c00f`, and records a clean checkout; its lifecycle phase exited 1.
+  Compatibility previously tested the Windows boundary but did not expose dispatch test errors.
+  The diagnostic run `35624368777` showed `graph differs from committed contract bytes` before
+  any child started. The fixture wrote graph JSON as platform text, so Windows CRLF bytes differed
+  from Git's normalized LF commit. It now writes exact LF bytes and asserts the working and
+  committed contract match. Push run `35625206301` reached the Windows lifecycle and exposed a
+  60-second fixture timeout, a stale-PID probe that called `os.kill` on Windows, another CRLF
+  contract write in the integration-conflict case, and two maker retries after verifier rejection.
+  The fixture now allows a bounded 180-second graph call, uses an out-of-range stale PID, writes
+  the conflict graph as LF bytes, and prints verifier receipts on failure. Push run
+  `35627080730` reduced the suite to
+  three failures: a child controller disappeared before state reconciliation, a failed-node test
+  observed the same interruption, and one graph timed out on a live coordination owner. One
+  verifier receipt also showed Python executable-resolution stderr during parallel roots. Shared
+  Python/Git toolchain ACL grants are now serialized with a Windows named mutex; a concurrent
+  negative test passed in compatibility on `6cc0833`. Manual run `35628932249` passed Linux and
+  macOS native reports, but Windows failed its lifecycle phase. Its compatibility traceback
+  identified transient `.git/agentsmith-runs/coordination.lock` removal during the sandbox's
+  per-file DACL snapshot/restore as the verifier exit-126 cause. The sandbox now skips only
+  disappeared paths on Windows errors 2 and 3, and a native test deletes the lock mid-verifier.
+  Manual run `35630897623` passed that native negative test and all ten compatibility graph
+  cases, but its separate Windows native report still failed eight graph cases on the same clean
+  tree. The release recorder runs with a stripped Git/Python environment; a raw Windows case under
+  that exact environment in push run `35633073987` reproduced a live repository coordination
+  owner outlasting the ten-second wait during parallel graph start. A simulated 11-second live
+  owner failed before the timeout change and passed with a bounded 60-second wait. Manual run
+  `35634260887` reached maker validation but reported both fake maker worktrees dirty under the
+  release environment. Push run `35635281371` identified `src/a/change.txt` and
+  `src/b/change.txt` as the modified files. The recorder isolates Git configuration, while the
+  native role's environment allowlist had dropped that isolation. Git for Windows then normalized
+  the makers' CRLF files to LF on commit, and the controller's isolated clean check saw the CRLF
+  worktree bytes as modifications. A local Git regression reproduced the mismatch and now passes
+  when the role receives the controller's effective `core.autocrlf` value. Manual run
+  `35636764367` passed all three native reports on commit `56db8eb` and tree `d42ed99`, including
+  the Windows lifecycle and negative AppContainer boundary. A local strict aggregate accepted
+  those exact reports, but the hosted aggregate skipped because the separate Windows compatibility
+  job reached its 20-minute job timeout while recording First Verified Loop evidence after its
+  graph checks had passed. The compatibility budget now allows 30 minutes on Windows; the next
+  same-tree manual run must pass before this issue can close. Run `35639654255` passed all three
+  native reports on commit `f41c4cf`, tree `dd4f9f3`, but its separate Windows compatibility
+  lifecycle intermittently left two child controllers at `checking` after a verifier exit of 0.
+  The graph had rendered their failure reason as the string `None`, hiding the child process
+  error. Failure events now retain a bounded, secret-free exit/exception/source-line signature.
+  Manual run `35645070119` on `b331612` passed all three native reports, but its Windows
+  compatibility copy again observed a child controller gone before terminal state: node `b`
+  was `interrupted`, independent node `a` completed, and dependent `c` stayed blocked. The
+  expected-nonzero test path did not print its graph event or child stderr, so the exit cause
+  remains unknown. Same-commit rerun `35646692896` passed all nine jobs, including Windows
+  compatibility and the hosted strict aggregate. This remains an open reliability defect.
+  Push run `35651017175` repeated the Windows failure in another fixture: node `a` exhausted
+  the 60-second coordination wait on live process `3484`, while `b` exited at `prepared` without
+  a terminal reason. A simulated Windows sharing denial on coordination-lock release failed
+  before a bounded unlink retry and passed after it; the exact hosted exception was not
+  captured. Push run `35652909610` then identified `PermissionError` at the exclusive
+  coordination-lock creation call in a different Windows fixture. Bounded Windows sharing
+  retries now cover acquisition and release; targeted tests fail before each fix and pass
+  after. A same-tree native rerun is the release gate. Failed runs do not produce a passing
+  aggregate.
+- [ ] 2026-09-21 — A stop request arriving after a fake maker has committed but before its receipt
+  is reconciled can leave an interrupted run whose resume replays the maker, producing a clean
+  worktree with nothing new to commit. A local graph stop/resume test exposed this under heavy
+  concurrent verification. The fixture now holds the maker before commit to test a deterministic
+  mid-maker stop; the late-stop reconciliation path still needs a bounded controller fix.
+## Resolved during W2-06
+
+- [x] 2026-09-21 — Windows AppContainer ACL grants initially left inherited ACE drift after
+  cleanup. Runs `35614813369`, `35616698843`, `35617685307`, and `35618648705` isolated the
+  failure to ACL propagation, including `icacls /restore`. Per-file DACL restoration passed
+  the worktree, Python, and Git ACL comparisons plus file/network denials in hosted run
+  `35621523631`. The launcher returns 126 if setup or cleanup fails. See
+  `docs/research/windows-verifier-sandbox.md` for the full progression.
+- [x] 2026-09-21 — A Linux verifier mount fixture patched `sys.platform` while the controller
+  selected Windows with `os.name`; native run `35619728991` failed the fixture after passing
+  the AppContainer boundary. Platform routing now uses `sys.platform`, and Windows run
+  `35621523631` passed that fixture.
+- [x] 2026-09-21 — A Windows graph status fixture wrote platform line endings, so its working
+  graph bytes differed from the committed contract on run `35613620432`. It now writes exact
+  UTF-8 bytes with LF, as the manifest fixture already did; run `35614813369` passed the graph
+  contract step on native Windows.
+- [x] 2026-09-21 — Hosted macOS graph dispatch sometimes treated a change to Git's
+  `.git/info/refs` dumb-transport cache as an unauthorized maker metadata write during parallel
+  work. The docs-only push run `35610061317` exposed the exact path. A linked-worktree
+  regression failed before the change and passed after; malformed cache content still fails
+  the protected metadata check.
+- [x] 2026-09-21 — The Ubuntu guardrail previously skipped the active sandbox and missed a
+  verifier command that accepted a sibling write inside isolated `/tmp`. The job now installs
+  Bubblewrap and the controller remounts isolated `/tmp` and home read-only before binding the
+  worktree. Run `35608202281` passed all 87 guardrail checks and all seven Linux native phases
+  on commit `0ec6c8a`, tree `2363ad5`.
+- [x] 2026-09-21 — Hosted Linux hid graph fixture worktrees under a late `/tmp` tmpfs mount,
+  causing eight verifier-dependent lifecycle failures. The controller now mounts `/tmp` before
+  creating and binding those worktree paths. Run `35605909782` passed the actual verifier probe
+  and all seven native phases on commit `819d56b`, tree `176e14d`.
+- [x] 2026-09-21 — Windows checkout converted work-graph fixture JSON from LF to CRLF, invalidating
+  the committed manifest and graph hashes. Git attributes now pin that fixture tree to LF; the
+  contract suite failed in a simulated Windows checkout before the fix and passed after.
+- [x] 2026-09-21 — Hosted Linux coordination read the empty lock between exclusive creation and
+  owner-record flush. A bounded publication retry passed its red/green test and the next Linux
+  native report passed all 24 coordination tests.
+- [x] 2026-09-21 — The Windows native report stopped at a POSIX-only secret-scanner test reported
+  as skipped. A native Windows CRLF scanner test now fills that slot; the next report passed all
+  ten secret-scanner tests and reached the lifecycle phase.
+- [x] 2026-09-21 — Failure reports retained only output hashes, hiding which coordination test
+  failed on Linux. The recorder now emits bounded unittest names or a skip marker to CI logs,
+  with a regression proving exception text stays out of those labels.
 
 ## Resolved during FVL-02
 

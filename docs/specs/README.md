@@ -14,3 +14,6 @@ the active tracker-write consent policy governs creating, commenting on, or clos
   documentation, and public proof.
 - [`agentsmith-next-stage.md`](agentsmith-next-stage.md) — wider living roadmap; orchestration,
   integration, office/extension paths, presentation production, and hosting remain later waves.
+- [`parallel-development-and-integration-wave.md`](parallel-development-and-integration-wave.md) —
+  **accepted** Wave 2 contract for the typed local work graph, scheduler over finite runs,
+  deterministic integration train, and complete agent-native development lifecycle.

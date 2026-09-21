@@ -18,6 +18,7 @@ make_fake() {
   printf '%s\n' '{"auth_mode":"chatgpt","tokens":{}}' > "$path/codex-home/auth.json"
   cp "$ROOT/scripts/autonomous-run.py" "$path/controller.py"
   cp "$ROOT/native_launcher.py" "$path/native_launcher.py"
+  cp "$ROOT/windows_verifier_sandbox.py" "$path/windows_verifier_sandbox.py"
   chmod +x "$path/controller.py"
   cp "$ROOT/templates/autonomous-run.json" "$path/template.json"
   printf '%s\n' \
@@ -204,18 +205,12 @@ expect_concurrent_start() {
 
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*)
-    if python3 - "$ROOT/scripts/autonomous-run.py" "$ROOT" <<'PY'
-from pathlib import Path
-import sys
-namespace = {'__name__': 'agentsmith_sandbox_probe', '__file__': sys.argv[1]}
-exec(compile(Path(sys.argv[1]).read_text(), sys.argv[1], 'exec'), namespace)
-result = namespace['sandboxed_verify'](
-    'exit 0', Path(sys.argv[2]), 15, namespace['verifier_env']())
-raise SystemExit(0 if result.returncode == 126 else 1)
-PY
-    then ok 'unsupported Windows verifier fails closed instead of running unrestricted'
-    else bad 'unsupported Windows verifier did not fail closed'; fi
-    printf 'autonomous-run: %d passed, %d failed (state machine covered on macOS/Linux)\n' "$pass" "$fail"
+    if python3 "$ROOT/scripts/test-windows-verifier-sandbox.py"; then
+      ok 'Windows AppContainer confines verifier files and network'
+    else
+      bad 'Windows AppContainer verifier boundary failed'
+    fi
+    printf 'autonomous-run: %d passed, %d failed (native Windows boundary covered)\n' "$pass" "$fail"
     [ "$fail" -eq 0 ]
     exit
     ;;

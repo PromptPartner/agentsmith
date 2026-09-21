@@ -948,6 +948,7 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
             (native_project / ".agentsmith" / "autonomous-run.py").is_file()
             and (native_project / ".agentsmith" / "agentsmith.py").is_file()
             and (native_project / ".agentsmith" / "native_launcher.py").is_file()
+            and (native_project / ".agentsmith" / "windows_verifier_sandbox.py").is_file()
             and (native_project / ".agentsmith" / "evaluate.py").is_file()
             and (native_project / ".harness" / "verify.conf").is_file(),
             "software project scaffolds the autonomous controller and cross-platform runtime",

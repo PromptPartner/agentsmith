@@ -21,14 +21,14 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 30 || 20 }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
       - name: Python core compiles
-        run: python -m py_compile agentsmith.py native_launcher.py evaluate.py config/statusline.py scripts/autonomous-run.py scripts/first-loop-release-evidence.py scripts/generate-first-loop-proof.py scripts/test-agent-conformance.py scripts/test-autonomous-state.py scripts/test-doctor.py scripts/test-evaluate.py scripts/test-first-verified-loop-contracts.py scripts/test-secret-scan.py scripts/test-statusline.py scripts/test-tracker-consent.py scripts/test-update.py scripts/test-verify-receipts.py compatibility/test_registry.py
+        run: python -m py_compile agentsmith.py work_graph.py native_launcher.py windows_verifier_sandbox.py evaluate.py config/statusline.py scripts/autonomous-run.py scripts/test-windows-verifier-sandbox.py scripts/first-loop-release-evidence.py scripts/work-graph-release-evidence.py scripts/generate-first-loop-proof.py scripts/test-agent-conformance.py scripts/test-autonomous-state.py scripts/test-autonomous-graph-base.py scripts/test-work-graph-contracts.py scripts/test-work-graph-status.py scripts/test-work-graph-dispatch.py scripts/test-work-graph-cli-surface.py scripts/test-work-graph-release-evidence.py scripts/test-doctor.py scripts/test-evaluate.py scripts/test-first-verified-loop-contracts.py scripts/test-secret-scan.py scripts/test-statusline.py scripts/test-tracker-consent.py scripts/test-update.py scripts/test-verify-receipts.py compatibility/test_registry.py
       - name: Registry schema and contract
         run: python compatibility/test_registry.py
       - name: Strict cross-platform conformance
@@ -47,6 +47,25 @@ jobs:
         run: python scripts/test-first-verified-loop-contracts.py --fvl07
       - name: First Verified Loop release-evidence contracts
         run: python scripts/test-first-verified-loop-contracts.py --fvl08
+      - name: Work-graph contracts and read-only status
+        run: |
+          python scripts/test-work-graph-contracts.py
+          python scripts/test-work-graph-status.py
+          python scripts/test-autonomous-graph-base.py
+          python scripts/test-work-graph-cli-surface.py
+          python scripts/test-work-graph-release-evidence.py
+      - name: Work-graph local lifecycle on native macOS
+        if: runner.os == 'macOS'
+        run: python scripts/test-work-graph-dispatch.py
+      - name: Windows verifier file and network boundary
+        if: runner.os == 'Windows'
+        run: python scripts/test-windows-verifier-sandbox.py
+      - name: Work-graph lifecycle under native report environment on Windows
+        if: runner.os == 'Windows'
+        run: python -c 'import runpy, subprocess, sys; env = runpy.run_path("scripts/work-graph-release-evidence.py")["environment"](); raise SystemExit(subprocess.call([sys.executable, "scripts/test-work-graph-dispatch.py", "GraphDispatchTests.test_parallel_roots_and_dependent_checkpoint"], env=env))'
+      - name: Work-graph local lifecycle on native Windows
+        if: runner.os == 'Windows'
+        run: python scripts/test-work-graph-dispatch.py
       - name: Stable release updater
         run: python scripts/test-update.py
       - name: Cross-platform secret scanner fixtures
@@ -106,6 +125,93 @@ jobs:
           path: ${{ runner.temp }}/first-verified-loop-native-aggregate.json
           retention-days: 14
 
+  w2-native-evidence:
+    name: native work-graph lifecycle (${{ matrix.os }})
+    if: github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install Linux verifier sandbox
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          bwrap --unshare-net --ro-bind / / --tmpfs /tmp --dev /dev --proc /proc /bin/true
+      - name: Probe actual Linux verifier policy
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        shell: bash
+        run: |
+          python - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          import subprocess
+          import tempfile
+
+          source = Path('scripts/autonomous-run.py').resolve()
+          spec = importlib.util.spec_from_file_location('agentsmith_verifier_probe', source)
+          assert spec and spec.loader
+          controller = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(controller)
+          with tempfile.TemporaryDirectory(prefix='agentsmith verifier probe ') as temporary:
+              repo = Path(temporary) / 'repo'
+              repo.mkdir()
+              subprocess.run(['git', 'init', '-q'], cwd=repo, check=True)
+              result = controller.sandboxed_verify('true', repo, 10, controller.verifier_env())
+              if result.returncode:
+                  print(f'verifier policy probe exit={result.returncode}; stderr={result.stderr[:300]!r}')
+                  raise SystemExit(1)
+          print('verifier policy probe passed')
+          PY
+      - name: Record native work-graph lifecycle
+        run: python scripts/work-graph-release-evidence.py record --expected-commit "${{ github.sha }}" --output-root "${{ runner.temp }}" --output "${{ runner.temp }}/work-graph-${{ runner.os }}.json"
+      - name: Upload native work-graph report, including failure evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: w2-native-${{ runner.os }}
+          path: ${{ runner.temp }}/work-graph-${{ runner.os }}.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  w2-native-aggregate:
+    name: aggregate native work-graph evidence
+    if: always() && github.event_name == 'workflow_dispatch' && needs.compatibility.result == 'success' && needs.posix-guardrails.result == 'success'
+    needs: [w2-native-evidence, compatibility, posix-guardrails]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Download native work-graph reports
+        uses: actions/download-artifact@v5
+        with:
+          pattern: w2-native-*
+          path: release-evidence
+          merge-multiple: true
+      - name: Aggregate matching native work-graph reports
+        run: python scripts/work-graph-release-evidence.py aggregate --expected-commit "${{ github.sha }}" --report release-evidence/work-graph-Linux.json --report release-evidence/work-graph-macOS.json --report release-evidence/work-graph-Windows.json --output-root "${{ runner.temp }}" --output "${{ runner.temp }}/work-graph-native-aggregate.json"
+      - name: Upload work-graph aggregate
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: w2-native-aggregate
+          path: ${{ runner.temp }}/work-graph-native-aggregate.json
+          retention-days: 14
+
   posix-guardrails:
     name: existing guardrails (Ubuntu)
     runs-on: ubuntu-latest
@@ -115,6 +221,14 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
+      - name: Install Linux guardrail sandbox
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          bwrap --unshare-net --ro-bind / / --tmpfs /tmp --dev /dev --proc /proc /bin/true
       - name: Security and harness invariant tests
         shell: bash
         run: |
