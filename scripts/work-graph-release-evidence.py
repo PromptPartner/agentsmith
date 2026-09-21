@@ -37,6 +37,7 @@ SECURITY_COVERAGE = (
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 TEST_RESULT = re.compile(r"Ran (\d+) tests? in ")
+FAILED_TEST = re.compile(r"(?m)^(?:FAIL|ERROR): (test_[A-Za-z0-9_]{1,128}) \([A-Za-z0-9_.]+\)\r?$")
 
 
 class EvidenceError(RuntimeError):
@@ -106,6 +107,11 @@ def timestamp() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
+def failure_labels(stderr: str) -> list[str]:
+    """Expose bounded unittest names, never exception messages or raw process output."""
+    return sorted(set(FAILED_TEST.findall(stderr)))[:8]
+
+
 def native_platform() -> str:
     system = platform.system().lower()
     value = {"darwin": "macos", "linux": "linux", "windows": "windows"}.get(system)
@@ -135,6 +141,10 @@ def record(output: Path, output_root: Path, expected_commit: str) -> None:
                               "stdout_sha256": hashlib.sha256(completed.stdout).hexdigest(),
                               "stderr_sha256": hashlib.sha256(completed.stderr).hexdigest()})
         if completed.returncode or count < minimum or not re.search(r"(?m)^OK(?:\s|$)", stderr) or "skipped=" in stderr:
+            for name in failure_labels(stderr):
+                print(f"native phase {label} failed test: {name}", file=sys.stderr)
+            if "skipped=" in stderr:
+                print(f"native phase {label} contains skipped tests", file=sys.stderr)
             status = "failed"
             break
     dirty_after = bool(git("status", "--porcelain=v1", "--untracked-files=all"))

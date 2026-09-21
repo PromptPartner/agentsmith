@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
 import subprocess
@@ -13,6 +14,10 @@ import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts/work-graph-release-evidence.py"
+SPEC = importlib.util.spec_from_file_location("work_graph_release_evidence", SCRIPT)
+assert SPEC and SPEC.loader
+RECORDER = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(RECORDER)
 
 
 def git(*arguments: str) -> str:
@@ -21,6 +26,13 @@ def git(*arguments: str) -> str:
 
 
 class WorkGraphReleaseEvidenceTests(unittest.TestCase):
+    def test_failure_labels_keep_test_names_without_raw_output(self) -> None:
+        synthetic_secret = "ghp_" + "abcdefghijklmnopqrstuvwxyz1234"
+        stderr = ("FAIL: test_coordination (__main__.FixtureTests.test_coordination)\n"
+                  f"AssertionError: {synthetic_secret}\n"
+                  "ERROR: test_resume (__main__.FixtureTests.test_resume)\r\n")
+        self.assertEqual(RECORDER.failure_labels(stderr), ["test_coordination", "test_resume"])
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="agentsmith graph evidence ")
         self.addCleanup(self.temporary.cleanup)

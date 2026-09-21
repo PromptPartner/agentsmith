@@ -17,20 +17,24 @@ been authorized, so the entries are kept here.
 - [ ] 2026-09-21 — The Windows finite-run verifier has no supported fail-closed sandbox and returns
   126. The Windows work-graph lifecycle and same-commit three-platform aggregate remain blocked.
   See `docs/research/windows-verifier-sandbox.md` for the reviewed platform options.
-- [ ] 2026-09-21 — The first hosted Linux W2-06 native report stopped in the coordination phase
-  (`test-autonomous-state.py`, 20 tests). The recorder retains only output hashes, so the exact
-  failing case is unknown. Recheck on the next native run before classifying its cause.
+- [ ] 2026-09-21 — Hosted Linux coordination failed twice. The compatibility log identified a
+  reader seeing the empty coordination lock between exclusive creation and owner-record flush.
+  A bounded publication retry and red/green test are in place; native confirmation is pending.
+- [ ] 2026-09-21 — Hosted macOS compatibility still failed intermittently when one resumed peer's
+  Git worktree files changed classification during another maker's snapshot. Exact terminal-peer
+  binding now applies at both snapshots; native confirmation is pending.
+- [ ] 2026-09-21 — The Windows native report stopped after secret scanning because a POSIX-only
+  test was reported as skipped. The suite now runs a Windows CRLF scanner test in that slot;
+  native confirmation is pending before the verifier sandbox can be reached.
 
 ## Resolved during W2-06
 
 - [x] 2026-09-21 — Windows checkout converted work-graph fixture JSON from LF to CRLF, invalidating
   the committed manifest and graph hashes. Git attributes now pin that fixture tree to LF; the
   contract suite failed in a simulated Windows checkout before the fix and passed after.
-- [x] 2026-09-21 — Parallel peer setup crossed the Git metadata snapshot in either order: a ref
-  could appear after the ref scan but before the timestamp, or the ref could exist before its
-  state file. The snapshot now starts its clock before scanning and keeps every ref it saw
-  protected on the next scan. Forced-order tests failed before each correction and pass after;
-  an altered peer ref still fails validation.
+- [x] 2026-09-21 — Failure reports retained only output hashes, hiding which coordination test
+  failed on Linux. The recorder now emits bounded unittest names or a skip marker to CI logs,
+  with a regression proving exception text stays out of those labels.
 
 ## Resolved during FVL-02
 
