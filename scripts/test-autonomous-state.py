@@ -28,6 +28,25 @@ SPEC.loader.exec_module(CONTROLLER)
 
 
 class AutonomousStateTests(unittest.TestCase):
+    def test_native_role_disables_automatic_git_object_repacking(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith role git maintenance ") as temporary:
+            repo = Path(temporary)
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "gc.auto", "1"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "maintenance.auto", "true"], cwd=repo, check=True)
+            with CONTROLLER.native_role_environment("claude", repo) as maker_env:
+                gc_auto = subprocess.run(["git", "config", "--get", "gc.auto"], cwd=repo,
+                                         env=maker_env, text=True, capture_output=True, check=True)
+                maintenance_auto = subprocess.run(["git", "config", "--get", "maintenance.auto"],
+                                                  cwd=repo, env=maker_env, text=True,
+                                                  capture_output=True, check=True)
+            self.assertEqual(gc_auto.stdout.strip(), "0")
+            self.assertEqual(maintenance_auto.stdout.strip(), "false")
+            self.assertEqual(subprocess.check_output(["git", "config", "--get", "gc.auto"],
+                                                     cwd=repo, text=True).strip(), "1")
+            self.assertEqual(subprocess.check_output(["git", "config", "--get", "maintenance.auto"],
+                                                     cwd=repo, text=True).strip(), "true")
+
     def test_native_role_git_conversion_matches_controller_clean_check(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith role git config ") as temporary:
             repo = Path(temporary)

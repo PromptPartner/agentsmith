@@ -1152,11 +1152,14 @@ def effective_autocrlf(worktree: Path) -> str:
 @contextlib.contextmanager
 def native_role_environment(runtime: str, worktree: Path):
     with native_environment(runtime) as environment:
-        # The native-client allowlist strips arbitrary GIT_* variables. Pin only
-        # the controller's effective text conversion so maker commits and the
-        # controller's clean check interpret the same worktree bytes.
-        environment.update({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.autocrlf",
-                            "GIT_CONFIG_VALUE_0": effective_autocrlf(worktree)})
+        # The native-client allowlist strips arbitrary GIT_* variables. Pin the
+        # controller's text conversion and suppress Git's automatic maintenance
+        # while protected object-store snapshots bracket a native role. Git can
+        # otherwise repack existing loose objects during an ordinary commit.
+        environment.update({"GIT_CONFIG_COUNT": "3", "GIT_CONFIG_KEY_0": "core.autocrlf",
+                            "GIT_CONFIG_VALUE_0": effective_autocrlf(worktree),
+                            "GIT_CONFIG_KEY_1": "gc.auto", "GIT_CONFIG_VALUE_1": "0",
+                            "GIT_CONFIG_KEY_2": "maintenance.auto", "GIT_CONFIG_VALUE_2": "false"})
         yield environment
 
 
