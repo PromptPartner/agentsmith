@@ -836,6 +836,7 @@ def terminal_peer_git_artifacts(common: Path, active_ref: str, since_epoch: floa
 
 
 def _git_metadata_once(repo: Path, *, known_peers: dict[str, Any] | None = None) -> dict[str, Any]:
+    snapshot_epoch = time.time()
     common = resolved_git_path(repo, "--git-common-dir")
     active = resolved_git_path(repo, "--git-dir")
     active_rel = active.relative_to(common) if active.is_relative_to(common) else None
@@ -893,7 +894,7 @@ def _git_metadata_once(repo: Path, *, known_peers: dict[str, Any] | None = None)
             "refs": sorted(other_run_refs),
             "branch_logs": sorted(path.as_posix() for path in run_branch_logs),
             "worktree_admin": sorted(path.as_posix() for path in run_worktree_admin),
-            "snapshot_epoch": time.time(),
+            "snapshot_epoch": snapshot_epoch,
         },
     }
 
