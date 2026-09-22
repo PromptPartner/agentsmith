@@ -35,7 +35,10 @@ been authorized, so the entries are kept here.
   cleanup-preview reruns under the native recorder's stripped environment passed on macOS.
   The recorder now retains only the failing test name, phase, source line, and exception type
   in a failed report, so the next native failure can identify the assertion without leaking
-  traceback paths or output. Keep this issue open until the original failure is reproduced.
+  traceback paths or output. Manual workflow run `35697924409` passed the macOS native and
+  compatibility lifecycle on commit `13bfb84`; its hosted aggregate accepted all three native
+  reports from tree `a9e84ec`. The original failure did not recur, so keep this issue open
+  until its failing assertion is captured.
 - [ ] 2026-09-21 — PR run `35641860248` exposed a macOS false negative in the new Git
   text-conversion regression: `git status` sometimes trusted cached index metadata immediately
   after the test changed `core.autocrlf`, so it reported a clean worktree even though the
@@ -106,8 +109,10 @@ been authorized, so the entries are kept here.
   after. A same-tree native rerun is the release gate. Failed runs do not produce a passing
   aggregate. On 2026-09-22, the expected failed-node fixture gained bounded graph-event and
   child-exit signatures in its assertion; a synthetic redaction check fails before that
-  diagnostic and passes after. No post-fix Windows child interruption has been reproduced yet,
-  so the controller cause remains open pending native evidence.
+  diagnostic and passes after. Manual workflow run `35697924409` passed both Windows native
+  and compatibility lifecycle paths on commit `13bfb84`, and its hosted aggregate bound all
+  three native reports to tree `a9e84ec`. No post-fix Windows child interruption recurred;
+  the controller cause remains open pending a captured failure and red regression.
 - [ ] 2026-09-21 — A stop request arriving after a fake maker has committed but before its receipt
   is reconciled can leave an interrupted run whose resume replays the maker, producing a clean
   worktree with nothing new to commit. A local graph stop/resume test exposed this under heavy

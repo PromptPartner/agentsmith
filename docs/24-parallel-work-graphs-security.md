@@ -1,8 +1,11 @@
 # Work-graph security review — W2-06
 
 Original review: 2026-09-21 against `b33161231eccf6f9b902612abd798dd74417f79e`.
-The bounded failure-diagnostic fields were checked locally on 2026-09-22; native confirmation
-for that change remains pending.
+The bounded failure-diagnostic fields were checked locally on 2026-09-22. The
+[same-commit native workflow](https://github.com/PromptPartner/agentsmith/actions/runs/35697924409)
+passed Linux, macOS, and Windows reports and the hosted strict aggregate on commit `13bfb84` and
+tree `a9e84ec`; the two intermittent root causes remain open in `KNOWN-ISSUES.md`.
+
 This review names the mechanism and check for every required category. The [manual native
 workflow](https://github.com/PromptPartner/agentsmith/actions/runs/35646692896) passed on that
 commit: Linux, macOS, and Windows reports each passed seven phases and 70 tests, and the strict
