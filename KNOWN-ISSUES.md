@@ -357,3 +357,9 @@ been authorized, so the entries are kept here.
 - [ ] 2026-09-18 — The frozen First Verified Loop specification still calls the repository gate a
   24-phase gate, while `.harness/verify.conf` now contains 25 phases. The protected specification was
   intentionally not edited during FVL-08; release-facing documentation uses the observed count.
+
+## Resolved during public launch
+
+- [x] 2026-09-22 — The planned history text replacement changed a proof privacy assertion into a
+  check for a common word. The assertion now hashes candidate substrings against the historical
+  identifier, preserving the check without keeping that identifier in public source.
