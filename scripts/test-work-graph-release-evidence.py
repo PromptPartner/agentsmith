@@ -26,6 +26,23 @@ def git(*arguments: str) -> str:
 
 
 class WorkGraphReleaseEvidenceTests(unittest.TestCase):
+    def test_failure_diagnostics_keep_stage_line_and_exception_without_raw_output(self) -> None:
+        synthetic_secret = "ghp_" + "abcdefghijklmnopqrstuvwxyz1234"
+        stderr = (
+            "FAIL: test_cleanup_preview_retains_foreign_and_source_artifacts "
+            "(__main__.GraphDispatchTests.test_cleanup_preview_retains_foreign_and_source_artifacts)\n"
+            "Traceback (most recent call last):\n"
+            "  File \"/private/secret/repo/scripts/test-work-graph-dispatch.py\", line 260, "
+            "in test_cleanup_preview_retains_foreign_and_source_artifacts\n"
+            f"AssertionError: {synthetic_secret} /private/secret/repo\n"
+        )
+        self.assertEqual(RECORDER.failure_diagnostics("lifecycle", stderr), [
+            {"test": "test_cleanup_preview_retains_foreign_and_source_artifacts",
+             "stage": "lifecycle", "line": 260, "exception": "AssertionError"}
+        ])
+        self.assertNotIn(synthetic_secret, str(RECORDER.failure_diagnostics("lifecycle", stderr)))
+        self.assertNotIn("/private/secret", str(RECORDER.failure_diagnostics("lifecycle", stderr)))
+
     def test_failure_labels_keep_test_names_without_raw_output(self) -> None:
         synthetic_secret = "ghp_" + "abcdefghijklmnopqrstuvwxyz1234"
         stderr = ("FAIL: test_coordination (__main__.FixtureTests.test_coordination)\n"
@@ -55,6 +72,7 @@ class WorkGraphReleaseEvidenceTests(unittest.TestCase):
             "phases": [
                 {"label": label, "command": ["python", script], "exit_code": 0,
                  "tests_run": minimum, "stdout_sha256": "a" * 64, "stderr_sha256": "b" * 64}
+                | {"failures": []}
                 for label, script, minimum in (
                     ("contracts", "scripts/test-work-graph-contracts.py", 6),
                     ("status", "scripts/test-work-graph-status.py", 6),
@@ -131,6 +149,12 @@ class WorkGraphReleaseEvidenceTests(unittest.TestCase):
         altered["phases"][-1]["exit_code"] = False
         (self.root / "boolean-exit.json").write_text(json.dumps(altered), encoding="utf-8")
         variants["boolean-exit"] = [paths[0], paths[1], self.root / "boolean-exit.json"]
+        altered = self.report("windows")
+        altered["phases"][-1]["failures"] = [
+            {"test": "test_failed", "stage": "lifecycle", "line": 1, "exception": "AssertionError"}
+        ]
+        (self.root / "hidden-failure.json").write_text(json.dumps(altered), encoding="utf-8")
+        variants["hidden-failure"] = [paths[0], paths[1], self.root / "hidden-failure.json"]
         for name, selected in variants.items():
             with self.subTest(name=name):
                 result = self.aggregate(selected, name + "-aggregate.json")

@@ -111,6 +111,10 @@ alias is not a pinned model version.
 | Existing finite-run guards still hold | `test-autonomous-state.py`, `test-autonomous-run.sh` | Scope keys coordinate cooperating runs, not untrusted processes. |
 | Three native reports describe the same commit and tree | `work-graph-release-evidence.py aggregate`, `test-work-graph-release-evidence.py` | A generated aggregate is required; fixture JSON is illustrative only. |
 
+On a native test failure, the recorder saves the test name, phase, source line, and exception
+type in the failed report. It does not copy traceback paths, exception messages, or process
+output. The aggregate still accepts only three complete passing reports from one commit and tree.
+
 This is local test evidence, not a claim that arbitrary mutually untrusted makers are isolated:
 worktrees share Git metadata and local resources, and declared scope keys coordinate cooperating
 runs rather than binding operating-system ports or services. Cross-platform native proof and a

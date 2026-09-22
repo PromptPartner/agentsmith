@@ -31,7 +31,11 @@ been authorized, so the entries are kept here.
   maker snapshots were active. Git can repack loose objects during automatic maintenance;
   the role environment now disables both `gc.auto` and `maintenance.auto` without changing
   repository config. A passing same-tree native rerun is the release gate for this mitigation;
-  the original cleanup-preview assertion remains unknown.
+  the original cleanup-preview assertion remains unknown. On 2026-09-22, eight bounded
+  cleanup-preview reruns under the native recorder's stripped environment passed on macOS.
+  The recorder now retains only the failing test name, phase, source line, and exception type
+  in a failed report, so the next native failure can identify the assertion without leaking
+  traceback paths or output. Keep this issue open until the original failure is reproduced.
 - [ ] 2026-09-21 — PR run `35641860248` exposed a macOS false negative in the new Git
   text-conversion regression: `git status` sometimes trusted cached index metadata immediately
   after the test changed `core.autocrlf`, so it reported a clean worktree even though the
