@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import builtins
 import hashlib
 import json
 import os
@@ -38,8 +39,11 @@ def failed_node_diagnostics(events_path: Path, child_root: Path) -> str:
             details.append(f"{kind}:{run_id}")
             signature = CHILD_EXIT.fullmatch(str(event.get("reason", ""))) if kind == "run_failed" else None
             if signature:
+                exception_type = getattr(builtins, signature[3], None)
+                exception_name = (signature[3] if isinstance(exception_type, type)
+                                  and issubclass(exception_type, BaseException) else "unknown")
                 details.append(f"exit={signature[1]} stage={signature[2]} "
-                               f"exception={signature[3]} location={signature[4]}")
+                               f"exception={exception_name} location={signature[4]}")
     for run_id in ("a", "b", "c"):
         path = child_root / run_id / "state.json"
         if path.is_file():
@@ -67,6 +71,9 @@ class GraphDispatchTests(unittest.TestCase):
                           "location=autonomous-run.py:315",
             }) + "\n" + json.dumps({
                 "event": "run_completed", "run_id": "a", "reason": "/private/secret raw output",
+            }) + "\n" + json.dumps({
+                "event": "run_failed", "run_id": "c",
+                "reason": "child process exit=1 in making; exception=ghp_secret; location=unknown",
             }) + "\n", encoding="utf-8")
             child = root / "b" / "state.json"
             child.parent.mkdir()
