@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 330" role="img" aria-labelledby="title description">
+  <title id="title">AgentSmith's verified work loop</title>
+  <desc id="description">Project rules and a work profile guide a bounded agent task. Automated checks and a real-path exercise produce evidence. A handoff records the result so another session can resume.</desc>
+  <defs>
+    <style>
+      .bg{fill:#14213D}.box{fill:#fff;stroke:#AEBFE5;stroke-width:2}.accent{fill:#FCA311}.label{font:700 27px Arial,sans-serif;fill:#14213D}.small{font:400 19px Arial,sans-serif;fill:#3B4B68}.num{font:700 19px Arial,sans-serif;fill:#14213D}.arrow{stroke:#FCA311;stroke-width:5;fill:none;stroke-linecap:round;stroke-linejoin:round}
+    </style>
+  </defs>
+  <rect class="bg" width="1500" height="330" rx="28"/>
+  <g>
+    <rect class="box" x="30" y="70" width="260" height="190" rx="20"/>
+    <circle class="accent" cx="68" cy="110" r="22"/><text class="num" x="62" y="117">1</text>
+    <text class="label" x="54" y="159">Project rules</text><text class="small" x="54" y="196">and work profile</text>
+    <path class="arrow" d="M300 165h35m-13-12 13 12-13 12"/>
+    <rect class="box" x="345" y="70" width="260" height="190" rx="20"/>
+    <circle class="accent" cx="383" cy="110" r="22"/><text class="num" x="377" y="117">2</text>
+    <text class="label" x="369" y="159">Bounded agent</text><text class="small" x="369" y="196">work on one task</text>
+    <path class="arrow" d="M615 165h35m-13-12 13 12-13 12"/>
+    <rect class="box" x="660" y="70" width="260" height="190" rx="20"/>
+    <circle class="accent" cx="698" cy="110" r="22"/><text class="num" x="692" y="117">3</text>
+    <text class="label" x="684" y="159">Checks + real</text><text class="small" x="684" y="196">path exercise</text>
+    <path class="arrow" d="M930 165h35m-13-12 13 12-13 12"/>
+    <rect class="box" x="975" y="70" width="215" height="190" rx="20"/>
+    <circle class="accent" cx="1013" cy="110" r="22"/><text class="num" x="1007" y="117">4</text>
+    <text class="label" x="999" y="159">Evidence</text><text class="small" x="999" y="196">for the claim</text>
+    <path class="arrow" d="M1200 165h35m-13-12 13 12-13 12"/>
+    <rect class="box" x="1245" y="70" width="225" height="190" rx="20"/>
+    <circle class="accent" cx="1283" cy="110" r="22"/><text class="num" x="1277" y="117">5</text>
+    <text class="label" x="1269" y="159">Handoff</text><text class="small" x="1269" y="196">and resume</text>
+  </g>
+</svg>
