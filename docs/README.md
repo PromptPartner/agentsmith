@@ -1,61 +1,35 @@
-# The docs — a map and a reading order
+# AgentSmith documentation
 
-Everything in this folder is **dynamic context**: none of it is loaded into the agent unless a
-task calls for it, so it costs the rule budget nothing (see
-[`01-harness-philosophy.md`](01-harness-philosophy.md) for why that distinction runs the whole
-design). That's also why these docs can afford to be generous while `core/` is rationed line by
-line.
+AgentSmith gives an AI coding agent rules for your project, a profile for the kind of work, and a checkable path from a task to evidence and a handoff. Start with the route that matches what you want to do.
 
-**The numbers are the reading order.** Go top to bottom and it reads as one course — from "what
-is a harness" to "make it your team's own," with the glossary as the appendix:
-
-| | One line |
+| I want to… | Start here |
 |---|---|
-| [`01-harness-philosophy.md`](01-harness-philosophy.md) | What a harness is and why the model is the small part — the 5-minute foundation. |
-| [`02-your-first-hour.md`](02-your-first-hour.md) | From "it installed" to "I know what changed": the tour of your native rule file, first task, first handoff. |
-| [`03-verify-means-evidence.md`](03-verify-means-evidence.md) | The most load-bearing concept: what counts as proof, per kind of work. |
-| [`04-why-your-agent-ignored-the-rule.md`](04-why-your-agent-ignored-the-rule.md) | The economics of rules, the four ways they fail, and the guard for each. |
-| [`05-operating-modes.md`](05-operating-modes.md) | Attended sessions vs autonomous loops, and which model for which phase. |
-| [`06-your-first-loop.md`](06-your-first-loop.md) | Complete the bounded First Verified Loop, then understand when that attended shape is ready for unattended operation. |
-| [`07-how-to-pick-a-profile.md`](07-how-to-pick-a-profile.md) | The ten profiles and how to choose (or stack) them. |
-| [`08-how-to-add-a-profile.md`](08-how-to-add-a-profile.md) | Extending the harness to work it doesn't cover yet. |
-| [`09-adapting-it-to-your-team.md`](09-adapting-it-to-your-team.md) | Earning your own rules, and retrofitting onto an existing project. |
-| [`10-best-practices.md`](10-best-practices.md) | Dos & don'ts, each traceable to a real incident. |
-| [`11-designing-uis.md`](11-designing-uis.md) | Product UI is `software-dev`: the `DESIGN.md` design-system workflow and how the harness holds UI to it. |
-| [`12-whats-built-in.md`](12-whats-built-in.md) | The catalog of conveniences setup can install — the machinery. |
-| [`13-platforms-and-tools.md`](13-platforms-and-tools.md) | The 16-agent matrix, three capability layers, and native destinations. |
-| [`14-project-tracker-guide.md`](14-project-tracker-guide.md) | Tool-agnostic tracker conventions (and the write-consent rule). |
-| [`15-safety-model.md`](15-safety-model.md) | What the harness can do to your machine, and how to bound it. |
-| [`16-securing-what-you-build.md`](16-securing-what-you-build.md) | The *other* security question: making the code the agent writes safe — gates, the `security-audit` profile, the skills pack. |
-| [`17-troubleshooting.md`](17-troubleshooting.md) | Symptom → cause → fix, for when it's behaving oddly at runtime. |
-| [`18-influences.md`](18-influences.md) | Full credits — who said each idea first, plus complementary work. |
-| [`19-glossary.md`](19-glossary.md) | Every harness term, one line each, with pointers. The appendix. |
-| [`20-wayfinding-spec-flow.md`](20-wayfinding-spec-flow.md) | Turn a foggy effort into an accepted terminal spec without collapsing decision and implementation tickets. |
-| [`21-autonomous-runs.md`](21-autonomous-runs.md) | Run one accepted coding ticket overnight through a local maker/checker controller. |
-| [`22-compatibility-contract.md`](22-compatibility-contract.md) | Support tiers, evidence vocabulary, canonical instructions, and certification rules. |
-| [`23-updating-existing-installations.md`](23-updating-existing-installations.md) | Bootstrap staged updates safely, preserve local evolution, and check known legacy blockers. |
-| [`24-parallel-work-graphs.md`](24-parallel-work-graphs.md) | Run reviewed coding tickets in parallel, reconcile stop/resume, and verify one local integration candidate. |
-| [`demos/first-verified-loop/`](demos/first-verified-loop/README.md) | Reproducible public red→green→real-path→receipt→handoff proof, lifecycle fixtures, claim map, and limitations. |
-| [`feedback/README.md`](feedback/README.md) | The post-incident log: how lessons become system changes. |
-| [`research/`](research/) | Source research the docs above were distilled from. |
+| Try the full loop in a disposable project | [Your first hour](02-your-first-hour.md), then the [First Verified Loop proof](demos/first-verified-loop/README.md) |
+| Install it in a real project | [Install and configure](../INSTALL.md), then [pick a profile](07-how-to-pick-a-profile.md) |
+| Understand what “verified” means | [Verification and evidence](03-verify-means-evidence.md) |
+| Check an agent's actual support | [Compatibility contract](22-compatibility-contract.md) and [registry](../config/agents.json) |
+| Run longer work safely | [Autonomous runs](21-autonomous-runs.md) and [parallel work graphs](24-parallel-work-graphs.md) |
+| Fix a problem | [Troubleshooting](17-troubleshooting.md) |
 
-## In a hurry? Four shortcuts
+## How the loop works
 
-**"I've never used an agent harness."** You ship software for a living; the AI-agent part is the
-new bit. Read [`01`](01-harness-philosophy.md), skim [the glossary](19-glossary.md) once, then
-[`04`](04-why-your-agent-ignored-the-rule.md) — the doc to read *before* a rule fails on you.
+![Flow from project rules and profile through bounded agent work, automated checks and real-path exercise, evidence, and handoff/resume.](../site/assets/agentsmith-flow.svg)
 
-**"I just installed it."** Start with [`02`](02-your-first-hour.md),
-[`03`](03-verify-means-evidence.md), and [`06`](06-your-first-loop.md). Inspect the
-[public proof](demos/first-verified-loop/README.md) when you want the exact evidence chain; use
-[`05`](05-operating-modes.md) before moving from attended work to an unattended loop.
+1. **Project rules and profile:** the agreement describes boundaries; the profile says what “done” means.
+2. **Bounded agent work:** the agent takes one clear task and makes an inspectable change.
+3. **Checks and real path:** automated checks test deterministic behavior; a real invocation checks the path a person would use.
+4. **Evidence:** the result is recorded so a completion claim can be checked.
+5. **Handoff and resume:** the next session can validate saved state and continue.
 
-**"Should I trust this on my machine?"** [`15-safety-model.md`](15-safety-model.md) is the whole
-posture in one place — what it can do, what's opt-in, and how to lock it down. That's blast radius;
-for the *other* security question — is the code it writes safe? — see
-[`16-securing-what-you-build.md`](16-securing-what-you-build.md). If something's already behaving
-oddly, [`17-troubleshooting.md`](17-troubleshooting.md).
+The [First Verified Loop](06-your-first-loop.md) walks through this sequence. The [public evidence bundle](demos/first-verified-loop/README.md) shows one concrete run and its limits.
 
-**"I want to make it mine."** [`09`](09-adapting-it-to-your-team.md), then
-[`10`](10-best-practices.md), then [`08`](08-how-to-add-a-profile.md) — and
-[`feedback/README.md`](feedback/README.md) for the loop that makes it compound.
+## Full guide
+
+| Topic | Pages |
+|---|---|
+| Foundations | [Harness philosophy](01-harness-philosophy.md) · [Why rules get ignored](04-why-your-agent-ignored-the-rule.md) · [Operating modes](05-operating-modes.md) |
+| Adapt the system | [Choose a profile](07-how-to-pick-a-profile.md) · [Add a profile](08-how-to-add-a-profile.md) · [Adapt it to your team](09-adapting-it-to-your-team.md) · [Best practices](10-best-practices.md) |
+| Build and operate | [Designing UIs](11-designing-uis.md) · [What's built in](12-whats-built-in.md) · [Platforms](13-platforms-and-tools.md) · [Project tracker](14-project-tracker-guide.md) · [Wayfinding specs](20-wayfinding-spec-flow.md) · [Updating installs](23-updating-existing-installations.md) |
+| Trust and reference | [Safety](15-safety-model.md) · [Securing what you build](16-securing-what-you-build.md) · [Influences](18-influences.md) · [Glossary](19-glossary.md) · [Parallel work graph security](24-parallel-work-graphs-security.md) |
+
+Product templates, demos, and the [spec format](specs/README.md) remain public. Your project research and specs belong in its `docs/research/` and `docs/specs/`, committed where that work is authorized to live.
