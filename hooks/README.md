@@ -64,9 +64,7 @@ continue to work without that variable.
 > second freshness window.
 > The dependable signals remain the **"handoff" keyword** above and the **human-watched
 > `ctx:NN%` gauge** in the status line. Treat this as a backstop, not a guarantee. Full
-> feasibility write-up: `docs/research/claude-code-hooks-and-managed-policy.md`. The separate
-> automatic-rollover decision is recorded in
-> `docs/research/handoff-rollover-orchestration.md`.
+> feasibility and automatic-rollover decisions are retained in the private project archive.
 
 ## Manual wiring
 

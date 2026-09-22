@@ -23,14 +23,11 @@ manifests without resource keys remain valid.
 changes, and report success. The post-update skill check is then skipped because it trusts the same
 false capability value.
 
-The silent capability-loss defect was fixed in `v0.2.2` and is recorded in
-[`feedback/0020-legacy-claude-reconstruction-skipped-skills-and-mcp.md`](feedback/0020-legacy-claude-reconstruction-skipped-skills-and-mcp.md).
+The silent capability-loss defect was fixed in `v0.2.2`.
 However, **do not use `v0.2.2` for a global update when a selected agent has any user-scope MCP
 server.** Any server in `~/.claude.json` or
 the Codex user configuration blocks `update plan --global`. AgentSmith cannot own global MCP
-servers, so those entries are foreign configuration. The regression is fixed in `v0.2.3` and
-recorded in
-[`feedback/0022-global-update-blocked-by-foreign-mcp.md`](feedback/0022-global-update-blocked-by-foreign-mcp.md).
+servers, so those entries are foreign configuration. The regression is fixed in `v0.2.3`.
 The fixed updater does not parse global MCP to infer capability ownership and never treats a global
 server as AgentSmith-managed. Valid foreign client configuration remains preserved. Do not remove
 foreign MCP configuration or edit an authenticated plan as a workaround for either older release.
@@ -38,12 +35,10 @@ foreign MCP configuration or edit an authenticated plan as a workaround for eith
 `v0.2.3` still inventories every directory under a detected skill root. On a legacy global Claude
 installation, a foreign skill containing a normal Python virtual-environment link such as
 `.venv/lib64 -> lib` can therefore block planning, and unrelated foreign files can enter the
-installation fingerprints. This ownership defect is fixed in `v0.2.4` and recorded in
-[`feedback/0023-update-inventoried-foreign-skill-trees.md`](feedback/0023-update-inventoried-foreign-skill-trees.md).
+installation fingerprints. This ownership defect is fixed in `v0.2.4`.
 `v0.2.4` can still preserve a stale AgentSmith-owned `.claude/skills` adapter when its canonical
 `.agents/skills` source changes. Claude discovers the stale adapter, while strict Doctor can report
-it as healthy. This ownership defect is fixed in `v0.2.5` and recorded in
-[`feedback/0024-claude-skill-adapter-drift-treated-as-customization.md`](feedback/0024-claude-skill-adapter-drift-treated-as-customization.md).
+it as healthy. This ownership defect is fixed in `v0.2.5`.
 Use `v0.3.1` for the complete legacy global update chain: foreign skill contents are preserved and
 ignored, canonical customizations are retained and mirrored to Claude, and symlinks escaping an
 owned inventory root remain rejected.

@@ -115,8 +115,8 @@ the pause-list and the loop denylist exist — they bound what a manipulated ste
 On a box you don't fully control, you want the safety floor enforced from above, where no project
 can re-enable the dangerous mode. `sudo setup.sh --org-policy` installs a managed `CLAUDE.md` at
 the OS policy path plus a stricter, no-bypass settings profile; the managed-settings keys that
-disable bypass mode (`disableBypassPermissionsMode`) and their exact per-OS paths are documented in
-[`research/claude-code-hooks-and-managed-policy.md`](research/claude-code-hooks-and-managed-policy.md).
+disable bypass mode (`disableBypassPermissionsMode`) and their exact per-OS paths are described in
+[Claude Code's managed settings documentation](https://code.claude.com/docs/en/settings#managed-settings).
 Managed settings are highest-precedence and can't be overridden by a user or project.
 
 ## Everything is reversible
