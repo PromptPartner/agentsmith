@@ -6,7 +6,7 @@
 # inherently fragile — the file can be stale (statusline hasn't rendered since the last turn) or
 # missing (statusline not installed / crashed). The RELIABLE handoff path is the "handoff"
 # keyword (hooks/handoff-on-keyword.sh) and the human-watched ctx:NN% gauge. Treat this as a
-# backstop, not a guarantee. See docs/research/claude-code-hooks-and-managed-policy.md.
+# backstop, not a guarantee. See hooks/README.md.
 #
 # Behaviour: when an operator-configured context USED threshold is reached, it nudges ONCE per
 # session (a marker file prevents a block-loop), asking the agent to safe-state + write a recall

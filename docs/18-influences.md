@@ -188,7 +188,5 @@ two compose cleanly on one machine.
 *The mental models here are theirs; the specific rules in `core/` are earned from real incidents on
 a production project. For the longer "why," see [`01-harness-philosophy.md`](01-harness-philosophy.md).*
 
-*The receipts behind this page — exact page numbers, source URLs, and honest confidence ratings for
-each attribution (including where the harness merely converges with a source rather than draws
-from it) — are in [`research/agentsmith-influences-and-credits.md`](research/agentsmith-influences-and-credits.md).
-This page is the curated version; that one is the working notes it was distilled from.*
+This page is the public attribution summary. Working research notes are kept in the private
+project archive.
