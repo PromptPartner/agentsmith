@@ -14,6 +14,10 @@ been authorized, so the entries are kept here.
 - [ ] `agentsmith verify discover --help` and `verify apply --help` currently show the shared
   verification parser's execution-only options; incompatible combinations fail clearly, but the
   subcommand help should expose only each operation's valid flags.
+- [ ] 2026-09-22 — A local macOS `agentsmith verify` run failed at the parallel work-graph
+  lifecycle fixture when a child snapshot classified transient `packed-refs.lock` as protected
+  Git metadata. Both child worktrees were clean afterward. The focused fixture and the full
+  31-phase gate passed on rerun. The exact writer and safe snapshot exclusion need diagnosis.
 - [ ] 2026-09-21 — Hosted macOS native lifecycle intermittently failed its cleanup-preview test
   in run `35607452415`, although the same suite passed in that run's compatibility job and in
   five local targeted attempts. Run `35605909782` had passed both paths. The exact failing
@@ -357,3 +361,9 @@ been authorized, so the entries are kept here.
 - [ ] 2026-09-18 — The frozen First Verified Loop specification still calls the repository gate a
   24-phase gate, while `.harness/verify.conf` now contains 25 phases. The protected specification was
   intentionally not edited during FVL-08; release-facing documentation uses the observed count.
+
+## Resolved during public launch
+
+- [x] 2026-09-22 — The planned history text replacement changed a proof privacy assertion into a
+  check for a common word. The assertion now hashes candidate substrings against the historical
+  identifier, preserving the check without keeping that identifier in public source.
