@@ -17,12 +17,9 @@
 #   ./scripts/leak-gate.sh          # scan the tracked tree
 # Exit 0 = clean, 1 = leak found, 2 = usage error.
 #
-# Scope is EVERY tracked file, with no exemptions. This project's own working records — .planning/
-# and its numbered docs/feedback/ post-incidents — used to be tracked and used to be exempt, on the
-# grounds that a record about a person may name them. They are now untracked and gitignored (kept
-# on disk, never published), so the exemption is gone and the rule is simply: nothing published by
-# this repo names anybody. If such a file is ever force-added back, the gate fails on it, which is
-# the intended answer rather than a special case.
+# Scope is EVERY tracked file, with no exemptions. Internal working records are archived in the
+# private development repository and blocked by path here. If one is force-added, this gate fails
+# even if its text has no name or credential shape.
 #
 # Tune with an optional .harness/leak-gate.allow file: one extended-regex per line; any
 # matching finding is ignored. Use it for a genuine false positive — never to wave through
@@ -44,15 +41,13 @@ ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$ROOT_DIR"
 ALLOW="$ROOT_DIR/.harness/leak-gate.allow"
 
-# No exemptions, for any check. The files that once needed one (this project's own records, which
-# are ABOUT an operator and so name them) are no longer tracked at all — see .gitignore. Keeping an
-# empty list rather than deleting the concept: `git grep` takes the pathspec either way, and an
-# exemption is exactly the kind of thing that should have to be added deliberately and argued for.
+# No exemptions: `git grep` takes the pathspec either way, and any future exemption must be
+# deliberate and narrow.
 SCOPE=()
 
 # Identity terms that must never appear in the shipped surface. These are public-safe (this
-# repo's author is already named throughout its git history and .planning/) — the point is not
-# that the name is secret, it is that a stranger installing this should never read it.
+# repo's author was once named in working material) — the point is that a stranger installing
+# this should not read an operator's name in instructions or product guides.
 #
 # Each term wraps one letter in a character class so this list cannot match ITSELF: 'w[o]rd' is
 # the regex for "word", while the literal text here is not that word. That is what lets the gate
@@ -63,6 +58,19 @@ SCOPE=()
 TERMS='l[u]kas|hert[i]g'
 
 fail=0
+
+# Paths carry private working material even when their text contains no obvious name or secret.
+# This is this repository's publication gate; installed projects keep their own research/specs.
+while IFS= read -r -d '' tracked_path; do
+  case "$tracked_path" in
+    .planning/*|brainstorms/*|docs/marketing/*|docs/research/*|docs/feedback/[0-9]*.md|docs/specs/*.md)
+      if [ "$tracked_path" != "docs/specs/README.md" ]; then
+        echo "  ✗ internal working path — $tracked_path"
+        fail=1
+      fi
+      ;;
+  esac
+done < <(git ls-files -z)
 
 # Drop allowlisted findings. Skipped when the file is absent/empty so an empty allowlist
 # cannot turn into "match nothing / invert / drop every finding".

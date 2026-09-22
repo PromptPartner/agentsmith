@@ -112,8 +112,8 @@ been authorized, so the entries are kept here.
   cleanup. Runs `35614813369`, `35616698843`, `35617685307`, and `35618648705` isolated the
   failure to ACL propagation, including `icacls /restore`. Per-file DACL restoration passed
   the worktree, Python, and Git ACL comparisons plus file/network denials in hosted run
-  `35621523631`. The launcher returns 126 if setup or cleanup fails. See
-  `docs/research/windows-verifier-sandbox.md` for the full progression.
+  `35621523631`. The launcher returns 126 if setup or cleanup fails. The detailed investigation
+  is retained in the private project archive.
 - [x] 2026-09-21 — A Linux verifier mount fixture patched `sys.platform` while the controller
   selected Windows with `os.name`; native run `35619728991` failed the fixture after passing
   the AppContainer boundary. Platform routing now uses `sys.platform`, and Windows run
