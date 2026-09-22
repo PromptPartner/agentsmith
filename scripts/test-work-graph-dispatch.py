@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -16,6 +17,39 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parent.parent
+CHILD_EXIT = re.compile(
+    r"\Achild process exit=(-?[0-9]{1,5}) in (prepared|making|checking|retrying|resuming|accepted|escalated|interrupted|unknown); "
+    r"exception=([A-Za-z_][A-Za-z0-9_.]{0,63}); location=(autonomous-run\.py:[1-9][0-9]{0,5}|unknown)\Z"
+)
+
+
+def failed_node_diagnostics(events_path: Path, child_root: Path) -> str:
+    """Bound fixture failure details to event names and controller exit signatures."""
+    details: list[str] = []
+    if events_path.is_file():
+        for raw in events_path.read_text(encoding="utf-8").splitlines()[-12:]:
+            try:
+                event = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            kind, run_id = event.get("event"), event.get("run_id")
+            if kind not in {"run_dispatched", "run_completed", "run_failed"} or run_id not in {"a", "b", "c"}:
+                continue
+            details.append(f"{kind}:{run_id}")
+            signature = CHILD_EXIT.fullmatch(str(event.get("reason", ""))) if kind == "run_failed" else None
+            if signature:
+                details.append(f"exit={signature[1]} stage={signature[2]} "
+                               f"exception={signature[3]} location={signature[4]}")
+    for run_id in ("a", "b", "c"):
+        path = child_root / run_id / "state.json"
+        if path.is_file():
+            try:
+                status = json.loads(path.read_text(encoding="utf-8")).get("status")
+            except (json.JSONDecodeError, OSError):
+                continue
+            if status in {"prepared", "making", "checking", "retrying", "resuming", "accepted", "escalated", "interrupted"}:
+                details.append(f"child:{run_id}:{status}")
+    return " ".join(details)[:999]
 
 
 def git(repo: Path, *arguments: str) -> str:
@@ -24,6 +58,30 @@ def git(repo: Path, *arguments: str) -> str:
 
 
 class GraphDispatchTests(unittest.TestCase):
+    def test_failed_node_diagnostics_exclude_paths_and_raw_output(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith graph diagnostics ") as temporary:
+            root = Path(temporary)
+            (root / "events.jsonl").write_text(json.dumps({
+                "event": "run_failed", "run_id": "b",
+                "reason": "child process exit=1 in making; exception=PermissionError; "
+                          "location=autonomous-run.py:315",
+            }) + "\n" + json.dumps({
+                "event": "run_completed", "run_id": "a", "reason": "/private/secret raw output",
+            }) + "\n", encoding="utf-8")
+            child = root / "b" / "state.json"
+            child.parent.mkdir()
+            child.write_text(json.dumps({"status": "making", "reason": "ghp_secret /private/secret"}),
+                             encoding="utf-8")
+            details = failed_node_diagnostics(root / "events.jsonl", root)
+            self.assertIn("exit=1", details)
+            self.assertIn("PermissionError", details)
+            self.assertIn("autonomous-run.py:315", details)
+            self.assertIn("run_failed:b", details)
+            self.assertIn("child:b:making", details)
+            self.assertNotIn("ghp_secret", details)
+            self.assertNotIn("/private/secret", details)
+            self.assertLess(len(details), 1000)
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="agentsmith graph dispatch ")
         self.addCleanup(self.temporary.cleanup)
@@ -134,13 +192,13 @@ class GraphDispatchTests(unittest.TestCase):
                 subprocess.run(["git", "worktree", "remove", "--force", str(path)], cwd=self.repo,
                                capture_output=True, check=False)
 
-    def invoke(self, action: str) -> subprocess.CompletedProcess[str]:
+    def invoke(self, action: str, *, diagnose_unexpected: bool = True) -> subprocess.CompletedProcess[str]:
         result = subprocess.run(
             [sys.executable, str(ROOT / "agentsmith.py"), "graph", action, "--graph", self.graph_path,
              "--target", str(self.repo), "--json"], cwd=self.repo, env=self.environment,
             text=True, capture_output=True, check=False, timeout=180,
         )
-        if action in {"start", "resume"} and result.returncode:
+        if diagnose_unexpected and action in {"start", "resume"} and result.returncode:
             events = self.repo / ".git/agentsmith-graphs/dispatch-fixture/events.jsonl"
             if events.is_file():
                 result.stderr += "\nGraph events:\n" + events.read_text(encoding="utf-8")
@@ -187,11 +245,15 @@ class GraphDispatchTests(unittest.TestCase):
 
     def test_failed_node_blocks_descendant_but_not_independent_peer(self) -> None:
         (self.fake_client.parent / "fail-run.txt").write_text("b", encoding="utf-8")
-        started = self.invoke("start")
-        self.assertEqual(started.returncode, 2, started.stdout + started.stderr)
+        started = self.invoke("start", diagnose_unexpected=False)
+        details = failed_node_diagnostics(
+            self.repo / ".git/agentsmith-graphs/dispatch-fixture/events.jsonl",
+            self.repo / ".git/agentsmith-runs",
+        )
+        self.assertEqual(started.returncode, 2, details)
         report = json.loads(self.invoke("status").stdout)
         self.assertEqual({node["run_id"]: node["status"] for node in report["nodes"]},
-                         {"a": "completed", "b": "failed", "c": "blocked"}, json.dumps(report))
+                         {"a": "completed", "b": "failed", "c": "blocked"}, details)
         self.assertFalse((self.repo.parent / "repo-c").exists())
 
     def test_stop_then_resume_preserves_partial_work_and_limits(self) -> None:
