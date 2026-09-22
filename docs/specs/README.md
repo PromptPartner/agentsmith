@@ -7,13 +7,6 @@ only explicit operator acceptance advances it to `accepted` and fills `accepted_
 The spec records decisions. Implementation proceeds through new, separately scoped tracker items;
 the active tracker-write consent policy governs creating, commenting on, or closing those items.
 
-## Current specs
-
-- [`first-verified-loop-wave.md`](first-verified-loop-wave.md) — **accepted** next implementation
-  wave: adaptive verification, active-state and profile clarity, guided sandbox, continuity,
-  documentation, and public proof.
-- [`agentsmith-next-stage.md`](agentsmith-next-stage.md) — wider living roadmap; orchestration,
-  integration, office/extension paths, presentation production, and hosting remain later waves.
-- [`parallel-development-and-integration-wave.md`](parallel-development-and-integration-wave.md) —
-  **accepted** Wave 2 contract for the typed local work graph, scheduler over finite runs,
-  deterministic integration train, and complete agent-native development lifecycle.
+This directory is a format guide. A project's own specs belong in its repository or private
+tracker, according to that project's visibility rules. AgentSmith does not ship its internal
+planning records here.

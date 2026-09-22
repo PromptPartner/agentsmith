@@ -1334,6 +1334,6 @@
     }
   ],
   "contract_version": 1,
-  "instruction_tokens": 8841,
+  "instruction_tokens": 8834,
   "python": ">=3.11"
 }

@@ -118,8 +118,7 @@ or `malformed`, then remove the explicit disable or re-run install as appropriat
 **"The context-% handoff nudge didn't fire."** On Codex, expected: it is intentionally not
 installed because it depends on Claude's status line, and this release has no `PreCompact` hook.
 On Claude, it is best-effort by design. No hook can reliably read live context usage (a documented
-Claude Code gap; details in
-[`research/claude-code-hooks-and-managed-policy.md`](research/claude-code-hooks-and-managed-policy.md)),
+Claude Code gap; see the [hooks guide](https://code.claude.com/docs/en/hooks)),
 so the % nudge is fragile. It is also disabled until `HANDOFF_PCT_THRESHOLD` is set: no single
 percentage predicts quality across models and tasks. Use the reliable path: treat the `ctx:NN%`
 gauge as load information, hand off at a natural phase boundary or when quality signals appear,

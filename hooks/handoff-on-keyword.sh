@@ -3,7 +3,7 @@
 # When the user says "handoff" or "wrap up", inject the handoff protocol so the agent
 # safe-states and emits a recall prompt before context runs out. This path needs NO
 # context-% visibility — it keys off the prompt text, which the hook always receives.
-# See core/50-git-and-handoff and docs/research/claude-code-hooks-and-managed-policy.md.
+# See core/50-git-and-handoff and hooks/README.md.
 #
 # Wire it (global ~/.claude/settings.json):
 #   "hooks": { "UserPromptSubmit": [ { "hooks": [
