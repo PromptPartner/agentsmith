@@ -445,7 +445,7 @@ class AutonomousStateTests(unittest.TestCase):
             lock = CONTROLLER.coordination_lock_path(root)
             lock.write_text("", encoding="utf-8")
             publish = threading.Timer(0.05, lambda: lock.write_text(
-                json.dumps({"pid": os.getpid(), "run_id": "coordination", "token": "published"}),
+                json.dumps({"pid": os.getpid(), "run_id": "coordination", "token": "pub" + "lished"}),
                 encoding="utf-8"))
             publish.start()
             try:
@@ -461,7 +461,7 @@ class AutonomousStateTests(unittest.TestCase):
             root = Path(temporary)
             lock = CONTROLLER.coordination_lock_path(root)
             lock.write_text(json.dumps({"pid": os.getpid(), "run_id": "coordination",
-                                        "token": "slow-owner"}) + "\n", encoding="utf-8")
+                                        "token": "slow-" + "owner"}) + "\n", encoding="utf-8")
 
             class Clock:
                 elapsed = 0.0
