@@ -1,7 +1,5 @@
 <div align="center">
   <img src="site/assets/promptpartner-mark-amber.svg" width="72" height="72" alt="PromptPartner mark">
-  <h1>AgentSmith</h1>
-  <p><strong>Erst der Beleg, dann „fertig“.</strong> Gib deinem KI-Agenten Projektregeln, eine Definition von „fertig“ und eine Möglichkeit, seine Arbeit zu belegen.</p>
   <p>
     <a href="https://github.com/PromptPartner/agentsmith/actions/workflows/verify.yml"><img alt="Verification" src="https://github.com/PromptPartner/agentsmith/actions/workflows/verify.yml/badge.svg?branch=master"></a>
     <a href="https://github.com/PromptPartner/agentsmith/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/PromptPartner/agentsmith"></a>
@@ -11,6 +9,10 @@
     <a href="README.md">English</a> · <strong>Deutsch</strong> · <a href="README.es.md">Español</a> · <a href="README.fr.md">Français</a> · <a href="README.zh-CN.md">简体中文</a>
   </p>
 </div>
+
+# AgentSmith
+
+**Erst der Beleg, dann „fertig“.** Gib deinem KI-Agenten Projektregeln, eine Definition von „fertig“ und eine Möglichkeit, seine Arbeit zu belegen.
 
 AgentSmith installiert eine gemeinsame Arbeitsvereinbarung und ein Arbeitsprofil in einem Projekt. Dein Agent erhält klare Grenzen, führt die passenden Prüfungen aus, testet den tatsächlichen Ablauf, dokumentiert Belege und hinterlässt eine Übergabe, die eine spätere Sitzung nachvollziehen kann. Du behältst die Kontrolle über Schreibzugriffe auf externe Systeme.
 

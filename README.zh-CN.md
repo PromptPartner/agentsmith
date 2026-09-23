@@ -1,7 +1,5 @@
 <div align="center">
   <img src="site/assets/promptpartner-mark-amber.svg" width="72" height="72" alt="PromptPartner mark">
-  <h1>AgentSmith</h1>
-  <p><strong>先验证，再完成。</strong> 为 AI 智能体提供项目规则、完成标准，以及证明工作成果的方法。</p>
   <p>
     <a href="https://github.com/PromptPartner/agentsmith/actions/workflows/verify.yml"><img alt="Verification" src="https://github.com/PromptPartner/agentsmith/actions/workflows/verify.yml/badge.svg?branch=master"></a>
     <a href="https://github.com/PromptPartner/agentsmith/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/PromptPartner/agentsmith"></a>
@@ -11,6 +9,10 @@
     <a href="README.md">English</a> · <a href="README.de.md">Deutsch</a> · <a href="README.es.md">Español</a> · <a href="README.fr.md">Français</a> · <strong>简体中文</strong>
   </p>
 </div>
+
+# AgentSmith
+
+**先验证，再完成。** 为 AI 智能体提供项目规则、完成标准，以及证明工作成果的方法。
 
 AgentSmith 会在项目中安装一套共享的工作约定和一个工作配置文件。智能体会获得明确的边界，运行相关检查，实际走通操作流程，记录证据，并留下可供后续会话验证的交接记录。对外部系统的写入操作始终由您掌控。
 

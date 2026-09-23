@@ -1,7 +1,5 @@
 <div align="center">
   <img src="site/assets/promptpartner-mark-amber.svg" width="72" height="72" alt="PromptPartner mark">
-  <h1>AgentSmith</h1>
-  <p><strong>La preuve avant de déclarer le travail terminé.</strong> Donnez à votre agent IA les règles du projet, une définition du travail terminé et un moyen de prouver le résultat.</p>
   <p>
     <a href="https://github.com/PromptPartner/agentsmith/actions/workflows/verify.yml"><img alt="Verification" src="https://github.com/PromptPartner/agentsmith/actions/workflows/verify.yml/badge.svg?branch=master"></a>
     <a href="https://github.com/PromptPartner/agentsmith/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/PromptPartner/agentsmith"></a>
@@ -11,6 +9,10 @@
     <a href="README.md">English</a> · <a href="README.de.md">Deutsch</a> · <a href="README.es.md">Español</a> · <strong>Français</strong> · <a href="README.zh-CN.md">简体中文</a>
   </p>
 </div>
+
+# AgentSmith
+
+**La preuve avant de déclarer le travail terminé.** Donnez à votre agent IA les règles du projet, une définition du travail terminé et un moyen de prouver le résultat.
 
 AgentSmith installe dans un projet un accord de fonctionnement commun et un profil de travail. Votre agent reçoit des limites claires, exécute les vérifications pertinentes, teste le parcours réel, consigne les preuves et prépare une transmission qu’une autre session peut valider. Vous gardez le contrôle des écritures vers des services externes.
 

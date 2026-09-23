@@ -1,7 +1,5 @@
 <div align="center">
   <img src="site/assets/promptpartner-mark-amber.svg" width="72" height="72" alt="PromptPartner mark">
-  <h1>AgentSmith</h1>
-  <p><strong>Primero la prueba, después el trabajo terminado.</strong> Dale a tu agente de IA reglas para el proyecto, una definición de trabajo terminado y una forma de demostrar lo que ha hecho.</p>
   <p>
     <a href="https://github.com/PromptPartner/agentsmith/actions/workflows/verify.yml"><img alt="Verification" src="https://github.com/PromptPartner/agentsmith/actions/workflows/verify.yml/badge.svg?branch=master"></a>
     <a href="https://github.com/PromptPartner/agentsmith/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/PromptPartner/agentsmith"></a>
@@ -11,6 +9,10 @@
     <a href="README.md">English</a> · <a href="README.de.md">Deutsch</a> · <strong>Español</strong> · <a href="README.fr.md">Français</a> · <a href="README.zh-CN.md">简体中文</a>
   </p>
 </div>
+
+# AgentSmith
+
+**Primero la prueba, después el trabajo terminado.** Dale a tu agente de IA reglas para el proyecto, una definición de trabajo terminado y una forma de demostrar lo que ha hecho.
 
 AgentSmith instala en un proyecto un acuerdo de trabajo compartido y un perfil de trabajo. Tu agente recibe límites claros, ejecuta las comprobaciones pertinentes, recorre el flujo real, registra pruebas y deja un traspaso que otra sesión puede validar. Tú mantienes el control de las escrituras en sistemas externos.
 

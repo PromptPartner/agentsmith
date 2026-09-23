@@ -1,7 +1,5 @@
 <div align="center">
   <img src="site/assets/promptpartner-mark-amber.svg" width="72" height="72" alt="PromptPartner mark">
-  <h1>AgentSmith</h1>
-  <p><strong>Proof before done.</strong> Give your AI agent project rules, a definition of done, and a way to prove the work.</p>
   <p>
     <a href="https://github.com/PromptPartner/agentsmith/actions/workflows/verify.yml"><img alt="Verification" src="https://github.com/PromptPartner/agentsmith/actions/workflows/verify.yml/badge.svg?branch=master"></a>
     <a href="https://github.com/PromptPartner/agentsmith/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/PromptPartner/agentsmith"></a>
@@ -11,6 +9,10 @@
     <strong>English</strong> · <a href="README.de.md">Deutsch</a> · <a href="README.es.md">Español</a> · <a href="README.fr.md">Français</a> · <a href="README.zh-CN.md">简体中文</a>
   </p>
 </div>
+
+# AgentSmith
+
+**Proof before done.** Give your AI agent project rules, a definition of done, and a way to prove the work.
 
 AgentSmith installs a shared operating agreement and a work profile into a project. Your agent gets clear boundaries, runs the relevant checks, exercises the real path, records evidence, and leaves a handoff another session can validate. You retain control of external writes.
 
