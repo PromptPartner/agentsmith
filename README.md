@@ -1,58 +1,95 @@
-# AgentSmith
+<div align="center">
+  <img src="site/assets/promptpartner-mark-amber.svg" width="72" height="72" alt="PromptPartner mark">
+  <h1>AgentSmith</h1>
+  <p><strong>Proof before done.</strong> Give your AI agent project rules, a definition of done, and a way to prove the work.</p>
+  <p>
+    <a href="https://github.com/PromptPartner/agentsmith/actions/workflows/verify.yml"><img alt="Verification" src="https://github.com/PromptPartner/agentsmith/actions/workflows/verify.yml/badge.svg?branch=master"></a>
+    <a href="https://github.com/PromptPartner/agentsmith/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/PromptPartner/agentsmith"></a>
+    <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-14213D.svg"></a>
+  </p>
+  <p>
+    <strong>English</strong> · <a href="README.de.md">Deutsch</a> · <a href="README.es.md">Español</a> · <a href="README.fr.md">Français</a> · <a href="README.zh-CN.md">简体中文</a>
+  </p>
+</div>
 
-**Proof before done.**
-
-**Give your coding agent project rules, a definition of done, and a way to prove the work.**
-
-AgentSmith installs a shared operating agreement and work-specific profiles into a project. The agent reads those rules, works on a bounded task, runs the project's checks, exercises the real path, records evidence, and leaves a handoff the next session can validate. You choose the task and retain control of external writes. AgentSmith is a local Python tool; no account or hosted service is required.
+AgentSmith installs a shared operating agreement and a work profile into a project. Your agent gets clear boundaries, runs the relevant checks, exercises the real path, records evidence, and leaves a handoff another session can validate. You retain control of external writes.
 
 ![AgentSmith flow: project rules and profile, bounded agent work, automated checks and real-path exercise, evidence, then handoff and resume.](site/assets/agentsmith-flow.svg)
 
-The [flow guide](docs/README.md#how-the-loop-works) describes each step. The SVG is editable and has a text description for screen readers.
+## Set up AgentSmith
 
-## See one real loop
+Choose one route. Both use the same guided setup and produce the same project files.
 
-The [First Verified Loop proof](docs/demos/first-verified-loop/README.md) records an intentionally failing readiness test, the correction, three passing verification phases, and a real command that reports `NOT READY` for incomplete checks. It includes a verification receipt and handoff/resume pair. This is a sanitized, reproducible fixture, not proof that every agent or operating system behaves identically.
+### 1. Manual setup
 
-## Guided path — try it in a disposable project
+1. Download the signed installer for macOS, Windows, or Linux from the [latest release](https://github.com/PromptPartner/agentsmith/releases/latest).
+2. Open a terminal and run `agentsmith`.
+3. Answer the guided questions. AgentSmith shows the exact plan before it writes anything.
 
-Requires Python 3.11 or newer and Git. No third-party Python package is needed.
+The wizard can configure an existing project or create an empty folder and initialize Git for a new one. The standalone app includes its runtime; Python is not required.
 
-```bash
-git clone https://github.com/PromptPartner/agentsmith.git ~/tools/agentsmith
-cd ~/tools/agentsmith
-python3 agentsmith.py demo first-loop --target /tmp/agentsmith-first-loop
+### 2. Ask your agent
+
+Paste this into Claude Code, Codex, or another coding agent:
+
+```text
+Install AgentSmith for this project. Follow the official agent guide at
+https://github.com/PromptPartner/agentsmith/blob/master/AGENT-INSTALL.md
+Inspect the project first, explain your profile recommendation in plain language,
+show me the exact installation plan, and ask once before applying it.
 ```
 
-The command refuses a non-empty target and prints the next steps and cleanup boundary. Follow the [guided first hour](docs/02-your-first-hour.md). On Windows, use `py -3` and a disposable Windows target; see [installation](INSTALL.md).
+The agent inspects the repository without running project code, recommends a profile from evidence, previews the managed files, installs AgentSmith, and runs the doctor check.
 
-## Experienced path — install in an existing project
+> Building AgentSmith from source is for contributors and advanced automation. See the [installation reference](INSTALL.md).
 
-To install directly:
+## New project or existing project?
 
-```bash
-./setup.sh --agent codex --profile software-dev --target /path/to/project
-# Windows: pwsh ./setup.ps1 --agent codex --profile software-dev --target C:\path\to\project
-```
-
-Run `python3 agentsmith.py status --target /path/to/project` to inspect the setup. Preview installation with `./setup.sh ... --dry-run`. The [installation guide](INSTALL.md) covers safety modes, profiles, updates, and removal.
-
-## Agent support, with evidence boundaries
-
-| Agent clients | Current status | What the status means |
+| Starting point | What AgentSmith does | What it does not do |
 |---|---|---|
-| Claude Code, Codex | Native integrations; certification passed | AgentSmith configures their documented local instruction and runtime surfaces. Dated native-client evaluation records exist. |
-| GitHub Copilot, Cursor, Gemini CLI, Windsurf / Devin, Cline, Roo Code, Aider, Continue, OpenHands, Goose, OpenCode, JetBrains Junie, Zed, Jules | Certification targets; certification pending | Each has an adapter and a registry-contract fixture only. Client behavior and native runtime remain unverified or unsupported as marked in the registry. |
+| Existing project | Inspects the files, recommends a profile, preserves foreign content, and adds managed rules and verification scaffolding. | It does not execute the project during inspection or replace existing project configuration. |
+| New project | Creates or validates an empty folder, initializes Git, and adds AgentSmith. | It does not choose or generate an application framework. Your agent can build the application after setup. |
 
-The [machine-readable registry](config/agents.json) is authoritative. Read the [compatibility contract](docs/22-compatibility-contract.md) for the evidence required for each claim.
+Project setup is the default because the rules travel with the repository and can be reviewed by collaborators. A user-wide core for every project is available under **Advanced options**. A layered setup combines that user-wide core with a small project-specific profile. See [project, user-wide, and layered setups](INSTALL.md#where-the-rules-live).
 
-## Go deeper
+## Work profiles
 
-- [Documentation map](docs/README.md) — start by task.
-- [First Verified Loop proof](docs/demos/first-verified-loop/README.md) — inspect red, green, real-path, receipt, and handoff artifacts.
-- [Verification and evidence](docs/03-verify-means-evidence.md) — what a passing check proves.
-- [Profiles](docs/07-how-to-pick-a-profile.md) — choose the quality gate for the work.
-- [Safety model](docs/15-safety-model.md) — what can write where and when consent is needed.
-- [Troubleshooting](docs/17-troubleshooting.md) — diagnose install or runtime problems.
+A profile tells the agent what “done” means for the work at hand. The wizard recommends one profile and shows the file evidence behind its choice. You can accept it or view the full list.
 
-MIT licensed. See [LICENSE](LICENSE) and [credits](docs/18-influences.md). Built by PromptPartner.
+| Profile | Use it for | Main proof |
+|---|---|---|
+| `software-dev` | Features, fixes, refactors, apps, libraries, and product UI | Build, checks, tests, security pass, real invocation |
+| `devops-setup` | Installers, CI, containers, configuration, and deployments | Dry run, idempotence, rollback, real deployment path |
+| `marketing-outreach` | Campaigns, email, newsletters, landing copy, and CRM work | Audience and factual review, links, rendering, send approval |
+| `document-creation` | Reports, proposals, specifications, manuals, and wikis | Source accuracy, structure, links, rendered file review |
+| `data-crunching` | Data cleaning, analysis, SQL, metrics, and ETL | Reproducibility, totals, edge cases, output inspection |
+| `general-admin` | Triage, scheduling, organization, summaries, and routine operations | Completeness, faithful output, destination and approval checks |
+| `deep-research` | Due diligence, market research, and cited investigations | Source quality, claim coverage, citations, synthesis review |
+| `creative-design` | Diagrams, decks, brand assets, images, and video | Brief, visual and export review, accessibility, brand consistency |
+| `security-audit` | Threat models, security reviews, penetration tests, and IAM audits | Reproduction, severity evidence, remediation, retest |
+
+`autonomous-loops` is an advanced modifier for scheduled or unattended work. Combine it with the main work profile; do not use it by itself. The [profile guide](docs/07-how-to-pick-a-profile.md) explains close calls, switching, and stacking.
+
+## What gets installed
+
+- `AGENTS.md` is the canonical project agreement. Claude Code also receives a generated `CLAUDE.md`.
+- `.harness/verify.conf` defines the real checks for this project.
+- `.agentsmith/state.json` records only AgentSmith-owned settings so updates and removal preserve foreign content.
+- Optional skills, MCP servers, and hooks are available in the collapsed advanced step.
+
+The cautious permission mode is the default. AgentSmith never treats a connected external service as permission to write to it.
+
+## See the proof
+
+The [First Verified Loop](docs/demos/first-verified-loop/README.md) records a failing test before the fix, passing verification afterward, a real command invocation, a receipt, and a resumable handoff. The [support registry](config/agents.json) separates instruction support from tested native behavior.
+
+## Documentation and community
+
+- [Installation reference](INSTALL.md)
+- [Documentation map](docs/README.md)
+- [How verification becomes evidence](docs/03-verify-means-evidence.md)
+- [Agent compatibility](docs/22-compatibility-contract.md)
+- [Contributing](CONTRIBUTING.md) and [support](SUPPORT.md)
+- [Security policy](SECURITY.md) and [code of conduct](CODE_OF_CONDUCT.md)
+
+MIT licensed. Built by [PromptPartner](https://promptpartner.ai/).
