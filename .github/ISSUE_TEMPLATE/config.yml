@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability privately
+    url: https://github.com/PromptPartner/agentsmith/security/advisories/new
+    about: Use GitHub private vulnerability reporting instead of a public issue.
+  - name: Read the support guide
+    url: https://github.com/PromptPartner/agentsmith/blob/master/SUPPORT.md
+    about: See what information to include when asking for help.

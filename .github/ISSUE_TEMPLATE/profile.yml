@@ -1,0 +1,61 @@
+name: Profile proposal
+description: Propose a new work profile or a substantial change to one.
+title: "profile: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Profiles define what good work and sufficient proof mean for a work type. Prefer improving an existing profile when its completion standard already fits.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I reviewed the existing profiles and profile selection guide.
+          required: true
+        - label: I searched existing issues for a similar proposal.
+          required: true
+  - type: input
+    id: name
+    attributes:
+      label: Proposed profile or existing profile
+      placeholder: software-dev
+    validations:
+      required: true
+  - type: textarea
+    id: work_type
+    attributes:
+      label: Work type
+      description: Describe the distinct work this profile covers and give concrete examples.
+    validations:
+      required: true
+  - type: textarea
+    id: distinction
+    attributes:
+      label: Why existing profiles do not fit
+      description: Identify the different completion standard or verification risk.
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Definition of done
+      description: What observable outcome should the profile require?
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification gates
+      description: List the automated checks and judgment-based evaluation needed before completion.
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Boundaries and overlap
+      description: State when to use this profile, when not to use it, and whether it is a primary profile or modifier.
+    validations:
+      required: true

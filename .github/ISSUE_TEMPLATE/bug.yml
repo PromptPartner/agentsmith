@@ -1,0 +1,75 @@
+name: Bug report
+description: Report a reproducible problem with AgentSmith.
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Search existing issues first and remove secrets or private project data from everything you post.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for this problem.
+          required: true
+        - label: This report does not disclose a security vulnerability or contain credentials or private data.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: AgentSmith version
+      description: Use a release number or commit hash.
+      placeholder: v0.3.1 or 25a4c4b
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, shell, Python version if applicable, and agent client.
+      placeholder: macOS 15, zsh, Python 3.12, Codex
+    validations:
+      required: true
+  - type: dropdown
+    id: project_state
+    attributes:
+      label: Project state
+      options:
+        - Existing project
+        - New or empty project
+        - User-wide installation
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Provide the smallest repeatable sequence, including sanitized commands and inputs.
+      placeholder: |
+        1. Run ...
+        2. Choose ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and evidence
+      description: Include sanitized errors, logs, screenshots, or doctor output.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add any relevant configuration or workaround. Remove secrets and private data.
