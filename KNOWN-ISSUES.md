@@ -367,3 +367,7 @@ been authorized, so the entries are kept here.
 - [x] 2026-09-22 — The planned history text replacement changed a proof privacy assertion into a
   check for a common word. The assertion now hashes candidate substrings against the historical
   identifier, preserving the check without keeping that identifier in public source.
+- [x] 2026-09-23 — The first standalone install stopped copying a project-local Python runtime, but
+  project scaffolding still relied on that copy to create `.agentsmith/` before writing its helper.
+  A real frozen-binary install reproduced the missing-directory failure. Scaffolding now creates the
+  owned directory explicitly, and every standalone CI target performs the same install and status run.

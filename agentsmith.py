@@ -40,6 +40,8 @@ VERSION = "0.3.1"
 OFFICIAL_REMOTE = "https://github.com/PromptPartner/agentsmith.git"
 ROOT = Path(__file__).resolve().parent
 REGISTRY_PATH = ROOT / "config" / "agents.json"
+PROFILE_CATALOG_PATH = ROOT / "config" / "profiles.json"
+WIZARD_LOCALES_PATH = ROOT / "config" / "wizard-locales.json"
 BEGIN = "<!-- BEGIN AGENTSMITH — universal agent harness (managed by agentsmith — edit core/profiles, not here) -->"
 END = "<!-- END AGENTSMITH -->"
 LEGACY_BEGIN = "<!-- BEGIN AGENTSMITH — universal agent harness (managed by setup.sh — edit core/profiles, not here) -->"
@@ -81,6 +83,8 @@ RUNTIME_FILES = (
     ".agentsmith/agentsmith",
     ".agentsmith/agentsmith.cmd",
     ".agentsmith/config/agents.json",
+    ".agentsmith/config/profiles.json",
+    ".agentsmith/config/wizard-locales.json",
     ".agentsmith/evaluate.py",
     ".agentsmith/native_launcher.py",
     ".agentsmith/windows_verifier_sandbox.py",
@@ -176,6 +180,16 @@ def home_dir() -> Path:
 
 def codex_home() -> Path:
     return Path(os.environ.get("CODEX_HOME") or home_dir() / ".codex").expanduser()
+
+
+def resolve_central_runtime(runtime_record: dict[str, Any]) -> Path:
+    command = str(runtime_record.get("path") or "agentsmith")
+    located = shutil.which(command)
+    if located:
+        return Path(located).resolve()
+    if getattr(sys, "frozen", False) and Path(sys.executable).name == Path(command).name:
+        return Path(sys.executable).resolve()
+    return Path(command)
 
 
 def backup(path: Path) -> Path | None:
@@ -739,6 +753,10 @@ def record_installation_manifest(
         "profiles": profiles,
         "include_core": not args.profile_only,
         "assemble_only": bool(args.assemble_only),
+        "runtime": {
+            "mode": "central-standalone" if getattr(sys, "frozen", False) else "project-python",
+            "path": Path(sys.executable).name if getattr(sys, "frozen", False) else ".agentsmith/agentsmith.py",
+        },
         "safety": safety,
         "operator": {
             "name": args.operator_name or recovery.get("operator_name") or "the project lead",
@@ -1390,15 +1408,21 @@ def install_adapters(target: Path, agents: list[str], *, dry_run: bool) -> None:
 
 
 def copy_runtime(target: Path, *, dry_run: bool) -> Path:
+    if getattr(sys, "frozen", False):
+        runtime = Path(sys.executable).resolve()
+        if dry_run:
+            say(f"DRY RUN — would use installed standalone runtime {runtime}")
+        return runtime
     # Validate the complete bundled dependency before the first runtime write.
     demo_source = demo_template_path()
     destination = target / ".agentsmith" / "agentsmith.py"
     if not dry_run:
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / "agentsmith.py", destination)
-        registry_destination = destination.parent / "config" / "agents.json"
-        registry_destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(REGISTRY_PATH, registry_destination)
+        config_destination = destination.parent / "config"
+        config_destination.mkdir(parents=True, exist_ok=True)
+        for source in (REGISTRY_PATH, PROFILE_CATALOG_PATH, WIZARD_LOCALES_PATH):
+            shutil.copy2(source, config_destination / source.name)
         for helper_name in ("native_launcher.py", "evaluate.py", "work_graph.py",
                             "windows_verifier_sandbox.py"):
             helper_source = ROOT / helper_name
@@ -1782,7 +1806,7 @@ def validate_installation_manifest(state: dict[str, Any]) -> dict[str, Any]:
         raise CliError("Installation state has no manifest; rerun install with explicit choices before planning an update")
     allowed_installation = {
         "installed_version", "source", "scope", "agents", "profiles", "include_core",
-        "assemble_only", "safety", "operator", "tracker", "capabilities", "managed_files",
+        "assemble_only", "runtime", "safety", "operator", "tracker", "capabilities", "managed_files",
     }
     unknown_installation = sorted(set(installation) - allowed_installation)
     if unknown_installation:
@@ -1794,7 +1818,7 @@ def validate_installation_manifest(state: dict[str, Any]) -> dict[str, Any]:
         )
     if not isinstance(installation["assemble_only"], bool):
         raise CliError("Installation manifest assemble_only field must be true or false; rerun install explicitly")
-    required = allowed_installation
+    required = allowed_installation - {"runtime"}
     missing = sorted(required - set(installation))
     if missing:
         raise CliError(f"Installation manifest is missing field(s): {', '.join(missing)}")
@@ -1822,6 +1846,14 @@ def validate_installation_manifest(state: dict[str, Any]) -> dict[str, Any]:
             raise CliError(f"Installation manifest {name} field must be an object")
     if not isinstance(installation["managed_files"], list):
         raise CliError("Installation manifest managed_files field must be a list")
+    runtime = installation.get("runtime")
+    if runtime is not None and (
+        not isinstance(runtime, dict)
+        or runtime.get("mode") not in {"central-standalone", "project-python"}
+        or not isinstance(runtime.get("path"), str)
+        or not runtime["path"]
+    ):
+        raise CliError("Installation manifest runtime field is invalid; rerun install explicitly")
     return installation
 
 
@@ -2256,6 +2288,11 @@ def cmd_update_plan(args: argparse.Namespace) -> int:
         )
     if installation["scope"] != expected_scope:
         raise CliError(f"Installation manifest scope is {installation['scope']!r}, not {expected_scope!r}")
+    if installation.get("runtime", {}).get("mode") == "central-standalone":
+        raise CliError(
+            "Standalone CLI updates use the signed operating-system installer; download the latest release, "
+            "then rerun 'agentsmith status'. The staged source updater is for source-based installations."
+        )
     if expected_scope == "global" and installation["capabilities"].get("mcp"):
         raise CliError(
             "Update planning refused: detected global MCP configuration, but global MCP ownership is not supported; "
@@ -3442,24 +3479,30 @@ def native_command(*arguments: str) -> str:
     return subprocess.list2cmdline(list(arguments)) if os.name == "nt" else shlex.join(arguments)
 
 
+def runtime_command(runtime: Path, *arguments: str) -> str:
+    if getattr(sys, "frozen", False):
+        return native_command(str(runtime), *arguments)
+    return native_command(sys.executable, str(runtime), *arguments)
+
+
 def install_hooks(target: Path, agents: list[str], args: argparse.Namespace) -> None:
     if not (args.with_handoff_hooks or args.with_ui_design_hook or args.with_hooks):
         return
     runtime = copy_runtime(home_dir() if args.global_mode else target, dry_run=args.dry_run)
     if args.with_handoff_hooks and "claude" in agents:
         def claude(data: dict[str, Any]) -> None:
-            append_unique_hook(data, "UserPromptSubmit", native_command(sys.executable, str(runtime), "hook", "handoff-on-keyword"))
-            append_unique_hook(data, "Stop", native_command(sys.executable, str(runtime), "hook", "context-budget-nudge"))
+            append_unique_hook(data, "UserPromptSubmit", runtime_command(runtime, "hook", "handoff-on-keyword"))
+            append_unique_hook(data, "Stop", runtime_command(runtime, "hook", "context-budget-nudge"))
         merge_json(home_dir() / ".claude" / "settings.json", claude, dry_run=args.dry_run)
     if args.with_handoff_hooks and "codex" in agents:
         def codex(data: dict[str, Any]) -> None:
-            append_unique_hook(data, "UserPromptSubmit", native_command(sys.executable, str(runtime), "hook", "handoff-on-keyword"))
+            append_unique_hook(data, "UserPromptSubmit", runtime_command(runtime, "hook", "handoff-on-keyword"))
         merge_json(codex_home() / "hooks.json", codex, dry_run=args.dry_run)
     if args.with_ui_design_hook:
         for agent, path in (("claude", home_dir() / ".claude" / "settings.json"), ("codex", codex_home() / "hooks.json")):
             if agent in agents:
                 def ui(data: dict[str, Any]) -> None:
-                    append_unique_hook(data, "PreToolUse", native_command(sys.executable, str(runtime), "hook", "ui-design-reminder"), "^(Edit|Write|apply_patch)$")
+                    append_unique_hook(data, "PreToolUse", runtime_command(runtime, "hook", "ui-design-reminder"), "^(Edit|Write|apply_patch)$")
                 merge_json(path, ui, dry_run=args.dry_run)
     if args.with_hooks and not args.global_mode:
         install_git_hooks(target, runtime, dry_run=args.dry_run)
@@ -3477,10 +3520,8 @@ def install_git_hooks(target: Path, runtime: Path, *, dry_run: bool) -> None:
         hooks = target / hooks
     # Git supplies its own POSIX launcher on Windows; no separately installed Git Bash/WSL is
     # required. The hook delegates immediately to the exact interpreter that ran setup.
-    command = (
-        "#!/bin/sh\n"
-        f"exec {shlex.quote(sys.executable)} {shlex.quote(str(runtime))} hook git-pre-commit\n"
-    )
+    invocation = runtime_command(runtime, "hook", "git-pre-commit")
+    command = f"#!/bin/sh\nexec {invocation}\n"
     if dry_run:
         say(f"DRY RUN — would install {hooks / 'pre-commit'}")
         return
@@ -3498,7 +3539,13 @@ def scaffold_project(target: Path, profiles: list[str], agents: list[str], args:
     if args.dry_run:
         say(f"DRY RUN — would scaffold cross-platform helpers under {target / '.agentsmith'}")
         return
-    for path in (target / "docs/research/_archive", target / "docs/feedback/_archive", target / ".harness/handoffs", target / ".planning"):
+    for path in (
+        target / ".agentsmith",
+        target / "docs/research/_archive",
+        target / "docs/feedback/_archive",
+        target / ".harness/handoffs",
+        target / ".planning",
+    ):
         path.mkdir(parents=True, exist_ok=True)
     copy_runtime(target, dry_run=False)
     templates = target / ".harness" / "templates"
@@ -3723,6 +3770,18 @@ def cmd_install(args: argparse.Namespace) -> int:
     if args.org_policy:
         return org_policy_install(args, agents)
     target = Path(args.target or os.getcwd()).expanduser().resolve()
+    if getattr(args, "initialize_git", False):
+        if target.exists() and (not target.is_dir() or any(target.iterdir())):
+            raise CliError(f"New project target must be absent or empty: {target}")
+        if args.dry_run:
+            say(f"DRY RUN — would create {target} and initialize Git")
+        else:
+            target.mkdir(parents=True, exist_ok=True)
+            if not shutil.which("git"):
+                raise CliError("Creating a new project requires Git on PATH")
+            result = subprocess.run(["git", "init", "-q"], cwd=target)
+            if result.returncode:
+                raise CliError(f"Git initialization failed for {target}")
     validate_design_system_source(args.design_system)
     if args.global_mode and args.target:
         raise CliError("--target cannot be combined with --global; global destinations are fixed by each runtime")
@@ -4376,10 +4435,15 @@ def inspect_statusline(agent_id: str) -> dict[str, Any]:
 
 
 def inspect_runtime(agent: dict[str, Any], target: Path) -> dict[str, Any]:
-    path = target / ".agentsmith" / "agentsmith.py"
+    installation = load_state(target).get("installation", {})
+    runtime_record = installation.get("runtime", {}) if isinstance(installation, dict) else {}
+    central = isinstance(runtime_record, dict) and runtime_record.get("mode") == "central-standalone"
+    path = resolve_central_runtime(runtime_record) if central else target / ".agentsmith" / "agentsmith.py"
     expected = Path(__file__).resolve()
     if not path.exists():
         state = "missing"
+    elif central:
+        state = "current"
     elif hashlib.sha256(path.read_bytes()).digest() == hashlib.sha256(expected.read_bytes()).digest():
         state = "current"
     else:
@@ -4528,31 +4592,30 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 
 def profile_catalog() -> list[dict[str, Any]]:
-    """Build stable public profile metadata from the profile sources themselves."""
-    profiles: list[dict[str, Any]] = []
-    for path in sorted((ROOT / "profiles").glob("*.md")):
-        text = path.read_text(encoding="utf-8")
-        heading = re.search(r"^## Profile: (.+)$", text, re.MULTILINE)
-        use = re.search(
-            r"\*\*Use this profile when\*\*\s*(.+?)(?=\n\s*\n)",
-            text,
-            re.DOTALL,
-        )
-        title = heading.group(1).strip() if heading else path.stem.replace("-", " ").title()
-        purpose = re.sub(r"\s+", " ", use.group(1)).strip() if use else f"Use for {title.lower()} work."
-        purpose = purpose.replace("`", "").replace("**", "")
-        preset = ROOT / "config" / "verify-presets" / f"{path.stem}.conf"
-        profiles.append(
-            {
-                "name": path.stem,
-                "purpose": purpose,
-                "work_types": [title],
-                "verification_preset": (
-                    f"config/verify-presets/{preset.name}" if preset.is_file() else "profile-defined manual gates"
-                ),
-            }
-        )
-    return profiles
+    """Load stable public metadata and prove it matches the shipped profile sources."""
+    try:
+        payload = json.loads(PROFILE_CATALOG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CliError(f"Cannot load profile catalog {PROFILE_CATALOG_PATH}: {exc}") from exc
+    profiles = payload.get("profiles", [])
+    if not isinstance(profiles, list):
+        raise CliError("Profile catalog must contain a profiles list")
+    source_names = {path.stem for path in (ROOT / "profiles").glob("*.md")}
+    catalog_names = {item.get("name") for item in profiles if isinstance(item, dict)}
+    if source_names and source_names != catalog_names:
+        raise CliError("Profile catalog and profile source files do not match")
+    result: list[dict[str, Any]] = []
+    for item in sorted(profiles, key=lambda value: value["name"]):
+        name = item["name"]
+        preset = ROOT / "config" / "verify-presets" / f"{name}.conf"
+        result.append({
+            **item,
+            "work_types": [item["label"]],
+            "verification_preset": (
+                f"config/verify-presets/{preset.name}" if preset.is_file() else "profile-defined manual gates"
+            ),
+        })
+    return result
 
 
 def profile_purpose(name: str) -> str:
@@ -4788,10 +4851,14 @@ def build_status(target: Path) -> dict[str, Any]:
         if isinstance(installed_files, list):
             managed_files.extend(installed_files)
     runtime_candidates: list[Path] = []
-    if project_installation:
-        runtime_candidates.append(target / ".agentsmith" / "agentsmith.py")
-    if global_installation:
-        runtime_candidates.append(home_dir().resolve() / ".agentsmith" / "agentsmith.py")
+    for root, installation in ((target, project_installation), (home_dir().resolve(), global_installation)):
+        if not installation:
+            continue
+        runtime_record = installation.get("runtime", {})
+        if isinstance(runtime_record, dict) and runtime_record.get("mode") == "central-standalone" and isinstance(runtime_record.get("path"), str):
+            runtime_candidates.append(resolve_central_runtime(runtime_record))
+        else:
+            runtime_candidates.append(root / ".agentsmith" / "agentsmith.py")
     runtime = next(
         (path for path in runtime_candidates if path.is_file()),
         runtime_candidates[0] if runtime_candidates else target / ".agentsmith" / "agentsmith.py",
@@ -4867,13 +4934,22 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_profiles_list(args: argparse.Namespace) -> int:
-    payload = {"schema_version": 1, "profiles": profile_catalog()}
+    profiles = profile_catalog()
     if args.json:
+        payload = {
+            "schema_version": 1,
+            "profiles": [
+                {key: profile[key] for key in ("name", "purpose", "work_types", "verification_preset")}
+                for profile in profiles
+            ],
+        }
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         return 0
-    for profile in payload["profiles"]:
-        print(f"{profile['name']}: {profile['purpose']}")
-        print(f"  Verification preset: {profile['verification_preset']}")
+    for profile in profiles:
+        print(f"{profile['name']} ({profile['kind']}): {profile['purpose']}")
+        print(f"  Examples: {', '.join(profile['examples'])}")
+        print(f"  Verification focus: {profile['verification_focus']}")
+        print(f"  Not for: {profile['not_for']}")
     return 0
 
 
@@ -7284,6 +7360,7 @@ def add_common_install_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--from", dest="update_from")
     parser.add_argument("--no-reassemble", action="store_true")
     parser.add_argument("--wizard", action="store_true")
+    parser.add_argument("--lang", choices=("en", "de", "es", "fr", "zh-CN"), help="wizard language")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -7427,18 +7504,141 @@ def normalize_legacy_argv(argv: list[str]) -> list[str]:
     return ["install", *argv]
 
 
-def apply_wizard_answers(args: argparse.Namespace, input_fn: Any = input) -> None:
-    chosen = input_fn("Agent ID/group [claude]: ").strip() or "claude"
-    profile = input_fn("Profile [general-admin]: ").strip() or "general-admin"
+def load_wizard_locales() -> dict[str, dict[str, str]]:
+    try:
+        data = json.loads(WIZARD_LOCALES_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CliError(f"Cannot load wizard translations {WIZARD_LOCALES_PATH}: {exc}") from exc
+    if not isinstance(data, dict) or "en" not in data:
+        raise CliError("Wizard translations must include English")
+    return data
+
+
+def default_wizard_language() -> str:
+    value = os.environ.get("LC_ALL") or os.environ.get("LC_MESSAGES") or os.environ.get("LANG") or "en"
+    normalized = value.replace("_", "-").lower()
+    if normalized.startswith("zh"):
+        return "zh-CN"
+    for language in ("de", "es", "fr"):
+        if normalized.startswith(language):
+            return language
+    return "en"
+
+
+def wizard_profile_recommendation(target: Path) -> dict[str, Any]:
+    payload = profile_recommendation(target)
+    chosen = payload["recommendations"][0]["profile"]
+    evidence = [signal["source_path"] for signal in payload["signals"]]
+    return {"profile": chosen, "evidence": evidence or [str(target)]}
+
+
+def wizard_choice(input_fn: Any, prompt: str, allowed: set[str], default: str, invalid: str) -> str:
     while True:
-        safety = input_fn("Safety [cautious/trusted] [cautious]: ").strip() or "cautious"
-        if safety in {"cautious", "trusted"}:
-            break
-        warn("Safety must be 'cautious' or 'trusted'; trusted is an explicit opt-in")
-    args.agent = [chosen]
-    args.profile = [profile]
+        value = input_fn(prompt).strip() or default
+        if value in allowed:
+            return value
+        warn(invalid.format(choices="/".join(sorted(allowed))))
+
+
+def apply_wizard_answers(args: argparse.Namespace, input_fn: Any = input) -> dict[str, Any]:
+    """Collect one reviewed installation plan. This function performs no writes."""
+    locales = load_wizard_locales()
+    language_default = getattr(args, "lang", None) or default_wizard_language()
+    language = input_fn(locales["en"]["language"].format(default=language_default)).strip() or language_default
+    if language not in locales:
+        language = "en"
+    messages = locales[language]
+    print(messages["welcome"])
+    invalid = messages["invalid"]
+
+    kind = wizard_choice(input_fn, messages["project_kind"], {"existing", "new"}, "existing", invalid)
+    default_target = str(Path.cwd())
+    target = Path(input_fn(messages["target"].format(default=default_target)).strip() or default_target).expanduser().resolve()
+    if kind == "existing" and not target.is_dir():
+        raise CliError(messages["target_missing"].format(target=target))
+    if kind == "new" and target.exists() and (not target.is_dir() or any(target.iterdir())):
+        raise CliError(messages["target_not_empty"].format(target=target))
+
+    detected_agents = [name for name in ("claude", "codex") if shutil.which(name)]
+    agent_default = ",".join(detected_agents) if detected_agents else "native"
+    chosen_agents = input_fn(messages["agent"].format(default=agent_default)).strip() or agent_default
+    resolve_agents([chosen_agents], None)
+
+    goal_profiles = {
+        "1": "software-dev", "2": "devops-setup", "3": "marketing-outreach",
+        "4": "document-creation", "5": "data-crunching", "6": "general-admin",
+        "7": "deep-research", "8": "creative-design",
+    }
+    if kind == "new":
+        goal = wizard_choice(input_fn, messages["new_goal"], set(goal_profiles), "1", invalid)
+        recommended = {"profile": goal_profiles[goal], "evidence": ["stated project goal"]}
+    else:
+        recommended = wizard_profile_recommendation(target)
+        print(messages["profile_recommendation"].format(
+            profile=recommended["profile"], evidence=", ".join(recommended["evidence"][:3])
+        ))
+        selected = input_fn(messages["profile"]).strip() or "recommended"
+        if selected == "all":
+            print(messages["profiles_header"])
+            for item in profile_catalog():
+                if item["kind"] == "primary":
+                    print(f"  {item['name']}: {item['purpose']} Examples: {', '.join(item['examples'])}.")
+            selected = input_fn(messages["profile"]).strip() or "recommended"
+        if selected != "recommended":
+            recommended["profile"] = selected
+    if recommended["profile"] not in {item["name"] for item in profile_catalog()}:
+        raise CliError(f"Unknown profile '{recommended['profile']}'. Run 'agentsmith profiles list'.")
+
+    experience = wizard_choice(input_fn, messages["experience"], {"1", "2", "3"}, "2", invalid)
+    bios = {
+        "1": "I am new to programming and AI agents. Explain technical terms, why each step is needed, what changes, the main risks, and how to undo it.",
+        "2": "I am comfortable with daily Git, tests, and command-line tools. I am new to AI programming agents. Explain agent-specific choices and history-changing operations before commands.",
+        "3": "I am experienced with software and AI agents. Be concise on routine work and explain non-obvious trade-offs, failure modes, and hard-to-reverse changes.",
+    }
+    safety = wizard_choice(input_fn, messages["safety"], {"cautious", "trusted"}, "cautious", invalid)
+
+    global_mode = False
+    profiles = [recommended["profile"]]
+    if wizard_choice(input_fn, messages["advanced"], {"y", "n"}, "n", invalid) == "y":
+        scope = wizard_choice(input_fn, messages["scope"], {"project", "user"}, "project", invalid)
+        global_mode = scope == "user"
+        extras = csv([input_fn(messages["extra_profiles"]).strip()])
+        for profile in extras:
+            if profile not in {item["name"] for item in profile_catalog()}:
+                raise CliError(f"Unknown profile '{profile}'. Run 'agentsmith profiles list'.")
+            if profile not in profiles:
+                profiles.append(profile)
+        capabilities = set(csv([input_fn(messages["capabilities"]).strip()]))
+        unknown = capabilities - {"skills", "mcp", "hooks", "handoff-hooks", "ui-design-hook"}
+        if unknown:
+            raise CliError(f"Unknown optional capability: {', '.join(sorted(unknown))}")
+        args.with_skills = "skills" in capabilities
+        args.with_mcp = ["playwright,context7"] if "mcp" in capabilities else None
+        args.with_hooks = "hooks" in capabilities
+        args.with_handoff_hooks = "handoff-hooks" in capabilities
+        args.with_ui_design_hook = "ui-design-hook" in capabilities
+
+    print(f"\n{messages['summary']}")
+    print(f"  {messages['git_init'] if kind == 'new' else messages['existing_use']}: {target}")
+    print(f"  {messages['scope_user'] if global_mode else messages['scope_project']}")
+    print(f"  Agent: {chosen_agents}")
+    print(f"  Profile: {', '.join(profiles)}")
+    print(f"  Safety: {safety}")
+    confirmed = wizard_choice(input_fn, messages["confirm"], {"yes", "no"}, "yes", invalid) == "yes"
+    if not confirmed:
+        raise CliError(messages["cancelled"])
+
+    args.agent = [chosen_agents]
+    args.profile = [] if global_mode else profiles
+    args.target = None if global_mode else str(target)
+    args.global_mode = global_mode
+    args.profile_only = False
+    args.operator_bio = bios[experience]
     args.safety = safety
+    args.initialize_git = kind == "new" and not global_mode
+    args.wizard_language = language
     args.wizard = False
+    return {"confirmed": True, "project_kind": kind, "target": str(target), "language": language}
 
 
 def run(argv: list[str] | None = None) -> int:

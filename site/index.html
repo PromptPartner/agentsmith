@@ -35,16 +35,18 @@
           <p class="eyebrow"><span class="signal" aria-hidden="true"></span> OPEN SOURCE · LOCAL FIRST</p>
           <h1 id="hero-title">Your agent can do the work.<br><em>Make it prove the result.</em></h1>
           <p class="lead">AgentSmith puts project rules, work-specific checks, and a clear handoff around AI-assisted development. Start with one bounded task. See what failed, what passed, and what actually ran.</p>
-          <div class="actions"><a class="button primary" href="#start">Try the First Verified Loop <span aria-hidden="true">→</span></a><a class="button secondary" href="https://github.com/PromptPartner/agentsmith/tree/master/docs/demos/first-verified-loop">Inspect the proof</a></div>
-          <p class="hero-note">Python 3.11+ · No account · No hosted runtime</p>
+          <div class="actions"><a class="button primary" href="#start">Set up AgentSmith <span aria-hidden="true">→</span></a><a class="button secondary" href="https://github.com/PromptPartner/agentsmith/tree/master/docs/demos/first-verified-loop">Inspect the proof</a></div>
+          <p class="hero-note">macOS · Windows · Linux · No account · No hosted runtime</p>
         </div>
-        <div class="terminal" aria-label="Terminal example for the disposable First Verified Loop demo">
-          <div class="terminal-bar"><span class="dots" aria-hidden="true">● ● ●</span><span>TRY IT LOCALLY</span></div>
-          <pre><code><span class="prompt">$</span> git clone https://github.com/PromptPartner/agentsmith.git ~/tools/agentsmith
-<span class="prompt">$</span> cd ~/tools/agentsmith
-<span class="prompt">$</span> python3 agentsmith.py demo first-loop --target /tmp/agentsmith-first-loop
+        <div class="terminal" aria-label="Terminal example for the AgentSmith guided setup">
+          <div class="terminal-bar"><span class="dots" aria-hidden="true">● ● ●</span><span>GUIDED SETUP</span></div>
+          <pre><code><span class="prompt">$</span> agentsmith
 
-<span class="muted"># The demo prints the next steps and exact cleanup boundary.</span></code></pre>
+AgentSmith guided setup
+Existing project or new folder? <span class="muted">existing</span>
+Recommended profile: <span class="prompt">software-dev</span>
+
+<span class="muted"># Review the complete plan before any project write.</span></code></pre>
         </div>
       </div>
     </section>
@@ -72,8 +74,18 @@
       </div>
     </section>
 
-    <section class="section start" id="start" aria-labelledby="start-title"><div class="wrap start-grid"><div><p class="kicker">START SMALL</p><h2 id="start-title">Try one verified loop.</h2><p>The disposable demo refuses a non-empty target, guides the red-to-green task, and gives you the cleanup boundary. After that, install a profile in your own project.</p><div class="actions"><a class="button primary" href="https://github.com/PromptPartner/agentsmith/blob/master/docs/02-your-first-hour.md">Follow the guided first hour <span aria-hidden="true">↗</span></a><a class="button outline" href="https://github.com/PromptPartner/agentsmith/blob/master/INSTALL.md">Installation guide</a></div></div><div class="start-note"><strong>Keep reading</strong><a href="https://github.com/PromptPartner/agentsmith/blob/master/docs/README.md">Documentation map <span aria-hidden="true">↗</span></a><a href="https://github.com/PromptPartner/agentsmith/blob/master/docs/03-verify-means-evidence.md">What counts as evidence <span aria-hidden="true">↗</span></a><a href="https://github.com/PromptPartner/agentsmith/blob/master/docs/15-safety-model.md">Safety and consent <span aria-hidden="true">↗</span></a></div></div></section>
+    <section class="section start" id="start" aria-labelledby="start-title">
+      <div class="wrap">
+        <p class="kicker">TWO WAYS TO START</p><h2 id="start-title">Choose the guide you want.</h2>
+        <p class="section-lead">Both routes inspect the project, recommend a work profile, show the exact plan, and ask before writing.</p>
+        <div class="support-grid start-options">
+          <article><div class="pill">MANUAL</div><h3>Run the setup wizard</h3><p>Download the standalone release, run <code>agentsmith</code>, and answer plain-language questions. The macOS and Windows builds are currently unsigned, so your operating system may ask you to confirm before running them.</p><a class="text-link" href="https://github.com/PromptPartner/agentsmith/releases/latest">Download the latest release <span aria-hidden="true">↗</span></a></article>
+          <article><div class="pill">AGENT-GUIDED</div><h3>Ask Claude Code or Codex</h3><p>Give your agent the official install guide. It inspects static evidence, explains the profile choice, previews the files, and verifies the result.</p><a class="text-link" href="https://github.com/PromptPartner/agentsmith/blob/master/AGENT-INSTALL.md">Copy the agent instructions <span aria-hidden="true">↗</span></a></article>
+        </div>
+        <div class="start-links"><a href="https://github.com/PromptPartner/agentsmith/blob/master/README.md#work-profiles">Compare work profiles <span aria-hidden="true">↗</span></a><a href="https://github.com/PromptPartner/agentsmith/blob/master/INSTALL.md#where-the-rules-live">Project vs user-wide setup <span aria-hidden="true">↗</span></a><a href="https://github.com/PromptPartner/agentsmith/blob/master/docs/demos/first-verified-loop/README.md">See one verified loop <span aria-hidden="true">↗</span></a></div>
+      </div>
+    </section>
   </main>
-  <footer><div class="wrap footer-inner"><div><img src="assets/promptpartner-lockup-white.png" width="116" height="116" alt="PromptPartner"><p>PromptPartner is a service of 23 Investments GmbH, Switzerland.</p></div><div><a href="https://github.com/PromptPartner/agentsmith">GitHub</a><a href="https://github.com/PromptPartner/agentsmith/blob/master/LICENSE">MIT license</a><span>promptpartner.ai</span></div></div></footer>
+  <footer><div class="wrap footer-inner"><div><img src="assets/promptpartner-lockup-white.png" width="116" height="116" alt="PromptPartner"><p>PromptPartner is a service of 23 Investments GmbH, Switzerland.</p></div><div><a href="https://github.com/PromptPartner/agentsmith">GitHub</a><a href="https://github.com/PromptPartner/agentsmith/blob/master/LICENSE">MIT license</a><a href="https://promptpartner.ai/" target="_blank" rel="noopener noreferrer">promptpartner.ai</a></div></div></footer>
 </body>
 </html>

@@ -1867,10 +1867,11 @@ class FVL07DocumentationContracts(unittest.TestCase):
         self.assertIn("<pre><code", rendered)
         self.assertNotIn("```", rendered)
 
-    def test_readme_has_guided_and_experienced_paths_with_public_proof_cta(self) -> None:
+    def test_readme_has_manual_and_agent_guided_paths_with_public_proof_cta(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn("## Guided path", readme)
-        self.assertIn("## Experienced path", readme)
+        self.assertIn("### 1. Manual setup", readme)
+        self.assertIn("### 2. Ask your agent", readme)
+        self.assertIn("AGENT-INSTALL.md", readme)
         self.assertIn("docs/demos/first-verified-loop/README.md", readme)
         self.assertIn("Proof before done.", readme)
 

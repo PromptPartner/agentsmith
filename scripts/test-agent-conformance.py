@@ -644,7 +644,7 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
                     f"s=importlib.util.spec_from_file_location('agentsmith_core',{str(CORE_PATH)!r});"
                     "m=importlib.util.module_from_spec(s);s.loader.exec_module(m);"
                     "a=m.parser().parse_args(['install','--wizard']);"
-                    "answers=iter(['claude','general-admin','invalid','']);prompts=[];"
+                    "answers=iter(['','','','claude','general-admin','2','invalid','','','yes']);prompts=[];"
                     "m.apply_wizard_answers(a,lambda p:(prompts.append(p),next(answers))[1]);"
                     "print(json.dumps({'agent':a.agent,'profile':a.profile,'safety':a.safety,'prompts':prompts}))"
                 ),
@@ -655,7 +655,7 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
             check=False,
         )
         try:
-            wizard_data = json.loads(wizard_probe.stdout)
+            wizard_data = json.loads(wizard_probe.stdout.splitlines()[-1])
         except json.JSONDecodeError:
             wizard_data = {}
         results.check(
@@ -663,7 +663,7 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
             and wizard_data.get("safety") == "cautious"
             and wizard_data.get("agent") == ["claude"]
             and wizard_data.get("profile") == ["general-admin"]
-            and sum("Safety [cautious/trusted] [cautious]:" in prompt for prompt in wizard_data.get("prompts", [])) == 2,
+            and sum("Agent permissions [cautious/trusted] [cautious]:" in prompt for prompt in wizard_data.get("prompts", [])) == 2,
             "wizard defaults safety to cautious and reprompts malformed choices",
             (wizard_probe.stdout + wizard_probe.stderr)[-700:],
         )
