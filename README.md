@@ -24,7 +24,7 @@ Choose one route. Both use the same guided setup and produce the same project fi
 
 ### 1. Manual setup
 
-1. Download the signed installer for macOS, Windows, or Linux from the [latest release](https://github.com/PromptPartner/agentsmith/releases/latest).
+1. Download the standalone build for macOS, Windows, or Linux from the [latest release](https://github.com/PromptPartner/agentsmith/releases/latest). The macOS and Windows builds are currently unsigned, so your operating system may ask you to confirm before running them.
 2. Open a terminal and run `agentsmith`.
 3. Answer the guided questions. AgentSmith shows the exact plan before it writes anything.
 
