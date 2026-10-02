@@ -10,13 +10,32 @@
   </p>
 </div>
 
-# AgentSmith
+# AgentSmith — el arnés de código abierto para agentes de programación
 
-**Primero la prueba, después el trabajo terminado.** Dale a tu agente de IA reglas para el proyecto, una definición de trabajo terminado y una forma de demostrar lo que ha hecho.
+**Pruebas antes de dar por terminado el trabajo.**
 
-AgentSmith instala en un proyecto un acuerdo de trabajo compartido y un perfil de trabajo. Tu agente recibe límites claros, ejecuta las comprobaciones pertinentes, recorre el flujo real, registra pruebas y deja un traspaso que otra sesión puede validar. Tú mantienes el control de las escrituras en sistemas externos.
+Pasa del vibe coding a la ingeniería con agentes. Dale a Claude Code o Codex las reglas de tu proyecto,
+una definición de trabajo terminado y comprobaciones que produzcan pruebas. Comprende la tarea,
+haz un cambio acotado, verifica el resultado y conserva las decisiones para la próxima sesión.
 
-![Flujo de AgentSmith: reglas y perfil del proyecto, trabajo acotado del agente, comprobaciones automatizadas y recorrido del flujo real, pruebas y, por último, traspaso y reanudación.](site/assets/agentsmith-flow.svg)
+Las reglas del proyecto y las salvaguardas configuradas ayudan a abordar la desviación del alcance,
+los ciclos repetidos de reparación y las afirmaciones de «terminado» sin pruebas.
+
+- **Empieza por el problema correcto.** Lee el código existente y define las comprobaciones de finalización antes de editar.
+- **Mantén los cambios revisables.** Haz cambios pequeños, elige los permisos nativos y activa los hooks opcionales de detección de secretos.
+- **Demuestra el resultado.** Ejecuta todas las comprobaciones configuradas, prueba la funcionalidad real y conserva las pruebas.
+- **Da continuidad al progreso.** Guarda las decisiones y un traspaso claro en tu proyecto.
+- **Mejora con la experiencia.** Registra un fallo, propón una regla, un hook o una prueba y valida el cambio.
+
+**Prueba la diferencia con una tarea.** [Ejecuta la demo desechable](docs/02-your-first-hour.md):
+reproduce un fallo, haz una corrección acotada e inspecciona las pruebas. O
+[consulta el conjunto de pruebas existente](docs/demos/first-verified-loop/README.md), que incluye
+el test fallido, la verificación, el resultado del flujo real, el comprobante y el traspaso y la reanudación.
+
+Cuando tus comprobaciones sean fiables, explora las [ejecuciones finitas de creador y verificador](docs/21-autonomous-runs.md)
+con un alcance aprobado y límites explícitos.
+
+![Introducción a AgentSmith: reglas del proyecto y comprobaciones configuradas, cambios acotados, verificación y pruebas conservadas, continuidad y mejora, y una demo concreta.](docs/assets/agentsmith-explainer.es.svg)
 
 ## Configurar AgentSmith
 

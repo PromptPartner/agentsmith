@@ -10,13 +10,32 @@
   </p>
 </div>
 
-# AgentSmith
+# AgentSmith — das Open-Source-Harness für Coding-Agenten
 
-**Erst der Beleg, dann „fertig“.** Gib deinem KI-Agenten Projektregeln, eine Definition von „fertig“ und eine Möglichkeit, seine Arbeit zu belegen.
+**Erst der Beleg, dann „fertig“.**
 
-AgentSmith installiert eine gemeinsame Arbeitsvereinbarung und ein Arbeitsprofil in einem Projekt. Dein Agent erhält klare Grenzen, führt die passenden Prüfungen aus, testet den tatsächlichen Ablauf, dokumentiert Belege und hinterlässt eine Übergabe, die eine spätere Sitzung nachvollziehen kann. Du behältst die Kontrolle über Schreibzugriffe auf externe Systeme.
+Vom Vibe Coding zum Agentic Engineering. Gib Claude Code oder Codex deine Projektregeln,
+eine Definition von „fertig“ und Prüfungen, die Belege liefern. Verstehe die Aufgabe, nimm eine
+klar begrenzte Änderung vor, prüfe das Ergebnis und übertrage Entscheidungen in die nächste Sitzung.
 
-![AgentSmith-Ablauf: Projektregeln und Profil, klar begrenzte Agentenarbeit, automatisierte Prüfungen und Test des tatsächlichen Ablaufs, Belege, danach Übergabe und Fortsetzung.](site/assets/agentsmith-flow.svg)
+Projektregeln und konfigurierte Schutzmechanismen helfen gegen schleichende Ausweitung des Umfangs,
+wiederholte Reparaturschleifen und „fertig“-Aussagen ohne Belege.
+
+- **Beginne mit dem richtigen Problem.** Lies den bestehenden Code und definiere Abschlussprüfungen, bevor du etwas änderst.
+- **Halte Änderungen überprüfbar.** Nimm kleine Änderungen vor, wähle native Berechtigungen und aktiviere optionale Hooks zur Suche nach Geheimnissen.
+- **Belege das Ergebnis.** Führe alle konfigurierten Prüfungen aus, teste die tatsächliche Funktion und bewahre die Belege auf.
+- **Trage Fortschritte weiter.** Speichere Entscheidungen und eine klare Übergabe in deinem Projekt.
+- **Lerne aus Erfahrung.** Halte einen Fehler fest, schlage eine Regel, einen Hook oder einen Test vor und validiere die Änderung.
+
+**Erlebe den Unterschied an einer Aufgabe.** [Führe die Demo in einer Wegwerfumgebung aus](docs/02-your-first-hour.md):
+Reproduziere einen Fehler, nimm eine klar begrenzte Korrektur vor und prüfe die Belege. Oder
+[sieh dir das vorhandene Belegpaket an](docs/demos/first-verified-loop/README.md), einschließlich
+fehlschlagendem Test, Verifikation, Ausgabe des tatsächlichen Ablaufs, Prüfprotokoll sowie Übergabe und Fortsetzung.
+
+Wenn deine Prüfungen verlässlich sind, erkunde [endliche Maker/Checker-Durchläufe](docs/21-autonomous-runs.md)
+mit freigegebenem Umfang und ausdrücklichen Grenzen.
+
+![AgentSmith: Claude Code oder Codex arbeitet mit Projektregeln und konfigurierten Prüfungen. Aufgabe verstehen und begrenzen, Ergebnis prüfen und Belege bewahren, Entscheidungen übergeben und Verbesserungen validieren. Eine Demo zeigt den Ablauf vom fehlschlagenden Test bis zur Fortsetzung.](docs/assets/agentsmith-explainer.de.svg)
 
 ## AgentSmith einrichten
 

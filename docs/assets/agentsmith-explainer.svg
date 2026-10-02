@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="980" viewBox="0 0 1400 980" role="img" aria-labelledby="title desc">
+  <title id="title">AgentSmith — the open-source harness for coding agents</title>
+  <desc id="desc">Claude Code or Codex works with project-owned rules and configured checks. Define the task, make a bounded change, verify checks and the real path, retain evidence, hand off, and validate improvements from observed failures. Try the disposable First Verified Loop demo. Instructions guide behavior; configured checks enforce specific boundaries.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0 L10 5 L0 10" fill="none" stroke="#ffa600" stroke-width="1.5"/></marker>
+    <style>
+      text{font-family:Arial,Helvetica,sans-serif;fill:#f8fafc}
+      .muted{fill:#bdc7d9}.gold{fill:#ffa600}.card{fill:#172238;stroke:#455575;stroke-width:2}
+      .edge{fill:none;stroke:#ffa600;stroke-width:2.5;marker-end:url(#arrow)}
+      .heading{font-size:25px;font-weight:700}.body{font-size:21px}.small{font-size:19px}
+    </style>
+  </defs>
+  <rect width="1400" height="980" fill="#090e1a"/>
+  <text x="700" y="65" text-anchor="middle" font-size="48" font-weight="700">AgentSmith</text>
+  <text x="700" y="108" text-anchor="middle" font-size="25" class="muted">The open-source harness for coding agents</text>
+  <text x="700" y="154" text-anchor="middle" font-size="29" font-weight="700" class="gold">Proof before done.</text>
+  <text x="700" y="180" text-anchor="middle" font-size="18" class="muted">From vibe coding to agentic engineering</text>
+  <rect x="50" y="202" width="270" height="92" rx="18" class="card"/>
+  <text x="185" y="240" text-anchor="middle" class="heading">Your task</text>
+  <text x="185" y="272" text-anchor="middle" class="small muted">Scope + definition of done</text>
+  <rect x="425" y="190" width="550" height="115" rx="20" fill="#ffa600"/>
+  <text x="700" y="236" text-anchor="middle" font-size="27" font-weight="700" style="fill:#090e1a">Claude Code or Codex + AgentSmith</text>
+  <text x="700" y="275" text-anchor="middle" font-size="23" style="fill:#090e1a">Project rules · configured checks · handoffs</text>
+  <rect x="1080" y="202" width="270" height="92" rx="18" class="card"/>
+  <text x="1215" y="240" text-anchor="middle" class="heading">Inspect the result</text>
+  <text x="1215" y="272" text-anchor="middle" class="small muted">Changes + retained evidence</text>
+  <path d="M325 248 H405" class="edge"/><path d="M982 248 H1060" class="edge"/>
+  <rect x="50" y="357" width="410" height="287" rx="22" class="card"/>
+  <text x="80" y="402" class="heading gold">1  Understand and bound</text>
+  <text x="80" y="451" class="body">Read existing code and callers.</text>
+  <text x="80" y="491" class="body">Define scope and completion checks.</text>
+  <text x="80" y="531" class="body">Make small, reviewable changes.</text>
+  <text x="80" y="580" class="small muted">Choose native permissions explicitly.</text>
+  <text x="80" y="611" class="small muted">Enable optional secret-scanning hooks.</text>
+  <rect x="495" y="357" width="410" height="287" rx="22" class="card"/>
+  <text x="525" y="402" class="heading gold">2  Verify and keep proof</text>
+  <text x="525" y="451" class="body">Reproduce the failure before fixing.</text>
+  <text x="525" y="491" class="body">Run all configured project checks.</text>
+  <text x="525" y="531" class="body">Exercise the user-visible path.</text>
+  <text x="525" y="580" class="small muted">Record check results in a receipt.</text>
+  <text x="525" y="611" class="small muted">Inspect what the evidence covers.</text>
+  <rect x="940" y="357" width="410" height="287" rx="22" class="card"/>
+  <text x="970" y="402" class="heading gold">3  Continue and improve</text>
+  <text x="970" y="451" class="body">Save decisions and a clear handoff.</text>
+  <text x="970" y="491" class="body">Resume from project-owned records.</text>
+  <text x="970" y="531" class="body">Capture observed failures.</text>
+  <text x="970" y="580" class="small muted">Propose a rule, hook, or test.</text>
+  <text x="970" y="611" class="small muted">Validate the change before adopting it.</text>
+  <text x="700" y="693" text-anchor="middle" class="small muted">Instructions guide behavior. Configured checks enforce specific boundaries.</text>
+  <path d="M50 723 H1350" stroke="#455575" stroke-width="2"/>
+  <text x="700" y="770" text-anchor="middle" class="heading">Try the difference on one task</text>
+  <text x="700" y="809" text-anchor="middle" class="body muted">Disposable demo: failing check → bounded fix → checks + real path → receipt → handoff / resume</text>
+  <text x="700" y="914" text-anchor="middle" class="small muted">Then explore finite maker/checker runs with approved scope and explicit limits.</text>
+  <text x="700" y="948" text-anchor="middle" font-size="17" class="muted">English diagram · 2026-10-02 · approved introduction</text>
+</svg>

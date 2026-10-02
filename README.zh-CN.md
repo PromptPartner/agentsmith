@@ -10,13 +10,25 @@
   </p>
 </div>
 
-# AgentSmith
+# AgentSmith — 面向编程智能体的开源工作框架
 
-**先验证，再完成。** 为 AI 智能体提供项目规则、完成标准，以及证明工作成果的方法。
+**先有证据，再说完成。**
 
-AgentSmith 会在项目中安装一套共享的工作约定和一个工作配置文件。智能体会获得明确的边界，运行相关检查，实际走通操作流程，记录证据，并留下可供后续会话验证的交接记录。对外部系统的写入操作始终由您掌控。
+从 vibe coding（凭直觉让 AI 编写代码）走向智能体工程。为 Claude Code 或 Codex 提供项目规则、完成标准，以及能产生证据的检查。理解任务，做出范围明确的修改，验证结果，并将决策带入下一次会话。
 
-![AgentSmith flow: project rules and profile, bounded agent work, automated checks and real-path exercise, evidence, then handoff and resume.](site/assets/agentsmith-flow.svg)
+项目规则与已配置的防护措施有助于应对范围偏移、反复修补，以及缺乏证据的“已完成”声明。
+
+- **先找准问题。** 阅读现有代码，在编辑前定义完成检查。
+- **让修改易于审查。** 做出小规模修改，选择原生权限，并启用可选的秘密扫描钩子。
+- **证明结果。** 运行所有已配置的检查，实际运行功能，并保留证据。
+- **延续进度。** 在项目中保存决策和清晰的交接记录。
+- **从经验中改进。** 记录一次失败，提出规则、钩子或测试，并验证修改。
+
+**用一项任务体验区别。** [运行可丢弃的演示](docs/02-your-first-hour.md)：复现失败，做出范围明确的修复，再检查证据。或者[查看现有证据包](docs/demos/first-verified-loop/README.md)，包括失败的测试、验证、真实流程输出、结果凭证，以及交接与恢复记录。
+
+当检查足够可信时，可以探索[有限轮次的创建者／检查者运行](docs/21-autonomous-runs.md)，并采用已批准的范围和明确限制。
+
+![AgentSmith 简介：项目规则与已配置的检查、范围明确的修改、验证与保留证据、工作延续与改进，以及具体演示。](docs/assets/agentsmith-explainer.zh-CN.svg)
 
 ## 设置 AgentSmith
 
