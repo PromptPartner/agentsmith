@@ -10,13 +10,32 @@
   </p>
 </div>
 
-# AgentSmith
+# AgentSmith — le cadre open source pour les agents de programmation
 
-**La preuve avant de déclarer le travail terminé.** Donnez à votre agent IA les règles du projet, une définition du travail terminé et un moyen de prouver le résultat.
+**La preuve avant de déclarer le travail terminé.**
 
-AgentSmith installe dans un projet un accord de fonctionnement commun et un profil de travail. Votre agent reçoit des limites claires, exécute les vérifications pertinentes, teste le parcours réel, consigne les preuves et prépare une transmission qu’une autre session peut valider. Vous gardez le contrôle des écritures vers des services externes.
+Passez du vibe coding à l’ingénierie agentique. Donnez à Claude Code ou Codex les règles de votre projet,
+une définition du travail terminé et des vérifications qui produisent des preuves. Comprenez la tâche,
+limitez la portée du changement, vérifiez le résultat et transmettez les décisions à la session suivante.
 
-![AgentSmith flow: project rules and profile, bounded agent work, automated checks and real-path exercise, evidence, then handoff and resume.](site/assets/agentsmith-flow.svg)
+Les règles du projet et les garde-fous configurés aident à limiter la dérive du périmètre,
+les boucles de réparation répétées et les déclarations de travail terminé sans preuves.
+
+- **Partez du bon problème.** Lisez le code existant et définissez les vérifications de fin avant de modifier quoi que ce soit.
+- **Gardez les changements faciles à examiner.** Faites de petits changements, choisissez les autorisations natives et activez les hooks facultatifs de détection des secrets.
+- **Prouvez le résultat.** Exécutez toutes les vérifications configurées, testez la fonctionnalité réelle et conservez les preuves.
+- **Transmettez les progrès.** Enregistrez les décisions et une transmission claire dans votre projet.
+- **Apprenez de l’expérience.** Consignez un échec, proposez une règle, un hook ou un test, puis validez le changement.
+
+**Découvrez la différence sur une tâche.** [Exécutez la démo dans un environnement jetable](docs/02-your-first-hour.md) :
+reproduisez un échec, apportez une correction au périmètre limité et examinez les preuves. Ou
+[examinez le dossier de preuves existant](docs/demos/first-verified-loop/README.md), qui comprend
+le test en échec, la vérification, la sortie du parcours réel, le reçu et la transmission avec reprise.
+
+Lorsque vos vérifications sont fiables, explorez les [exécutions finies maker/checker](docs/21-autonomous-runs.md)
+avec un périmètre approuvé et des limites explicites.
+
+![AgentSmith : Claude Code ou Codex travaille avec les règles du projet et des vérifications configurées. Comprendre et délimiter la tâche, vérifier et conserver les preuves, transmettre les décisions et valider les améliorations. Une démo montre le parcours du test en échec jusqu’à la reprise.](docs/assets/agentsmith-explainer.fr.svg)
 
 ## Configurer AgentSmith
 

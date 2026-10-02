@@ -3,6 +3,11 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [ ] 2026-10-02 — German, Spanish, French, and Simplified Chinese manual-setup instructions
+  describe signed installers, while the English README states macOS and Windows standalone builds
+  are unsigned. This predates the introduction update; align translated setup text with the
+  current release signing status in a separate documentation fix.
+
 - [ ] Project-scoped install writes Claude's user-global `permissions.defaultMode` through
   `install_native_config()`; the default `--safety cautious` therefore changes the user's global
   mode to `acceptEdits` from a project operation.

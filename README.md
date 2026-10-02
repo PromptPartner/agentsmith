@@ -10,13 +10,32 @@
   </p>
 </div>
 
-# AgentSmith
+# AgentSmith — the open-source harness for coding agents
 
-**Proof before done.** Give your AI agent project rules, a definition of done, and a way to prove the work.
+**Proof before done.**
 
-AgentSmith installs a shared operating agreement and a work profile into a project. Your agent gets clear boundaries, runs the relevant checks, exercises the real path, records evidence, and leaves a handoff another session can validate. You retain control of external writes.
+Move from vibe coding to agentic engineering. Give Claude Code or Codex your project rules,
+a definition of done, and checks that produce evidence. Understand the task, make a bounded
+change, verify the result, and carry decisions into the next session.
 
-![AgentSmith flow: project rules and profile, bounded agent work, automated checks and real-path exercise, evidence, then handoff and resume.](site/assets/agentsmith-flow.svg)
+Project rules and configured guardrails help address scope drift, repeated repair loops,
+and “done” claims without evidence.
+
+- **Start with the right problem.** Read existing code and define completion checks before editing.
+- **Keep changes reviewable.** Make small changes, choose native permissions, and enable optional secret-scanning hooks.
+- **Prove the result.** Run all configured checks, exercise the actual feature, and retain the evidence.
+- **Carry progress forward.** Save decisions and a clear handoff in your project.
+- **Improve from experience.** Capture a failure, propose a rule, hook, or test, and validate the change.
+
+![AgentSmith: project rules and configured checks around Claude Code or Codex; understand and bound the task, verify and keep proof, then continue and improve.](docs/assets/agentsmith-explainer.svg)
+
+**Try the difference on one task.** [Run the disposable demo](docs/02-your-first-hour.md):
+reproduce a failure, make a bounded fix, and inspect the proof. Or
+[inspect the existing evidence bundle](docs/demos/first-verified-loop/README.md), including
+the failing test, verification, real-path output, receipt, and handoff/resume.
+
+Once your checks are trustworthy, explore [finite maker/checker runs](docs/21-autonomous-runs.md)
+with approved scope and explicit limits.
 
 ## Set up AgentSmith
 

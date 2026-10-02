@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="980" viewBox="0 0 1400 980" role="img" aria-labelledby="title desc">
+  <title id="title">AgentSmith — el arnés de código abierto para agentes de programación</title>
+  <desc id="desc">Claude Code o Codex trabaja con reglas del proyecto y comprobaciones configuradas. Define la tarea, haz un cambio acotado, verifica las comprobaciones y el flujo real, conserva las pruebas, deja un traspaso y valida mejoras a partir de fallos observados. Prueba la demo desechable del primer ciclo verificado. Las instrucciones orientan el comportamiento; las comprobaciones configuradas aplican límites específicos.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0 L10 5 L0 10" fill="none" stroke="#ffa600" stroke-width="1.5"/></marker>
+    <style>
+      text{font-family:Arial,Helvetica,sans-serif;fill:#f8fafc}
+      .muted{fill:#bdc7d9}.gold{fill:#ffa600}.card{fill:#172238;stroke:#455575;stroke-width:2}
+      .edge{fill:none;stroke:#ffa600;stroke-width:2.5;marker-end:url(#arrow)}
+      .heading{font-size:25px;font-weight:700}.body{font-size:21px}.small{font-size:19px}
+    </style>
+  </defs>
+  <rect width="1400" height="980" fill="#090e1a"/>
+  <text x="700" y="65" text-anchor="middle" font-size="48" font-weight="700">AgentSmith</text>
+  <text x="700" y="108" text-anchor="middle" font-size="25" class="muted">El arnés de código abierto para agentes de programación</text>
+  <text x="700" y="154" text-anchor="middle" font-size="29" font-weight="700" class="gold">Pruebas antes de dar el trabajo por terminado.</text>
+  <text x="700" y="180" text-anchor="middle" font-size="18" class="muted">Del vibe coding a la ingeniería con agentes</text>
+  <rect x="50" y="202" width="270" height="92" rx="18" class="card"/>
+  <text x="185" y="240" text-anchor="middle" class="heading">Tu tarea</text>
+  <text x="185" y="272" text-anchor="middle" class="small muted" style="font-size:17px">Alcance + criterio de finalización</text>
+  <rect x="425" y="190" width="550" height="115" rx="20" fill="#ffa600"/>
+  <text x="700" y="236" text-anchor="middle" font-size="27" font-weight="700" style="fill:#090e1a">Claude Code o Codex + AgentSmith</text>
+  <text x="700" y="275" text-anchor="middle" font-size="23" style="fill:#090e1a">Reglas · comprobaciones · traspasos</text>
+  <rect x="1080" y="202" width="270" height="92" rx="18" class="card"/>
+  <text x="1215" y="240" text-anchor="middle" class="heading" style="font-size:21px">Inspecciona el resultado</text>
+  <text x="1215" y="272" text-anchor="middle" class="small muted" style="font-size:17px">Cambios + pruebas conservadas</text>
+  <path d="M325 248 H405" class="edge"/><path d="M982 248 H1060" class="edge"/>
+  <rect x="50" y="357" width="410" height="287" rx="22" class="card"/>
+  <text x="80" y="402" class="heading gold">1  Comprender y acotar</text>
+  <text x="80" y="451" class="body" style="font-size:18px">Lee el código y quienes lo invocan.</text>
+  <text x="80" y="491" class="body" style="font-size:18px">Define el alcance y cómo comprobarlo.</text>
+  <text x="80" y="531" class="body" style="font-size:18px">Haz cambios pequeños y revisables.</text>
+  <text x="80" y="580" class="small muted">Elige explícitamente permisos nativos.</text>
+  <text x="80" y="611" class="small muted">Activa hooks opcionales para secretos.</text>
+  <rect x="495" y="357" width="410" height="287" rx="22" class="card"/>
+  <text x="525" y="402" class="heading gold" style="font-size:23px">2  Verificar y guardar pruebas</text>
+  <text x="525" y="451" class="body" style="font-size:18px">Reproduce el fallo antes de corregirlo.</text>
+  <text x="525" y="491" class="body" style="font-size:18px">Ejecuta todas las comprobaciones.</text>
+  <text x="525" y="531" class="body" style="font-size:18px">Prueba el flujo que ve el usuario.</text>
+  <text x="525" y="580" class="small muted">Guarda resultados en un comprobante.</text>
+  <text x="525" y="611" class="small muted">Inspecciona qué cubren las pruebas.</text>
+  <rect x="940" y="357" width="410" height="287" rx="22" class="card"/>
+  <text x="970" y="402" class="heading gold">3  Continuar y mejorar</text>
+  <text x="970" y="451" class="body" style="font-size:18px">Guarda decisiones y un traspaso claro.</text>
+  <text x="970" y="491" class="body" style="font-size:18px">Retoma desde los registros del proyecto.</text>
+  <text x="970" y="531" class="body" style="font-size:18px">Registra los fallos observados.</text>
+  <text x="970" y="580" class="small muted">Propón una regla, un hook o un test.</text>
+  <text x="970" y="611" class="small muted">Valida el cambio antes de adoptarlo.</text>
+  <text x="700" y="693" text-anchor="middle" class="small muted">Las instrucciones orientan. Las comprobaciones configuradas aplican límites específicos.</text>
+  <path d="M50 723 H1350" stroke="#455575" stroke-width="2"/>
+  <text x="700" y="770" text-anchor="middle" class="heading">Prueba la diferencia con una tarea</text>
+  <text x="700" y="809" text-anchor="middle" class="body muted" style="font-size:19px">Demo desechable: fallo → corrección acotada → comprobaciones + flujo real → comprobante → traspaso / reanudación</text>
+  <text x="700" y="914" text-anchor="middle" class="small muted">Después explora ejecuciones finitas de creador y verificador con alcance aprobado y límites explícitos.</text>
+  <text x="700" y="948" text-anchor="middle" font-size="17" class="muted">Diagrama en español · 2026-10-02 · introducción aprobada</text>
+</svg>
