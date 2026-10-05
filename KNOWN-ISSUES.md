@@ -421,6 +421,10 @@ been authorized, so the entries are kept here.
   own files and their parents; existing links at other individual runtime filenames need a
   separate installer containment fix.
 
+- [x] 2026-10-05 — A child preflight refusal before run-state creation left the graph waiting
+  indefinitely with a dispatched node still reported as ready. Graph dispatch now persists
+  a terminal launch failure and safe exit signature; read-only status marks the failed roots
+  and blocked descendants. A real CLI regression failed at its 10-second bound before the fix.
 - [x] 2026-10-05 — Windows graph fixtures reached the new production native-role sandbox guard.
   Test-local controller wrappers substitute only that preflight for deterministic fake clients;
   the real Git and verifier boundary remain exercised. A simulated Windows check also proves

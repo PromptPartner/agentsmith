@@ -63,6 +63,18 @@ class GraphDispatchTests(unittest.TestCase):
                 controller.require_native_role_sandbox = lambda: None
                 return controller
             if __name__ == "__main__":
+                early_exit = Path(__file__).parent / "early-exit-a"
+                if (early_exit.is_file() and len(sys.argv) > 2
+                        and sys.argv[1] == "start" and Path(sys.argv[2]).stem == "a"):
+                    import time
+                    starts = Path(__file__).parent / "starts.log"
+                    deadline = time.monotonic() + 10
+                    while time.monotonic() < deadline:
+                        if starts.is_file() and any(line.startswith("b ") for line in starts.read_text().splitlines()):
+                            print("RunError: configured early child exit", file=sys.stderr)
+                            raise SystemExit(2)
+                        time.sleep(0.02)
+                    raise SystemExit("independent peer never entered maker fixture")
                 controller = load_controller()
                 raise SystemExit(controller.main())
             '''), encoding="utf-8")
@@ -237,6 +249,23 @@ class GraphDispatchTests(unittest.TestCase):
         self.assertLess(max(starts["a"], starts["b"]), min(finishes["a"], finishes["b"]))
         self.assertGreater(starts["c"], max(finishes["a"], finishes["b"]))
         self.assertEqual(git(self.repo, "status", "--porcelain"), "")
+
+    def test_early_child_exit_retains_live_independent_peer_acceptance(self) -> None:
+        (self.fake_client.parent / "early-exit-a").touch()
+        (self.fake_client.parent / "sleep-seconds.txt").write_text("4", encoding="utf-8")
+        started = self.invoke("start")
+        self.assertEqual(started.returncode, 2, started.stdout + started.stderr)
+        report = json.loads(self.invoke("status").stdout)
+        self.assertEqual({node["run_id"]: node["status"] for node in report["nodes"]},
+                         {"a": "failed", "b": "completed", "c": "blocked"},
+                         started.stdout + started.stderr)
+        self.assertFalse((self.repo / ".git/agentsmith-runs/a/state.json").exists())
+        peer = json.loads((self.repo / ".git/agentsmith-runs/b/state.json").read_text())
+        self.assertEqual(peer["status"], "accepted")
+        graph = json.loads((self.repo / ".git/agentsmith-graphs/dispatch-fixture/state.json").read_text())
+        failed = [item for item in graph["dispatches"] if item.get("launch_failed")]
+        self.assertEqual([item["run_id"] for item in failed], ["a"])
+        self.assertFalse((self.repo.parent / "repo-c").exists())
 
     def test_failed_node_blocks_descendant_but_not_independent_peer(self) -> None:
         (self.fake_client.parent / "fail-run.txt").write_text("b", encoding="utf-8")
