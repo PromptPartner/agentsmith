@@ -433,3 +433,12 @@ been authorized, so the entries are kept here.
   then indexed forward-slash contract keys. Recovery evidence now serializes relative paths
   with portable forward slashes for sources, artifacts and typed proof. A simulated Windows
   path regression reproduces the mismatch before the fix and validates the bound evidence after.
+- [x] 2026-10-05 — The repeated stop fixture continued after its 2.5-second startup wait
+  expired, so it could request stop before durable state existed. A four-second startup probe
+  reproduced the false status failure. The fixture now requires an observed active process
+  within a bounded ten-second wait and prints state and child output on failure. The exact
+  hosted failure lacked retained state and remains unattributed beyond this reproduced defect.
+- [ ] 2026-10-05 — A stop signal during the controller's terminal-head cleanup can raise
+  `RunInterrupted` outside its handler and print a traceback with exit 1 after interruption
+  is already persisted. Two of 25 retained stop probes reproduced this; durable state stayed
+  interrupted. Signal handling during terminal cleanup needs a separate regression and fix.

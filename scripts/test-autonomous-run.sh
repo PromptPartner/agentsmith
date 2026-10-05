@@ -658,24 +658,62 @@ echo 'autonomous-run — repeated start/stop race'
 race_fail=0
 for iteration in 1 2 3 4 5; do
   repo="$(new_repo "race-$iteration")"; make_fake "$repo/../fake"; manifest "$repo" "race-$iteration"
+  if [ "$iteration" -eq 1 ]; then
+    # Exercise startup beyond the old 2.5-second window in this copied fixture.
+    python3 - "$repo/../fake/controller.py" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+source = path.read_text()
+entry = 'if __name__ == "__main__":\n    raise SystemExit(main())'
+assert entry in source
+path.write_text(source.replace(entry, 'if __name__ == "__main__":\n'
+    '    if len(sys.argv) > 1 and sys.argv[1] == "start": time.sleep(4)\n'
+    '    raise SystemExit(main())'))
+PY
+  fi
   (
     cd "$repo" || exit 1
     invoke "$repo" slow start ".harness/runs/race-$iteration.json" >../out 2>../err
   ) & runner=$!
   state_file="$repo/.git/agentsmith-runs/race-$iteration/state.json"
-  for _ in {1..50}; do
-    sleep 0.05
-    if [ -f "$state_file" ] && python3 -c 'import json,sys; raise SystemExit(0 if json.load(open(sys.argv[1])).get("active_pid") else 1)' "$state_file"; then break; fi
-  done
-  (cd "$repo" && python3 "$repo/../fake/controller.py" stop "race-$iteration" >/dev/null 2>&1) || race_fail=1
+  if ! python3 - "$state_file" <<'PY'
+import json, pathlib, sys, time
+path = pathlib.Path(sys.argv[1])
+deadline = time.monotonic() + 10
+while time.monotonic() < deadline:
+    try:
+        if json.loads(path.read_text()).get('active_pid'):
+            raise SystemExit(0)
+    except (OSError, ValueError):
+        pass
+    time.sleep(0.05)
+print('maker readiness barrier timed out: ' + str(path), file=sys.stderr)
+raise SystemExit(1)
+PY
+  then
+    race_fail=1
+    cat "$repo/../err" >&2
+    if [ -f "$state_file" ]; then cat "$state_file" >&2; fi
+    stop_started_run "$repo" "race-$iteration"
+    wait "$runner" 2>/dev/null || true
+    break
+  fi
+  if ! (cd "$repo" && python3 "$repo/../fake/controller.py" stop "race-$iteration" >../stop-out 2>../stop-err); then
+    race_fail=1
+    cat "$repo/../stop-out" "$repo/../stop-err" "$repo/../err" >&2
+  fi
   wait "$runner" 2>/dev/null || true
-  python3 - "$state_file" "$repo/.git/agentsmith-runs/race-$iteration/events.jsonl" <<'PY' || race_fail=1
+  if ! python3 - "$state_file" "$repo/.git/agentsmith-runs/race-$iteration/events.jsonl" <<'PY'
 import json, sys
 state = json.load(open(sys.argv[1]))
 events = [json.loads(line) for line in open(sys.argv[2])]
-assert state['status'] == 'interrupted'
-assert sum(event['event'] == 'run_interrupted' for event in events) == 1
+assert state['status'] == 'interrupted', json.dumps(state, sort_keys=True)
+assert sum(event['event'] == 'run_interrupted' for event in events) == 1, events
 PY
+  then
+    race_fail=1
+    cat "$repo/../stop-out" "$repo/../stop-err" "$repo/../err" >&2
+  fi
 done
 if [ "$race_fail" -eq 0 ]; then ok 'repeated stop collisions stay parseable with one interruption each'
 else bad 'repeated stop collision invariant failed'; fi
