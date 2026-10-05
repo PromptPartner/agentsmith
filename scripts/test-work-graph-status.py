@@ -49,6 +49,8 @@ class WorkGraphStatusTests(unittest.TestCase):
             ("a", "src/a/**", []), ("b", "src/b/**", []), ("c", "src/c/**", ["a", "b"]),
         ):
             manifest = json.loads(TEMPLATE.read_text(encoding="utf-8"))
+            for role in manifest["roles"].values():
+                role["model"] = "fixture-model"
             manifest.update(run_id=run_id, spec_path="docs/specs/accepted.md", implementation_ticket=f"IMP-{run_id}")
             manifest["scope"]["allowed_paths"] = [scope]
             path = self.repo / ".harness" / "runs" / f"{run_id}.json"

@@ -60,6 +60,81 @@ class DoctorTests(unittest.TestCase):
     def warning_codes(agent: dict) -> set[str]:
         return {warning.get("code", "") for warning in agent.get("warnings", [])}
 
+    def test_consumer_install_prepares_autonomous_manifest(self) -> None:
+        project = self.root / "fresh consumer"
+        installed = self.install(project, "--agent", "codex", "--profile", "software-dev")
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        subprocess.run(["git", "-C", str(project), "init", "-q"], check=True)
+        prepared = subprocess.run(
+            [sys.executable, str(project / ".agentsmith/autonomous-run.py"), "prepare",
+             "--run-id", "consumer", "--spec", "docs/specs/task.md", "--ticket", "TASK-1"],
+            cwd=project, env=self.env, text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
+        manifest = json.loads((project / ".harness/runs/consumer.json").read_text())
+        self.assertEqual(manifest["run_id"], "consumer")
+        self.assertEqual(manifest["implementation_ticket"], "TASK-1")
+
+    def test_strict_doctor_detects_missing_required_payloads(self) -> None:
+        project = self.root / "incomplete consumer"
+        installed = self.install(project, "--agent", "codex", "--profile", "software-dev")
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        for relative in (".agentsmith/native_launcher.py", ".agentsmith/autonomous-run.py",
+                         ".harness/templates/autonomous-run.json"):
+            with self.subTest(relative=relative):
+                path = project / relative
+                original = path.read_bytes() if path.exists() else None
+                if path.exists():
+                    path.unlink()
+                strict = self.run_core("doctor", "--agent", "codex", "--target", str(project),
+                                       "--strict", "--json")
+                self.assertNotEqual(strict.returncode, 0, strict.stdout + strict.stderr)
+                agent = json.loads(strict.stdout)["codex"]
+                self.assertIn(relative, agent["runtime"]["missing_payloads"])
+                self.assertIn("required-runtime-payload-missing", self.warning_codes(agent))
+                if original is not None:
+                    path.write_bytes(original)
+
+    def test_reinstall_refreshes_managed_controller_and_preserves_draft_template(self) -> None:
+        project = self.root / "reinstalled consumer"
+        installed = self.install(project, "--agent", "codex", "--profile", "software-dev")
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        controller = project / ".agentsmith/autonomous-run.py"
+        controller.write_text("# stale managed controller\n")
+        template = project / ".harness/templates/autonomous-run.json"
+        template.write_text('{"project_draft": true}\n')
+        reinstalled = self.install(project, "--agent", "codex", "--profile", "software-dev")
+        self.assertEqual(reinstalled.returncode, 0, reinstalled.stdout + reinstalled.stderr)
+        self.assertEqual(controller.read_bytes(), (ROOT / "scripts/autonomous-run.py").read_bytes())
+        self.assertEqual(json.loads(template.read_text()), {"project_draft": True})
+
+    def test_autonomous_install_refuses_symlink_payload_paths(self) -> None:
+        for relative in (".agentsmith/autonomous-run.py", ".harness/templates/autonomous-run.json",
+                         ".agentsmith", ".harness/templates"):
+            with self.subTest(relative=relative):
+                project = self.root / ("unsafe project " + relative.replace("/", "-"))
+                destination = project / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                outside = self.root / ("outside " + relative.replace("/", "-"))
+                directory = relative in {".agentsmith", ".harness/templates"}
+                if directory:
+                    outside.mkdir()
+                    sentinel = outside / "sentinel.txt"
+                else:
+                    sentinel = outside
+                sentinel.write_text("preserve outside bytes\n")
+                try:
+                    destination.symlink_to(outside, target_is_directory=directory)
+                except (OSError, NotImplementedError) as exc:
+                    self.skipTest(f"symlinks unavailable: {exc}")
+                installed = self.install(project, "--agent", "codex", "--profile", "software-dev")
+                self.assertNotEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+                self.assertIn("symbolic link", installed.stdout + installed.stderr)
+                self.assertEqual(sentinel.read_text(), "preserve outside bytes\n")
+                self.assertTrue(destination.is_symlink())
+                if directory:
+                    self.assertEqual(sorted(p.name for p in outside.iterdir()), ["sentinel.txt"])
+
     def test_duplicate_full_cores_warn_but_profile_only_layer_does_not(self) -> None:
         global_install = self.run_core(
             "install", "--agent", "native", "--global", "--profile", "software-dev", "--assemble-only"

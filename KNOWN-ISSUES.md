@@ -376,3 +376,30 @@ been authorized, so the entries are kept here.
   project scaffolding still relied on that copy to create `.agentsmith/` before writing its helper.
   A real frozen-binary install reproduced the missing-directory failure. Scaffolding now creates the
   owned directory explicitly, and every standalone CI target performs the same install and status run.
+
+- [x] 2026-10-04 — Autonomous model tools could write controller state through the maker's shared
+  Git grant. Native policies now carve trusted state/contracts/runtime folders out of that grant;
+  a real Codex sandbox probe denies both writes and ancestor renames. The verifier also protects
+  trusted contracts/runtime folders when a repository is under `/tmp`. Claude Bash and built-in
+  file tools receive separate restrictions. This is tool containment, not hostile host isolation.
+- [x] 2026-10-04 — Resume restarted makers after checking interruptions and replaced prior logs.
+  Durable stage/candidate checkpoints now revalidate the same attempt; streaming logs, invocation
+  archives and atomic reported-usage recovery retain evidence across stop and hard crashes.
+- [ ] 2026-10-04 — Foundation qualification still needs Linux/native-client containment and
+  crash/timeout pilots, checker budget reservation, and accounting for unreported crash spend.
+  Process-group stopping does not contain detached daemons or hostile same-user processes.
+  The native-client qualification contract defines required cases;
+  the earlier project-config override probe is inconclusive, and inference remains unqualified.
+- [x] 2026-10-04 — Stopping the primary during peer inspection could swallow SIGTERM as an
+  ordinary run error and falsely report the legitimate `disjoint` peer branch as tampering.
+  Cancellation now bypasses invalid-peer handlers. Retained before/after fixtures and deterministic
+  SIGTERM regression checks are in `scripts/test-autonomous-state.py`.
+  The native-client qualification contract is accepted; actual inference remains unexecuted.
+- [x] 2026-10-05 — Refreshing the installed autonomous controller followed an existing destination
+  symlink and could overwrite a file outside the project. Software-development scaffolding now
+  rejects symbolic links in either autonomous payload path before runtime/template writes.
+  Four real-install regression variants cover payload files and parent directories.
+- [ ] 2026-10-05 — Other runtime payload copies in `copy_runtime()` still use `shutil.copy2`
+  without checking every destination component. The new autonomous payload guard protects its
+  own files and their parents; existing links at other individual runtime filenames need a
+  separate installer containment fix.

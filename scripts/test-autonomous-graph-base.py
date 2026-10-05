@@ -59,6 +59,8 @@ class GraphBaseTests(unittest.TestCase):
         nodes = []
         for run_id, dependencies in (("a", []), ("b", ["a"])):
             manifest = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
+            for role in manifest["roles"].values():
+                role["model"] = "fixture-model"
             manifest.update(run_id=run_id, spec_path="docs/specs/accepted.md",
                             implementation_ticket=f"IMP-{run_id}")
             manifest["scope"]["allowed_paths"] = [f"src/{run_id}/**"]

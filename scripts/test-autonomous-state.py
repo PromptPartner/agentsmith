@@ -11,6 +11,8 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
+import shlex
 import tempfile
 import threading
 import time
@@ -28,6 +30,263 @@ SPEC.loader.exec_module(CONTROLLER)
 
 
 class AutonomousStateTests(unittest.TestCase):
+    def test_verifier_cannot_replace_trusted_contract_in_temporary_repository(self) -> None:
+        if CONTROLLER.sys.platform != 'darwin':
+            self.skipTest('macOS verifier execution probe')
+        with tempfile.TemporaryDirectory(dir='/tmp') as temporary:
+            repo = Path(temporary).resolve()
+            subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+            manifest = repo/'manifest.json'
+            manifest.write_text('original')
+            checkout = repo/'candidate'
+            checkout.mkdir()
+            directory = repo/'.git/agentsmith-runs/probe'
+            directory.mkdir(parents=True)
+            state = {'repo': str(repo), 'worktree': str(checkout), 'spec_path': 'spec.md',
+                     'manifest_path': str(manifest), 'state_path': str(directory/'state.json'), 'attempt': 1}
+            command = shlex.join([CONTROLLER.sys.executable, '-c',
+                                  'import pathlib,sys; pathlib.Path(sys.argv[1]).write_text("forged")', str(manifest)])
+            result = CONTROLLER.sandboxed_verify(command, checkout, 10, CONTROLLER.verifier_env(), state=state)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(manifest.read_text(), 'original')
+
+    def test_orphaned_group_is_live_even_after_its_leader_exits(self) -> None:
+        if os.name == 'nt':
+            self.skipTest('POSIX process group probe')
+        script = ('import subprocess,sys; p=subprocess.Popen([sys.executable,"-c",'
+                  '"import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(60)"],'
+                  'stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); print(p.pid,flush=True)')
+        leader = subprocess.Popen([CONTROLLER.sys.executable, '-c', script], start_new_session=True,
+                                  text=True, stdout=subprocess.PIPE)
+        leader.communicate(timeout=10)
+        try:
+            self.assertFalse(CONTROLLER.process_is_live(leader.pid))
+            self.assertTrue(CONTROLLER.process_group_is_live(leader.pid))
+        finally:
+            CONTROLLER.terminate_process_tree(leader.pid)
+        for _ in range(100):
+            if not CONTROLLER.process_group_is_live(leader.pid):
+                break
+            time.sleep(0.02)
+        self.assertFalse(CONTROLLER.process_group_is_live(leader.pid))
+
+    def test_codex_native_maker_can_commit_without_writing_trusted_state(self) -> None:
+        executable = shutil.which('codex')
+        if executable is None or CONTROLLER.sys.platform != 'darwin':
+            self.skipTest('native Codex Git probe requires a local supported client')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            repo, workspace = root/'repo', root/'maker'
+            subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+            for key, value in [('user.name', 'Fixture'), ('user.email', 'fixture@example.com')]:
+                subprocess.run(['git', '-C', str(repo), 'config', key, value], check=True)
+            (repo/'base').write_text('base')
+            subprocess.run(['git', '-C', str(repo), 'add', '.'], check=True)
+            subprocess.run(['git', '-C', str(repo), 'commit', '-qm', 'baseline'], check=True)
+            subprocess.run(['git', '-C', str(repo), 'worktree', 'add', '-qb', 'maker', str(workspace)], check=True)
+            trusted = repo/'.git/agentsmith-runs/probe'
+            state = {'repo': str(repo), 'worktree': str(workspace), 'state_path': str(trusted/'state.json'),
+                     'manifest_path': str(repo/'manifest.json'), 'spec_path': 'spec.md',
+                     'attempt': 1, 'deadline_epoch': time.time()+30}
+            manifest = {'roles': {'maker': {'runtime': 'codex', 'model': 'fixture', 'effort': 'high'}}, 'limits': {}}
+            class Observed(Exception):
+                pass
+            with mock.patch.object(CONTROLLER, 'build_native_command', side_effect=Observed) as launch:
+                with self.assertRaises(Observed):
+                    CONTROLLER.launch_role(state, manifest, 'maker', 'make')
+            policy = CONTROLLER.codex_permissions(workspace, launch.call_args.kwargs['extra_write_dirs'],
+                                                 protected_write_paths=launch.call_args.kwargs['protected_write_paths'])
+            prefix = [executable, 'sandbox', '--permission-profile', 'agentsmith', '-c',
+                      'permissions='+CONTROLLER.toml_inline({'agentsmith': policy}), '--']
+            (workspace/'candidate').write_text('candidate')
+            result = CONTROLLER.run([*prefix, '/bin/bash', '-c', 'git add candidate && git commit -qm candidate'], workspace)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = CONTROLLER.run([*prefix, CONTROLLER.sys.executable, '-c',
+                                     'import pathlib,sys; pathlib.Path(sys.argv[1]).write_text("forged")',
+                                     str(trusted/'forged')], workspace)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((trusted/'forged').exists())
+
+    def test_verifier_timeout_stops_descendants_and_preserves_output(self) -> None:
+        if os.name == 'nt':
+            self.skipTest('POSIX process group probe')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = {'state_path': str(root / 'state.json'), 'attempt': 1}
+            script = ('import subprocess,sys,time; '
+                      'p=subprocess.Popen([sys.executable,"-c","import time; time.sleep(60)"]); '
+                      'print(p.pid,flush=True); time.sleep(60)')
+            with self.assertRaises(subprocess.TimeoutExpired):
+                CONTROLLER.verifier_process([CONTROLLER.sys.executable, '-c', script], root,
+                                            0.3, CONTROLLER.verifier_env(), state)
+            child = int((root / 'attempt-1-verify.stdout').read_text().strip())
+            for _ in range(100):
+                if not CONTROLLER.process_is_live(child):
+                    break
+                time.sleep(0.02)
+            self.assertFalse(CONTROLLER.process_is_live(child))
+            self.assertIsNone(json.loads((root/'state.json').read_text())['active_pid'])
+            self.assertNotEqual(json.loads((root/'attempt-1-verify-exit.json').read_text())['exit_code'], 0)
+
+    def test_codex_native_profile_denies_trusted_writes_inside_git_grant(self) -> None:
+        executable = shutil.which('codex')
+        if executable is None or CONTROLLER.sys.platform != 'darwin':
+            self.skipTest('native Codex sandbox probe requires a local supported client')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            common = root / 'common'
+            trusted = common / 'agentsmith-runs'
+            trusted.mkdir(parents=True)
+            protected = trusted / 'state.json'
+            protected.write_text('original')
+            permissions = CONTROLLER.codex_permissions(root, [common], protected_write_paths=[trusted])
+            prefix = [executable, 'sandbox', '--permission-profile', 'agentsmith', '-c',
+                      'permissions=' + CONTROLLER.toml_inline({'agentsmith': permissions}), '--']
+            script = 'import pathlib,sys; pathlib.Path(sys.argv[1]).write_text("forged")'
+            result = CONTROLLER.run([*prefix, CONTROLLER.sys.executable, '-c', script, str(protected)], root)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(protected.read_text(), 'original')
+            result = CONTROLLER.run([*prefix, CONTROLLER.sys.executable, '-c', script, str(root / 'allowed')], root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = CONTROLLER.run([*prefix, 'mv', str(common), str(root/'escaped')], root)
+            self.assertNotEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(protected.exists())
+            command = CONTROLLER.build_native_command('codex', 'make', root, root/'schema', root/'receipt',
+                                                      extra_write_dirs=[common], protected_write_paths=[trusted])
+            self.assertIn('default_permissions="agentsmith"', command)
+            self.assertIn('--strict-config', command)
+            self.assertNotIn('--sandbox', command)
+
+    def test_claude_native_policy_covers_bash_and_builtin_file_tools(self) -> None:
+        protected = ROOT / 'trusted'
+        settings = CONTROLLER.claude_sandbox_settings(ROOT, [ROOT], protected_write_paths=[protected])
+        self.assertIn(str(protected), settings['sandbox']['filesystem']['denyWrite'])
+        self.assertIn(f'Edit(/{protected}/**)', settings['permissions']['deny'])
+
+    def test_claude_qualification_settings_disable_hooks_explicitly(self) -> None:
+        # C07: project-source exclusion alone does not express the hook boundary.
+        for role in ('maker', 'checker'):
+            with self.subTest(role=role):
+                settings = CONTROLLER.claude_sandbox_settings(
+                    ROOT, read_only=role == 'checker', protected_write_paths=[ROOT/'trusted'])
+                self.assertIs(settings.get('disableAllHooks'), True)
+                self.assertFalse(settings['enableAllProjectMcpServers'])
+                self.assertFalse(settings['sandbox']['allowUnsandboxedCommands'])
+
+    def test_claude_checker_denies_bash_writes_to_checkout(self) -> None:
+        settings = CONTROLLER.claude_sandbox_settings(ROOT, read_only=True)
+        self.assertIn(str(ROOT), settings['sandbox']['filesystem'].get('denyWrite', []))
+
+    def test_trusted_boundary_fails_closed_on_unsupported_host(self) -> None:
+        with mock.patch.object(CONTROLLER.sys, 'platform', 'unsupported'):
+            with self.assertRaisesRegex(CONTROLLER.RunError, 'trusted-state sandbox'):
+                CONTROLLER.require_native_role_sandbox()
+
+    def test_resume_original_spec_must_match_committed_contract(self) -> None:
+        with tempfile.TemporaryDirectory(prefix='qualification spec drift ') as temporary:
+            repo = Path(temporary).resolve()
+            subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+            subprocess.run(['git', '-C', str(repo), 'config', 'user.name', 'Test'], check=True)
+            subprocess.run(['git', '-C', str(repo), 'config', 'user.email', 'user@example.com'], check=True)
+            spec = repo/'spec.md'
+            spec.write_bytes(b'accepted contract\n')
+            (repo/'.gitattributes').write_bytes(b'*.md text eol=lf\n')
+            subprocess.run(['git', '-C', str(repo), 'add', '.'], check=True)
+            subprocess.run(['git', '-C', str(repo), 'commit', '-qm', 'baseline'], check=True)
+            CONTROLLER.validate_original_spec(repo, Path('spec.md'), 'HEAD')
+            # Git-normalized line endings are the same contract on Windows.
+            spec.write_bytes(b'accepted contract\r\n')
+            CONTROLLER.validate_original_spec(repo, Path('spec.md'), 'HEAD')
+            spec.write_bytes(b'changed contract\n')
+            with self.assertRaisesRegex(CONTROLLER.RunError, 'original spec changed'):
+                CONTROLLER.validate_original_spec(repo, Path('spec.md'), 'HEAD')
+            spec.unlink()
+            with self.assertRaisesRegex(CONTROLLER.RunError, 'original spec changed'):
+                CONTROLLER.validate_original_spec(repo, Path('spec.md'), 'HEAD')
+
+    def test_recovery_does_not_relaunch_completed_maker(self) -> None:
+        state = {'attempt': 1, 'stage': 'verifying', 'maker_receipt': {'status': 'completed'}}
+        self.assertTrue(CONTROLLER.pending_candidate(state))
+        state['stage'] = 'checking'
+        self.assertTrue(CONTROLLER.pending_candidate(state))
+        state['stage'] = 'making'
+        self.assertFalse(CONTROLLER.pending_candidate(state))
+
+    def test_acceptance_requires_nonblank_evidence_and_no_unresolved_findings(self) -> None:
+        for evidence in ([], [""], ["   "]):
+            self.assertFalse(CONTROLLER.acceptance_ready(0, {"status": "accepted", "evidence": evidence, "unresolved": []}))
+        receipt = {"status": "accepted", "evidence": ["required checks pass"], "unresolved": []}
+        self.assertTrue(CONTROLLER.acceptance_ready(0, receipt))
+        self.assertFalse(CONTROLLER.acceptance_ready(126, receipt))
+        self.assertFalse(CONTROLLER.acceptance_ready(0, {**receipt, "unresolved": ["missing check"]}))
+
+    def test_execution_requires_explicit_role_models_and_effort(self) -> None:
+        manifest = json.loads((ROOT / "templates/autonomous-run.json").read_text())
+        manifest.update(run_id="fixture", spec_path="docs/specs/accepted.md", implementation_ticket="IMP-1")
+        spec = "---\nstatus: accepted\naccepted_by: Operator\naccepted_at: 2026-10-04\ndecision_ticket: DEC-1\n---\n"
+        for config in manifest["roles"].values():
+            config.update(model="fixture-model", effort="high")
+        for role in ("maker", "checker"):
+            for key in ("model", "effort"):
+                with self.subTest(role=role, key=key):
+                    original = manifest["roles"][role][key]
+                    manifest["roles"][role][key] = ""
+                    with mock.patch.object(CONTROLLER, "git", return_value=spec):
+                        with self.assertRaisesRegex(CONTROLLER.RunError, f"roles.{role}.{key}"):
+                            CONTROLLER.validate_manifest(manifest, ROOT)
+                    manifest["roles"][role][key] = original
+
+    def test_codex_read_only_command_has_no_write_roots(self) -> None:
+        command = CONTROLLER.build_native_command(
+            "codex", "check", ROOT, ROOT / "schema.json", ROOT / "receipt.json",
+            read_only=True, extra_write_dirs=[ROOT],
+        )
+        self.assertEqual(command[command.index("--sandbox") + 1], "read-only")
+        self.assertNotIn("--add-dir", command)
+
+    def test_codex_checker_passes_read_only_to_shared_launcher(self) -> None:
+        state = {"worktree": str(ROOT), "repo": str(ROOT), "state_path": str(ROOT / "state.json"),
+                 "attempt": 1, "deadline_epoch": time.time() + 30,
+                 "manifest_path": str(ROOT / 'manifest.json'), "spec_path": 'spec.md'}
+        manifest = {"roles": {"checker": {"runtime": "codex", "model": "fixture", "effort": "high"}},
+                    "limits": {}}
+        class LaunchObserved(Exception):
+            pass
+        with (mock.patch.object(CONTROLLER, "write_json"),
+              mock.patch.object(CONTROLLER, "build_native_command", side_effect=LaunchObserved) as launch):
+            with self.assertRaises(LaunchObserved):
+                CONTROLLER.launch_role(state, manifest, "checker", "check")
+        self.assertTrue(launch.call_args.kwargs.get("read_only"))
+
+    def test_verification_policy_and_baseline_tests_cannot_be_weakened(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            for name in (".harness/verify.conf", "tests/test_baseline.py", "test_acceptance.py", "acceptance_test.py", ".agentsmith/agentsmith.py", "src/app.py"):
+                path = repo / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("baseline\n")
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "baseline"], check=True)
+            base = CONTROLLER.git(repo, "rev-parse", "HEAD")
+            state = {"worktree": str(repo), "base_head": base, "spec_sha256": "spec", "manifest_sha256": "manifest"}
+            proof = CONTROLLER.verification_binding(state, {"verify": {"command": "check"}}, base)
+            self.assertEqual(proof["verify_configuration_sha256"], hashlib.sha256(b"baseline\n").hexdigest())
+            for name in (".harness/verify.conf", "tests/test_baseline.py", "test_acceptance.py", "acceptance_test.py", ".agentsmith/agentsmith.py"):
+                with self.subTest(path=name):
+                    (repo / name).write_text("weakened\n")
+                    subprocess.run(["git", "-C", str(repo), "commit", "-qam", "candidate"], check=True)
+                    with self.assertRaisesRegex(CONTROLLER.RunError, "protected verification"):
+                        CONTROLLER.validate_verification_changes(repo, base, "HEAD", {})
+                    subprocess.run(["git", "-C", str(repo), "reset", "--hard", base], capture_output=True, check=True)
+            (repo / "src/app.py").write_text("implementation\n")
+            (repo / "tests/test_new.py").write_text("new regression\n")
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "candidate"], check=True)
+            CONTROLLER.validate_verification_changes(repo, base, "HEAD", {})
+
     def test_coordination_lock_acquire_retries_windows_sharing_denial(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith coordination acquire ") as temporary:
             root = Path(temporary)
@@ -196,7 +455,7 @@ class AutonomousStateTests(unittest.TestCase):
                 mock.patch.object(CONTROLLER.sys, "platform", "linux"),
                 mock.patch.object(CONTROLLER.shutil, "which", return_value="/usr/bin/bwrap"),
                 mock.patch.object(CONTROLLER, "resolved_git_path", return_value=common),
-                mock.patch.object(CONTROLLER, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run,
+                mock.patch.object(CONTROLLER, "verifier_process", return_value=subprocess.CompletedProcess([], 0, "", "")) as run,
             ):
                 CONTROLLER.sandboxed_verify("true", repo, 10, CONTROLLER.verifier_env())
             args = run.call_args.args[0]
@@ -527,6 +786,59 @@ class AutonomousStateTests(unittest.TestCase):
                     with self.assertRaisesRegex(CONTROLLER.RunError, "git phase.*held"):
                         with CONTROLLER.git_phase(repo, "checker", timeout_seconds=0.05):
                             pass
+
+    def test_peer_inspection_propagates_operator_interruption(self) -> None:
+        # Cancellation must reach run_controller, rather than look like corrupt peer state.
+        with tempfile.TemporaryDirectory(prefix="agentsmith interrupted peer ") as temporary:
+            common = Path(temporary)
+            state_file = common / "agentsmith-runs" / "peer" / "state.json"
+            state_file.parent.mkdir(parents=True)
+            state_file.write_text("{}\n", encoding="utf-8")
+            for inspect in (
+                lambda: CONTROLLER.registered_run_git_artifacts(common, "refs/heads/active"),
+                lambda: CONTROLLER.terminal_peer_git_artifacts(common, "refs/heads/active", set()),
+                lambda: CONTROLLER.live_run_scope(common, state_file.parent, {"run_id": "peer"}),
+            ):
+                with self.subTest(inspect=inspect), mock.patch.object(
+                    CONTROLLER, "load_json", side_effect=CONTROLLER.RunInterrupted("stopped by operator")
+                ):
+                    with self.assertRaises(CONTROLLER.RunInterrupted):
+                        inspect()
+            # Unverifiable peers still earn no metadata exemption.
+            with mock.patch.object(CONTROLLER, "load_json", side_effect=CONTROLLER.RunError("bad state")):
+                self.assertEqual(CONTROLLER.registered_run_git_artifacts(common, "refs/heads/active"),
+                                 (set(), set(), set()))
+                self.assertEqual(CONTROLLER.terminal_peer_git_artifacts(common, "refs/heads/active", set()),
+                                 (set(), set(), set()))
+
+    def test_controller_persists_sigterm_during_peer_inspection(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith peer signal ") as temporary:
+            common = Path(temporary)
+            peer = common / "agentsmith-runs" / "peer" / "state.json"
+            peer.parent.mkdir(parents=True)
+            peer.write_text("{}\n", encoding="utf-8")
+            directory = common / "controller"
+            directory.mkdir()
+            state = {"run_id": "active", "state_path": str(directory / "state.json"),
+                     "worktree": str(common), "status": "making", "active_pid": 123}
+
+            def inspect_peer(_state: dict[str, Any], _manifest: dict[str, Any]) -> int:
+                CONTROLLER.registered_run_git_artifacts(common, "refs/heads/active")
+                return 0
+
+            def stop_during_read(_path: Path) -> dict[str, Any]:
+                CONTROLLER.signal.raise_signal(CONTROLLER.signal.SIGTERM)
+                return {}
+
+            with mock.patch.object(CONTROLLER, "execute", side_effect=inspect_peer), mock.patch.object(
+                CONTROLLER, "load_json", side_effect=stop_during_read
+            ), mock.patch.object(CONTROLLER, "git", return_value="a" * 40):
+                self.assertEqual(CONTROLLER.run_controller(state, {}), 130)
+            durable = json.loads((directory / "state.json").read_text())
+            self.assertEqual(durable["status"], "interrupted")
+            self.assertIsNone(durable["active_pid"])
+            events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+            self.assertEqual([event["event"] for event in events], ["run_interrupted"])
 
     def test_maker_metadata_keeps_only_previously_verified_peer_artifacts(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith peer snapshot ") as temporary:

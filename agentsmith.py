@@ -90,6 +90,7 @@ RUNTIME_FILES = (
     ".agentsmith/windows_verifier_sandbox.py",
     *(f".agentsmith/templates/first-loop/{path}" for path in DEMO_TEMPLATE_FILES),
 )
+AUTONOMOUS_PAYLOADS = (".agentsmith/autonomous-run.py", ".harness/templates/autonomous-run.json")
 SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("PEM private key", re.compile(r"BEGIN [A-Z ]*PRIVATE KEY")),
     ("AWS access key id", re.compile(r"AKIA[0-9A-Z]{16}")),
@@ -2982,7 +2983,10 @@ def validate_post_update_health(plan: dict[str, Any]) -> None:
     needs_runtime = plan["scope"] == "project" or capabilities.get("handoff_hooks") or capabilities.get("ui_design_hook")
     runtime = runtime_root / ".agentsmith" / "agentsmith.py"
     if needs_runtime:
-        for relative in RUNTIME_FILES:
+        required_payloads = list(RUNTIME_FILES)
+        if plan["scope"] == "project" and "software-dev" in installation["profiles"]:
+            required_payloads.extend(AUTONOMOUS_PAYLOADS)
+        for relative in required_payloads:
             if not safe_update_path(runtime_root, relative).is_file():
                 raise CliError(f"Post-update health check failed: managed runtime file is missing: {relative}")
         declared = re.search(
@@ -3539,6 +3543,9 @@ def scaffold_project(target: Path, profiles: list[str], agents: list[str], args:
     if args.dry_run:
         say(f"DRY RUN — would scaffold cross-platform helpers under {target / '.agentsmith'}")
         return
+    if "software-dev" in profiles:
+        for relative in AUTONOMOUS_PAYLOADS:
+            safe_update_path(target, relative)
     for path in (
         target / ".agentsmith",
         target / "docs/research/_archive",
@@ -3564,10 +3571,17 @@ def scaffold_project(target: Path, profiles: list[str], agents: list[str], args:
         chunks.append('unwired :: echo "wire real verification phases in .harness/verify.conf" && exit 1')
         atomic_write(conf, "\n".join(chunks) + "\n")
     if "software-dev" in profiles:
+        template = ROOT / "templates" / "autonomous-run.json"
+        if not template.is_file() or template.is_symlink():
+            raise CliError(f"Bundled autonomous manifest template is missing or unsafe: {template}")
+        template_destination = templates / template.name
+        if not template_destination.exists():
+            shutil.copy2(template, template_destination)
         source = ROOT / "scripts" / "autonomous-run.py"
         destination = target / ".agentsmith" / "autonomous-run.py"
-        if source.exists() and not destination.exists():
-            shutil.copy2(source, destination)
+        if not source.is_file() or source.is_symlink():
+            raise CliError(f"Bundled autonomous controller is missing or unsafe: {source}")
+        shutil.copy2(source, destination)
 
 
 def instruction_paths(target: Path, agents: list[str], global_mode: bool) -> tuple[list[Path], list[Path]]:
@@ -4453,6 +4467,24 @@ def inspect_runtime(agent: dict[str, Any], target: Path) -> dict[str, Any]:
     autonomous_state = "missing"
     if autonomous.exists():
         autonomous_state = "current" if expected_autonomous.exists() and autonomous.read_bytes() == expected_autonomous.read_bytes() else "stale"
+    ownership = load_state(target)
+    installation = ownership.get("installation", {}) if isinstance(ownership, dict) else {}
+    if not isinstance(installation, dict):
+        installation = {}
+    required_payloads = []
+    if installation.get("scope") == "project" and not installation.get("assemble_only"):
+        required_payloads = list(RUNTIME_FILES)
+        if "software-dev" in installation.get("profiles", []):
+            required_payloads.extend(AUTONOMOUS_PAYLOADS)
+    missing_payloads = [relative for relative in required_payloads
+                        if not (target / relative).is_file() or (target / relative).is_symlink()]
+    # Availability is diagnostic, not permission to launch or an installation failure.
+    dependencies = {name: {"available": shutil.which(name) is not None,
+                           "path": shutil.which(name) or ""}
+                    for name in ("git", "claude", "codex")}
+    sandbox = "sandbox-exec" if sys.platform == "darwin" else "bwrap" if sys.platform.startswith("linux") else ""
+    dependencies["verifier_sandbox"] = {"available": bool(sandbox and shutil.which(sandbox)),
+                                        "path": (shutil.which(sandbox) or "") if sandbox else ""}
     return {
         "declared": str(agent.get("native_runtime", {}).get("lifecycle", {}).get("agentsmith_management", "unverified")),
         "state": state,
@@ -4460,6 +4492,9 @@ def inspect_runtime(agent: dict[str, Any], target: Path) -> dict[str, Any]:
         "sha256": hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else "",
         "autonomous_path": str(autonomous),
         "autonomous_state": autonomous_state,
+        "required_payloads": required_payloads,
+        "missing_payloads": missing_payloads,
+        "dependencies": dependencies,
         "ownership_state_path": str(target / ".agentsmith" / "state.json"),
         "ownership_state_present": (target / ".agentsmith" / "state.json").is_file(),
     }
@@ -4517,6 +4552,19 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             "statusline": statusline,
             "runtime": runtime,
         }
+        if runtime["missing_payloads"]:
+            warnings.append(doctor_warning(
+                "required-runtime-payload-missing",
+                "Required installed runtime payloads are missing or unsafe: " + ", ".join(runtime["missing_payloads"]),
+                "Re-run install or the reviewed update to restore the managed runtime.",
+            ))
+        if AUTONOMOUS_PAYLOADS[0] in runtime["required_payloads"]:
+            unavailable = [name for name, dependency in runtime["dependencies"].items() if not dependency["available"]]
+            if unavailable:
+                warnings.append(doctor_warning(
+                    "autonomous-adapter-unavailable", "Autonomous execution dependencies are unavailable: " + ", ".join(unavailable),
+                    "Install or select supported local adapters before starting an autonomous run.",
+                ))
         for name in ("skills", "mcp", "hooks", "statusline", "runtime"):
             capability = capabilities[name]
             if capability["declared"] in {"supported", "native"} and capability["state"] == "missing":
@@ -4565,6 +4613,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         result[agent_id] = {**capabilities, "safety": safety, "warnings": warnings}
         unhealthy |= instructions["state"] in {"missing", "malformed"}
         unhealthy |= bool(skills["adapter_diverged_names"])
+        unhealthy |= bool(runtime["missing_payloads"])
     if args.json:
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
