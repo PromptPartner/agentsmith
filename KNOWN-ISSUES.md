@@ -388,13 +388,30 @@ been authorized, so the entries are kept here.
 - [ ] 2026-10-04 — Foundation qualification still needs Linux/native-client containment and
   crash/timeout pilots, checker budget reservation, and accounting for unreported crash spend.
   Process-group stopping does not contain detached daemons or hostile same-user processes.
-  The native-client qualification contract defines required cases;
+  The [qualification contract](docs/26-native-qualification-contract.md) defines required cases;
   the earlier project-config override probe is inconclusive, and inference remains unqualified.
 - [x] 2026-10-04 — Stopping the primary during peer inspection could swallow SIGTERM as an
   ordinary run error and falsely report the legitimate `disjoint` peer branch as tampering.
   Cancellation now bypasses invalid-peer handlers. Retained before/after fixtures and deterministic
   SIGTERM regression checks are in `scripts/test-autonomous-state.py`.
   The native-client qualification contract is accepted; actual inference remains unexecuted.
+## Native qualification work (2026-10-05)
+
+- [x] NQ-01/C07 — Generated Claude role policy omitted an explicit hook-disable setting.
+  Maker/checker regression failed before adding `disableAllHooks: true` and passes afterward.
+  Native hook/connector evaluation remains pending in NQ-03; offline policy assertions do not
+  establish containment of actual native tools.
+- [x] NQ-02 review — Initial recovery proof validation accepted fabricated pass records
+  without case-specific state, timing/group or frozen source proof. Independent adversarial
+  probes reproduced false acceptance for R01 and R04 and cross-variant relabeling. The recorder
+  now requires case-bound frozen proof, strong receipts, separate timing/group evidence and
+  accounting replay; regressions reject false passes. This is separate from the marketing gate.
+- [x] NQ-02/R08 — Resume ignored edits to the original accepted spec and accepted a saved
+  candidate. A real changed-spec fixture reproduced the acceptance. Resume now compares the
+  original file with the committed contract before launching work; changed/missing/symlinked
+  specs are refused and Git-normalized line endings remain valid. Unit red/green evidence and
+  the real changed-spec refusal are retained with the qualification series.
+
 - [x] 2026-10-05 — Refreshing the installed autonomous controller followed an existing destination
   symlink and could overwrite a file outside the project. Software-development scaffolding now
   rejects symbolic links in either autonomous payload path before runtime/template writes.

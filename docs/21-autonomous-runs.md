@@ -188,6 +188,11 @@ See [parallel work graphs](24-parallel-work-graphs.md) for the full lifecycle an
 
 Before relying on this unattended, run one report-only fixture, observe one complete maker/checker
 cycle, and test `stop`. Autonomy is earned using the same ladder as the autonomous-loops profile.
+The [accepted native-client qualification contract](26-native-qualification-contract.md) defines the bounded
+host/client containment and crash/timeout matrix, required evidence and unresolved pilot gates.
+The [offline qualification recorders](25-native-qualification.md) freeze required variants and raw
+evidence. Fixture completeness and passing native inference results are separate gates.
+
 The installed controller is refreshed on reinstall; existing project manifest drafts are
 preserved. Installation refuses symbolic links in the controller or manifest-template destination
 paths before copying runtime payloads.
