@@ -420,3 +420,8 @@ been authorized, so the entries are kept here.
   without checking every destination component. The new autonomous payload guard protects its
   own files and their parents; existing links at other individual runtime filenames need a
   separate installer containment fix.
+
+- [x] 2026-10-05 — Windows graph fixtures reached the new production native-role sandbox guard.
+  Test-local controller wrappers substitute only that preflight for deterministic fake clients;
+  the real Git and verifier boundary remain exercised. A simulated Windows check also proves
+  the original production guard still refuses unsupported native role launches.

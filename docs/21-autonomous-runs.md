@@ -196,3 +196,9 @@ evidence. Fixture completeness and passing native inference results are separate
 The installed controller is refreshed on reinstall; existing project manifest drafts are
 preserved. Installation refuses symbolic links in the controller or manifest-template destination
 paths before copying runtime payloads.
+
+Native role preflight currently permits macOS with `sandbox-exec` and Linux with `bubblewrap`.
+Windows has a separate AppContainer verifier, but native role trusted-state containment is
+unsupported and production role launches are refused. Provider-free Windows graph fixtures
+substitute only the role preflight and keep the real Git/verifier checks; their results cannot
+qualify native model tools.
