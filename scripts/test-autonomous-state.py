@@ -30,6 +30,27 @@ SPEC.loader.exec_module(CONTROLLER)
 
 
 class AutonomousStateTests(unittest.TestCase):
+    def test_git_paths_preserve_unicode_under_windows_locale_decoding(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith git ü ") as temporary:
+            repo = Path(temporary).resolve() / "fresh consumer"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            template = repo / ".harness/templates/autonomous-run.json"
+            template.parent.mkdir(parents=True)
+            shutil.copy2(ROOT / "templates/autonomous-run.json", template)
+            args = CONTROLLER.parser().parse_args([
+                "prepare", "--run-id", "consumer", "--spec", "docs/specs/task.md",
+                "--ticket", "TASK-1",
+            ])
+            with mock.patch.object(subprocess, "_text_encoding", return_value="cp1252"):
+                self.assertEqual(CONTROLLER.repo_root(repo), repo)
+                self.assertEqual(Path(CONTROLLER.git(repo, "rev-parse", "--show-toplevel")), repo)
+                with mock.patch.object(CONTROLLER.Path, "cwd", return_value=repo):
+                    self.assertEqual(CONTROLLER.prepare(args), 0)
+            manifest = json.loads((repo / ".harness/runs/consumer.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["run_id"], "consumer")
+            self.assertEqual(manifest["implementation_ticket"], "TASK-1")
+
     def test_verifier_cannot_replace_trusted_contract_in_temporary_repository(self) -> None:
         if CONTROLLER.sys.platform != 'darwin':
             self.skipTest('macOS verifier execution probe')

@@ -442,3 +442,11 @@ been authorized, so the entries are kept here.
   `RunInterrupted` outside its handler and print a traceback with exit 1 after interruption
   is already persisted. Two of 25 retained stop probes reproduced this; durable state stayed
   interrupted. Signal handling during terminal cleanup needs a separate regression and fix.
+- [x] 2026-10-05 — The installed autonomous controller decoded UTF-8 Git paths with the
+  Windows locale. Preparing a manifest under a `ü` directory looked for a nonexistent `Ã¼`
+  template path. A real Git repository with a simulated CP-1252 subprocess decoder reproduced
+  the corruption; explicit UTF-8 Git transport preserves the original repository path.
+- [ ] 2026-10-05 — Controller receipt, captured-log and usage-replay file reads still use
+  the locale default. A simulated CP-1252 read corrupts UTF-8 JSON text. These paths need
+  explicit encoding and their own receipt/replay regressions; native Windows model-role
+  execution remains unsupported, separately from the corrected prepare command.

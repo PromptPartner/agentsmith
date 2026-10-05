@@ -81,7 +81,8 @@ def now() -> str:
 
 def run(cmd: list[str] | str, cwd: Path, *, timeout: int | None = None,
         env: dict[str, str] | None = None, shell: bool = False) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, cwd=cwd, text=True, capture_output=True, timeout=timeout,
+    return subprocess.run(cmd, cwd=cwd, text=True, encoding="utf-8", errors="replace",
+                          capture_output=True, timeout=timeout,
                           env=env, shell=shell, check=False)
 
 
