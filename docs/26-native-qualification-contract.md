@@ -179,12 +179,14 @@ recorded R01/R02/R03 injection is also performed. Cleanup never counts as automa
    stage/attempt/candidate, injection and exit times, process/group IDs, result, raw-artifact
    hashes and reason. Use **pass**, **fail**, **undetermined**, **not-run**; disabled tool variants
    carry explicit applicability evidence. Missing required evidence blocks qualification.
+   Serialized relative artifact, proof and source-snapshot paths use forward slashes on every
+   host, including Windows, so the evidence keys match the same contract across platforms.
 
 Raw private evidence stays in local `.harness/handoffs/`; retain its backup outside disposable
 clones. Export only credential-free curated reports with stable case IDs to durable repository
 docs when reviewed. A receipt without its referenced logs is incomplete evidence. A qualified
 report lists every required variant, exact versions/hashes and remaining limitations. This is a
-report contract is implemented by the offline [qualification recorders](25-native-qualification.md).
+report contract implemented by the offline [qualification recorders](25-native-qualification.md).
 Their gates distinguish containment completeness, fixture recovery completeness and native qualification.
 
 ## Decision map

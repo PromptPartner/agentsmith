@@ -5,6 +5,7 @@ import pathlib
 import json
 import tempfile
 import unittest
+from unittest import mock
 spec = importlib.util.spec_from_file_location('recovery', pathlib.Path(__file__).with_name('qualification-recovery.py'))
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
@@ -49,7 +50,7 @@ class EvidenceTests(unittest.TestCase):
         snapshot={}
         for name in sources:
             p=root/'source'/name; p.parent.mkdir(parents=True,exist_ok=True); p.write_text('frozen source '+name)
-            snapshot[str(p.relative_to(root))]=m.digest(p)
+            snapshot[p.relative_to(root).as_posix()]=m.digest(p)
         m.write(root/'snapshot.json',snapshot)
         m.write(root/'red.json',{'exit':1})
         m.write(root/'state.json',{'status':'accepted','attempt':1,'accepted_commit':'a'*40,'base_head':'b'*40,'spec_sha256':'s','manifest_sha256':'m'})
@@ -63,7 +64,21 @@ class EvidenceTests(unittest.TestCase):
         return record
 
     def rehash(self,root,record):
-        record['artifacts']={str(p.relative_to(root)):m.digest(p) for p in root.rglob('*') if p.is_file()}
+        record['artifacts']={p.relative_to(root).as_posix():m.digest(p) for p in root.rglob('*') if p.is_file()}
+
+    def test_windows_relative_evidence_paths_use_portable_contract_keys(self):
+        original_relative_to = pathlib.Path.relative_to
+        def windows_relative_to(path, *arguments, **kwargs):
+            relative = original_relative_to(path, *arguments, **kwargs)
+            return pathlib.PureWindowsPath(*relative.parts)
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            with mock.patch.object(pathlib.Path, 'relative_to', windows_relative_to):
+                record = self.proof(root)
+                m.validate_records(root, [record])
+                snapshot = json.loads((root / 'snapshot.json').read_text())
+                self.assertIn('source/scripts/autonomous-run.py', snapshot)
+                self.assertTrue(all('\\' not in name for name in record['artifacts']))
 
     def test_stale_candidate_is_not_accepted_even_with_new_hash(self):
         with tempfile.TemporaryDirectory() as d:

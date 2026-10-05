@@ -102,12 +102,12 @@ def validate_records(root, records, require_native=False, require_complete=False
                 verify=run/f"attempt-{state['attempt']}-verify.json"
                 checker=run/f"attempt-{state['attempt']}-checker-receipt.json"
                 for path in (verify,checker):
-                    if str(path.relative_to(root)) not in r['artifacts']: raise ValueError('missing bound acceptance receipt')
+                    if path.relative_to(root).as_posix() not in r['artifacts']: raise ValueError('missing bound acceptance receipt')
                 v=json.loads(verify.read_text()); c=json.loads(checker.read_text())
                 if v.get('candidate_commit')!=state.get('accepted_commit') or c.get('commit')!=state.get('accepted_commit'):
                     raise ValueError('stale candidate evidence')
                 output=run/f"attempt-{state['attempt']}-verify.txt"
-                if str(output.relative_to(root)) not in r['artifacts']: raise ValueError('missing raw verifier output')
+                if output.relative_to(root).as_posix() not in r['artifacts']: raise ValueError('missing raw verifier output')
                 if v.get('exit_code')!=0 or c.get('status')!='accepted' or not any(str(x).strip() for x in c.get('evidence',[])) or c.get('unresolved')!=[]:
                     raise ValueError('failed verifier/checker cannot qualify acceptance')
                 if v.get('checker_receipt_sha256')!=digest(checker) or v.get('output_sha256')!=digest(output):
@@ -118,7 +118,7 @@ def validate_records(root, records, require_native=False, require_complete=False
                     raise ValueError('runtime snapshot binding mismatch')
             if case=='R07':
                 events=run/'events.jsonl'
-                if str(events.relative_to(root)) not in r['artifacts']: raise ValueError('unbound accounting events')
+                if events.relative_to(root).as_posix() not in r['artifacts']: raise ValueError('unbound accounting events')
                 usage=[json.loads(line) for line in events.read_text().splitlines() if json.loads(line).get('event')=='usage_recorded']
                 if len(usage)!=1 or state.get('usage_pending') or not state.get('usage_accounting_incomplete'):
                     raise ValueError('duplicate or incomplete usage replay evidence')
@@ -284,7 +284,7 @@ class Fixture:
                 self.cleanup_group(json.loads(state_path.read_text()).get('active_pid'))
             self.call('status','fixture')
         write(self.directory/'observations.json',self.observations)
-        return {str(p.relative_to(self.directory)):digest(p) for p in self.directory.rglob('*') if p.is_file() and '.git' not in p.parts}
+        return {p.relative_to(self.directory).as_posix():digest(p) for p in self.directory.rglob('*') if p.is_file() and '.git' not in p.parts}
 
 def execute_variant(f,variant):
     case, detail=variant.split('/')
@@ -411,7 +411,7 @@ def run(output,only=None):
     output=Path(output).resolve(); output.mkdir(parents=True,exist_ok=False)
     for relative in ('scripts/autonomous-run.py','native_launcher.py','windows_verifier_sandbox.py','scripts/qualification-recovery.py','docs/26-native-qualification-contract.md'):
         dest=output/'source'/relative; dest.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(ROOT/relative,dest)
-    write(output/'snapshot.json',{str(p.relative_to(output)):digest(p) for p in (output/'source').rglob('*') if p.is_file()})
+    write(output/'snapshot.json',{p.relative_to(output).as_posix():digest(p) for p in (output/'source').rglob('*') if p.is_file()})
     records=[]
     for variant in required_variants():
         r={'variant':variant,'result':'not-run','evidence_kind':'fixture','artifacts':{},'reason':'not selected','host':sys.platform}
@@ -430,12 +430,12 @@ def run(output,only=None):
                 except Exception as e: r.update(result='fail',reason='cleanup/status failed: '+str(e))
             # Freeze raw trusted artifacts too, including .git run-state and archived usage.
             if directory.exists():
-                r['artifacts']={str(p.relative_to(output)):digest(p) for p in directory.rglob('*') if p.is_file()}
+                r['artifacts']={p.relative_to(output).as_posix():digest(p) for p in directory.rglob('*') if p.is_file()}
             if r['result']=='pass':
-                r['proof']={'state':str(f.state_path.relative_to(output)),
-                            'red_control':str((directory/'red-control.json').relative_to(output)),
-                            'observations':str((directory/'observations.json').relative_to(output)),
-                            'source_snapshot':'snapshot.json','case_contract':str((directory/'case-contract.json').relative_to(output))}
+                r['proof']={'state':f.state_path.relative_to(output).as_posix(),
+                            'red_control':(directory/'red-control.json').relative_to(output).as_posix(),
+                            'observations':(directory/'observations.json').relative_to(output).as_posix(),
+                            'source_snapshot':'snapshot.json','case_contract':(directory/'case-contract.json').relative_to(output).as_posix()}
                 r['artifacts']['snapshot.json']=digest(output/'snapshot.json')
                 r['artifacts'].update(json.loads((output/'snapshot.json').read_text()))
             records.append(r); write_exclusive(output/f'ledger-{len(records):04d}.json',{'schema_version':1,'required_variants':required_variants(),'records':records,'native_qualified':False,'offline_complete':len(records)==len(required_variants()) and all(x['result']=='pass' for x in records)})

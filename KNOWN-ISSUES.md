@@ -429,3 +429,7 @@ been authorized, so the entries are kept here.
   Test-local controller wrappers substitute only that preflight for deterministic fake clients;
   the real Git and verifier boundary remain exercised. A simulated Windows check also proves
   the original production guard still refuses unsupported native role launches.
+- [x] 2026-10-05 — Windows qualification fixtures serialized source paths with backslashes,
+  then indexed forward-slash contract keys. Recovery evidence now serializes relative paths
+  with portable forward slashes for sources, artifacts and typed proof. A simulated Windows
+  path regression reproduces the mismatch before the fix and validates the bound evidence after.
