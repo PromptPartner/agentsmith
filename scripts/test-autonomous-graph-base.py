@@ -45,6 +45,11 @@ class GraphBaseTests(unittest.TestCase):
         self.assertNotIn("D:\\a", reason)
 
     def setUp(self) -> None:
+        # These fixtures exercise graph contracts with run_controller stubbed; no
+        # native role is launched, so supported-host policy is a separate gate.
+        native_guard = mock.patch.object(CONTROLLER, "require_native_role_sandbox", return_value=None)
+        native_guard.start()
+        self.addCleanup(native_guard.stop)
         self.temporary = tempfile.TemporaryDirectory(prefix="agentsmith graph base ")
         self.addCleanup(self.temporary.cleanup)
         self.repo = Path(self.temporary.name).resolve() / "repo"
@@ -59,6 +64,8 @@ class GraphBaseTests(unittest.TestCase):
         nodes = []
         for run_id, dependencies in (("a", []), ("b", ["a"])):
             manifest = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
+            for role in manifest["roles"].values():
+                role["model"] = "fixture-model"
             manifest.update(run_id=run_id, spec_path="docs/specs/accepted.md",
                             implementation_ticket=f"IMP-{run_id}")
             manifest["scope"]["allowed_paths"] = [f"src/{run_id}/**"]
@@ -201,6 +208,7 @@ class GraphBaseTests(unittest.TestCase):
         with self.assertRaises(CONTROLLER.RunError):
             self._start("--graph", self.graph_path, "--effective-base", checkpoint)
 
+    @mock.patch.object(CONTROLLER.sys, "platform", "win32")
     def test_resume_revalidates_checkpoint_without_resetting_child_limits(self) -> None:
         checkpoint = self.accepted_predecessor()
         self.assertEqual(self._start("--graph", self.graph_path, "--effective-base", checkpoint), 0)

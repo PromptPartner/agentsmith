@@ -346,6 +346,18 @@ def _checkpoint_commit(contract: dict[str, Any], run_id: str) -> str | None:
 
 def status(contract: dict[str, Any]) -> dict[str, Any]:
     controller = contract["controller"]
+    saved = _load_graph_state(contract) if _graph_directory(contract).exists() else None
+    failed_launches: dict[str, str] = {}
+    if saved is not None:
+        for dispatch in saved["dispatches"]:
+            if isinstance(dispatch, dict) and dispatch.get("launch_failed") is True:
+                run_id = dispatch.get("run_id")
+                reason = dispatch.get("failure_reason")
+                if (not isinstance(run_id, str) or run_id not in contract["nodes"]
+                        or type(dispatch.get("exit_code")) is not int
+                        or not isinstance(reason, str) or not reason or len(reason) > 500):
+                    raise GraphError("durable graph launch failure is malformed")
+                failed_launches[run_id] = reason
     nodes: list[dict[str, Any]] = []
     by_id: dict[str, dict[str, Any]] = {}
     reserved: list[str] = []
@@ -365,7 +377,9 @@ def status(contract: dict[str, Any]) -> dict[str, Any]:
         state = _child_state(contract, run_id)
         checkpoint = _checkpoint_commit(contract, run_id) if node["depends_on"] else contract["contract_commit"]
         result: dict[str, Any] = {"run_id": run_id, "effective_base_oid": checkpoint}
-        if state is not None:
+        if run_id in failed_launches:
+            result.update(status="failed", reason=failed_launches[run_id])
+        elif state is not None:
             child_status = state.get("status")
             if checkpoint is None or state.get("base_head") != checkpoint:
                 raise GraphError(f"child base lineage mismatch for {run_id}")
@@ -432,8 +446,7 @@ def status(contract: dict[str, Any]) -> dict[str, Any]:
         graph_status, action = "running", "status"
     else:
         graph_status, action = "prepared", "start" if ready_set else "status"
-    if _graph_directory(contract).exists():
-        saved = _load_graph_state(contract)
+    if saved is not None:
         if saved["status"] == "stopped":
             graph_status, action, ready_set = "stopped", "resume", []
     if graph_status == "completed" and (_graph_directory(contract) / "integration-candidate.json").is_file():
@@ -756,9 +769,17 @@ def _run_graph(contract: dict[str, Any], state: dict[str, Any], directory: Path,
                                        "child checker accepted"))
             else:
                 reason = child_failure_reason(child, process.returncode, stderr)
+                if child is None:
+                    dispatch = next(item for item in reversed(state["dispatches"])
+                                    if item["run_id"] == run_id)
+                    dispatch.update(launch_failed=True, exit_code=process.returncode,
+                                    failure_reason=reason[:500])
                 pending_events.append(("run_failed", run_id, None,
                                        reason[:500] or "child process exited without accepted evidence"))
         if not active and pending_events:
+            # Graph state is protected during peer roles; persist launch failures
+            # only once their metadata snapshots have finished.
+            _save_graph_state(directory, state)
             for kind, run_id, commit, reason in pending_events:
                 _graph_event(directory, contract["graph_id"], kind, run_id=run_id,
                              commit=commit, reason=reason)

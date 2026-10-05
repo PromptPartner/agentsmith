@@ -49,6 +49,8 @@ class WorkGraphStatusTests(unittest.TestCase):
             ("a", "src/a/**", []), ("b", "src/b/**", []), ("c", "src/c/**", ["a", "b"]),
         ):
             manifest = json.loads(TEMPLATE.read_text(encoding="utf-8"))
+            for role in manifest["roles"].values():
+                role["model"] = "fixture-model"
             manifest.update(run_id=run_id, spec_path="docs/specs/accepted.md", implementation_ticket=f"IMP-{run_id}")
             manifest["scope"]["allowed_paths"] = [scope]
             path = self.repo / ".harness" / "runs" / f"{run_id}.json"
@@ -156,6 +158,40 @@ class WorkGraphStatusTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 2)
                 self.assertIn(phrase, result.stderr.lower())
                 self.assertNotIn("Traceback", result.stderr)
+
+    def test_child_exit_before_state_is_terminal_and_retains_peer_failures(self) -> None:
+        wrapper = Path(self.temporary.name) / "early-exit-graph.py"
+        child = Path(self.temporary.name) / "failed-controller.py"
+        child.write_text("import sys\nprint('RunError: unsupported fixture host', file=sys.stderr)\nraise SystemExit(2)\n")
+        wrapper.write_text(
+            "import sys\nfrom pathlib import Path\n"
+            + "sys.path.insert(0, " + repr(str(ROOT)) + ")\n"
+            + "import agentsmith, work_graph\n"
+            + "work_graph._controller_source = lambda: Path(" + repr(str(child)) + ")\n"
+            + "raise SystemExit(agentsmith.run())\n"
+        )
+        command = [sys.executable, str(wrapper), "graph", "start", "--graph",
+                   ".harness/work-graph.json", "--target", str(self.repo), "--json"]
+        try:
+            result = subprocess.run(command, cwd=self.repo, capture_output=True, text=True,
+                                    check=False, timeout=10)
+        except subprocess.TimeoutExpired:
+            self.fail("graph waited after both children exited without durable state")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual(report["status"], "failed")
+        self.assertEqual({n["run_id"]: n["status"] for n in report["nodes"]},
+                         {"a": "failed", "b": "failed", "c": "blocked"})
+        observed = invoke(self.repo, "status", "--graph", ".harness/work-graph.json")
+        self.assertEqual(json.loads(observed.stdout)["nodes"], report["nodes"])
+        for node in report["nodes"][:2]:
+            self.assertIn("exit=2", node["reason"])
+            self.assertIn("exception=RunError", node["reason"])
+        state = json.loads((self.repo / ".git/agentsmith-graphs/fixture-graph/state.json").read_text())
+        self.assertEqual(state["status"], "failed")
+        self.assertEqual(len(state["dispatches"]), 2)
+        self.assertTrue(all(d["launch_failed"] for d in state["dispatches"]))
+        self.assertEqual(list((self.repo / ".git/agentsmith-runs").glob("*/state.json")), [])
 
     def test_graph_state_symlink_is_rejected_without_external_write(self) -> None:
         outside = Path(self.temporary.name) / "foreign-state"

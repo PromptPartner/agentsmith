@@ -74,6 +74,11 @@ jobs:
         run: python scripts/test-verify-receipts.py
       - name: Cross-platform tracker consent fixtures
         run: python scripts/test-tracker-consent.py
+      - name: Qualification evidence and fixture contracts
+        run: |
+          python scripts/test-qualification.py
+          python scripts/test-qualification-containment.py
+          python scripts/test-qualification-recovery.py
       - name: Cross-platform autonomous state fixtures
         run: python scripts/test-autonomous-state.py
       - name: Cross-platform doctor fixtures

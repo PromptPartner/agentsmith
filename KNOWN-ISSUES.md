@@ -376,3 +376,77 @@ been authorized, so the entries are kept here.
   project scaffolding still relied on that copy to create `.agentsmith/` before writing its helper.
   A real frozen-binary install reproduced the missing-directory failure. Scaffolding now creates the
   owned directory explicitly, and every standalone CI target performs the same install and status run.
+
+- [x] 2026-10-04 — Autonomous model tools could write controller state through the maker's shared
+  Git grant. Native policies now carve trusted state/contracts/runtime folders out of that grant;
+  a real Codex sandbox probe denies both writes and ancestor renames. The verifier also protects
+  trusted contracts/runtime folders when a repository is under `/tmp`. Claude Bash and built-in
+  file tools receive separate restrictions. This is tool containment, not hostile host isolation.
+- [x] 2026-10-04 — Resume restarted makers after checking interruptions and replaced prior logs.
+  Durable stage/candidate checkpoints now revalidate the same attempt; streaming logs, invocation
+  archives and atomic reported-usage recovery retain evidence across stop and hard crashes.
+- [ ] 2026-10-04 — Foundation qualification still needs Linux/native-client containment and
+  crash/timeout pilots, checker budget reservation, and accounting for unreported crash spend.
+  Process-group stopping does not contain detached daemons or hostile same-user processes.
+  The [qualification contract](docs/26-native-qualification-contract.md) defines required cases;
+  the earlier project-config override probe is inconclusive, and inference remains unqualified.
+- [x] 2026-10-04 — Stopping the primary during peer inspection could swallow SIGTERM as an
+  ordinary run error and falsely report the legitimate `disjoint` peer branch as tampering.
+  Cancellation now bypasses invalid-peer handlers. Retained before/after fixtures and deterministic
+  SIGTERM regression checks are in `scripts/test-autonomous-state.py`.
+  The native-client qualification contract is accepted; actual inference remains unexecuted.
+## Native qualification work (2026-10-05)
+
+- [x] NQ-01/C07 — Generated Claude role policy omitted an explicit hook-disable setting.
+  Maker/checker regression failed before adding `disableAllHooks: true` and passes afterward.
+  Native hook/connector evaluation remains pending in NQ-03; offline policy assertions do not
+  establish containment of actual native tools.
+- [x] NQ-02 review — Initial recovery proof validation accepted fabricated pass records
+  without case-specific state, timing/group or frozen source proof. Independent adversarial
+  probes reproduced false acceptance for R01 and R04 and cross-variant relabeling. The recorder
+  now requires case-bound frozen proof, strong receipts, separate timing/group evidence and
+  accounting replay; regressions reject false passes. This is separate from the marketing gate.
+- [x] NQ-02/R08 — Resume ignored edits to the original accepted spec and accepted a saved
+  candidate. A real changed-spec fixture reproduced the acceptance. Resume now compares the
+  original file with the committed contract before launching work; changed/missing/symlinked
+  specs are refused and Git-normalized line endings remain valid. Unit red/green evidence and
+  the real changed-spec refusal are retained with the qualification series.
+
+- [x] 2026-10-05 — Refreshing the installed autonomous controller followed an existing destination
+  symlink and could overwrite a file outside the project. Software-development scaffolding now
+  rejects symbolic links in either autonomous payload path before runtime/template writes.
+  Four real-install regression variants cover payload files and parent directories.
+- [ ] 2026-10-05 — Other runtime payload copies in `copy_runtime()` still use `shutil.copy2`
+  without checking every destination component. The new autonomous payload guard protects its
+  own files and their parents; existing links at other individual runtime filenames need a
+  separate installer containment fix.
+
+- [x] 2026-10-05 — A child preflight refusal before run-state creation left the graph waiting
+  indefinitely with a dispatched node still reported as ready. Graph dispatch now persists
+  a terminal launch failure and safe exit signature; read-only status marks the failed roots
+  and blocked descendants. A real CLI regression failed at its 10-second bound before the fix.
+- [x] 2026-10-05 — Windows graph fixtures reached the new production native-role sandbox guard.
+  Test-local controller wrappers substitute only that preflight for deterministic fake clients;
+  the real Git and verifier boundary remain exercised. A simulated Windows check also proves
+  the original production guard still refuses unsupported native role launches.
+- [x] 2026-10-05 — Windows qualification fixtures serialized source paths with backslashes,
+  then indexed forward-slash contract keys. Recovery evidence now serializes relative paths
+  with portable forward slashes for sources, artifacts and typed proof. A simulated Windows
+  path regression reproduces the mismatch before the fix and validates the bound evidence after.
+- [x] 2026-10-05 — The repeated stop fixture continued after its 2.5-second startup wait
+  expired, so it could request stop before durable state existed. A four-second startup probe
+  reproduced the false status failure. The fixture now requires an observed active process
+  within a bounded ten-second wait and prints state and child output on failure. The exact
+  hosted failure lacked retained state and remains unattributed beyond this reproduced defect.
+- [ ] 2026-10-05 — A stop signal during the controller's terminal-head cleanup can raise
+  `RunInterrupted` outside its handler and print a traceback with exit 1 after interruption
+  is already persisted. Two of 25 retained stop probes reproduced this; durable state stayed
+  interrupted. Signal handling during terminal cleanup needs a separate regression and fix.
+- [x] 2026-10-05 — The installed autonomous controller decoded UTF-8 Git paths with the
+  Windows locale. Preparing a manifest under a `ü` directory looked for a nonexistent `Ã¼`
+  template path. A real Git repository with a simulated CP-1252 subprocess decoder reproduced
+  the corruption; explicit UTF-8 Git transport preserves the original repository path.
+- [ ] 2026-10-05 — Controller receipt, captured-log and usage-replay file reads still use
+  the locale default. A simulated CP-1252 read corrupts UTF-8 JSON text. These paths need
+  explicit encoding and their own receipt/replay regressions; native Windows model-role
+  execution remains unsupported, separately from the corrected prepare command.

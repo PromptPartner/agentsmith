@@ -15,22 +15,56 @@ The agent may write a draft spec, but it cannot accept its own spec. Starting th
 separate human action. If Linear writes are not authorized, the ticket remains a paste-ready draft
 until the operator posts it; naming Linear never grants the run a connector.
 
-Copy `templates/autonomous-run.json` through the controller's `prepare` command. The manifest pins
+Run `python3 .agentsmith/autonomous-run.py prepare --run-id <id> --spec docs/specs/<name>.md
+--ticket <implementation-ticket>` in an installed consumer project. It uses
+`.harness/templates/autonomous-run.json`; the source checkout uses `scripts/autonomous-run.py`
+and `templates/autonomous-run.json`. The manifest pins
 the spec hash, ticket, base ref, maker/checker runtime and model, path boundary, verifier, attempt
 cap, wall-clock budget, and git/external-write policy. It must be reviewed and committed before
-`start` will accept it. `scope.resources` optionally names local coordination keys such as
+`start` will accept it. Both roles require explicit model and effort settings; blank or placeholder
+settings keep the prepared draft non-executable. `scope.resources` optionally names local coordination keys such as
 `port:3000`, `db:local/test`, or `service:redis`; omit it in an older manifest or use an empty list
 when the run reserves none.
 
 ## What runs overnight
 
-`scripts/autonomous-run.py start <manifest>` creates a sibling git worktree on an
+`python3 .agentsmith/autonomous-run.py start <manifest>` creates a sibling git worktree on an
 `agentsmith/<run-id>` branch. Each attempt is a fresh maker process. The maker must leave atomic
 local commits and a clean tree, then emit a schema-shaped receipt. The controller independently
 checks the commit, receipt, changed and ignored paths, fast-forward history, refs, config, hooks,
 existing Git objects, and other worktrees' administration. It then creates a disposable detached
 worktree at that exact commit: the deterministic verifier and fresh checker run there, never in
 the maker's retained worktree.
+
+Before verification, the controller rejects edits to `.agentsmith/`, `.harness/`, workflow files,
+known launchers, the accepted spec, and existing baseline tests. Broad allowed scope does not
+waive this gate. New regression tests may be added. Include additional project acceptance inputs
+as globs in `verify.protected_paths` in the reviewed manifest. Protected changes require separate
+operator review outside this run; the controller has no self-approval override.
+
+Controller verification writes the raw exit code and stdout/stderr to `attempt-N-verify.txt` and
+an adjacent JSON receipt. That receipt binds the candidate and base commits, spec and manifest
+hashes, verification policy and configuration hashes, controller/launcher hashes, output hash,
+and checker receipt hash. A checker acceptance with empty evidence or unresolved findings does
+not accept a candidate. Role exit codes are retained separately from structured receipts.
+
+Trusted state stays in the controller's shared run directory. Each native role receives explicit
+write restrictions for that directory, the original contract, and the controller/launcher source
+folders. Codex uses a strict named filesystem permissions profile: the maker can write its
+worktree, shared Git directory, and its active worktree administration directory, with more
+specific read-only rules for trusted paths. Claude
+uses `sandbox.filesystem.denyWrite` for shell tools and absolute `Edit` deny rules for its built-in
+file tools. Checker worktrees remain read-only to model tools. The client writes its structured
+output to a temporary exchange directory; only the controller copies the parsed receipt into
+trusted state. An outer Seatbelt wrapper is unsuitable because macOS rejects nested sandbox
+initialization. See [Codex permissions](https://learn.chatgpt.com/docs/permissions) and
+[Claude sandboxing](https://code.claude.com/docs/en/sandboxing).
+
+This protects trusted files from model tools using the declared native sandbox. The native client
+and host remain trusted; hostile same-user processes and mutually untrusted makers sharing Git
+need stronger isolation. Custom verification inputs still require explicit protected paths.
+Native integration and Linux containment remain pilot gates. Missing verification configuration
+is represented by a null hash rather than an invented receipt.
 
 The role map is data, not policy. Claude/Fable planning → Codex making → Claude checking and Claude
 making → Codex checking use the same protocol. Planning is normally attended; the overnight run
@@ -69,6 +103,9 @@ runs with a credential-free environment, no network, no access to other home-dir
 and no writes outside the disposable worktree. Read-only Git metadata remains visible so Git-based
 checks work. macOS uses the built-in sandbox; Linux requires `bubblewrap`. On any other host—or
 Linux without `bwrap`—verification exits closed instead of silently running unrestricted.
+Codex checkers use a named read-only filesystem profile with no additional write roots.
+Their native sandbox permission is distinct from the later mutation checks. Checkers inspect deterministic verifier
+evidence and may run read-only probes; checks needing output files run through the verifier.
 Both roles start fresh; their receipts, not conversational memory, are the handoff.
 The autonomous controller and `agentsmith evaluate` share the same immutable native-launch helper
 for command construction, structured-output parsing, usage extraction, sandbox settings, and the
@@ -86,6 +123,11 @@ refresh state and is removed after the process exits; global instructions, user 
 plugins, apps, and MCP servers never enter the role environment, and non-ChatGPT authentication
 fails closed.
 
+Claude role settings explicitly set `disableAllHooks: true`, exclude user/project setting sources,
+and supply an empty strict MCP configuration. The [Claude hook reference](https://code.claude.com/docs/en/hooks)
+documents the session override. Managed host policy remains part of the trusted native-client boundary;
+generated settings are offline evidence, not proof of native tool denial.
+
 ## Operations and recovery
 
 The controller and manifest template are scaffolded only for `software-dev` projects in v1; the
@@ -93,7 +135,8 @@ Wayfinder spec flow remains available to every work type.
 
 `status <id>` reads controller state from the repository's git-common directory. `start` and
 `resume` hold one per-run lifecycle lock, so a second live controller is refused; a dead owner's
-lock is reclaimed only after its PID is demonstrably gone. While starting or resuming, the short
+lock is reclaimed only after its PID is demonstrably gone. Resume also checks the original spec
+file against its committed contract, using Git text normalization so Windows line endings remain valid. While starting or resuming, the short
 repository coordination lock serializes the live-scope scan and lifecycle-state transition, then
 releases before model execution. A conflict names the other run and overlapping path prefix or
 resource. On Windows, lock acquisition and release retry brief file-sharing denials from
@@ -101,7 +144,7 @@ competing readers; a persistent denial still fails closed. Malformed live scope 
 a demonstrably dead
 controller and a stopped run do
 not block new work. `stop <id>` atomically writes a stop
-request, signals the active controller and child, then waits up to five seconds for the controller
+request, terminates the active process group and signals the controller, then waits up to five seconds for the controller
 to persist `interrupted`. It never writes `state.json` itself. If the controller has already died,
 the request remains in place and `resume` reconciles the interruption after acquiring the stale
 lock.
@@ -110,6 +153,23 @@ lock.
 and worktree still match and the worktree is clean. A changed contract requires a new run ID rather
 than silently moving the goalposts. The original deadline and accumulated Claude/Codex usage remain
 authoritative across every resume; pausing does not reset either budget.
+
+The durable `stage` distinguishes making, candidate validation, verification, checking, and retry.
+If a completed maker candidate was checkpointed, resume revalidates its exact commit, receipt,
+scope, protected inputs, and Git transition, reruns verification, and launches a fresh checker
+within the same attempt. It removes an abandoned checker worktree only after proving its generated
+path, repository, and candidate identity. An unfinished maker that advanced HEAD without a validated
+receipt requires operator review; a dirty worktree or a surviving role process group blocks recovery.
+Legacy checking states without a candidate checkpoint also require review.
+
+Raw stdout/stderr stream to durable files; launch and exit records retain process IDs and exit
+codes. Repeated verification/checker invocations archive their earlier artifacts under `archive/`.
+After a hard crash, emitted usage is replayed once from the retained log. `usage_accounting_incomplete`
+marks that any unreported spend remains unknown. The checker/verification budget reserve and the
+full native-client crash/timeout pilot remain separate foundation gates. Process groups cover
+ordinary descendants; detached daemons and hostile process interference require host-level isolation.
+Native Windows starts fail closed until native role containment is qualified; standalone Windows
+verifier support is unchanged.
 
 An accepted run prints the branch, commit, worktree, and evidence for human review. An escalated
 run prints the exact boundary that stopped it. Nothing leaves the machine until the operator
@@ -128,3 +188,17 @@ See [parallel work graphs](24-parallel-work-graphs.md) for the full lifecycle an
 
 Before relying on this unattended, run one report-only fixture, observe one complete maker/checker
 cycle, and test `stop`. Autonomy is earned using the same ladder as the autonomous-loops profile.
+The [accepted native-client qualification contract](26-native-qualification-contract.md) defines the bounded
+host/client containment and crash/timeout matrix, required evidence and unresolved pilot gates.
+The [offline qualification recorders](25-native-qualification.md) freeze required variants and raw
+evidence. Fixture completeness and passing native inference results are separate gates.
+
+The installed controller is refreshed on reinstall; existing project manifest drafts are
+preserved. Installation refuses symbolic links in the controller or manifest-template destination
+paths before copying runtime payloads.
+
+Native role preflight currently permits macOS with `sandbox-exec` and Linux with `bubblewrap`.
+Windows has a separate AppContainer verifier, but native role trusted-state containment is
+unsupported and production role launches are refused. Provider-free Windows graph fixtures
+substitute only the role preflight and keep the real Git/verifier checks; their results cannot
+qualify native model tools.

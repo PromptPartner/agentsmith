@@ -25,15 +25,17 @@ controller has no external-write adapter at all.
 
 ## Prepare the contract
 
-If `scripts/autonomous-run.py` exists, use it. Its installed template is
+Use `.agentsmith/autonomous-run.py` in an installed project; the source checkout uses
+`scripts/autonomous-run.py`. The installed template is
 `.harness/templates/autonomous-run.json` (the harness source checkout uses
 `templates/autonomous-run.json`):
 
 ```text
-python3 scripts/autonomous-run.py prepare --run-id <short-id> --spec docs/specs/<name>.md --ticket <implementation-ticket> --maker codex --checker claude --template .harness/templates/autonomous-run.json
+python3 .agentsmith/autonomous-run.py prepare --run-id <short-id> --spec docs/specs/<name>.md --ticket <implementation-ticket> --maker codex --checker claude --template .harness/templates/autonomous-run.json
 ```
 
-This only creates a manifest. Review its exact allowed/denied paths, verifier, models, attempt cap,
+This creates a non-executable draft until both roles have explicit model and effort settings.
+Review its exact allowed/denied paths, verifier, models, attempt cap,
 wall-clock limit, budgets, and optional `scope.resources` keys such as `port:3000` or
 `db:local/test`. Resource keys coordinate cooperating local runs; they do not replace operating-
 system port binding or database isolation. Commit the manifest before execution; the controller
@@ -46,15 +48,22 @@ security boundary for mutually untrusted makers.
 Only after explicit operator authorization:
 
 ```text
-python3 scripts/autonomous-run.py start .harness/runs/<short-id>.json
+python3 .agentsmith/autonomous-run.py start .harness/runs/<short-id>.json
 ```
 
 The controller creates an isolated local branch/worktree, launches a fresh maker, validates its
 receipt, scope and Git transition, then creates a disposable detached worktree for the sandboxed
 deterministic verifier and a fresh checker. A rejection becomes the next maker's input. Three
 failed attempts, invalid state, denied scope, immutable-deadline or reported-budget exhaustion,
-Git metadata drift, or checker mutation escalates instead of widening authority. Verification
+Git metadata drift, protected verification edits, or checker mutation escalates instead of widening authority. Verification
 fails closed unless macOS `sandbox-exec` or Linux `bubblewrap` is available.
+
+Existing baseline tests, the accepted spec, runtime launchers, and verification policy are protected
+even with broad maker scope. Add custom acceptance inputs via `verify.protected_paths`; changing
+protected inputs requires separate operator review outside this run. New regression tests remain
+allowed. Both roles receive trusted-path write restrictions through their native policies; Codex uses a
+strict named filesystem profile, and Claude combines Bash denyWrite with file-tool Edit denials.
+Native clients and the host remain trusted. Checkers inspect the controller verifier evidence.
 
 Before `start` creates local Git or state artifacts, and before `resume` restarts work, the
 controller serializes a repository-local collision scan. Ancestor/descendant fixed prefixes from
@@ -63,6 +72,10 @@ resource keys conflict. Live malformed state fails closed, while stopped or demo
 controllers no longer reserve their scopes.
 
 Use `status <id>`, `stop <id>`, or `resume <id>`. Stop/resume retains the worktree and audit state.
+Resume revalidates a checkpointed candidate and reruns verification/checking in the same attempt.
+Dirty or unreceipted maker commits require operator review. Raw logs survive controller crashes;
+earlier invocations are archived. Report `usage_accounting_incomplete` when a crash leaves
+unreported spend unknown. A surviving role process group must be stopped before recovery.
 An accepted run ends at a local commit for human review: never push, open a PR, merge, deploy,
 rewrite history, or write to Linear from this workflow.
 

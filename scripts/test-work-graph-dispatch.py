@@ -42,6 +42,58 @@ class GraphDispatchTests(unittest.TestCase):
         fake.mkdir()
         (fake / "codex-home").mkdir()
         (fake / "codex-home" / "auth.json").write_text('{"auth_mode":"chatgpt"}', encoding="utf-8")
+        # Test-only launchers keep fake-client lifecycle coverage independent of
+        # native role support. Real Git and the platform verifier still execute.
+        self.controller_cli = fake / "controller.py"
+        self.controller_cli.write_text(textwrap.dedent(f'''\
+            import importlib.util
+            from pathlib import Path
+            import sys
+            from unittest import mock
+            sys.path.insert(0, {str(ROOT)!r})
+            def load_controller():
+                spec = importlib.util.spec_from_file_location("fixture_controller", {str(ROOT / "scripts/autonomous-run.py")!r})
+                controller = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(controller)
+                original_guard = controller.require_native_role_sandbox
+                if "--probe-native-policy" in sys.argv:
+                    with mock.patch.object(controller.sys, "platform", "win32"):
+                        original_guard()
+                    raise AssertionError("production guard accepted unsupported host")
+                controller.require_native_role_sandbox = lambda: None
+                return controller
+            if __name__ == "__main__":
+                early_exit = Path(__file__).parent / "early-exit-a"
+                if (early_exit.is_file() and len(sys.argv) > 2
+                        and sys.argv[1] == "start" and Path(sys.argv[2]).stem == "a"):
+                    import time
+                    starts = Path(__file__).parent / "starts.log"
+                    deadline = time.monotonic() + 10
+                    while time.monotonic() < deadline:
+                        if starts.is_file() and any(line.startswith("b ") for line in starts.read_text().splitlines()):
+                            print("RunError: configured early child exit", file=sys.stderr)
+                            raise SystemExit(2)
+                        time.sleep(0.02)
+                    raise SystemExit("independent peer never entered maker fixture")
+                controller = load_controller()
+                raise SystemExit(controller.main())
+            '''), encoding="utf-8")
+        self.graph_cli = fake / "graph.py"
+        self.graph_cli.write_text(textwrap.dedent(f'''\
+            import sys
+            from pathlib import Path
+            sys.path.insert(0, {str(ROOT)!r})
+            import agentsmith
+            import work_graph
+            import controller
+            work_graph._controller_source = lambda: Path({str(self.controller_cli)!r})
+            work_graph._controller = controller.load_controller
+            try:
+                raise SystemExit(agentsmith.run())
+            except agentsmith.CliError as exc:
+                print(f"[error] {{exc}}", file=sys.stderr)
+                raise SystemExit(2)
+            '''), encoding="utf-8")
         self.fake_client = fake / "agent.py"
         self.fake_client.write_text(textwrap.dedent('''\
             import json
@@ -98,6 +150,8 @@ class GraphDispatchTests(unittest.TestCase):
         nodes = []
         for run_id, dependencies in (("a", []), ("b", []), ("c", ["a", "b"])):
             manifest = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
+            for role in manifest["roles"].values():
+                role["model"] = "fixture-model"
             manifest.update(run_id=run_id, spec_path="docs/specs/accepted.md", implementation_ticket=f"IMP-{run_id}")
             manifest["scope"]["allowed_paths"] = [f"src/{run_id}/**"]
             manifest["verify"]["command"] = (
@@ -136,7 +190,7 @@ class GraphDispatchTests(unittest.TestCase):
 
     def invoke(self, action: str) -> subprocess.CompletedProcess[str]:
         result = subprocess.run(
-            [sys.executable, str(ROOT / "agentsmith.py"), "graph", action, "--graph", self.graph_path,
+            [sys.executable, str(self.graph_cli), "graph", action, "--graph", self.graph_path,
              "--target", str(self.repo), "--json"], cwd=self.repo, env=self.environment,
             text=True, capture_output=True, check=False, timeout=180,
         )
@@ -158,6 +212,17 @@ class GraphDispatchTests(unittest.TestCase):
                                            capture_output=True, check=False)
                     result.stderr += f"{run_id} Git status: {dirty.stdout[:1000]}{dirty.stderr[:300]}\n"
         return result
+
+    def test_fixture_wrapper_preserves_production_unsupported_host_refusal(self) -> None:
+        probe = subprocess.run(
+            [sys.executable, str(self.controller_cli), "--probe-native-policy"],
+            cwd=self.repo, env=self.environment, text=True, capture_output=True,
+            check=False, timeout=10,
+        )
+        self.assertNotEqual(probe.returncode, 0)
+        self.assertIn("no supported fail-closed trusted-state sandbox", probe.stderr)
+        self.assertFalse((self.repo / ".git/agentsmith-runs").exists())
+        self.assertFalse((self.fake_client.parent / "starts.log").exists())
 
     def test_parallel_roots_and_dependent_checkpoint(self) -> None:
         started = self.invoke("start")
@@ -185,6 +250,23 @@ class GraphDispatchTests(unittest.TestCase):
         self.assertGreater(starts["c"], max(finishes["a"], finishes["b"]))
         self.assertEqual(git(self.repo, "status", "--porcelain"), "")
 
+    def test_early_child_exit_retains_live_independent_peer_acceptance(self) -> None:
+        (self.fake_client.parent / "early-exit-a").touch()
+        (self.fake_client.parent / "sleep-seconds.txt").write_text("4", encoding="utf-8")
+        started = self.invoke("start")
+        self.assertEqual(started.returncode, 2, started.stdout + started.stderr)
+        report = json.loads(self.invoke("status").stdout)
+        self.assertEqual({node["run_id"]: node["status"] for node in report["nodes"]},
+                         {"a": "failed", "b": "completed", "c": "blocked"},
+                         started.stdout + started.stderr)
+        self.assertFalse((self.repo / ".git/agentsmith-runs/a/state.json").exists())
+        peer = json.loads((self.repo / ".git/agentsmith-runs/b/state.json").read_text())
+        self.assertEqual(peer["status"], "accepted")
+        graph = json.loads((self.repo / ".git/agentsmith-graphs/dispatch-fixture/state.json").read_text())
+        failed = [item for item in graph["dispatches"] if item.get("launch_failed")]
+        self.assertEqual([item["run_id"] for item in failed], ["a"])
+        self.assertFalse((self.repo.parent / "repo-c").exists())
+
     def test_failed_node_blocks_descendant_but_not_independent_peer(self) -> None:
         (self.fake_client.parent / "fail-run.txt").write_text("b", encoding="utf-8")
         started = self.invoke("start")
@@ -197,7 +279,7 @@ class GraphDispatchTests(unittest.TestCase):
     def test_stop_then_resume_preserves_partial_work_and_limits(self) -> None:
         (self.fake_client.parent / "sleep-seconds.txt").write_text("20", encoding="utf-8")
         running = subprocess.Popen(
-            [sys.executable, str(ROOT / "agentsmith.py"), "graph", "start", "--graph", self.graph_path,
+            [sys.executable, str(self.graph_cli), "graph", "start", "--graph", self.graph_path,
              "--target", str(self.repo), "--json"],
             cwd=self.repo, env=self.environment, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -262,7 +344,7 @@ class GraphDispatchTests(unittest.TestCase):
         foreign.mkdir()
         (foreign / "notes.md").write_text("retain me\n", encoding="utf-8")
         preview = subprocess.run(
-            [sys.executable, str(ROOT / "agentsmith.py"), "graph", "cleanup", "--preview",
+            [sys.executable, str(self.graph_cli), "graph", "cleanup", "--preview",
              "--graph", self.graph_path, "--target", str(self.repo), "--json"],
             cwd=self.repo, env=self.environment, text=True, capture_output=True, check=False,
         )
@@ -275,7 +357,7 @@ class GraphDispatchTests(unittest.TestCase):
     def test_changed_graph_contract_cannot_resume_stopped_run(self) -> None:
         (self.fake_client.parent / "sleep-seconds.txt").write_text("4", encoding="utf-8")
         running = subprocess.Popen(
-            [sys.executable, str(ROOT / "agentsmith.py"), "graph", "start", "--graph", self.graph_path,
+            [sys.executable, str(self.graph_cli), "graph", "start", "--graph", self.graph_path,
              "--target", str(self.repo), "--json"],
             cwd=self.repo, env=self.environment, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -316,7 +398,7 @@ class GraphDispatchTests(unittest.TestCase):
         self.assertTrue(checkpoint.is_dir())
         dirty = checkpoint / "research-notes.md"
         dirty.write_text("retain source material\n", encoding="utf-8")
-        command = [sys.executable, str(ROOT / "agentsmith.py"), "graph", "cleanup", "--apply",
+        command = [sys.executable, str(self.graph_cli), "graph", "cleanup", "--apply",
                    "--graph", self.graph_path, "--target", str(self.repo), "--json"]
         refused = subprocess.run(command, cwd=self.repo, env=self.environment, text=True,
                                  capture_output=True, check=False)

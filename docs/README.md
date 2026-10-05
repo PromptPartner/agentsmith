@@ -30,6 +30,6 @@ The [First Verified Loop](06-your-first-loop.md) walks through this sequence. Th
 | Foundations | [Harness philosophy](01-harness-philosophy.md) · [Why rules get ignored](04-why-your-agent-ignored-the-rule.md) · [Operating modes](05-operating-modes.md) |
 | Adapt the system | [Choose a profile](07-how-to-pick-a-profile.md) · [Add a profile](08-how-to-add-a-profile.md) · [Adapt it to your team](09-adapting-it-to-your-team.md) · [Best practices](10-best-practices.md) |
 | Build and operate | [Designing UIs](11-designing-uis.md) · [What's built in](12-whats-built-in.md) · [Platforms](13-platforms-and-tools.md) · [Project tracker](14-project-tracker-guide.md) · [Wayfinding specs](20-wayfinding-spec-flow.md) · [Updating installs](23-updating-existing-installations.md) |
-| Trust and reference | [Safety](15-safety-model.md) · [Securing what you build](16-securing-what-you-build.md) · [Influences](18-influences.md) · [Glossary](19-glossary.md) · [Parallel work graph security](24-parallel-work-graphs-security.md) |
+| Trust and reference | [Safety](15-safety-model.md) · [Securing what you build](16-securing-what-you-build.md) · [Influences](18-influences.md) · [Glossary](19-glossary.md) · [Parallel work graph security](24-parallel-work-graphs-security.md) · [Offline native-client qualification](25-native-qualification.md) |
 
 Product templates, demos, and the [spec format](specs/README.md) remain public. Your project research and specs belong in its `docs/research/` and `docs/specs/`, committed where that work is authorized to live.

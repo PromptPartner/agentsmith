@@ -193,3 +193,9 @@ work-graph evidence job is manual-only. The macOS fixture uses
 `sandbox-exec`; Linux needs `bubblewrap` and permission to create its
 namespaces. A missing sandbox is a failing report, never a skipped test or a portability claim.
 See [the security review](24-parallel-work-graphs-security.md) for the named threat checks.
+
+A child that exits before saving run state is recorded as a terminal launch failure in the graph's
+own dispatch record. `status` retains its bounded exit signature, marks that node failed and blocks
+dependent nodes. Independent peers can finish; the graph releases its lifecycle lock instead of
+waiting on an already dispatched node. Failed launches require operator reconciliation rather than
+an automatic retry with new limits.
