@@ -163,3 +163,5 @@ Plans and receipts are authenticated with the local account's
 machines. Repeat plan, inspection, and apply separately for every installation.
 
 Update plans retain selected capability effect records. Expanded effects require an explicit reviewed install selection; unchanged effects remain durable. Review [capability disclosures](local-capabilities.md) before selecting optional integrations.
+
+Startup recall is separately selected with `install --with-memory-startup` (preview with `--dry-run`). Legacy installs remain disabled. Updates and rollback preserve the decision; `--without-memory-startup` removes its owned scoped registration. See [project memory](project-memory.md).

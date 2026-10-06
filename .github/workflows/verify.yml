@@ -66,6 +66,11 @@ jobs:
       - name: Work-graph local lifecycle on native Windows
         if: runner.os == 'Windows'
         run: python scripts/test-work-graph-dispatch.py
+      - name: Capability effects and local memory contracts
+        run: |
+          python scripts/test-capability-effects.py
+          python scripts/test-project-memory.py
+          python scripts/test-memory-lifecycle.py
       - name: Stable release updater
         run: python scripts/test-update.py
       - name: Cross-platform secret scanner fixtures

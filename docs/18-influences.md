@@ -194,3 +194,5 @@ project archive.
 ## ECC hook effect disclosures
 
 Capability effect categories borrow the design from [ECC](https://github.com/affaan-m/ECC/blob/ef648e01899ba3e8dc6371642deaaf64b4477775/scripts/lib/install/hook-consent.js) (MIT, Affaan Mustafa). AgentSmith implements its own records in the existing installation lifecycle; no ECC code or runtime dependency is imported.
+
+Local memory retrieval also borrows ECC’s design contracts for Markdown provenance, bounded lexical recall and explicit incompleteness. The implementation is original Python; [project memory](project-memory.md) describes its narrower scope.

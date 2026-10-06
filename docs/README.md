@@ -35,3 +35,5 @@ The [First Verified Loop](06-your-first-loop.md) walks through this sequence. Th
 Product templates, demos, and the [spec format](specs/README.md) remain public. Your project research and specs belong in its `docs/research/` and `docs/specs/`, committed where that work is authorized to live.
 
 - [Optional capability effects](local-capabilities.md) — selection and lifecycle records.
+
+- [Local project memory](project-memory.md) — manual recall and optional startup references.
