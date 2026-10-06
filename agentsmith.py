@@ -665,6 +665,58 @@ def source_release_identity() -> dict[str, str | None]:
     return identity
 
 
+# Effect revisions change only when the disclosed behavior expands. Legacy choices
+# are grandfathered for these existing capabilities; new ones require selection.
+CAPABILITY_EFFECTS = {
+    "hooks": {"version": 1, "files": "Git pre-commit launcher and local runtime", "process_control": "may reject a commit containing secrets", "egress": "none", "context": "none", "records": "installation ownership and backups"},
+    "handoff_hooks": {"version": 1, "files": "native hook configuration and local runtime", "process_control": "local Python on prompt/stop events; fail open", "egress": "no separate export; existing agent provider processes injected context", "context": "handoff references and budget reminders", "records": "local budget signals; installation ownership and backups"},
+    "ui_design_hook": {"version": 1, "files": "native hook configuration and local runtime", "process_control": "local Python before edits; fail open", "egress": "no separate export; existing agent provider processes injected context", "context": "DESIGN.md reminder", "records": "installation ownership and backups"},
+    "skills": {"version": 1, "files": "portable skills and client adapters", "process_control": "agent may invoke skill procedures", "egress": "existing agent provider processes skill context; procedures may call services", "context": "skill instructions on discovery/invocation", "records": "procedure-dependent; ownership and backups"},
+    "mcp": {"version": 1, "files": "selected MCP declarations", "process_control": "client launches selected server processes", "egress": "selected servers may access network and send tool data", "context": "server tools and responses", "records": "server-dependent; ownership and backups"},
+}
+
+
+def capability_effects(capabilities: dict[str, Any]) -> dict[str, Any]:
+    return {name: dict(effect) for name, effect in CAPABILITY_EFFECTS.items() if capabilities.get(name)}
+
+
+def review_capability_effects(prior: dict[str, Any], args: argparse.Namespace) -> None:
+    capabilities = prior.get("capabilities", {})
+    recorded = prior.get("effects", {})
+    for name, effect in capability_effects(capabilities).items():
+        explicit = bool(getattr(args, "with_" + name, False))
+        if "effects" in prior and recorded.get(name) != effect and not explicit:
+            raise CliError(f"Capability {name} effects changed; review install --dry-run and explicitly select --with-{name.replace('_', '-')}")
+
+
+def check_candidate_effects(checkout: Path, installation: dict[str, Any]) -> None:
+    """Inspect declarations without executing release code during planning."""
+    import ast
+    source = checkout / "agentsmith.py"
+    try:
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        assignments = [node for node in tree.body if isinstance(node, ast.Assign)
+                       and any(isinstance(target, ast.Name) and target.id == "CAPABILITY_EFFECTS" for target in node.targets)]
+        candidate = ast.literal_eval(assignments[0].value) if len(assignments) == 1 else None
+    except (OSError, ValueError, SyntaxError) as exc:
+        raise CliError("Cannot inspect candidate capability effects") from exc
+    selected = capability_effects(installation["capabilities"])
+    if candidate is None:
+        # Releases predating disclosures have only the five original capabilities.
+        if installation["capabilities"].get("memory_startup"):
+            raise CliError("Candidate does not support reviewed startup recall")
+        return
+    if not isinstance(candidate, dict) or any(candidate.get(name) != effect for name, effect in selected.items()):
+        raise CliError("Candidate capability effects expanded; review that release's install --dry-run and explicitly select its capabilities before updating")
+
+
+def show_capability_effects(capabilities: dict[str, Any]) -> None:
+    for name, effect in capability_effects(capabilities).items():
+        say(f"Capability {name} (effects v{effect['version']}):")
+        for kind in ("files", "process_control", "egress", "context", "records"):
+            say(f"  {kind}: {effect[kind]}")
+
+
 def record_installation_manifest(
     target: Path,
     agents: list[str],
@@ -780,6 +832,7 @@ def record_installation_manifest(
         },
         "managed_files": managed_files,
     }
+    state["installation"]["effects"] = capability_effects(state["installation"]["capabilities"])
     path = state_path(manifest_root)
     rendered = json.dumps(state, indent=2, ensure_ascii=False) + "\n"
     if not path.exists() or path.read_text(encoding="utf-8") != rendered:
@@ -1807,7 +1860,7 @@ def validate_installation_manifest(state: dict[str, Any]) -> dict[str, Any]:
         raise CliError("Installation state has no manifest; rerun install with explicit choices before planning an update")
     allowed_installation = {
         "installed_version", "source", "scope", "agents", "profiles", "include_core",
-        "assemble_only", "runtime", "safety", "operator", "tracker", "capabilities", "managed_files",
+        "assemble_only", "runtime", "safety", "operator", "tracker", "capabilities", "managed_files", "effects",
     }
     unknown_installation = sorted(set(installation) - allowed_installation)
     if unknown_installation:
@@ -1819,7 +1872,7 @@ def validate_installation_manifest(state: dict[str, Any]) -> dict[str, Any]:
         )
     if not isinstance(installation["assemble_only"], bool):
         raise CliError("Installation manifest assemble_only field must be true or false; rerun install explicitly")
-    required = allowed_installation - {"runtime"}
+    required = allowed_installation - {"runtime", "effects"}
     missing = sorted(required - set(installation))
     if missing:
         raise CliError(f"Installation manifest is missing field(s): {', '.join(missing)}")
@@ -1847,6 +1900,8 @@ def validate_installation_manifest(state: dict[str, Any]) -> dict[str, Any]:
             raise CliError(f"Installation manifest {name} field must be an object")
     if not isinstance(installation["managed_files"], list):
         raise CliError("Installation manifest managed_files field must be a list")
+    if "effects" in installation and not isinstance(installation["effects"], dict):
+        raise CliError("Installation effects must be an object")
     runtime = installation.get("runtime")
     if runtime is not None and (
         not isinstance(runtime, dict)
@@ -2299,6 +2354,10 @@ def cmd_update_plan(args: argparse.Namespace) -> int:
             "Update planning refused: detected global MCP configuration, but global MCP ownership is not supported; "
             "rerun install with explicit choices after preserving that configuration"
         )
+    recorded_effects = installation.get("effects")
+    if recorded_effects is not None and recorded_effects != capability_effects(installation["capabilities"]):
+        raise CliError("Capability effects changed; explicitly review and rerun install before updating")
+    installation.setdefault("effects", capability_effects(installation["capabilities"]))
     remote = args.update_from or OFFICIAL_REMOTE
     release = resolve_stable_release(remote, args.version)
     roots, fingerprints, foreign_skill_directories = installation_fingerprints(
@@ -2803,6 +2862,7 @@ def stage_planned_update(
     plan: dict[str, Any], temporary_root: Path, *, execute_candidate: bool
 ) -> tuple[Path, list[tuple[str, str, bytes | None, int | None]]]:
     checkout = checkout_planned_release(plan["remote"], plan["release"], temporary_root / "release")
+    check_candidate_effects(checkout, plan["installation"])
     shadow_roots = {
         "target": temporary_root / "target",
         "home": temporary_root / "home",
@@ -3087,6 +3147,9 @@ def validate_post_update_health(plan: dict[str, Any]) -> None:
         for agent_id, expected_safety in installation["safety"].items():
             if inspect_safety(agent_id)["state"] != expected_safety:
                 raise CliError(f"Post-update health check failed: native safety does not match the manifest for {agent_id}")
+
+    if "effects" in installed and installed["effects"] != capability_effects(installation["capabilities"]):
+        raise CliError("Post-update health check failed: capability effects require reviewed selection")
 
 
 def prepare_restoration(
@@ -3472,7 +3535,17 @@ def org_policy_install(args: argparse.Namespace, agents: list[str]) -> int:
 
 def append_unique_hook(data: dict[str, Any], event: str, command: str, matcher: str | None = None) -> None:
     hooks = data.setdefault("hooks", {}).setdefault(event, [])
-    hooks[:] = [entry for entry in hooks if not any(command.split()[-1] in h.get("command", "") for h in entry.get("hooks", []))]
+    hook_name = command.split()[-1]
+    retained_groups = []
+    for group in hooks:
+        retained = [handler for handler in group.get("hooks", []) if not (
+            "agentsmith.py" in handler.get("command", "")
+            and " hook " in handler.get("command", "")
+            and handler.get("command", "").split()[-1] == hook_name
+        )]
+        if retained:
+            retained_groups.append({**group, "hooks": retained})
+    hooks[:] = retained_groups
     entry: dict[str, Any] = {"hooks": [{"type": "command", "command": command}]}
     if matcher:
         entry["matcher"] = matcher
@@ -3626,11 +3699,13 @@ def remove_owned_hooks(path: Path, *, dry_run: bool) -> None:
     for event in list(hooks):
         kept = []
         for entry in hooks[event]:
-            commands = [hook.get("command", "") for hook in entry.get("hooks", [])]
-            if any("agentsmith.py" in command and " hook " in command for command in commands):
-                changed = True
-            else:
-                kept.append(entry)
+            handlers = entry.get("hooks", [])
+            retained = [hook for hook in handlers if not (
+                "agentsmith.py" in hook.get("command", "") and " hook " in hook.get("command", "")
+            )]
+            changed |= len(retained) != len(handlers)
+            if retained:
+                kept.append({**entry, "hooks": retained})
         if kept:
             hooks[event] = kept
         else:
@@ -3819,6 +3894,13 @@ def cmd_install(args: argparse.Namespace) -> int:
         return uninstall(args, agents, target)
     if not profiles and not args.global_mode:
         raise CliError("Pick a profile with --profile <name[,name]> or use --global")
+    prior_installation = load_state(home_dir() if args.global_mode else target).get("installation", {})
+    review_capability_effects(prior_installation, args)
+    requested = dict(prior_installation.get("capabilities", {}))
+    for name in CAPABILITY_EFFECTS:
+        if getattr(args, "with_" + name, False):
+            requested[name] = True
+    show_capability_effects(requested)
     canonical, generated = instruction_paths(target, agents, args.global_mode)
     ownership_safety = load_state(home_dir()).get("native_safety", {})
     if not isinstance(ownership_safety, dict):
@@ -4610,7 +4692,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     "Use cautious safety unless this expanded tool surface is deliberately trusted.",
                 )
             )
-        result[agent_id] = {**capabilities, "safety": safety, "warnings": warnings}
+        installation = load_state(target).get("installation", {})
+        installation = installation if isinstance(installation, dict) else {}
+        result[agent_id] = {**capabilities, "safety": safety, "warnings": warnings, "effects": installation.get("effects", {}), "selected_capabilities": installation.get("capabilities", {})}
         unhealthy |= instructions["state"] in {"missing", "malformed"}
         unhealthy |= bool(skills["adapter_diverged_names"])
         unhealthy |= bool(runtime["missing_payloads"])
@@ -4619,6 +4703,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     else:
         for agent_id, capabilities in result.items():
             print(agent_id)
+            show_capability_effects(capabilities.get("selected_capabilities", {}))
             for name in ("instructions", "skills", "mcp", "hooks", "statusline", "runtime"):
                 state = capabilities[name]
                 print(f"  {name:<12} {state['state']:<9} declared={state['declared']}{' path=' + state['path'] if state['path'] else ''}")
@@ -7673,6 +7758,7 @@ def apply_wizard_answers(args: argparse.Namespace, input_fn: Any = input) -> dic
     print(f"  Agent: {chosen_agents}")
     print(f"  Profile: {', '.join(profiles)}")
     print(f"  Safety: {safety}")
+    show_capability_effects({name: bool(getattr(args, "with_" + name, False)) for name in CAPABILITY_EFFECTS})
     confirmed = wizard_choice(input_fn, messages["confirm"], {"yes", "no"}, "yes", invalid) == "yes"
     if not confirmed:
         raise CliError(messages["cancelled"])

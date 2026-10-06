@@ -450,3 +450,7 @@ been authorized, so the entries are kept here.
   the locale default. A simulated CP-1252 read corrupts UTF-8 JSON text. These paths need
   explicit encoding and their own receipt/replay regressions; native Windows model-role
   execution remains unsupported, separately from the corrected prepare command.
+
+### LOCAL-CAPABILITIES: shared hook groups lost foreign handlers (fixed)
+
+Registration and uninstall previously removed an entire matcher group if one handler was AgentSmith-owned. A failing mixed-handler fixture reproduced foreign configuration loss. Reconciliation now filters only owned handlers and preserves group options and foreign siblings. Regression: scripts/test-capability-effects.py.

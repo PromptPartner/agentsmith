@@ -114,3 +114,5 @@ The [First Verified Loop](docs/demos/first-verified-loop/README.md) records a fa
 - [Security policy](SECURITY.md) and [code of conduct](CODE_OF_CONDUCT.md)
 
 MIT licensed. Built by [PromptPartner](https://promptpartner.ai/).
+
+Optional integrations disclose their effects before installation. See [capability selection](docs/local-capabilities.md).

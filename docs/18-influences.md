@@ -190,3 +190,7 @@ a production project. For the longer "why," see [`01-harness-philosophy.md`](01-
 
 This page is the public attribution summary. Working research notes are kept in the private
 project archive.
+
+## ECC hook effect disclosures
+
+Capability effect categories borrow the design from [ECC](https://github.com/affaan-m/ECC/blob/ef648e01899ba3e8dc6371642deaaf64b4477775/scripts/lib/install/hook-consent.js) (MIT, Affaan Mustafa). AgentSmith implements its own records in the existing installation lifecycle; no ECC code or runtime dependency is imported.

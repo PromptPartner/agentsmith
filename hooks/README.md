@@ -184,3 +184,5 @@ branch-naming, and tests-green are not part of the current Python install contra
 
 Every guardrail is bypassable for a single commit/push with `--no-verify` (use sparingly), and each
 fails safe. They're plain scripts — test one directly, e.g. `hooks/git/conventional-commit.sh msg.txt`.
+
+Installation previews disclose hook effects and persist the selected effect versions. See [capability selection](../docs/local-capabilities.md).
