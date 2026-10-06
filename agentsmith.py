@@ -81,6 +81,7 @@ RUNTIME_FILES = (
     ".agentsmith/agentsmith.py",
     ".agentsmith/work_graph.py",
     ".agentsmith/project_memory.py",
+    ".agentsmith/config_audit.py",
     ".agentsmith/agentsmith",
     ".agentsmith/agentsmith.cmd",
     ".agentsmith/config/agents.json",
@@ -1485,7 +1486,7 @@ def copy_runtime(target: Path, *, dry_run: bool) -> Path:
         for source in (REGISTRY_PATH, PROFILE_CATALOG_PATH, WIZARD_LOCALES_PATH):
             shutil.copy2(source, config_destination / source.name)
         for helper_name in ("native_launcher.py", "evaluate.py", "work_graph.py",
-                            "windows_verifier_sandbox.py", "project_memory.py"):
+                            "windows_verifier_sandbox.py", "project_memory.py", "config_audit.py"):
             helper_source = ROOT / helper_name
             if helper_source.exists():
                 shutil.copy2(helper_source, destination.parent / helper_name)
@@ -7542,6 +7543,20 @@ def context_budget_nudge(payload: str) -> dict[str, str] | None:
     }
 
 
+def cmd_audit_config(args: argparse.Namespace) -> int:
+    sys.dont_write_bytecode = True
+    import config_audit
+    try:
+        report = config_audit.audit_config(Path(args.target or os.getcwd()).expanduser(), include_user=args.include_user)
+    except (OSError, ValueError, RuntimeError, RecursionError):
+        report = {"schema_version": 1, "complete": False, "advisory": True,
+                  "scope": "project-and-user" if args.include_user else "project", "inspected": [],
+                  "unsupported": [], "absent": [], "findings": [], "limitations": ["Inspection is incomplete; no containment claim."],
+                  "unreadable": [{"path": ".", "reason": "Project inspection could not be completed"}]}
+    print(json.dumps(report, indent=2, ensure_ascii=False) if args.json else config_audit.render_text(report), end="\n" if args.json else "")
+    return config_audit.exit_code(report, args.fail_on)
+
+
 def memory_git_identity(target: Path) -> tuple[str | None, str | None]:
     values = []
     for arguments in (("symbolic-ref", "--short", "HEAD"), ("rev-parse", "--verify", "HEAD")):
@@ -7839,6 +7854,11 @@ def parser() -> argparse.ArgumentParser:
     secret.add_argument("--all", action="store_true", help="scan the tracked working tree")
     secret.add_argument("--target", help="Git/project root for staged, tracked-tree, and allow rules")
     secret.add_argument("paths", nargs="*", metavar="FILE", help="files to scan, or '-' for stdin")
+    audit = sub.add_parser("audit-config", help="advisory static audit of selected native configuration")
+    audit.add_argument("--target")
+    audit.add_argument("--include-user", action="store_true", help="also read native user configuration")
+    audit.add_argument("--json", action="store_true", help="schema-versioned report")
+    audit.add_argument("--fail-on", choices=("low", "medium", "high", "critical"), help="explicit CI severity gate; incomplete inspection always errors")
     memory = sub.add_parser("memory", help="search and read bounded local Markdown memory")
     memory_commands = memory.add_subparsers(dest="memory_command", required=True)
     for name, argument in (("search", "query"), ("read", "relative_path"), ("startup", None)):
@@ -7871,7 +7891,7 @@ def parser() -> argparse.ArgumentParser:
 def normalize_legacy_argv(argv: list[str]) -> list[str]:
     if not argv:
         return ["install", "--wizard"]
-    commands = {"install", "update", "agents", "doctor", "status", "profiles", "compatibility", "verify", "validate-integration", "graph", "demo", "resume", "handoff", "new-feedback", "new-research", "secret-scan", "hook", "memory", "evaluate"}
+    commands = {"install", "update", "agents", "doctor", "status", "profiles", "compatibility", "verify", "validate-integration", "graph", "demo", "resume", "handoff", "new-feedback", "new-research", "secret-scan", "hook", "memory", "audit-config", "evaluate"}
     if argv[0] in commands or argv[0] in {"-h", "--help", "--version"}:
         return argv
     if "--doctor" in argv:
@@ -8081,6 +8101,8 @@ def run(argv: list[str] | None = None) -> int:
         return cmd_scaffold(args.command, args)
     if args.command == "secret-scan":
         return cmd_secret_scan(args)
+    if args.command == "audit-config":
+        return cmd_audit_config(args)
     if args.command == "memory":
         return cmd_memory(args)
     if args.command == "hook":

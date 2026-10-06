@@ -12,3 +12,5 @@ choices. New capabilities are disabled until explicitly selected.
 Doctor reports recorded selections and effects. Uninstall removes owned registration while retaining
 project scaffolding and foreign configuration. Local runtime files are inert without registration;
 AgentSmith provides no automatically discovered plugin entrypoint.
+
+Manual `memory search`, `memory read` and `audit-config` run only when invoked. The audit is advisory and read-only; it does not execute configured launchers or change permissions. Startup recall remains separately selected.

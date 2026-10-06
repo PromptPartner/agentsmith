@@ -37,3 +37,5 @@ Product templates, demos, and the [spec format](specs/README.md) remain public. 
 - [Optional capability effects](local-capabilities.md) — selection and lifecycle records.
 
 - [Local project memory](project-memory.md) — manual recall and optional startup references.
+
+- [Configuration audit](27-config-audit.md) — selected local checks, completeness and explicit CI gates.

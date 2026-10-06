@@ -470,3 +470,14 @@ One full verify run stalled after `stopped primary run is durably interrupted` i
 ### LOCAL-CAPABILITIES: ambiguous memory metadata and truncated references (fixed before release)
 
 Review reproduced duplicate JSON status keys and a boolean metadata version bypassing archive exclusion. Metadata now requires integer version 1 and rejects duplicate keys. Long startup paths are displayed in full or omitted with a diagnostic; bounded warnings retain drift/incompleteness information. Regressions live in scripts/test-project-memory.py.
+
+### LOCAL-CAPABILITIES: partial config inspection and credential forms (fixed before release)
+
+Audit fixtures reproduced clean/incomplete misclassification for missing roots, malformed hook structure, unsupported hook types and deep JSON. Reports now distinguish these with error status 2. Contextual credential checks cover URL passwords and bearer literals while accepting environment references. Tests also cover CODEX_HOME, wildcard grants and output redaction in scripts/test-config-audit.py.
+
+### LOCAL-CAPABILITIES: audit command text false positives (fixed before release)
+
+Quoted `echo` and `printf` arguments containing download or package commands were
+misclassified as executable launchers. Reproduced with safe fixtures; bounded
+command-position recognition now separates arguments from commands. Regression
+checks cover safe printed text and risky separators, wrappers and environment prefixes.

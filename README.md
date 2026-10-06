@@ -118,3 +118,5 @@ MIT licensed. Built by [PromptPartner](https://promptpartner.ai/).
 Optional integrations disclose their effects before installation. See [capability selection](docs/local-capabilities.md).
 
 Recall local notes with `agentsmith memory search "topic"` or `agentsmith memory read docs/research/note.md`. Optional `--with-memory-startup` adds reference-only startup suggestions; see [project memory](docs/project-memory.md). Orca delivery requires host observation.
+
+`agentsmith audit-config` provides a read-only advisory report for selected project configuration. `--include-user` adds native user settings; `--fail-on high` adds a CI gate. See [configuration audit](docs/27-config-audit.md) for scope and limits.
