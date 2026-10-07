@@ -450,3 +450,34 @@ been authorized, so the entries are kept here.
   the locale default. A simulated CP-1252 read corrupts UTF-8 JSON text. These paths need
   explicit encoding and their own receipt/replay regressions; native Windows model-role
   execution remains unsupported, separately from the corrected prepare command.
+
+### LOCAL-CAPABILITIES: shared hook groups lost foreign handlers (fixed)
+
+Registration and uninstall previously removed an entire matcher group if one handler was AgentSmith-owned. A failing mixed-handler fixture reproduced foreign configuration loss. Reconciliation now filters only owned handlers and preserves group options and foreign siblings. Regression: scripts/test-capability-effects.py.
+
+### LOCAL-CAPABILITIES: staged hook paths lost shell quoting (fixed)
+
+A memory-enabled update fixture failed when a staged runtime path without spaces was translated into a live Unicode path with spaces. Owned hook argv is now translated before destination-shell quoting. The update/rollback fixture invokes the exact installed command and checks reference-only context, then restores every original byte.
+
+### LOCAL-CAPABILITIES: Orca delivery remains unverified
+
+No callable Orca native-session interface is available in this implementation session. Manual CLI recall and configured launcher fixtures are verified separately; native Claude/Codex startup and resume through Orca require attended observation. Record host/client versions and observed reference output; mark unsupported only if suppression is observed. No workaround is included.
+
+### LOCAL-CAPABILITIES verification: autonomous fixture cleanup stalled (open)
+
+One full verify run stalled after `stopped primary run is durably interrupted` in scripts/test-autonomous-run.sh. Its disposable `legacy` controller remained in `making` with `active_pid: null` and an exited/defunct child while the fixture waited for its runner. The preceding disclosure full suite passed the same unchanged controller. The stalled test tree was terminated; that run is not passing evidence. Controller/NQ-03 fixes remain separate; rerun the full suite and investigate if recurrence persists.
+
+### LOCAL-CAPABILITIES: ambiguous memory metadata and truncated references (fixed before release)
+
+Review reproduced duplicate JSON status keys and a boolean metadata version bypassing archive exclusion. Metadata now requires integer version 1 and rejects duplicate keys. Long startup paths are displayed in full or omitted with a diagnostic; bounded warnings retain drift/incompleteness information. Regressions live in scripts/test-project-memory.py.
+
+### LOCAL-CAPABILITIES: partial config inspection and credential forms (fixed before release)
+
+Audit fixtures reproduced clean/incomplete misclassification for missing roots, malformed hook structure, unsupported hook types and deep JSON. Reports now distinguish these with error status 2. Contextual credential checks cover URL passwords and bearer literals while accepting environment references. Tests also cover CODEX_HOME, wildcard grants and output redaction in scripts/test-config-audit.py.
+
+### LOCAL-CAPABILITIES: audit command text false positives (fixed before release)
+
+Quoted `echo` and `printf` arguments containing download or package commands were
+misclassified as executable launchers. Reproduced with safe fixtures; bounded
+command-position recognition now separates arguments from commands. Regression
+checks cover safe printed text and risky separators, wrappers and environment prefixes.

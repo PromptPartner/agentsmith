@@ -80,6 +80,8 @@ DEMO_TEMPLATE_FILES = (
 RUNTIME_FILES = (
     ".agentsmith/agentsmith.py",
     ".agentsmith/work_graph.py",
+    ".agentsmith/project_memory.py",
+    ".agentsmith/config_audit.py",
     ".agentsmith/agentsmith",
     ".agentsmith/agentsmith.cmd",
     ".agentsmith/config/agents.json",
@@ -665,6 +667,62 @@ def source_release_identity() -> dict[str, str | None]:
     return identity
 
 
+# Effect revisions change only when the disclosed behavior expands. Legacy choices
+# are grandfathered for these existing capabilities; new ones require selection.
+CAPABILITY_EFFECTS = {
+    "memory_startup": {"version": 1, "files": "SessionStart registration and local runtime", "process_control": "local bounded Python retrieval on startup/resume; fail open", "egress": "no separate export; existing agent provider processes reference context", "context": "up to three local document references and freshness warnings; no bodies", "records": "selection ownership and configuration backups; no transcript capture"},
+    "hooks": {"version": 1, "files": "Git pre-commit launcher and local runtime", "process_control": "may reject a commit containing secrets", "egress": "none", "context": "none", "records": "installation ownership and backups"},
+    "handoff_hooks": {"version": 1, "files": "native hook configuration and local runtime", "process_control": "local Python on prompt/stop events; fail open", "egress": "no separate export; existing agent provider processes injected context", "context": "handoff references and budget reminders", "records": "local budget signals; installation ownership and backups"},
+    "ui_design_hook": {"version": 1, "files": "native hook configuration and local runtime", "process_control": "local Python before edits; fail open", "egress": "no separate export; existing agent provider processes injected context", "context": "DESIGN.md reminder", "records": "installation ownership and backups"},
+    "skills": {"version": 1, "files": "portable skills and client adapters", "process_control": "agent may invoke skill procedures", "egress": "existing agent provider processes skill context; procedures may call services", "context": "skill instructions on discovery/invocation", "records": "procedure-dependent; ownership and backups"},
+    "mcp": {"version": 1, "files": "selected MCP declarations", "process_control": "client launches selected server processes", "egress": "selected servers may access network and send tool data", "context": "server tools and responses", "records": "server-dependent; ownership and backups"},
+}
+
+
+def capability_effects(capabilities: dict[str, Any]) -> dict[str, Any]:
+    return {name: dict(effect) for name, effect in CAPABILITY_EFFECTS.items() if capabilities.get(name)}
+
+
+def review_capability_effects(prior: dict[str, Any], args: argparse.Namespace) -> None:
+    capabilities = prior.get("capabilities", {})
+    recorded = prior.get("effects", {})
+    for name, effect in capability_effects(capabilities).items():
+        explicit = bool(getattr(args, "with_" + name, False))
+        if name == "memory_startup" and getattr(args, "without_memory_startup", False):
+            continue
+        legacy = name in {"hooks", "handoff_hooks", "ui_design_hook", "skills", "mcp"}
+        if ("effects" in prior or not legacy) and recorded.get(name) != effect and not explicit:
+            raise CliError(f"Capability {name} effects changed; review install --dry-run and explicitly select --with-{name.replace('_', '-')}")
+
+
+def check_candidate_effects(checkout: Path, installation: dict[str, Any]) -> None:
+    """Inspect declarations without executing release code during planning."""
+    import ast
+    source = checkout / "agentsmith.py"
+    try:
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        assignments = [node for node in tree.body if isinstance(node, ast.Assign)
+                       and any(isinstance(target, ast.Name) and target.id == "CAPABILITY_EFFECTS" for target in node.targets)]
+        candidate = ast.literal_eval(assignments[0].value) if len(assignments) == 1 else None
+    except (OSError, ValueError, SyntaxError) as exc:
+        raise CliError("Cannot inspect candidate capability effects") from exc
+    selected = capability_effects(installation["capabilities"])
+    if candidate is None:
+        # Releases predating disclosures have only the five original capabilities.
+        if installation["capabilities"].get("memory_startup"):
+            raise CliError("Candidate does not support reviewed startup recall")
+        return
+    if not isinstance(candidate, dict) or any(candidate.get(name) != effect for name, effect in selected.items()):
+        raise CliError("Candidate capability effects expanded; review that release's install --dry-run and explicitly select its capabilities before updating")
+
+
+def show_capability_effects(capabilities: dict[str, Any]) -> None:
+    for name, effect in capability_effects(capabilities).items():
+        say(f"Capability {name} (effects v{effect['version']}):")
+        for kind in ("files", "process_control", "egress", "context", "records"):
+            say(f"  {kind}: {effect[kind]}")
+
+
 def record_installation_manifest(
     target: Path,
     agents: list[str],
@@ -780,6 +838,9 @@ def record_installation_manifest(
         },
         "managed_files": managed_files,
     }
+    if args.with_memory_startup or getattr(args, "without_memory_startup", False) or "memory_startup" in prior_capabilities:
+        state["installation"]["capabilities"]["memory_startup"] = bool(args.with_memory_startup and not args.without_memory_startup)
+    state["installation"]["effects"] = capability_effects(state["installation"]["capabilities"])
     path = state_path(manifest_root)
     rendered = json.dumps(state, indent=2, ensure_ascii=False) + "\n"
     if not path.exists() or path.read_text(encoding="utf-8") != rendered:
@@ -1425,7 +1486,7 @@ def copy_runtime(target: Path, *, dry_run: bool) -> Path:
         for source in (REGISTRY_PATH, PROFILE_CATALOG_PATH, WIZARD_LOCALES_PATH):
             shutil.copy2(source, config_destination / source.name)
         for helper_name in ("native_launcher.py", "evaluate.py", "work_graph.py",
-                            "windows_verifier_sandbox.py"):
+                            "windows_verifier_sandbox.py", "project_memory.py", "config_audit.py"):
             helper_source = ROOT / helper_name
             if helper_source.exists():
                 shutil.copy2(helper_source, destination.parent / helper_name)
@@ -1807,7 +1868,7 @@ def validate_installation_manifest(state: dict[str, Any]) -> dict[str, Any]:
         raise CliError("Installation state has no manifest; rerun install with explicit choices before planning an update")
     allowed_installation = {
         "installed_version", "source", "scope", "agents", "profiles", "include_core",
-        "assemble_only", "runtime", "safety", "operator", "tracker", "capabilities", "managed_files",
+        "assemble_only", "runtime", "safety", "operator", "tracker", "capabilities", "managed_files", "effects",
     }
     unknown_installation = sorted(set(installation) - allowed_installation)
     if unknown_installation:
@@ -1819,7 +1880,7 @@ def validate_installation_manifest(state: dict[str, Any]) -> dict[str, Any]:
         )
     if not isinstance(installation["assemble_only"], bool):
         raise CliError("Installation manifest assemble_only field must be true or false; rerun install explicitly")
-    required = allowed_installation - {"runtime"}
+    required = allowed_installation - {"runtime", "effects"}
     missing = sorted(required - set(installation))
     if missing:
         raise CliError(f"Installation manifest is missing field(s): {', '.join(missing)}")
@@ -1847,6 +1908,8 @@ def validate_installation_manifest(state: dict[str, Any]) -> dict[str, Any]:
             raise CliError(f"Installation manifest {name} field must be an object")
     if not isinstance(installation["managed_files"], list):
         raise CliError("Installation manifest managed_files field must be a list")
+    if "effects" in installation and not isinstance(installation["effects"], dict):
+        raise CliError("Installation effects must be an object")
     runtime = installation.get("runtime")
     if runtime is not None and (
         not isinstance(runtime, dict)
@@ -2139,6 +2202,11 @@ def installation_fingerprints(
         for agent_id in installation["agents"]:
             if agent_id in adapters:
                 add("target", adapters[agent_id])
+        if "memory_startup" in installation.get("capabilities", {}):
+            if "claude" in installation["agents"]:
+                add("target", ".claude/settings.json")
+            if "codex" in installation["agents"]:
+                add("target", ".codex/hooks.json")
         if installation["capabilities"].get("mcp"):
             if "claude" in installation["agents"]:
                 add("target", ".mcp.json")
@@ -2166,7 +2234,7 @@ def installation_fingerprints(
             add_owned_skills("home", skill_target / ".agents" / "skills", classification)
             if skill_agent == "claude":
                 add_owned_skills("home", skill_target / ".claude" / "skills", classification)
-        if installation["capabilities"].get("handoff_hooks") or installation["capabilities"].get("ui_design_hook"):
+        if installation["capabilities"].get("handoff_hooks") or installation["capabilities"].get("ui_design_hook") or installation["capabilities"].get("memory_startup"):
             for relative in RUNTIME_FILES:
                 add("home", relative)
     add("home", ".agentsmith/state.json")
@@ -2299,6 +2367,10 @@ def cmd_update_plan(args: argparse.Namespace) -> int:
             "Update planning refused: detected global MCP configuration, but global MCP ownership is not supported; "
             "rerun install with explicit choices after preserving that configuration"
         )
+    recorded_effects = installation.get("effects")
+    if recorded_effects is not None and recorded_effects != capability_effects(installation["capabilities"]):
+        raise CliError("Capability effects changed; explicitly review and rerun install before updating")
+    installation.setdefault("effects", capability_effects(installation["capabilities"]))
     remote = args.update_from or OFFICIAL_REMOTE
     release = resolve_stable_release(remote, args.version)
     roots, fingerprints, foreign_skill_directories = installation_fingerprints(
@@ -2654,6 +2726,10 @@ def install_arguments_from_manifest(plan: dict[str, Any], shadow_target: Path) -
         arguments.append("--with-handoff-hooks")
     if capabilities.get("ui_design_hook"):
         arguments.append("--with-ui-design-hook")
+    if capabilities.get("memory_startup"):
+        arguments.append("--with-memory-startup")
+    elif "memory_startup" in capabilities:
+        arguments.append("--without-memory-startup")
     if capabilities.get("hooks"):
         arguments.append("--with-hooks")
     return arguments
@@ -2698,6 +2774,28 @@ def translate_root_paths(
     for old, new in sorted(replacements, key=lambda item: len(item[0]), reverse=True):
         text = text.replace(old, new)
     return text.encode("utf-8")
+
+
+def translate_hook_configuration(content: bytes, source_roots: dict[str, Path], destination_roots: dict[str, str]) -> bytes:
+    """Translate owned launcher argv before quoting for its destination shell."""
+    original = json.loads(content)
+    translated = json.loads(translate_root_paths(content, source_roots, destination_roots))
+    def visit(before: Any, after: Any) -> None:
+        if isinstance(before, dict) and isinstance(after, dict):
+            command = before.get("command")
+            if isinstance(command, str) and managed_hook_name(command) is not None:
+                words = [word.strip('"') for word in shlex.split(command, posix=os.name != "nt")]
+                after["command"] = native_command(*[
+                    translate_root_paths(word.encode("utf-8"), source_roots, destination_roots).decode("utf-8")
+                    for word in words
+                ])
+            for key in before:
+                visit(before[key], after[key])
+        elif isinstance(before, list) and isinstance(after, list):
+            for old, new in zip(before, after):
+                visit(old, new)
+    visit(original, translated)
+    return (json.dumps(translated, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
 
 
 def refresh_translated_statusline_hashes(
@@ -2751,6 +2849,11 @@ def allowed_update_path(root_name: str, relative: str, installation: dict[str, A
             ".gemini/settings.json", ".continue/rules/agentsmith.md", ".mcp.json", ".codex/config.toml",
             *RUNTIME_FILES, ".agentsmith/autonomous-run.py", ".agentsmith/state.json",
         }
+        if not installation or "memory_startup" in installation.get("capabilities", {}):
+            if not installation or "claude" in installation["agents"]:
+                exact.add(".claude/settings.json")
+            if not installation or "codex" in installation["agents"]:
+                exact.add(".codex/hooks.json")
         prefixes = (".harness/templates/", ".agents/skills/", ".claude/skills/")
         return relative in exact or relative.startswith(prefixes)
     if root_name == "home":
@@ -2803,6 +2906,7 @@ def stage_planned_update(
     plan: dict[str, Any], temporary_root: Path, *, execute_candidate: bool
 ) -> tuple[Path, list[tuple[str, str, bytes | None, int | None]]]:
     checkout = checkout_planned_release(plan["remote"], plan["release"], temporary_root / "release")
+    check_candidate_effects(checkout, plan["installation"])
     shadow_roots = {
         "target": temporary_root / "target",
         "home": temporary_root / "home",
@@ -2851,8 +2955,9 @@ def stage_planned_update(
         for relative, (content, mode) in shadow_files(shadow_root).items():
             if not allowed_update_path(root_name, relative, plan["installation"]):
                 raise CliError(f"Release attempted an update outside the managed surface: {root_name}:{relative}")
+            is_hook_configuration = relative in {".claude/settings.json", ".codex/hooks.json", "hooks.json"}
             translated_files[root_name][relative] = (
-                translate_root_paths(content, shadow_roots, plan["roots"]),
+                translate_hook_configuration(content, shadow_roots, plan["roots"]) if is_hook_configuration else translate_root_paths(content, shadow_roots, plan["roots"]),
                 mode,
             )
     refresh_translated_statusline_hashes(plan, translated_files)
@@ -2980,7 +3085,7 @@ def validate_post_update_health(plan: dict[str, Any]) -> None:
         if managed_mcp - set(capabilities.get("mcp", [])):
             raise CliError("Post-update health check failed: installed MCP evidence was omitted from the manifest")
     runtime_root = Path(plan["roots"]["home"]) if plan["scope"] == "global" else target
-    needs_runtime = plan["scope"] == "project" or capabilities.get("handoff_hooks") or capabilities.get("ui_design_hook")
+    needs_runtime = plan["scope"] == "project" or capabilities.get("handoff_hooks") or capabilities.get("ui_design_hook") or capabilities.get("memory_startup")
     runtime = runtime_root / ".agentsmith" / "agentsmith.py"
     if needs_runtime:
         required_payloads = list(RUNTIME_FILES)
@@ -3066,6 +3171,18 @@ def validate_post_update_health(plan: dict[str, Any]) -> None:
             ):
                 raise CliError(f"Post-update health check failed: UI design hook is missing for {agent_id}")
 
+    for agent_id in installation["agents"]:
+        if agent_id not in {"claude", "codex"}:
+            continue
+        if plan["scope"] == "global":
+            config = home_dir() / ".claude/settings.json" if agent_id == "claude" else codex_home() / "hooks.json"
+        else:
+            config = target / (".claude/settings.json" if agent_id == "claude" else ".codex/hooks.json")
+        commands, _ = hook_commands(config)
+        active = any(managed_hook_name(command) == "memory-startup" for command in commands)
+        if active != bool(capabilities.get("memory_startup")):
+            raise CliError(f"Post-update health check failed: startup recall selection and registration disagree for {agent_id} (selected={bool(capabilities.get('memory_startup'))}, detected={active}, handlers={len(commands)})")
+
     if capabilities.get("hooks"):
         hook_dir = subprocess.run(
             ["git", "-C", str(target), "rev-parse", "--git-path", "hooks"],
@@ -3087,6 +3204,9 @@ def validate_post_update_health(plan: dict[str, Any]) -> None:
         for agent_id, expected_safety in installation["safety"].items():
             if inspect_safety(agent_id)["state"] != expected_safety:
                 raise CliError(f"Post-update health check failed: native safety does not match the manifest for {agent_id}")
+
+    if "effects" in installed and installed["effects"] != capability_effects(installation["capabilities"]):
+        raise CliError("Post-update health check failed: capability effects require reviewed selection")
 
 
 def prepare_restoration(
@@ -3470,9 +3590,29 @@ def org_policy_install(args: argparse.Namespace, agents: list[str]) -> int:
     return 0
 
 
+def managed_hook_name(command: str) -> str | None:
+    try:
+        words = [word.strip('"') for word in shlex.split(command, posix=os.name != "nt")]
+    except ValueError:
+        return None
+    if len(words) >= 4 and Path(words[1]).name == "agentsmith.py" and re.fullmatch(r"python(?:[0-9.]+)?(?:\.exe)?", Path(words[0]).name, re.I) and words[2] == "hook":
+        return words[3]
+    if len(words) >= 3 and Path(words[0]).name.lower() in {"agentsmith", "agentsmith.exe"} and words[1] == "hook":
+        return words[2]
+    return None
+
+
 def append_unique_hook(data: dict[str, Any], event: str, command: str, matcher: str | None = None) -> None:
     hooks = data.setdefault("hooks", {}).setdefault(event, [])
-    hooks[:] = [entry for entry in hooks if not any(command.split()[-1] in h.get("command", "") for h in entry.get("hooks", []))]
+    hook_name = managed_hook_name(command)
+    retained_groups = []
+    for group in hooks:
+        retained = [handler for handler in group.get("hooks", []) if not (
+            hook_name is not None and managed_hook_name(handler.get("command", "")) == hook_name
+        )]
+        if retained:
+            retained_groups.append({**group, "hooks": retained})
+    hooks[:] = retained_groups
     entry: dict[str, Any] = {"hooks": [{"type": "command", "command": command}]}
     if matcher:
         entry["matcher"] = matcher
@@ -3490,9 +3630,21 @@ def runtime_command(runtime: Path, *arguments: str) -> str:
 
 
 def install_hooks(target: Path, agents: list[str], args: argparse.Namespace) -> None:
-    if not (args.with_handoff_hooks or args.with_ui_design_hook or args.with_hooks):
+    startup_paths = (("claude", (home_dir() if args.global_mode else target) / ".claude/settings.json"),
+                     ("codex", codex_home() / "hooks.json" if args.global_mode else target / ".codex/hooks.json"))
+    if getattr(args, "without_memory_startup", False):
+        for agent_id, path in startup_paths:
+            if agent_id in agents:
+                remove_owned_hooks(path, dry_run=args.dry_run, hook_name="memory-startup")
+    if not (args.with_handoff_hooks or args.with_ui_design_hook or args.with_hooks or args.with_memory_startup):
         return
     runtime = copy_runtime(home_dir() if args.global_mode else target, dry_run=args.dry_run)
+    if args.with_memory_startup:
+        for agent_id, path in startup_paths:
+            if agent_id in agents:
+                def startup_hook(data: dict[str, Any]) -> None:
+                    append_unique_hook(data, "SessionStart", runtime_command(runtime, "hook", "memory-startup", "--memory-scope", "global" if args.global_mode else "project"), "^(startup|resume)$")
+                merge_json(path, startup_hook, dry_run=args.dry_run)
     if args.with_handoff_hooks and "claude" in agents:
         def claude(data: dict[str, Any]) -> None:
             append_unique_hook(data, "UserPromptSubmit", runtime_command(runtime, "hook", "handoff-on-keyword"))
@@ -3617,7 +3769,7 @@ def remove_owned_text_block(path: Path, *, dry_run: bool) -> None:
         path.unlink()
 
 
-def remove_owned_hooks(path: Path, *, dry_run: bool) -> None:
+def remove_owned_hooks(path: Path, *, dry_run: bool, hook_name: str | None = None) -> None:
     if not path.exists():
         return
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -3626,11 +3778,14 @@ def remove_owned_hooks(path: Path, *, dry_run: bool) -> None:
     for event in list(hooks):
         kept = []
         for entry in hooks[event]:
-            commands = [hook.get("command", "") for hook in entry.get("hooks", [])]
-            if any("agentsmith.py" in command and " hook " in command for command in commands):
-                changed = True
-            else:
-                kept.append(entry)
+            handlers = entry.get("hooks", [])
+            retained = [hook for hook in handlers if not (
+                managed_hook_name(hook.get("command", "")) is not None
+                and (hook_name is None or managed_hook_name(hook.get("command", "")) == hook_name)
+            )]
+            changed |= len(retained) != len(handlers)
+            if retained:
+                kept.append({**entry, "hooks": retained})
         if kept:
             hooks[event] = kept
         else:
@@ -3743,6 +3898,10 @@ def uninstall(args: argparse.Namespace, agents: list[str], target: Path) -> int:
                     else: mcp_path.unlink()
         remove_owned_hooks(home_dir() / ".claude" / "settings.json", dry_run=args.dry_run)
         remove_owned_hooks(codex_home() / "hooks.json", dry_run=args.dry_run)
+        if "claude" in agents:
+            remove_owned_hooks(target / ".claude/settings.json", dry_run=args.dry_run, hook_name="memory-startup")
+        if "codex" in agents:
+            remove_owned_hooks(target / ".codex/hooks.json", dry_run=args.dry_run, hook_name="memory-startup")
     else:
         if "codex" in agents:
             remove_owned_text_block(codex_home() / "config.toml", dry_run=args.dry_run)
@@ -3763,6 +3922,17 @@ def uninstall(args: argparse.Namespace, agents: list[str], target: Path) -> int:
         remove_owned_skills(
             home_dir() if args.global_mode else target, agents, ownership, dry_run=args.dry_run
         )
+    if args.global_mode:
+        if "claude" in agents:
+            remove_owned_hooks(home_dir() / ".claude/settings.json", dry_run=args.dry_run, hook_name="memory-startup")
+        if "codex" in agents:
+            remove_owned_hooks(codex_home() / "hooks.json", dry_run=args.dry_run, hook_name="memory-startup")
+    manifest_root = home_dir() if args.global_mode else target
+    prior = load_state(manifest_root).get("installation", {})
+    if isinstance(prior, dict) and "memory_startup" in prior.get("capabilities", {}):
+        prior["capabilities"]["memory_startup"] = False
+        prior.get("effects", {}).pop("memory_startup", None)
+        record_state(manifest_root, "installation", prior, dry_run=args.dry_run)
     ok("uninstall removed only Agentsmith-owned instruction/config blocks; scaffolding was retained")
     return 0
 
@@ -3819,6 +3989,20 @@ def cmd_install(args: argparse.Namespace) -> int:
         return uninstall(args, agents, target)
     if not profiles and not args.global_mode:
         raise CliError("Pick a profile with --profile <name[,name]> or use --global")
+    prior_installation = load_state(home_dir() if args.global_mode else target).get("installation", {})
+    if not isinstance(prior_installation, dict):
+        raise CliError("Malformed installation selection; inspect state before reinstalling")
+    review_capability_effects(prior_installation, args)
+    args.with_memory_startup = bool(args.with_memory_startup or prior_installation.get("capabilities", {}).get("memory_startup")) and not args.without_memory_startup
+    if args.with_memory_startup and not set(agents) & {"claude", "codex"}:
+        raise CliError("memory-startup requires a selected Claude or Codex native client")
+    requested = dict(prior_installation.get("capabilities", {}))
+    for name in CAPABILITY_EFFECTS:
+        if getattr(args, "with_" + name, False):
+            requested[name] = True
+    if args.without_memory_startup:
+        requested["memory_startup"] = False
+    show_capability_effects(requested)
     canonical, generated = instruction_paths(target, agents, args.global_mode)
     ownership_safety = load_state(home_dir()).get("native_safety", {})
     if not isinstance(ownership_safety, dict):
@@ -4332,7 +4516,13 @@ def inspect_hooks(agent_id: str, agent: dict[str, Any], target: Path) -> dict[st
     config = home_dir() / ".claude" / "settings.json" if agent_id == "claude" else codex_home() / "hooks.json"
     commands, parse_state = hook_commands(config) if agent_id in {"claude", "codex"} else ([], "missing")
     runtime = (target / ".agentsmith" / "agentsmith.py").resolve()
-    managed_commands = [command for command in commands if "agentsmith.py" in command and " hook " in command]
+    if agent_id in {"claude", "codex"}:
+        project_config = target / (".claude/settings.json" if agent_id == "claude" else ".codex/hooks.json")
+        project_commands, project_state = hook_commands(project_config)
+        commands += project_commands
+        if project_state == "malformed":
+            parse_state = "malformed"
+    managed_commands = [command for command in commands if managed_hook_name(command) is not None]
     legacy_commands = [
         command for command in commands
         if any(name in command for name in ("handoff-on-keyword.sh", "context-budget-nudge.sh", "ui-design-reminder.sh"))
@@ -4610,7 +4800,17 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     "Use cautious safety unless this expanded tool surface is deliberately trusted.",
                 )
             )
-        result[agent_id] = {**capabilities, "safety": safety, "warnings": warnings}
+        installation = load_state(target).get("installation", {})
+        installation = installation if isinstance(installation, dict) else {}
+        global_installation = load_state(home_dir()).get("installation", {})
+        global_installation = global_installation if isinstance(global_installation, dict) else {}
+        selected_capabilities = {**global_installation.get("capabilities", {}), **installation.get("capabilities", {})}
+        effect_records = {"project": installation.get("effects", {}), "user": global_installation.get("effects", {})}
+        result[agent_id] = {**capabilities, "safety": safety, "warnings": warnings,
+                            "effects": {**effect_records["user"], **effect_records["project"]},
+                            "effect_records": effect_records, "selected_capabilities": selected_capabilities,
+                            "memory_startup": {"selected": bool(selected_capabilities.get("memory_startup")),
+                                               "native_delivery": "unverified", "orca_delivery": "unverified"}}
         unhealthy |= instructions["state"] in {"missing", "malformed"}
         unhealthy |= bool(skills["adapter_diverged_names"])
         unhealthy |= bool(runtime["missing_payloads"])
@@ -4619,6 +4819,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     else:
         for agent_id, capabilities in result.items():
             print(agent_id)
+            show_capability_effects(capabilities.get("selected_capabilities", {}))
             for name in ("instructions", "skills", "mcp", "hooks", "statusline", "runtime"):
                 state = capabilities[name]
                 print(f"  {name:<12} {state['state']:<9} declared={state['declared']}{' path=' + state['path'] if state['path'] else ''}")
@@ -4881,6 +5082,7 @@ def build_status(target: Path) -> dict[str, Any]:
         "hooks": False,
         "handoff_hooks": False,
         "ui_design_hook": False,
+        "memory_startup": False,
     }
     safety: dict[str, Any] = {}
     managed_files: list[Any] = []
@@ -4891,7 +5093,7 @@ def build_status(target: Path) -> dict[str, Any]:
         installed_capabilities = installation.get("capabilities", {})
         if isinstance(installed_capabilities, dict):
             capabilities["skills"] = bool(capabilities["skills"] or installed_capabilities.get("skills"))
-            for name in ("hooks", "handoff_hooks", "ui_design_hook"):
+            for name in ("hooks", "handoff_hooks", "ui_design_hook", "memory_startup"):
                 capabilities[name] = bool(capabilities[name] or installed_capabilities.get(name))
             installed_mcp = installed_capabilities.get("mcp", [])
             if isinstance(installed_mcp, list):
@@ -4916,7 +5118,7 @@ def build_status(target: Path) -> dict[str, Any]:
         "safety": status_capability("managed" if safety else "not-configured", f"{len(safety)} managed agent safety setting(s)." if safety else "No managed native safety setting is recorded."),
         "skills": status_capability("managed" if capabilities.get("skills") else "not-configured", "Managed skills are installed." if capabilities.get("skills") else "Managed skills are not enabled."),
         "mcp": status_capability("managed" if capabilities.get("mcp") else "not-configured", f"{len(capabilities.get('mcp', []))} managed MCP server(s)." if isinstance(capabilities.get("mcp"), list) and capabilities.get("mcp") else "Managed MCP servers are not enabled."),
-        "hooks": status_capability("managed" if any(capabilities.get(name) for name in ("hooks", "handoff_hooks", "ui_design_hook")) else "not-configured", "Managed hooks are enabled." if any(capabilities.get(name) for name in ("hooks", "handoff_hooks", "ui_design_hook")) else "Managed hooks are not enabled."),
+        "hooks": status_capability("managed" if any(capabilities.get(name) for name in ("hooks", "handoff_hooks", "ui_design_hook", "memory_startup")) else "not-configured", "Managed hooks are enabled." if any(capabilities.get(name) for name in ("hooks", "handoff_hooks", "ui_design_hook", "memory_startup")) else "Managed hooks are not enabled."),
         "runtime": status_capability("managed" if runtime.is_file() else "missing", f"Runtime present at {runtime}." if runtime.is_file() else "No project-local AgentSmith runtime was found."),
         "owned_files": status_capability("managed" if managed_files else "not-configured", f"{len(managed_files)} managed file(s) are recorded." if managed_files else "No additional managed-file inventory is recorded."),
     }
@@ -7341,7 +7543,131 @@ def context_budget_nudge(payload: str) -> dict[str, str] | None:
     }
 
 
+def cmd_audit_config(args: argparse.Namespace) -> int:
+    sys.dont_write_bytecode = True
+    import config_audit
+    try:
+        report = config_audit.audit_config(Path(args.target or os.getcwd()).expanduser(), include_user=args.include_user)
+    except (OSError, ValueError, RuntimeError, RecursionError):
+        report = {"schema_version": 1, "complete": False, "advisory": True,
+                  "scope": "project-and-user" if args.include_user else "project", "inspected": [],
+                  "unsupported": [], "absent": [], "findings": [], "limitations": ["Inspection is incomplete; no containment claim."],
+                  "unreadable": [{"path": ".", "reason": "Project inspection could not be completed"}]}
+    print(json.dumps(report, indent=2, ensure_ascii=False) if args.json else config_audit.render_text(report), end="\n" if args.json else "")
+    return config_audit.exit_code(report, args.fail_on)
+
+
+def memory_git_identity(target: Path) -> tuple[str | None, str | None]:
+    values = []
+    for arguments in (("symbolic-ref", "--short", "HEAD"), ("rev-parse", "--verify", "HEAD")):
+        try:
+            result = subprocess.run(["git", "-C", str(target), *arguments], text=True, capture_output=True, timeout=0.25)
+            values.append(result.stdout.strip() if result.returncode == 0 else None)
+        except (OSError, subprocess.TimeoutExpired):
+            values.append(None)
+    return values[0], values[1]
+
+
+def cmd_memory(args: argparse.Namespace) -> int:
+    sys.dont_write_bytecode = True  # read-only recall leaves no compiled-file records
+    import project_memory
+    target = Path(args.target or os.getcwd()).expanduser().absolute()
+    try:
+        if args.memory_command == "search":
+            report = project_memory.search(target, args.query)
+        elif args.memory_command == "read":
+            report = project_memory.read(target, args.relative_path)
+        else:
+            if args.selected_only and not memory_startup_selected(target, args.selection_scope):
+                print(json.dumps({"schema_version": 1, "complete": True, "output": "", "references": [], "diagnostics": []}))
+                return 0
+            branch, commit = memory_git_identity(target)
+            report = project_memory.startup(target, branch, commit)
+        print(json.dumps(report, indent=2, ensure_ascii=False) if args.json else (
+            report["output"] if args.memory_command == "startup" else project_memory.format_report(report)))
+        return 0 if report["complete"] else 2
+    except (project_memory.MemoryError, OSError) as exc:
+        report = {"schema_version": 1, "operation": args.memory_command, "complete": False,
+                  "diagnostics": [project_memory._clean(str(exc))]}
+        print(json.dumps(report, ensure_ascii=False) if args.json else "INCOMPLETE: " + report["diagnostics"][0])
+        return 2
+
+
+def memory_startup_selected(target: Path, scope: str = "project") -> bool:
+    """Read selection safely; copied runtime files are not activation."""
+    import project_memory
+    def selection(root: Path) -> bool | None:
+        root_fd = project_memory._open_root(root)
+        try:
+            try:
+                fd = project_memory._open_relative(root_fd, (".agentsmith", "state.json"))
+            except FileNotFoundError:
+                return None
+            try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    raise ValueError("Nonregular selection state")
+                raw = os.read(fd, 131073)
+                if len(raw) > 131072:
+                    raise ValueError("Oversized selection state")
+                data = json.loads(raw)
+                installation = data.get("installation", {})
+                capabilities = installation.get("capabilities", {})
+                effects = installation.get("effects", {})
+                if "memory_startup" not in capabilities:
+                    return None
+                return capabilities.get("memory_startup") is True and effects.get("memory_startup") == CAPABILITY_EFFECTS["memory_startup"]
+            finally:
+                os.close(fd)
+        finally:
+            os.close(root_fd)
+    selected = selection(target)
+    if scope == "project":
+        return selected is True
+    # A project decision overrides the user-wide handler, avoiding duplicate context.
+    if selected is not None:
+        return False
+    return selection(home_dir()) is True
+
+
+def cmd_memory_startup_hook(args: argparse.Namespace) -> int:
+    """Native startup hook: bounded subprocess, reference context only, fail open."""
+    try:
+        raw = sys.stdin.read(65537)
+        if len(raw) > 65536:
+            return 0
+        try:
+            payload = json.loads(raw)
+        except ValueError:
+            return 0
+        if not isinstance(payload, dict) or payload.get("hook_event_name") != "SessionStart" or payload.get("source") not in {"startup", "resume"}:
+            return 0
+        cwd = payload.get("cwd")
+        if not isinstance(cwd, str) or not Path(cwd).is_absolute():
+            return 0
+        if args.memory_scope == "project" and ROOT.name == ".agentsmith" and Path(cwd).absolute() != ROOT.parent.absolute():
+            return 0
+        # Selection and filesystem discovery both run under the wall-clock watchdog.
+        invocation = [str(sys.executable)]
+        if not getattr(sys, "frozen", False):
+            invocation.append(str(Path(__file__).resolve()))
+        invocation += ["memory", "startup", "--target", cwd, "--json", "--selected-only", "--selection-scope", args.memory_scope]
+        result = subprocess.run(invocation, text=True, capture_output=True, timeout=2)
+        report = json.loads(result.stdout)
+        context = report.get("output", "")
+        if report.get("complete") is False and not context:
+            context = "Local memory unavailable; check manual recall diagnostics after session startup."
+        if not isinstance(context, str):
+            raise ValueError("Invalid startup report")
+        if context:
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context[:2000]}}))
+    except Exception:
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "Local memory unavailable or timed out; session can continue with manual recall."}}))
+    return 0
+
+
 def cmd_hook(args: argparse.Namespace) -> int:
+    if args.hook_name == "memory-startup":
+        return cmd_memory_startup_hook(args)
     payload = sys.stdin.read()
     if args.hook_name == "git-pre-commit":
         return cmd_secret_scan(argparse.Namespace(target=os.getcwd()))
@@ -7386,6 +7712,9 @@ def add_common_install_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--with-skills", action="store_true")
     parser.add_argument("--with-mcp", action="append")
     parser.add_argument("--with-hooks", action="store_true")
+    memory_selection = parser.add_mutually_exclusive_group()
+    memory_selection.add_argument("--with-memory-startup", action="store_true", help="select bounded local references on native startup/resume")
+    memory_selection.add_argument("--without-memory-startup", action="store_true", help="disable startup recall and remove its managed registration")
     parser.add_argument("--with-handoff-hooks", action="store_true")
     parser.add_argument("--with-ui-design-hook", action="store_true")
     parser.add_argument("--force", action="store_true")
@@ -7525,8 +7854,25 @@ def parser() -> argparse.ArgumentParser:
     secret.add_argument("--all", action="store_true", help="scan the tracked working tree")
     secret.add_argument("--target", help="Git/project root for staged, tracked-tree, and allow rules")
     secret.add_argument("paths", nargs="*", metavar="FILE", help="files to scan, or '-' for stdin")
+    audit = sub.add_parser("audit-config", help="advisory static audit of selected native configuration")
+    audit.add_argument("--target")
+    audit.add_argument("--include-user", action="store_true", help="also read native user configuration")
+    audit.add_argument("--json", action="store_true", help="schema-versioned report")
+    audit.add_argument("--fail-on", choices=("low", "medium", "high", "critical"), help="explicit CI severity gate; incomplete inspection always errors")
+    memory = sub.add_parser("memory", help="search and read bounded local Markdown memory")
+    memory_commands = memory.add_subparsers(dest="memory_command", required=True)
+    for name, argument in (("search", "query"), ("read", "relative_path"), ("startup", None)):
+        command = memory_commands.add_parser(name, help="reference-only startup discovery" if name == "startup" else None)
+        if argument:
+            command.add_argument(argument)
+        command.add_argument("--target")
+        if name == "startup":
+            command.add_argument("--selected-only", action="store_true", help=argparse.SUPPRESS)
+            command.add_argument("--selection-scope", choices=("project", "global"), default="project", help=argparse.SUPPRESS)
+        command.add_argument("--json", action="store_true", help="schema-versioned report")
     hook = sub.add_parser("hook")
-    hook.add_argument("hook_name", choices=("handoff-on-keyword", "context-budget-nudge", "ui-design-reminder", "git-pre-commit"))
+    hook.add_argument("--memory-scope", choices=("project", "global"), default="project", help=argparse.SUPPRESS)
+    hook.add_argument("hook_name", choices=("handoff-on-keyword", "context-budget-nudge", "ui-design-reminder", "git-pre-commit", "memory-startup"))
     evaluate = sub.add_parser("evaluate", help="run isolated native-client behavioral evaluations")
     evaluate.add_argument("--agent", required=True, choices=("claude", "codex", "native"),
                           help="native client to exercise; 'native' runs Claude and Codex")
@@ -7545,7 +7891,7 @@ def parser() -> argparse.ArgumentParser:
 def normalize_legacy_argv(argv: list[str]) -> list[str]:
     if not argv:
         return ["install", "--wizard"]
-    commands = {"install", "update", "agents", "doctor", "status", "profiles", "compatibility", "verify", "validate-integration", "graph", "demo", "resume", "handoff", "new-feedback", "new-research", "secret-scan", "hook", "evaluate"}
+    commands = {"install", "update", "agents", "doctor", "status", "profiles", "compatibility", "verify", "validate-integration", "graph", "demo", "resume", "handoff", "new-feedback", "new-research", "secret-scan", "hook", "memory", "audit-config", "evaluate"}
     if argv[0] in commands or argv[0] in {"-h", "--help", "--version"}:
         return argv
     if "--doctor" in argv:
@@ -7658,7 +8004,7 @@ def apply_wizard_answers(args: argparse.Namespace, input_fn: Any = input) -> dic
             if profile not in profiles:
                 profiles.append(profile)
         capabilities = set(csv([input_fn(messages["capabilities"]).strip()]))
-        unknown = capabilities - {"skills", "mcp", "hooks", "handoff-hooks", "ui-design-hook"}
+        unknown = capabilities - {"skills", "mcp", "hooks", "handoff-hooks", "ui-design-hook", "memory-startup"}
         if unknown:
             raise CliError(f"Unknown optional capability: {', '.join(sorted(unknown))}")
         args.with_skills = "skills" in capabilities
@@ -7666,6 +8012,7 @@ def apply_wizard_answers(args: argparse.Namespace, input_fn: Any = input) -> dic
         args.with_hooks = "hooks" in capabilities
         args.with_handoff_hooks = "handoff-hooks" in capabilities
         args.with_ui_design_hook = "ui-design-hook" in capabilities
+        args.with_memory_startup = "memory-startup" in capabilities
 
     print(f"\n{messages['summary']}")
     print(f"  {messages['git_init'] if kind == 'new' else messages['existing_use']}: {target}")
@@ -7673,6 +8020,7 @@ def apply_wizard_answers(args: argparse.Namespace, input_fn: Any = input) -> dic
     print(f"  Agent: {chosen_agents}")
     print(f"  Profile: {', '.join(profiles)}")
     print(f"  Safety: {safety}")
+    show_capability_effects({name: bool(getattr(args, "with_" + name, False)) for name in CAPABILITY_EFFECTS})
     confirmed = wizard_choice(input_fn, messages["confirm"], {"yes", "no"}, "yes", invalid) == "yes"
     if not confirmed:
         raise CliError(messages["cancelled"])
@@ -7753,6 +8101,10 @@ def run(argv: list[str] | None = None) -> int:
         return cmd_scaffold(args.command, args)
     if args.command == "secret-scan":
         return cmd_secret_scan(args)
+    if args.command == "audit-config":
+        return cmd_audit_config(args)
+    if args.command == "memory":
+        return cmd_memory(args)
     if args.command == "hook":
         return cmd_hook(args)
     if args.command == "evaluate":

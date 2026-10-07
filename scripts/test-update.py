@@ -79,7 +79,7 @@ class UpdateCheckTests(unittest.TestCase):
             if not destination.exists():
                 shutil.copytree(ROOT / directory, destination)
         for helper in ("native_launcher.py", "evaluate.py", "work_graph.py",
-                       "windows_verifier_sandbox.py"):
+                       "windows_verifier_sandbox.py", "project_memory.py", "config_audit.py"):
             shutil.copy2(ROOT / helper, self.seed / helper)
         (self.seed / "VERSION").write_text(version + "\n", encoding="utf-8")
         runtime = CORE.read_text(encoding="utf-8")
@@ -321,6 +321,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertEqual(cloned.returncode, 0, cloned.stdout + cloned.stderr)
         target = self.root / "rollback project"
         target.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "memory-test", str(target)], check=True)
         environment = {
             **os.environ,
             "HOME": str(self.root / "home"),
@@ -328,7 +329,7 @@ class UpdateCheckTests(unittest.TestCase):
         }
         installed = self.run_core(
             "install", "--agent", "codex", "--profile", "software-dev",
-            "--target", str(target), "--operator-name", "Rollback Test",
+            "--target", str(target), "--operator-name", "Rollback Test", "--with-memory-startup",
             env=environment,
         )
         self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
@@ -337,6 +338,8 @@ class UpdateCheckTests(unittest.TestCase):
         research = target / "docs" / "research" / "source.md"
         research.parent.mkdir(parents=True, exist_ok=True)
         research.write_bytes(b"costly source material\n")
+        note = target / ".harness/handoffs/startup.md"
+        note.write_text('# Recovery reference\n<!-- agentsmith-memory: {"version":1,"branch":"memory-test"} -->\nBODY SENTINEL\n', encoding="utf-8")
         plan_path = self.root / "apply-plan.json"
         planned = self.run_core(
             "update", "plan", "--target", str(target), "--version", NEXT_TAG,
@@ -352,6 +355,17 @@ class UpdateCheckTests(unittest.TestCase):
         applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
 
         self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        state = json.loads((target / ".agentsmith/state.json").read_text())
+        self.assertTrue(state["installation"]["capabilities"]["memory_startup"])
+        self.assertIn("memory_startup", state["installation"]["effects"])
+        command = json.loads((target / ".codex/hooks.json").read_text())["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        if os.name != "nt":
+            observed = subprocess.run(command, shell=True, env=environment, cwd=target, text=True, capture_output=True,
+                input=json.dumps({"hook_event_name":"SessionStart","source":"startup","cwd":str(target.resolve())}))
+            self.assertEqual(observed.returncode, 0, observed.stderr)
+            context = json.loads(observed.stdout)["hookSpecificOutput"]["additionalContext"]
+            self.assertIn("startup.md", context)
+            self.assertNotIn("BODY SENTINEL", context)
         updated_agents = agents_path.read_text(encoding="utf-8")
         self.assertIn("# Foreign heading", updated_agents)
         self.assertIn(NEXT_RELEASE_PROBE, updated_agents)

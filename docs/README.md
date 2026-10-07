@@ -33,3 +33,9 @@ The [First Verified Loop](06-your-first-loop.md) walks through this sequence. Th
 | Trust and reference | [Safety](15-safety-model.md) · [Securing what you build](16-securing-what-you-build.md) · [Influences](18-influences.md) · [Glossary](19-glossary.md) · [Parallel work graph security](24-parallel-work-graphs-security.md) · [Offline native-client qualification](25-native-qualification.md) |
 
 Product templates, demos, and the [spec format](specs/README.md) remain public. Your project research and specs belong in its `docs/research/` and `docs/specs/`, committed where that work is authorized to live.
+
+- [Optional capability effects](local-capabilities.md) — selection and lifecycle records.
+
+- [Local project memory](project-memory.md) — manual recall and optional startup references.
+
+- [Configuration audit](27-config-audit.md) — selected local checks, completeness and explicit CI gates.

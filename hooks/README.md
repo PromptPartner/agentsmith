@@ -184,3 +184,7 @@ branch-naming, and tests-green are not part of the current Python install contra
 
 Every guardrail is bypassable for a single commit/push with `--no-verify` (use sparingly), and each
 fails safe. They're plain scripts — test one directly, e.g. `hooks/git/conventional-commit.sh msg.txt`.
+
+Installation previews disclose hook effects and persist the selected effect versions. See [capability selection](../docs/local-capabilities.md).
+
+`memory-startup` is separately selected. Its scoped `SessionStart` registration matches startup/resume only; it supplies local references through `hookSpecificOutput.additionalContext`, with a two-second watchdog. See [memory limits and selection](../docs/project-memory.md).
