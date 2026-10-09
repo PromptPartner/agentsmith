@@ -536,3 +536,37 @@ same stop case ended with one event, exit code 130 and no traceback. Regressions
 stop-signal cases in scripts/test-autonomous-state.py, beside the existing check that a signal
 during execution still interrupts, and the traceback check in the stop case of
 scripts/test-autonomous-run.sh.
+
+### RUN-CONTROLLER: a stop signal can still disturb a run outside the interruption record (open)
+
+Found while fixing the interruption record, and not changed by that fix.
+
+Two cases were seen end to end, in repetitions of the stop-during-checker case from
+scripts/test-autonomous-run.sh.
+
+- While the controller removes the disposable checker worktree. The stop signal still raises
+  inside the run, and the removal is left half done: the checker tree is gone, its entry under
+  `.git/worktrees` stays, and the state still names the checker worktree. Resume then escalates
+  with `runtime changed protected Git metadata`. Seen in 1 of 80 repetitions at `19afde4` and in
+  0 of 80 with the interruption fix. It also failed one full gate run made with that fix, in
+  three assertions of that case. Read from the code and not confirmed: the signal raises inside
+  the `git worktree remove` call, which ends the Git process.
+- After the controller function has returned. The default signal action applies again, so a stop
+  signal that arrives before the process ends kills it. The exit status is the signal instead of
+  130, and the record itself is complete. Seen in 1 of 80 repetitions at `19afde4` and in 0 of
+  380 with the fix. Read from the code and not run: the lifecycle lock is left behind, and the
+  next resume replaces a dead owner's lock.
+
+Two more were reproduced only with a controller-level fixture, at `19afde4` and with the fix:
+`execute` is stubbed to reach one outcome, and the signal is delivered at a chosen point.
+
+- Inside the escalation record. The handler raises out of the controller, which a command-line
+  run shows as a traceback and exit code 1 instead of 2. The state says `escalated` with its
+  reason, and no `run_escalated` event is written.
+- After the acceptance record. The signal raises inside `execute`, and the controller then
+  records an interruption over a run it has already recorded as accepted. The event log holds
+  `run_accepted` followed by `run_interrupted`, the state says `interrupted`, and the exit code
+  is 130. What a resume does next was read from the code and not run: it starts another attempt
+  on top of the accepted commit, or reaches the attempt cap.
+
+The last two need a rule for which outcome wins when a stop meets the run's own result.
