@@ -359,6 +359,41 @@ class AutonomousStateTests(unittest.TestCase):
             self.assertTrue(all(CONTROLLER.path_allowed(path, manifest) for path in paths))
             CONTROLLER.validate_verification_changes(repo, base, "HEAD", {})
 
+    def test_scope_rules_see_the_exact_name_where_git_would_quote_it(self) -> None:
+        # Git's display listing wraps a non-ASCII name in quotes and escapes it, so a rule written
+        # with the real name would not match the listed one.
+        denied = "priv\u00e9/notes.md"
+        manifest = {"scope": {"allowed_paths": ["**"], "denied_paths": ["priv\u00e9/**"]}}
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            base = self.committed_fixture(repo, {denied: "base\n", "src/app.py": "base\n"})
+            (repo / denied).write_text("edited\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "commit", "-qam", "candidate"], check=True)
+            paths = CONTROLLER.changed_paths(repo, base)
+            self.assertEqual(paths, [denied])
+            self.assertFalse(CONTROLLER.path_allowed(paths[0], manifest))
+
+    def test_changed_paths_keep_leading_whitespace_of_a_name(self) -> None:
+        # " src/" is a different directory from "src/"; a trimmed listing would move the file
+        # into the allowed scope. The commit is built without the filesystem to suit every host.
+        manifest = {"scope": {"allowed_paths": ["src/**"], "denied_paths": []}}
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            base = self.committed_fixture(repo, {"src/app.py": "base\n"})
+            blob = subprocess.run(["git", "-C", str(repo), "hash-object", "-w", "--stdin"], input="extra\n",
+                                  text=True, capture_output=True, check=True).stdout.strip()
+            subprocess.run(["git", "-C", str(repo), "update-index", "--add", "--cacheinfo",
+                            "100644", blob, " src/extra.py"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "candidate"], check=True)
+            paths = CONTROLLER.changed_paths(repo, base)
+            self.assertEqual(paths, [" src/extra.py"])
+            self.assertFalse(CONTROLLER.path_allowed(paths[0], manifest))
+
+    def test_file_names_are_shown_with_control_characters_escaped(self) -> None:
+        # The maker chooses these names and the controller prints them to the operator's terminal.
+        shown = CONTROLLER.shown_paths(["clear\x1b[2J.txt", "two\nlines.txt", "priv\u00e9/notes.md"])
+        self.assertEqual(shown, "clear\\x1b[2J.txt, two\\nlines.txt, priv\u00e9/notes.md")
+
     def test_role_prompts_say_how_a_receipt_lists_a_moved_file(self) -> None:
         # Both roles must return the controller's own path list, so each must be told its rule.
         state = {"run_id": "fixture", "base_head": "0123abc"}
@@ -369,7 +404,7 @@ class AutonomousStateTests(unittest.TestCase):
         for role in ("maker", "checker"):
             with self.subTest(role=role):
                 prompt = CONTROLLER.role_prompt(state, manifest, role)
-                self.assertIn("git diff --name-only --no-renames 0123abc HEAD", prompt)
+                self.assertIn("git -c core.quotepath=off diff --name-only --no-renames 0123abc HEAD", prompt)
                 self.assertIn("old path and the new path", prompt)
 
     def test_coordination_lock_acquire_retries_windows_sharing_denial(self) -> None:

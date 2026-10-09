@@ -34,7 +34,10 @@ local commits and a clean tree, then emit a schema-shaped receipt. The controlle
 checks the commit, receipt, changed and ignored paths, fast-forward history, refs, config, hooks,
 existing Git objects, and other worktrees' administration. The receipt's `changed_paths` must
 equal the controller's own list, in which a moved file appears twice: under its old path and
-under its new path. Both must be inside the allowed scope. It then creates a disposable detached
+under its new path. Both must be inside the allowed scope. The list holds plain file names, so a
+name with a non-ASCII character is written as it is, without the quotes and escapes of Git's
+default listing. Scope and protection rules are matched against those plain names. It then
+creates a disposable detached
 worktree at that exact commit: the deterministic verifier and fresh checker run there, never in
 the maker's retained worktree.
 

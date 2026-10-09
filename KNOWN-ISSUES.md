@@ -494,3 +494,16 @@ level, moving `.harness/verify.conf` passed the same two checks. Both lists now 
 to the scope, the denied paths and the protected inputs. A role receipt must list both paths of a
 move, and the role prompt now says so. Regressions: scripts/test-autonomous-state.py and the move
 cases in scripts/test-autonomous-run.sh.
+
+### RUN-CONTROLLER: quoted file names missed scope rules and blocked non-ASCII projects (fixed)
+
+The scope check read Git's line listing, which wraps a name with a non-ASCII or special character
+in quotes and escapes it. A rule written with the real name then did not match the listed one. A
+fixture run with broad scope edited a file under a denied directory with a non-ASCII name and was
+accepted end to end when the maker's receipt repeated the quoted listing. In the other direction,
+an edit to an allowed file with a non-ASCII name was rejected as out of scope. The same reader
+also trimmed leading whitespace from the first name. All four path lists now read NUL-separated
+names, which Git neither quotes nor escapes, and receipts use plain names. Git no longer escapes
+the names, so the scope escalation shows control characters in a name escaped. Regressions:
+scripts/test-autonomous-state.py and the non-ASCII and crafted-name cases in
+scripts/test-autonomous-run.sh.

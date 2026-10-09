@@ -37,7 +37,7 @@ make_fake() {
     '  if [ -n "$receipt" ]; then printf "%s\n" "$payload" > "$receipt"' \
     '  else printf "{\"type\":\"result\",\"total_cost_usd\":0.25,\"structured_output\":%s}\n" "$payload"; fi' \
     '}' \
-    'listed_paths() { git diff --name-only "$1" HEAD~1 HEAD | python3 -c "import json, sys; print(json.dumps(sys.stdin.read().splitlines()))"; }' \
+    'listed_paths() { git "$@" HEAD~1 HEAD | python3 -c "import json, sys; print(json.dumps(sys.stdin.buffer.read().decode().splitlines()))"; }' \
     'if [ "$mode" = malformed ]; then emit "{}"; exit 0; fi' \
     'if [[ "$prompt" == *"independent checker"* ]]; then' \
     '  if [ -n "$receipt" ]; then for ((i=0; i<${#args[@]}; i++)); do if [ "${args[$i]}" = --sandbox ] && [ "${args[$((i+1))]}" != read-only ]; then exit 42; fi; done; fi' \
@@ -65,6 +65,9 @@ make_fake() {
     '  if [ "$mode" = ignored-outside ]; then printf x > ignored.tmp; fi' \
     '  if [[ "$mode" == move-protected* ]]; then git mv tests/test_baseline.py src/moved_checks.py; fi' \
     '  if [ "$mode" = move-in-scope ]; then git mv src/keep.txt src/kept.txt; fi' \
+    '  if [ "$mode" = quoted-denied ]; then printf "edited\n" > "privé/notes.md"; git add "privé/notes.md"; fi' \
+    '  if [ "$mode" = control-name ]; then crafted="$(printf "clear\033[2J.txt")"; printf x > "$crafted"; git add -- "$crafted"; fi' \
+    '  if [ "$mode" = plain-accented ]; then printf "edited\n" > "src/résumé.txt"; git add "src/résumé.txt"; fi' \
     '  git add src/change.txt forbidden.txt 2>/dev/null || git add src/change.txt' \
     '  if [ "$mode" = amend-history ]; then git commit --amend --no-edit >/dev/null' \
     '  else git commit -m "test(run): fake maker checkpoint" >/dev/null; fi' \
@@ -75,9 +78,11 @@ make_fake() {
     '  if [ "$mode" = object-admin ]; then mkdir -p "$(git rev-parse --git-common-dir)/objects/info"; printf /tmp/escape > "$(git rev-parse --git-common-dir)/objects/info/alternates"; fi' \
     '  if [ "$mode" = other-index ]; then printf bad >> "$(git rev-parse --git-common-dir)/index"; fi' \
     '  paths_json="[\"$changed\"]"' \
-    '  if [ "$mode" = move-protected ]; then paths_json="$(listed_paths --find-renames)"; fi' \
-    '  if [ "$mode" = move-protected-listed ] || [ "$mode" = move-in-scope ]; then paths_json="$(listed_paths --no-renames)"; fi' \
-    '  if [[ "$mode" == move-* ]]; then printf "%s" "$paths_json" > "$fake_root/paths_json"; fi' \
+    '  if [ "$mode" = move-protected ]; then paths_json="$(listed_paths diff --name-only --find-renames)"; fi' \
+    '  if [ "$mode" = move-protected-listed ] || [ "$mode" = move-in-scope ]; then paths_json="$(listed_paths diff --name-only --no-renames)"; fi' \
+    '  if [ "$mode" = quoted-denied ]; then paths_json="$(listed_paths diff --name-only --no-renames)"; fi' \
+    '  if [ "$mode" = plain-accented ]; then paths_json="$(listed_paths -c core.quotepath=off diff --name-only --no-renames)"; fi' \
+    '  if [ "$paths_json" != "[\"$changed\"]" ]; then printf "%s" "$paths_json" > "$fake_root/paths_json"; fi' \
     '  emit "{\"status\":\"completed\",\"summary\":\"fake maker\",\"commit\":\"$(git rev-parse HEAD)\",\"changed_paths\":$paths_json,\"evidence\":[\"fake maker evidence\"],\"unresolved\":[],\"next_state\":\"checking\"}"' \
     'fi' \
     'if [ -n "$receipt" ]; then printf "%s\n" "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":7,\"output_tokens\":3}}"; fi' > "$path/bin/fake-agent"
@@ -786,6 +791,40 @@ if (cd "$repo" && invoke "$repo" move-in-scope start .harness/runs/move-allowed.
   ok 'a move inside scope is accepted when both receipts list old and new path'
 else
   bad 'a move inside scope was rejected'
+  sed -n '1,40p' "$repo/../err" 2>/dev/null || true
+fi
+
+# Git's display listing quotes and escapes a non-ASCII name. A scope rule is written with the real
+# name, so the controller must compare real names: the first maker repeats the quoted listing.
+repo="$(new_repo quoted-denied)"; make_fake "$repo/../fake"; manifest "$repo" quoted-denied
+mkdir -p "$repo/privé"; printf 'private\n' > "$repo/privé/notes.md"
+python3 - "$repo/.harness/runs/quoted-denied.json" <<'PYTEST'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); v = json.loads(p.read_text(encoding='utf-8'))
+v['scope']['allowed_paths'] = ['**']
+v['scope']['denied_paths'].append('priv\u00e9/**')
+p.write_text(json.dumps(v) + '\n', encoding='utf-8')
+PYTEST
+git -C "$repo" add . && git -C "$repo" commit -qm 'test: denied directory with a non-ASCII name'
+if (cd "$repo" && invoke "$repo" quoted-denied start .harness/runs/quoted-denied.json >../out 2>../err); then
+  bad 'edit under a denied non-ASCII path was accepted'
+else ok 'edit under a denied non-ASCII path escalates'; fi
+assert 'scope escalation names the denied non-ASCII path' grep -q 'outside scope: priv' "$repo/../err"
+
+repo="$(new_repo control-name)"; make_fake "$repo/../fake"; manifest "$repo" control-name
+if (cd "$repo" && invoke "$repo" control-name start .harness/runs/control-name.json >../out 2>../err); then
+  bad 'out-of-scope file with a crafted name was accepted'
+else ok 'out-of-scope file with a crafted name escalates'; fi
+assert 'crafted name is shown with its control character escaped' grep -q -F 'outside scope: clear\x1b[2J.txt' "$repo/../err"
+assert 'crafted name writes no control character to the terminal' bash -c "! grep -q \$'\\033' '$repo/../err'"
+
+repo="$(new_repo plain-accented)"; make_fake "$repo/../fake"; manifest "$repo" plain-accented
+mkdir -p "$repo/src"; printf 'base\n' > "$repo/src/résumé.txt"
+git -C "$repo" add . && git -C "$repo" commit -qm 'test: allowed file with a non-ASCII name'
+if (cd "$repo" && invoke "$repo" plain-accented start .harness/runs/plain-accented.json >../out 2>../err); then
+  ok 'edit to an allowed non-ASCII path is accepted when receipts use the plain name'
+else
+  bad 'edit to an allowed non-ASCII path was rejected'
   sed -n '1,40p' "$repo/../err" 2>/dev/null || true
 fi
 

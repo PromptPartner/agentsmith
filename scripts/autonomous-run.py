@@ -93,6 +93,21 @@ def git(repo: Path, *args: str, check: bool = True) -> str:
     return result.stdout.strip()
 
 
+def git_paths(repo: Path, command: str, *args: str) -> list[str]:
+    """Names exactly as Git stores them. Line output quotes and escapes unusual names, and
+    trimming drops leading whitespace; scope and protection rules need the real name."""
+    result = run(["git", command, "-z", *args], repo)
+    if result.returncode:
+        raise RunError(result.stderr.strip() or f"git {command} failed")
+    return [path for path in result.stdout.split("\0") if path]
+
+
+def shown_paths(paths: list[str]) -> str:
+    """A runtime chooses these names and the operator's terminal prints them."""
+    return ", ".join("".join(char if char.isprintable() else char.encode("unicode_escape").decode("ascii")
+                             for char in path) for path in paths)
+
+
 def repo_root(path: Path) -> Path:
     result = run(["git", "rev-parse", "--show-toplevel"], path)
     if result.returncode:
@@ -766,8 +781,7 @@ def remaining_seconds(state: dict[str, Any], manifest: dict[str, Any]) -> int:
 def changed_paths(worktree: Path, base: str, head: str = "HEAD") -> list[str]:
     # A move must list its old path too: rename detection would hide the path that scope
     # and protection rules are written against.
-    output = git(worktree, "diff", "--name-only", "--no-renames", f"{base}..{head}")
-    return [line for line in output.splitlines() if line]
+    return git_paths(worktree, "diff", "--name-only", "--no-renames", f"{base}..{head}")
 
 
 # These are controller policy, even when the maker scope is broad. Additional project
@@ -788,10 +802,9 @@ def validate_verification_changes(worktree: Path, base: str, head: str,
     extra = manifest.get("verify", {}).get("protected_paths", [])
     if not isinstance(extra, list) or any(not isinstance(path, str) or not path for path in extra):
         raise RunError("verify.protected_paths must be an array of nonempty path globs")
-    baseline = set(git(worktree, "ls-tree", "-r", "--name-only", "-z", base).split("\0"))
-    changes = git(worktree, "diff", "--name-only", "--no-renames", "-z", base, head).split("\0")
+    baseline = set(git_paths(worktree, "ls-tree", "-r", "--name-only", base))
     protected = []
-    for path in filter(None, changes):
+    for path in git_paths(worktree, "diff", "--name-only", "--no-renames", base, head):
         patterns = (*VERIFICATION_POLICY_PATHS, *extra)
         if path in baseline:
             patterns += BASELINE_TEST_PATHS
@@ -1064,8 +1077,7 @@ def git_metadata(repo: Path, *, known_peers: dict[str, Any] | None = None) -> di
 
 
 def ignored_paths(worktree: Path) -> set[str]:
-    output = git(worktree, "ls-files", "--others", "--ignored", "--exclude-standard", "-z")
-    return {path for path in output.split("\0") if path}
+    return set(git_paths(worktree, "ls-files", "--others", "--ignored", "--exclude-standard"))
 
 
 def validate_git_transition(worktree: Path, before: dict[str, Any], after: dict[str, Any],
@@ -1487,7 +1499,8 @@ Read the accepted terminal spec at {spec}. This ticket is separate from its deci
 Allowed paths: {json.dumps(scope['allowed_paths'])}. Denied paths: {json.dumps(scope['denied_paths'])}.
 No network, connectors, tracker writes, push, PR, merge, deployment, production action, or history rewrite.
 Return only the requested JSON receipt. Never claim evidence you did not produce.
-In changed_paths list every path printed by `git diff --name-only --no-renames {base} HEAD`.
+In changed_paths list every path printed by
+`git -c core.quotepath=off diff --name-only --no-renames {base} HEAD`, as plain names without quotes.
 A moved file counts twice: list the old path and the new path.
 """
     if role == "maker":
@@ -1609,7 +1622,7 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
         paths = changed_paths(worktree, state["base_head"])
         bad = [path for path in paths if not path_allowed(path, manifest)]
         if bad:
-            raise RunError(f"maker changed paths outside scope: {', '.join(bad)}")
+            raise RunError(f"maker changed paths outside scope: {shown_paths(bad)}")
         ignored_added = sorted(ignored_paths(worktree) - before_ignored)
         ignored_bad = [path for path in ignored_added if not path_allowed(path, manifest)]
         if ignored_bad:
