@@ -764,7 +764,9 @@ def remaining_seconds(state: dict[str, Any], manifest: dict[str, Any]) -> int:
 
 
 def changed_paths(worktree: Path, base: str, head: str = "HEAD") -> list[str]:
-    output = git(worktree, "diff", "--name-only", f"{base}..{head}")
+    # A move must list its old path too: rename detection would hide the path that scope
+    # and protection rules are written against.
+    output = git(worktree, "diff", "--name-only", "--no-renames", f"{base}..{head}")
     return [line for line in output.splitlines() if line]
 
 
@@ -787,7 +789,7 @@ def validate_verification_changes(worktree: Path, base: str, head: str,
     if not isinstance(extra, list) or any(not isinstance(path, str) or not path for path in extra):
         raise RunError("verify.protected_paths must be an array of nonempty path globs")
     baseline = set(git(worktree, "ls-tree", "-r", "--name-only", "-z", base).split("\0"))
-    changes = git(worktree, "diff", "--name-only", "-z", base, head).split("\0")
+    changes = git(worktree, "diff", "--name-only", "--no-renames", "-z", base, head).split("\0")
     protected = []
     for path in filter(None, changes):
         patterns = (*VERIFICATION_POLICY_PATHS, *extra)
@@ -1485,6 +1487,8 @@ Read the accepted terminal spec at {spec}. This ticket is separate from its deci
 Allowed paths: {json.dumps(scope['allowed_paths'])}. Denied paths: {json.dumps(scope['denied_paths'])}.
 No network, connectors, tracker writes, push, PR, merge, deployment, production action, or history rewrite.
 Return only the requested JSON receipt. Never claim evidence you did not produce.
+In changed_paths list every path printed by `git diff --name-only --no-renames {base} HEAD`.
+A moved file counts twice: list the old path and the new path.
 """
     if role == "maker":
         feedback = f"\nThe prior checker rejected the attempt:\n{json.dumps(prior, indent=2)}\n" if prior else ""

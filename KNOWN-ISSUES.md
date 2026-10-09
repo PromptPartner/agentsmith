@@ -481,3 +481,16 @@ Quoted `echo` and `printf` arguments containing download or package commands wer
 misclassified as executable launchers. Reproduced with safe fixtures; bounded
 command-position recognition now separates arguments from commands. Regression
 checks cover safe printed text and risky separators, wrappers and environment prefixes.
+
+## Run controller path reading (2026-10-09)
+
+### RUN-CONTROLLER: a moved file hid its old path from the scope and protection checks (fixed)
+
+The controller listed a candidate's changes with Git's rename detection on, so a moved file
+appeared under its new path only. A fixture run moved an approved baseline check from `tests/`
+into the allowed scope and was accepted end to end, with narrow and with broad scope. At function
+level, moving `.harness/verify.conf` passed the same two checks. Both lists now use
+`--no-renames`: a move is the old path removed plus the new path added, so the old path is held
+to the scope, the denied paths and the protected inputs. A role receipt must list both paths of a
+move, and the role prompt now says so. Regressions: scripts/test-autonomous-state.py and the move
+cases in scripts/test-autonomous-run.sh.

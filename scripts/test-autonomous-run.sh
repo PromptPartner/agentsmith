@@ -37,6 +37,7 @@ make_fake() {
     '  if [ -n "$receipt" ]; then printf "%s\n" "$payload" > "$receipt"' \
     '  else printf "{\"type\":\"result\",\"total_cost_usd\":0.25,\"structured_output\":%s}\n" "$payload"; fi' \
     '}' \
+    'listed_paths() { git diff --name-only "$1" HEAD~1 HEAD | python3 -c "import json, sys; print(json.dumps(sys.stdin.read().splitlines()))"; }' \
     'if [ "$mode" = malformed ]; then emit "{}"; exit 0; fi' \
     'if [[ "$prompt" == *"independent checker"* ]]; then' \
     '  if [ -n "$receipt" ]; then for ((i=0; i<${#args[@]}; i++)); do if [ "${args[$i]}" = --sandbox ] && [ "${args[$((i+1))]}" != read-only ]; then exit 42; fi; done; fi' \
@@ -49,7 +50,8 @@ make_fake() {
     '  status=accepted' \
     '  if [ "$mode" = reject-once ] && [ "$count" -eq 1 ]; then status=rejected; fi' \
     '  if [ "$mode" = always-reject ]; then status=rejected; fi' \
-    '  emit "{\"status\":\"$status\",\"summary\":\"checker $status\",\"commit\":\"$(git rev-parse HEAD)\",\"changed_paths\":[\"src/change.txt\"],\"evidence\":[\"fake check\"],\"unresolved\":[],\"next_state\":\"$status\"}"' \
+    '  paths_json="[\"src/change.txt\"]"; if [ -f "$fake_root/paths_json" ]; then paths_json="$(<"$fake_root/paths_json")"; fi' \
+    '  emit "{\"status\":\"$status\",\"summary\":\"checker $status\",\"commit\":\"$(git rev-parse HEAD)\",\"changed_paths\":$paths_json,\"evidence\":[\"fake check\"],\"unresolved\":[],\"next_state\":\"$status\"}"' \
     'else' \
     '  if [ "$mode" = slow ]; then sleep 20; fi' \
     '  if [ "$mode" = collision-slow ]; then sleep 60; fi' \
@@ -61,6 +63,8 @@ make_fake() {
     '  if [ "$mode" = weaken-verifier ]; then printf "bypass :: true\n" > .harness/verify.conf; git add .harness/verify.conf; changed=".harness/verify.conf\",\"src/change.txt"; fi' \
     '  if [ "$mode" = out-of-scope ]; then printf x > forbidden.txt; changed="forbidden.txt"; fi' \
     '  if [ "$mode" = ignored-outside ]; then printf x > ignored.tmp; fi' \
+    '  if [[ "$mode" == move-protected* ]]; then git mv tests/test_baseline.py src/moved_checks.py; fi' \
+    '  if [ "$mode" = move-in-scope ]; then git mv src/keep.txt src/kept.txt; fi' \
     '  git add src/change.txt forbidden.txt 2>/dev/null || git add src/change.txt' \
     '  if [ "$mode" = amend-history ]; then git commit --amend --no-edit >/dev/null' \
     '  else git commit -m "test(run): fake maker checkpoint" >/dev/null; fi' \
@@ -70,7 +74,11 @@ make_fake() {
     '  if [ "$mode" = object-mutation ]; then object="$(git rev-parse HEAD^)"; object_path="$(git rev-parse --git-common-dir)/objects/${object:0:2}/${object:2}"; chmod u+w "$object_path"; printf bad > "$object_path"; fi' \
     '  if [ "$mode" = object-admin ]; then mkdir -p "$(git rev-parse --git-common-dir)/objects/info"; printf /tmp/escape > "$(git rev-parse --git-common-dir)/objects/info/alternates"; fi' \
     '  if [ "$mode" = other-index ]; then printf bad >> "$(git rev-parse --git-common-dir)/index"; fi' \
-    '  emit "{\"status\":\"completed\",\"summary\":\"fake maker\",\"commit\":\"$(git rev-parse HEAD)\",\"changed_paths\":[\"$changed\"],\"evidence\":[\"fake maker evidence\"],\"unresolved\":[],\"next_state\":\"checking\"}"' \
+    '  paths_json="[\"$changed\"]"' \
+    '  if [ "$mode" = move-protected ]; then paths_json="$(listed_paths --find-renames)"; fi' \
+    '  if [ "$mode" = move-protected-listed ] || [ "$mode" = move-in-scope ]; then paths_json="$(listed_paths --no-renames)"; fi' \
+    '  if [[ "$mode" == move-* ]]; then printf "%s" "$paths_json" > "$fake_root/paths_json"; fi' \
+    '  emit "{\"status\":\"completed\",\"summary\":\"fake maker\",\"commit\":\"$(git rev-parse HEAD)\",\"changed_paths\":$paths_json,\"evidence\":[\"fake maker evidence\"],\"unresolved\":[],\"next_state\":\"checking\"}"' \
     'fi' \
     'if [ -n "$receipt" ]; then printf "%s\n" "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":7,\"output_tokens\":3}}"; fi' > "$path/bin/fake-agent"
   chmod +x "$path/bin/fake-agent"
@@ -743,6 +751,43 @@ if (cd "$repo" && invoke "$repo" weaken-verifier start .harness/runs/weaken-veri
 else ok 'maker cannot weaken verification even with broad scope'; fi
 assert 'verifier weakening explains separate operator review' grep -q 'protected verification inputs' "$repo/../err"
 assert 'policy rejection retains committed candidate' test -f "$repo/../repo-weaken-verifier/src/change.txt"
+
+# A move deletes the old path and adds the new one. Git's default listing shows the new path only,
+# so each case below fails if the controller reads that listing again.
+repo="$(new_repo move-scope)"; make_fake "$repo/../fake"; manifest "$repo" move-scope
+mkdir -p "$repo/tests"; printf 'approved baseline check\n' > "$repo/tests/test_baseline.py"
+git -C "$repo" add . && git -C "$repo" commit -qm 'test: approved baseline check'
+if (cd "$repo" && invoke "$repo" move-protected start .harness/runs/move-scope.json >../out 2>../err); then
+  bad 'maker moved a baseline check into scope and was accepted'
+else ok 'moving a baseline check into scope escalates'; fi
+assert 'scope escalation names the old path of a move' grep -q 'outside scope: tests/test_baseline.py' "$repo/../err"
+
+repo="$(new_repo move-broad)"; make_fake "$repo/../fake"; manifest "$repo" move-broad
+mkdir -p "$repo/tests"; printf 'approved baseline check\n' > "$repo/tests/test_baseline.py"
+set_manifest_scope "$repo" move-broad '**' '[]'
+if (cd "$repo" && invoke "$repo" move-protected start .harness/runs/move-broad.json >../out 2>../err); then
+  bad 'broad scope accepted a moved baseline check that the receipt left out'
+else ok 'a receipt that leaves out the old path of a move escalates'; fi
+assert 'short receipt is rejected as a Git state mismatch' grep -q 'maker receipt does not match' "$repo/../err"
+
+repo="$(new_repo move-listed)"; make_fake "$repo/../fake"; manifest "$repo" move-listed
+mkdir -p "$repo/tests"; printf 'approved baseline check\n' > "$repo/tests/test_baseline.py"
+set_manifest_scope "$repo" move-listed '**' '[]'
+if (cd "$repo" && invoke "$repo" move-protected-listed start .harness/runs/move-listed.json >../out 2>../err); then
+  bad 'broad scope accepted a moved baseline check'
+else ok 'moving a baseline check escalates even with broad scope'; fi
+assert 'moved baseline check needs separate operator review' \
+  grep -q 'protected verification inputs.*tests/test_baseline.py' "$repo/../err"
+
+repo="$(new_repo move-allowed)"; make_fake "$repo/../fake"; manifest "$repo" move-allowed
+mkdir -p "$repo/src"; printf 'keep\n' > "$repo/src/keep.txt"
+git -C "$repo" add . && git -C "$repo" commit -qm 'test: file the maker may move'
+if (cd "$repo" && invoke "$repo" move-in-scope start .harness/runs/move-allowed.json >../out 2>../err); then
+  ok 'a move inside scope is accepted when both receipts list old and new path'
+else
+  bad 'a move inside scope was rejected'
+  sed -n '1,40p' "$repo/../err" 2>/dev/null || true
+fi
 
 echo 'autonomous-run — trusted state and stage recovery'
 repo="$(new_repo stage-recovery)"; make_fake "$repo/../fake"; manifest "$repo" stage-recovery

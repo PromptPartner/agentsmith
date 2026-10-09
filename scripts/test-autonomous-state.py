@@ -308,6 +308,70 @@ class AutonomousStateTests(unittest.TestCase):
             subprocess.run(["git", "-C", str(repo), "commit", "-qm", "candidate"], check=True)
             CONTROLLER.validate_verification_changes(repo, base, "HEAD", {})
 
+    def committed_fixture(self, repo: Path, files: dict[str, str]) -> str:
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+        for name, content in files.items():
+            path = repo / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "baseline"], check=True)
+        return CONTROLLER.git(repo, "rev-parse", "HEAD")
+
+    def test_moving_a_protected_input_into_scope_is_still_rejected(self) -> None:
+        # Git reports a move under its new path only unless rename detection is switched off, so a
+        # maker could carry an approved check or the verify policy out of the paths that guard it.
+        manifest = {"scope": {"allowed_paths": ["src/**"], "denied_paths": ["tests/**", ".harness/**"]}}
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            base = self.committed_fixture(repo, {
+                ".harness/verify.conf": "tests :: python3 -m unittest discover -s tests\n",
+                "tests/test_baseline.py": "import unittest\n\n\nclass Baseline(unittest.TestCase):\n"
+                                          "    def test_sum(self):\n        self.assertEqual(1 + 1, 2)\n",
+                "src/app.py": "def add(a, b):\n    return a + b\n",
+            })
+            for source, destination in ((".harness/verify.conf", "src/verify.conf"),
+                                        ("tests/test_baseline.py", "src/moved_checks.py")):
+                with self.subTest(source=source):
+                    subprocess.run(["git", "-C", str(repo), "mv", source, destination], check=True)
+                    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "candidate"], check=True)
+                    paths = CONTROLLER.changed_paths(repo, base)
+                    self.assertEqual(sorted(paths), sorted([source, destination]))
+                    self.assertEqual([path for path in paths if not CONTROLLER.path_allowed(path, manifest)],
+                                     [source])
+                    with self.assertRaises(CONTROLLER.RunError) as rejected:
+                        CONTROLLER.validate_verification_changes(repo, base, "HEAD", {})
+                    self.assertIn("protected verification", str(rejected.exception))
+                    self.assertIn(source, str(rejected.exception))
+                    subprocess.run(["git", "-C", str(repo), "reset", "--hard", base], capture_output=True, check=True)
+
+    def test_move_inside_scope_counts_as_two_allowed_paths(self) -> None:
+        manifest = {"scope": {"allowed_paths": ["src/**"], "denied_paths": ["tests/**"]}}
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            base = self.committed_fixture(repo, {"src/app.py": "def add(a, b):\n    return a + b\n"})
+            subprocess.run(["git", "-C", str(repo), "mv", "src/app.py", "src/core.py"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "candidate"], check=True)
+            paths = CONTROLLER.changed_paths(repo, base)
+            self.assertEqual(sorted(paths), ["src/app.py", "src/core.py"])
+            self.assertTrue(all(CONTROLLER.path_allowed(path, manifest) for path in paths))
+            CONTROLLER.validate_verification_changes(repo, base, "HEAD", {})
+
+    def test_role_prompts_say_how_a_receipt_lists_a_moved_file(self) -> None:
+        # Both roles must return the controller's own path list, so each must be told its rule.
+        state = {"run_id": "fixture", "base_head": "0123abc"}
+        manifest = {"implementation_ticket": "IMP-1", "spec_path": "docs/specs/fixture.md",
+                    "scope": {"allowed_paths": ["src/**"], "denied_paths": []},
+                    "verify": {"command": "check"}, "limits": {},
+                    "roles": {"maker": {"runtime": "claude"}, "checker": {"runtime": "codex"}}}
+        for role in ("maker", "checker"):
+            with self.subTest(role=role):
+                prompt = CONTROLLER.role_prompt(state, manifest, role)
+                self.assertIn("git diff --name-only --no-renames 0123abc HEAD", prompt)
+                self.assertIn("old path and the new path", prompt)
+
     def test_coordination_lock_acquire_retries_windows_sharing_denial(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith coordination acquire ") as temporary:
             root = Path(temporary)

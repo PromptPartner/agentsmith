@@ -32,13 +32,16 @@ when the run reserves none.
 `agentsmith/<run-id>` branch. Each attempt is a fresh maker process. The maker must leave atomic
 local commits and a clean tree, then emit a schema-shaped receipt. The controller independently
 checks the commit, receipt, changed and ignored paths, fast-forward history, refs, config, hooks,
-existing Git objects, and other worktrees' administration. It then creates a disposable detached
+existing Git objects, and other worktrees' administration. The receipt's `changed_paths` must
+equal the controller's own list, in which a moved file appears twice: under its old path and
+under its new path. Both must be inside the allowed scope. It then creates a disposable detached
 worktree at that exact commit: the deterministic verifier and fresh checker run there, never in
 the maker's retained worktree.
 
 Before verification, the controller rejects edits to `.agentsmith/`, `.harness/`, workflow files,
 known launchers, the accepted spec, and existing baseline tests. Broad allowed scope does not
-waive this gate. New regression tests may be added. Include additional project acceptance inputs
+waive this gate. Moving or renaming a protected file counts as changing it. New regression tests
+may be added. Include additional project acceptance inputs
 as globs in `verify.protected_paths` in the reviewed manifest. Protected changes require separate
 operator review outside this run; the controller has no self-approval override.
 

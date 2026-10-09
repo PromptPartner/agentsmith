@@ -59,7 +59,9 @@ Git metadata drift, protected verification edits, or checker mutation escalates 
 fails closed unless macOS `sandbox-exec` or Linux `bubblewrap` is available.
 
 Existing baseline tests, the accepted spec, runtime launchers, and verification policy are protected
-even with broad maker scope. Add custom acceptance inputs via `verify.protected_paths`; changing
+even with broad maker scope, and moving or renaming one of them counts as changing it. A moved
+file counts as two changed paths, the old one and the new one; both must be inside the allowed
+scope. Add custom acceptance inputs via `verify.protected_paths`; changing
 protected inputs requires separate operator review outside this run. New regression tests remain
 allowed. Both roles receive trusted-path write restrictions through their native policies; Codex uses a
 strict named filesystem profile, and Claude combines Bash denyWrite with file-tool Edit denials.
