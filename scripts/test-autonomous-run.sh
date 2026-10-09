@@ -63,6 +63,7 @@ make_fake() {
     '  if [ "$mode" = weaken-verifier ]; then printf "bypass :: true\n" > .harness/verify.conf; git add .harness/verify.conf; changed=".harness/verify.conf\",\"src/change.txt"; fi' \
     '  if [ "$mode" = out-of-scope ]; then printf x > forbidden.txt; changed="forbidden.txt"; fi' \
     '  if [ "$mode" = ignored-outside ]; then printf x > ignored.tmp; fi' \
+    '  if [ "$mode" = ignored-control ]; then printf x > "$(printf "clear\033[2J.cache")"; fi' \
     '  if [[ "$mode" == move-protected* ]]; then git mv tests/test_baseline.py src/moved_checks.py; fi' \
     '  if [ "$mode" = move-in-scope ]; then git mv src/keep.txt src/kept.txt; fi' \
     '  if [ "$mode" = quoted-denied ]; then printf "edited\n" > "privé/notes.md"; git add "privé/notes.md"; fi' \
@@ -817,6 +818,16 @@ if (cd "$repo" && invoke "$repo" control-name start .harness/runs/control-name.j
 else ok 'out-of-scope file with a crafted name escalates'; fi
 assert 'crafted name is shown with its control character escaped' grep -q -F 'outside scope: clear\x1b[2J.txt' "$repo/../err"
 assert 'crafted name writes no control character to the terminal' bash -c "! grep -q \$'\\033' '$repo/../err'"
+
+repo="$(new_repo ignored-control)"; make_fake "$repo/../fake"; manifest "$repo" ignored-control
+printf '*.cache\n' >> "$repo/.gitignore"
+git -C "$repo" add . && git -C "$repo" commit -qm 'test: ignore cache files'
+if (cd "$repo" && invoke "$repo" ignored-control start .harness/runs/ignored-control.json >../out 2>../err); then
+  bad 'ignored out-of-scope file with a crafted name was accepted'
+else ok 'ignored out-of-scope file with a crafted name escalates'; fi
+assert 'crafted ignored name is shown with its control character escaped' \
+  grep -q -F 'ignored paths outside scope: clear\x1b[2J.cache' "$repo/../err"
+assert 'crafted ignored name writes no control character to the terminal' bash -c "! grep -q \$'\\033' '$repo/../err'"
 
 repo="$(new_repo plain-accented)"; make_fake "$repo/../fake"; manifest "$repo" plain-accented
 mkdir -p "$repo/src"; printf 'base\n' > "$repo/src/résumé.txt"

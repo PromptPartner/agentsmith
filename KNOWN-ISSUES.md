@@ -507,3 +507,12 @@ names, which Git neither quotes nor escapes, and receipts use plain names. Git n
 the names, so the scope escalation shows control characters in a name escaped. Regressions:
 scripts/test-autonomous-state.py and the non-ASCII and crafted-name cases in
 scripts/test-autonomous-run.sh.
+
+### RUN-CONTROLLER: two escalations printed crafted file names unescaped (fixed)
+
+The escalations for protected verification inputs and for ignored paths outside scope printed a
+file name as stored. A maker chooses those names, so a name holding a terminal control sequence
+reached the operator's terminal as is. A fixture run with such an ignored file reproduced it.
+Both messages now show control characters escaped, as the scope escalation does. Regressions:
+scripts/test-autonomous-state.py and the crafted ignored-name case in
+scripts/test-autonomous-run.sh.

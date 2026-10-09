@@ -812,7 +812,7 @@ def validate_verification_changes(worktree: Path, base: str, head: str,
             protected.append(path)
     if protected:
         raise RunError("maker changed protected verification inputs; separate operator review required: "
-                       + ", ".join(protected))
+                       + shown_paths(protected))
 
 
 def verification_binding(state: dict[str, Any], manifest: dict[str, Any], head: str) -> dict[str, Any]:
@@ -1626,7 +1626,7 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
         ignored_added = sorted(ignored_paths(worktree) - before_ignored)
         ignored_bad = [path for path in ignored_added if not path_allowed(path, manifest)]
         if ignored_bad:
-            raise RunError(f"maker created ignored paths outside scope: {', '.join(ignored_bad)}")
+            raise RunError(f"maker created ignored paths outside scope: {shown_paths(ignored_bad)}")
         if maker["commit"] != after_head or sorted(maker["changed_paths"]) != sorted(paths):
             raise RunError("maker receipt does not match the committed Git state")
         validate_verification_changes(worktree, state["base_head"], after_head, manifest)

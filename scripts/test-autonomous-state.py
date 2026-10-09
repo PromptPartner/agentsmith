@@ -394,6 +394,16 @@ class AutonomousStateTests(unittest.TestCase):
         shown = CONTROLLER.shown_paths(["clear\x1b[2J.txt", "two\nlines.txt", "priv\u00e9/notes.md"])
         self.assertEqual(shown, "clear\\x1b[2J.txt, two\\nlines.txt, priv\u00e9/notes.md")
 
+    def test_protected_input_rejection_escapes_control_characters_in_a_name(self) -> None:
+        # Git on Windows refuses to store such a name, so the two path lists are supplied here.
+        crafted = ".harness/clear\x1b[2J.conf"
+        with mock.patch.object(CONTROLLER, "git_paths", side_effect=[[], [crafted]]):
+            with self.assertRaises(CONTROLLER.RunError) as rejected:
+                CONTROLLER.validate_verification_changes(Path("."), "base", "head", {})
+        self.assertIn("protected verification inputs", str(rejected.exception))
+        self.assertIn(".harness/clear\\x1b[2J.conf", str(rejected.exception))
+        self.assertNotIn("\x1b", str(rejected.exception))
+
     def test_role_prompts_say_how_a_receipt_lists_a_moved_file(self) -> None:
         # Both roles must return the controller's own path list, so each must be told its rule.
         state = {"run_id": "fixture", "base_head": "0123abc"}
