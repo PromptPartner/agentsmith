@@ -970,6 +970,63 @@ class AutonomousStateTests(unittest.TestCase):
             events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
             self.assertEqual([event["event"] for event in events], ["run_interrupted"])
 
+    def stopped_controller_outcome(self, common: Path, *, write_json: Any = None,
+                                   git: Any = None) -> tuple[Any, dict[str, Any], list[str]]:
+        # `stop` ends the role first, so the controller usually learns of the stop from the
+        # role's exit. Its own signal arrives afterwards, at a point the caller chooses.
+        directory = common / "controller"
+        directory.mkdir()
+        state = {"run_id": "active", "state_path": str(directory / "state.json"),
+                 "worktree": str(common), "status": "making", "active_pid": 123}
+        with mock.patch.object(
+            CONTROLLER, "execute", side_effect=CONTROLLER.RunInterrupted("stopped by operator")
+        ), mock.patch.object(
+            CONTROLLER, "write_json", side_effect=write_json or CONTROLLER.write_json
+        ), mock.patch.object(CONTROLLER, "git", side_effect=git or (lambda *_args, **_kwargs: "a" * 40)):
+            try:
+                outcome: Any = CONTROLLER.run_controller(state, {})
+            except CONTROLLER.RunInterrupted as escaped:
+                outcome = escaped
+        durable = json.loads((directory / "state.json").read_text())
+        log = directory / "events.jsonl"
+        events = [json.loads(line)["event"] for line in log.read_text().splitlines()] if log.exists() else []
+        return outcome, durable, events
+
+    def test_stop_signal_inside_the_interruption_record_keeps_its_event(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith stop record ") as temporary:
+            write_state = CONTROLLER.write_json
+            signalled: list[bool] = []
+
+            def stop_during_record(path: Path, value: dict[str, Any]) -> None:
+                if value.get("status") == "interrupted" and not signalled:
+                    signalled.append(True)
+                    CONTROLLER.signal.raise_signal(CONTROLLER.signal.SIGTERM)
+                write_state(path, value)
+
+            outcome, durable, events = self.stopped_controller_outcome(
+                Path(temporary), write_json=stop_during_record)
+            self.assertEqual(signalled, [True])
+            self.assertEqual(events, ["run_interrupted"])
+            self.assertEqual(outcome, 130)
+            self.assertEqual(durable["status"], "interrupted")
+            self.assertIsNone(durable["active_pid"])
+
+    def test_stop_signal_during_terminal_cleanup_still_exits_as_interrupted(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith stop cleanup ") as temporary:
+            signalled: list[bool] = []
+
+            def stop_during_cleanup(*_args: Any, **_kwargs: Any) -> str:
+                signalled.append(True)
+                CONTROLLER.signal.raise_signal(CONTROLLER.signal.SIGTERM)
+                return "a" * 40
+
+            outcome, durable, events = self.stopped_controller_outcome(
+                Path(temporary), git=stop_during_cleanup)
+            self.assertEqual(signalled, [True])
+            self.assertEqual(outcome, 130)
+            self.assertEqual(events, ["run_interrupted"])
+            self.assertEqual(durable["terminal_head"], "a" * 40)
+
     def test_maker_metadata_keeps_only_previously_verified_peer_artifacts(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith peer snapshot ") as temporary:
             repo = Path(temporary)

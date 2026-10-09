@@ -595,6 +595,7 @@ import json, sys
 events = [json.loads(line) for line in open(sys.argv[1])]
 raise SystemExit(0 if sum(event['event'] == 'run_interrupted' for event in events) == 1 else 1)
 PY
+assert 'stopped controller ends without a traceback' bash -c "! grep -q '^Traceback' '$repo/../err'"
 deadline_before="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["deadline_epoch"])' "$repo/.git/agentsmith-runs/stopped/state.json")"
 printf 'dirty\n' > "$repo-stopped/dirty.tmp"
 if (cd "$repo" && invoke "$repo" accept resume stopped >../dirty-out 2>../dirty-err); then

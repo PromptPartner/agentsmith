@@ -1712,14 +1712,20 @@ def persist_interrupted(state: dict[str, Any]) -> None:
 
 def run_controller(state: dict[str, Any], manifest: dict[str, Any]) -> int:
     previous = signal.getsignal(signal.SIGTERM)
+    recording_stop = False
 
     def interrupted(_signum: int, _frame: Any) -> None:
+        # `stop` ends the role before it signals the controller, so this signal often arrives
+        # after the stop is already caught. Raising again there cuts its record short.
+        if recording_stop:
+            return
         raise RunInterrupted("stopped by operator")
 
     signal.signal(signal.SIGTERM, interrupted)
     try:
         return execute(state, manifest)
     except RunInterrupted:
+        recording_stop = True
         persist_interrupted(state)
         print(f"interrupted: {state['run_id']}; use resume when ready", file=sys.stderr)
         return 130
