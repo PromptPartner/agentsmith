@@ -516,3 +516,17 @@ reached the operator's terminal as is. A fixture run with such an ignored file r
 Both messages now show control characters escaped, as the scope escalation does. Regressions:
 scripts/test-autonomous-state.py and the crafted ignored-name case in
 scripts/test-autonomous-run.sh.
+
+### RUN-CONTROLLER: a second stop signal can cut short the interruption record (open)
+
+`stop` first terminates the active role's process tree and then signals the controller. When the
+controller has already started to record the interruption, its own signal arrives inside that
+write and the handler raises again. The run state then says `interrupted`, but no
+`run_interrupted` event is written, and the controller exits with a traceback and code 1 instead
+of 130. Reproduced on the unchanged controller at `b293c3a`: 1 of 30 repetitions of the stop case
+from scripts/test-autonomous-run.sh, with a traceback that ends in `persist_interrupted`,
+`save_state`, `write_json` and the signal handler. In the full gate it appears as a failed
+`controller records exactly one interruption transition`; one gate run of the path-reading fixes
+failed there and the rerun passed. Not fixed with those fixes: the handler stays armed while the
+interruption is recorded, and a correction must keep exactly one event without losing a stop
+that arrives earlier.
