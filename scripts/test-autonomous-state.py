@@ -1083,6 +1083,38 @@ class AutonomousStateTests(unittest.TestCase):
                 self.assertEqual(durable["status"], "accepted")
                 self.assertEqual(durable["terminal_head"], "a" * 40)
 
+    def test_stop_signal_after_the_controller_returns_keeps_the_exit_code(self) -> None:
+        # The process still releases its lifecycle lock after the controller returns, so a stop
+        # signal then must not end it by the default action.
+        child = (
+            "import importlib.util, signal, sys, tempfile\n"
+            "from pathlib import Path\n"
+            "from unittest import mock\n"
+            "spec = importlib.util.spec_from_file_location('controller', sys.argv[1])\n"
+            "c = importlib.util.module_from_spec(spec); spec.loader.exec_module(c)\n"
+            "def accept(state, _manifest):\n"
+            "    state['status'] = 'accepted'\n"
+            "    return 0\n"
+            "outcome = accept if sys.argv[2] == 'accepted' else c.RunInterrupted('stopped by operator')\n"
+            "with tempfile.TemporaryDirectory() as temporary:\n"
+            "    directory = Path(temporary) / 'controller'; directory.mkdir()\n"
+            "    state = {'run_id': 'active', 'state_path': str(directory / 'state.json'),\n"
+            "             'worktree': temporary, 'status': 'making', 'active_pid': None}\n"
+            "    with mock.patch.object(c, 'execute', side_effect=outcome), \\\n"
+            "            mock.patch.object(c, 'git', return_value='a' * 40):\n"
+            "        code = c.run_controller(state, {})\n"
+            "    signal.raise_signal(signal.SIGTERM)\n"
+            "    print('lock released', flush=True)\n"
+            "raise SystemExit(code)\n"
+        )
+        for result_name, expected in (("interrupted", 130), ("accepted", 0)):
+            with self.subTest(result=result_name):
+                result = subprocess.run(
+                    [CONTROLLER.sys.executable, "-c", child, str(CONTROLLER_PATH), result_name],
+                    capture_output=True, text=True, check=False, timeout=60)
+                self.assertEqual((result.returncode, result.stdout.strip()),
+                                 (expected, "lock released"), result.stderr)
+
     def test_stop_reports_a_run_that_already_finished(self) -> None:
         for status in ("accepted", "escalated"):
             with self.subTest(status=status), \

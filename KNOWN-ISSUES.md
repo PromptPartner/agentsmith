@@ -564,11 +564,14 @@ recorded `accepted` or `escalated` keeps it: the handler no longer raises once t
 so, and `stop` reports the finished result instead of promising a reconciliation. Regressions:
 the escalation, acceptance and finished-run stop cases in scripts/test-autonomous-state.py.
 
-### RUN-CONTROLLER: a stop signal after the controller returns still ends the process (open)
+### RUN-CONTROLLER: a stop signal after the controller returned ended the process (fixed)
 
-Found while fixing the interruption record, and not changed by that fix. After the controller
-function has returned, the default signal action applies again, so a stop signal that arrives
-before the process ends kills it. The exit status is the signal instead of 130, and the record
-itself is complete. Seen in 1 of 80 repetitions of the stop-during-checker case from
-scripts/test-autonomous-run.sh at `19afde4`, and in 0 of 380 with the fix. Read from the code
-and not run: the lifecycle lock is left behind, and the next resume replaces a dead owner's lock.
+After the controller function returned, it restored the default signal action, so a stop signal
+that arrived before the process ended killed it while it still released the lifecycle lock. The
+exit status was the signal instead of 130, and the lock stayed for the next resume to replace.
+The record itself was complete. Seen in 1 of 80 repetitions of the stop-during-checker case from
+scripts/test-autonomous-run.sh at `19afde4`. A run that has recorded its result now keeps the
+handler, which ignores a late stop, until the process ends. It is a Python handler, not an
+ignored signal, so processes started afterwards still receive `stop` normally. Regression: the
+after-return case in scripts/test-autonomous-state.py, which sends the signal from inside a real
+child process and expects its own exit code.
