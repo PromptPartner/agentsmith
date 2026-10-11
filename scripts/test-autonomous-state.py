@@ -1277,7 +1277,8 @@ class AutonomousStateTests(unittest.TestCase):
             else:
                 status = checker_status
                 if stop_during_checker:
-                    os.kill(os.getpid(), CONTROLLER.signal.SIGTERM)
+                    # Not os.kill: on Windows it ends this process instead of calling the handler.
+                    CONTROLLER.signal.raise_signal(CONTROLLER.signal.SIGTERM)
             return {"status": status, "summary": role, "commit": head["value"],
                     "changed_paths": ["a.txt"], "evidence": ["fake evidence"], "unresolved": [],
                     "next_state": ""}

@@ -630,3 +630,11 @@ Probes on the final change, macOS, with every wait capped at 120 seconds:
 
 Those counts alone cannot rule the hang out, because it was 1 in 80. The proof is the Git-call
 test and the handler that no longer raises.
+
+The first Windows run of these tests in CI (runs `38177003930` and `38177011951`) ended the test
+process inside the fake-role harness. The harness sent its stop with `os.kill` to its own
+process. On Windows, that terminates the process instead of calling the handler. This is the
+second `os.kill` that behaved differently on Windows; the first was the stale-PID probe in the
+lifecycle entry above. The harness now uses `signal.raise_signal`, as the other stop tests do.
+A local shim that gives `os.kill` the Windows behaviour reproduced the failure before the change
+and passed after it.
