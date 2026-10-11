@@ -164,9 +164,11 @@ The durable `stage` distinguishes making, candidate validation, verification, ch
 If a completed maker candidate was checkpointed, resume revalidates its exact commit, receipt,
 scope, protected inputs, and Git transition, reruns verification, and launches a fresh checker
 within the same attempt. It removes an abandoned checker worktree only after proving its generated
-path, repository, and candidate identity. An unfinished maker that advanced HEAD without a validated
-receipt requires operator review; a dirty worktree or a surviving role process group blocks recovery.
-Legacy checking states without a candidate checkpoint also require review.
+path, repository, and candidate identity. When a stop interrupted that removal after the checker
+folder was gone, resume also removes the checker's leftover entry under `.git/worktrees`, but only
+when the entry is unlocked and names the missing folder. An unfinished maker that advanced HEAD
+without a validated receipt requires operator review; a dirty worktree or a surviving role process
+group blocks recovery. Legacy checking states without a candidate checkpoint also require review.
 
 Raw stdout/stderr stream to durable files; launch and exit records retain process IDs and exit
 codes. Repeated verification/checker invocations archive their earlier artifacts under `archive/`.

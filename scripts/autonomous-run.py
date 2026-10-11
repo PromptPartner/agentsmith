@@ -1872,6 +1872,27 @@ def stop(args: argparse.Namespace) -> int:
     return 0
 
 
+def clear_abandoned_checker_entry(repo: Path, checker: Path) -> None:
+    """Finish a checker removal that was stopped after its folder was deleted.
+
+    `git worktree remove` deletes the folder before its entry under .git/worktrees. Remove only
+    that entry, by the rule `git worktree prune` applies: not locked, and its gitdir file is
+    missing or names the missing folder. An entry another worktree owns stays untouched.
+    """
+    entry = resolved_git_path(repo, '--git-common-dir') / 'worktrees' / checker.name
+    if entry.is_symlink() or not entry.is_dir() or (entry / 'locked').exists():
+        return
+    gitdir = entry / 'gitdir'
+    if gitdir.exists():
+        try:
+            target = Path(gitdir.read_text(encoding='utf-8').strip())
+        except (OSError, UnicodeError):
+            return
+        if target.resolve() != (checker / '.git').resolve():
+            return
+    shutil.rmtree(entry)
+
+
 def recover_checker_worktree(state: dict[str, Any], manifest: dict[str, Any]) -> None:
     if not state.get('checker_worktree'):
         return
@@ -1891,6 +1912,8 @@ def recover_checker_worktree(state: dict[str, Any], manifest: dict[str, Any]) ->
                 removed = run(['git', 'worktree', 'remove', '--force', str(expected)], repo)
                 if removed.returncode:
                     raise RunError('cannot clean up interrupted checker worktree')
+            else:
+                clear_abandoned_checker_entry(repo, expected)
             state.pop('checker_worktree', None)
         save_state(state, 'checker_worktree_recovered')
 

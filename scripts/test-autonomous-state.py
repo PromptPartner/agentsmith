@@ -1027,6 +1027,55 @@ class AutonomousStateTests(unittest.TestCase):
             self.assertEqual(events, ["run_interrupted"])
             self.assertEqual(durable["terminal_head"], "a" * 40)
 
+    def test_checker_recovery_clears_the_entry_a_stopped_removal_left(self) -> None:
+        # `git worktree remove` deletes the folder before the entry under .git/worktrees, so a
+        # stop between the two leaves the entry. Resume compares Git metadata with the snapshot
+        # taken before the maker, and the leftover entry escalated every resume.
+        for shape in ("complete entry", "entry without gitdir", "foreign entry"):
+            with self.subTest(shape=shape), \
+                    tempfile.TemporaryDirectory(prefix="agentsmith checker recovery ") as temporary:
+                root = Path(temporary).resolve()
+                repo = root / "repo"
+                subprocess.run(["git", "init", "-q", str(repo)], check=True)
+                subprocess.run(["git", "-C", str(repo), "-c", "user.name=Test", "-c",
+                                "user.email=test@example.com", "commit", "-q", "--allow-empty",
+                                "-m", "fixture"], check=True)
+                worktree = root / "run"
+                subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", "-b",
+                                "agentsmith/fixture", str(worktree)], check=True)
+                checker = worktree.with_name(f"{worktree.name}-check-1")
+                entry = repo / ".git" / "worktrees" / checker.name
+                if shape == "foreign entry":
+                    # Another worktree took the checker's entry name; it is not this run's.
+                    foreign = root / "elsewhere" / checker.name
+                    subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", "--detach",
+                                    str(foreign), "HEAD"], check=True)
+                    foreign_gitdir = (entry / "gitdir").read_text(encoding="utf-8")
+                before = CONTROLLER.git_metadata(worktree)
+                if shape != "foreign entry":
+                    subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", "--detach",
+                                    str(checker), "HEAD"], check=True)
+                    shutil.rmtree(checker)
+                    if shape == "entry without gitdir":
+                        (entry / "gitdir").unlink()
+                self.assertTrue(entry.is_dir())
+                run_dir = root / "state"
+                run_dir.mkdir()
+                state = {"repo": str(repo), "worktree": str(worktree), "attempt": 1,
+                         "checker_worktree": str(checker), "state_path": str(run_dir / "state.json")}
+                with mock.patch.object(CONTROLLER, "remaining_seconds", return_value=60):
+                    CONTROLLER.recover_checker_worktree(state, {})
+                self.assertNotIn("checker_worktree", state)
+                after = CONTROLLER.git_metadata(worktree, known_peers=before["registered_peers"])
+                self.assertEqual(after["protected_files"], before["protected_files"])
+                if shape == "foreign entry":
+                    self.assertEqual((entry / "gitdir").read_text(encoding="utf-8"), foreign_gitdir)
+                    continue
+                self.assertFalse(entry.exists())
+                # The next checker session adds the same path again.
+                subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", "--detach",
+                                str(checker), "HEAD"], check=True)
+
     def test_maker_metadata_keeps_only_previously_verified_peer_artifacts(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith peer snapshot ") as temporary:
             repo = Path(temporary)

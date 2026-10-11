@@ -537,20 +537,27 @@ stop-signal cases in scripts/test-autonomous-state.py, beside the existing check
 during execution still interrupts, and the traceback check in the stop case of
 scripts/test-autonomous-run.sh.
 
+### RUN-CONTROLLER: a stopped checker removal blocked every resume (fixed)
+
+`git worktree remove` deletes the checker folder before its entry under `.git/worktrees`. A stop
+between the two left the entry, and the state still named the checker. Resume compares Git
+metadata with the snapshot taken before the maker, so the leftover entry escalated it with
+`runtime changed protected Git metadata`, listing whichever entry files the removal had not
+reached yet. Seen in 1 of 80 repetitions of the stop-during-checker case at `19afde4`, and in one
+full gate run as a failed `checking stage recovery`. Resume now removes that entry when the folder
+is gone, by the rule `git worktree prune` uses: unlocked, and its `gitdir` file is missing or
+names the missing folder. An entry another worktree owns stays. A hard crash at the same point
+leaves the same state and is covered too. Regressions: the three shapes in
+scripts/test-autonomous-state.py, and the half-removed checker case in
+scripts/test-autonomous-run.sh, which ended with the same six-file escalation before the change.
+
 ### RUN-CONTROLLER: a stop signal can still disturb a run outside the interruption record (open)
 
 Found while fixing the interruption record, and not changed by that fix.
 
-Two cases were seen end to end, in repetitions of the stop-during-checker case from
+One case was seen end to end, in repetitions of the stop-during-checker case from
 scripts/test-autonomous-run.sh.
 
-- While the controller removes the disposable checker worktree. The stop signal still raises
-  inside the run, and the removal is left half done: the checker tree is gone, its entry under
-  `.git/worktrees` stays, and the state still names the checker worktree. Resume then escalates
-  with `runtime changed protected Git metadata`. Seen in 1 of 80 repetitions at `19afde4` and in
-  0 of 80 with the interruption fix. It also failed one full gate run made with that fix, in
-  three assertions of that case. Read from the code and not confirmed: the signal raises inside
-  the `git worktree remove` call, which ends the Git process.
 - After the controller function has returned. The default signal action applies again, so a stop
   signal that arrives before the process ends kills it. The exit status is the signal instead of
   130, and the record itself is complete. Seen in 1 of 80 repetitions at `19afde4` and in 0 of
