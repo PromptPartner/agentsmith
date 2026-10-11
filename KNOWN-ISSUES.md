@@ -438,10 +438,11 @@ been authorized, so the entries are kept here.
   reproduced the false status failure. The fixture now requires an observed active process
   within a bounded ten-second wait and prints state and child output on failure. The exact
   hosted failure lacked retained state and remains unattributed beyond this reproduced defect.
-- [ ] 2026-10-05 — A stop signal during the controller's terminal-head cleanup can raise
+- [x] 2026-10-05 — A stop signal during the controller's terminal-head cleanup could raise
   `RunInterrupted` outside its handler and print a traceback with exit 1 after interruption
-  is already persisted. Two of 25 retained stop probes reproduced this; durable state stayed
-  interrupted. Signal handling during terminal cleanup needs a separate regression and fix.
+  was already persisted. Two of 25 retained stop probes reproduced this; durable state stayed
+  interrupted. Fixed on 2026-10-09 with the interruption record; see "a second stop signal
+  could cut short the interruption record" below.
 - [x] 2026-10-05 — The installed autonomous controller decoded UTF-8 Git paths with the
   Windows locale. Preparing a manifest under a `ü` directory looked for a nonexistent `Ã¼`
   template path. A real Git repository with a simulated CP-1252 subprocess decoder reproduced
@@ -517,16 +518,55 @@ Both messages now show control characters escaped, as the scope escalation does.
 scripts/test-autonomous-state.py and the crafted ignored-name case in
 scripts/test-autonomous-run.sh.
 
-### RUN-CONTROLLER: a second stop signal can cut short the interruption record (open)
+### RUN-CONTROLLER: a second stop signal could cut short the interruption record (fixed)
 
-`stop` first terminates the active role's process tree and then signals the controller. When the
-controller has already started to record the interruption, its own signal arrives inside that
-write and the handler raises again. The run state then says `interrupted`, but no
-`run_interrupted` event is written, and the controller exits with a traceback and code 1 instead
-of 130. Reproduced on the unchanged controller at `b293c3a`: 1 of 30 repetitions of the stop case
-from scripts/test-autonomous-run.sh, with a traceback that ends in `persist_interrupted`,
-`save_state`, `write_json` and the signal handler. In the full gate it appears as a failed
-`controller records exactly one interruption transition`; one gate run of the path-reading fixes
-failed there and the rerun passed. Not fixed with those fixes: the handler stays armed while the
-interruption is recorded, and a correction must keep exactly one event without losing a stop
-that arrives earlier.
+`stop` first terminates the active role's process tree and then signals the controller. The
+controller usually learns of the stop from the role's exit, so its own signal often arrived after
+it had already caught the stop, and the handler raised a second time. Two places were reproduced.
+Inside the interruption write, the run state said `interrupted` but no `run_interrupted` event
+was written: 1 of 30 repetitions of the stop case from scripts/test-autonomous-run.sh at
+`b293c3a`, with a traceback that ends in `persist_interrupted`, `save_state`, `write_json` and the
+signal handler. In the full gate this appeared as a failed `controller records exactly one
+interruption transition`. In the terminal-head cleanup that follows, the record was complete but
+the controller exited with a traceback and code 1 instead of 130: 10 of 150 repetitions at
+`19afde4` on macOS. The handler now raises only until the controller has caught the stop. After
+that the signal changes nothing, so the record and the cleanup finish. A stop that arrives while
+the run still executes interrupts it as before. With the change, 300 of 300 repetitions of the
+same stop case ended with one event, exit code 130 and no traceback. Regressions: the two
+stop-signal cases in scripts/test-autonomous-state.py, beside the existing check that a signal
+during execution still interrupts, and the traceback check in the stop case of
+scripts/test-autonomous-run.sh.
+
+### RUN-CONTROLLER: a stop signal can still disturb a run outside the interruption record (open)
+
+Found while fixing the interruption record, and not changed by that fix.
+
+Two cases were seen end to end, in repetitions of the stop-during-checker case from
+scripts/test-autonomous-run.sh.
+
+- While the controller removes the disposable checker worktree. The stop signal still raises
+  inside the run, and the removal is left half done: the checker tree is gone, its entry under
+  `.git/worktrees` stays, and the state still names the checker worktree. Resume then escalates
+  with `runtime changed protected Git metadata`. Seen in 1 of 80 repetitions at `19afde4` and in
+  0 of 80 with the interruption fix. It also failed one full gate run made with that fix, in
+  three assertions of that case. Read from the code and not confirmed: the signal raises inside
+  the `git worktree remove` call, which ends the Git process.
+- After the controller function has returned. The default signal action applies again, so a stop
+  signal that arrives before the process ends kills it. The exit status is the signal instead of
+  130, and the record itself is complete. Seen in 1 of 80 repetitions at `19afde4` and in 0 of
+  380 with the fix. Read from the code and not run: the lifecycle lock is left behind, and the
+  next resume replaces a dead owner's lock.
+
+Two more were reproduced only with a controller-level fixture, at `19afde4` and with the fix:
+`execute` is stubbed to reach one outcome, and the signal is delivered at a chosen point.
+
+- Inside the escalation record. The handler raises out of the controller, which a command-line
+  run shows as a traceback and exit code 1 instead of 2. The state says `escalated` with its
+  reason, and no `run_escalated` event is written.
+- After the acceptance record. The signal raises inside `execute`, and the controller then
+  records an interruption over a run it has already recorded as accepted. The event log holds
+  `run_accepted` followed by `run_interrupted`, the state says `interrupted`, and the exit code
+  is 130. What a resume does next was read from the code and not run: it starts another attempt
+  on top of the accepted commit, or reaches the attempt cap.
+
+The last two need a rule for which outcome wins when a stop meets the run's own result.
