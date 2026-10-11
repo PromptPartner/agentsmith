@@ -914,6 +914,27 @@ root=pathlib.Path(sys.argv[1])
 assert any('0.125' in p.read_text() for p in (root/'archive').glob('*/attempt-1-checker.stdout'))
 PYTEST
 
+echo 'autonomous-run — checker removal stopped after its folder was deleted'
+repo="$(new_repo checker-half-removed)"; make_fake "$repo/../fake"; manifest "$repo" checker-half-removed
+(cd "$repo" && invoke "$repo" checker-slow start .harness/runs/checker-half-removed.json >../out 2>../err) & runner=$!
+for _ in {1..100}; do
+  if [ -f "$repo/../fake/child-pid" ]; then break; fi
+  sleep 0.05
+done
+assert 'checker was running before the removal stopped' test -f "$repo/../fake/child-pid"
+controller_pid="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["controller_pid"])' "$repo/.git/agentsmith-runs/checker-half-removed/state.json")"
+kill -KILL "$controller_pid"
+wait "$runner" 2>/dev/null || true
+(cd "$repo" && python3 "$repo/../fake/controller.py" stop checker-half-removed >../stop-out 2>../stop-err)
+# `git worktree remove` deletes the folder before the entry under .git/worktrees.
+checker_entry="$repo/.git/worktrees/$(basename "$repo")-checker-half-removed-check-1"
+rm -rf "$repo-checker-half-removed-check-1"
+assert 'stopped removal leaves the checker entry without its folder' test -d "$checker_entry"
+if (cd "$repo" && invoke "$repo" accept resume checker-half-removed >../resume-out 2>../resume-err); then
+  ok 'resume finishes a checker removal stopped after its folder was deleted'
+else bad 'resume escalated over a half-removed checker'; cat "$repo/../resume-err"; fi
+assert 'resume removes the leftover checker entry' test ! -e "$checker_entry"
+
 echo
 printf 'autonomous-run: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

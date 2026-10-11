@@ -151,9 +151,20 @@ a demonstrably dead
 controller and a stopped run do
 not block new work. `stop <id>` atomically writes a stop
 request, terminates the active process group and signals the controller, then waits up to five seconds for the controller
-to persist `interrupted`. It never writes `state.json` itself. If the controller has already died,
+to persist `interrupted`. The controller's signal handler only records the stop and ends the
+active process group; it never raises, because an exception from a signal handler can land
+inside library code. The controller acts on the stop at its next safe point:
+- while a role or verifier runs, checked every half second; a process that ignores the signal
+  is then killed;
+- a saved stage checkpoint;
+- the moment before the acceptance or attempt-cap record;
+- a wait for a Git phase or the coordination lock.
+
+It never acts inside a Git call or a lock release.
+`stop` never writes `state.json` itself. If the controller has already died,
 the request remains in place and `resume` reconciles the interruption after acquiring the stale
-lock.
+lock. A run that has already recorded `accepted` or `escalated` keeps that result: a stop that
+arrives later changes nothing, and `stop` reports the finished result instead.
 
 `resume <id>` works only when the committed manifest, accepted spec, base commit, recorded branch,
 and worktree still match and the worktree is clean. A changed contract requires a new run ID rather
@@ -164,9 +175,11 @@ The durable `stage` distinguishes making, candidate validation, verification, ch
 If a completed maker candidate was checkpointed, resume revalidates its exact commit, receipt,
 scope, protected inputs, and Git transition, reruns verification, and launches a fresh checker
 within the same attempt. It removes an abandoned checker worktree only after proving its generated
-path, repository, and candidate identity. An unfinished maker that advanced HEAD without a validated
-receipt requires operator review; a dirty worktree or a surviving role process group blocks recovery.
-Legacy checking states without a candidate checkpoint also require review.
+path, repository, and candidate identity. When a stop interrupted that removal after the checker
+folder was gone, resume also removes the checker's leftover entry under `.git/worktrees`, but only
+when the entry is unlocked and names the missing folder. An unfinished maker that advanced HEAD
+without a validated receipt requires operator review; a dirty worktree or a surviving role process
+group blocks recovery. Legacy checking states without a candidate checkpoint also require review.
 
 Raw stdout/stderr stream to durable files; launch and exit records retain process IDs and exit
 codes. Repeated verification/checker invocations archive their earlier artifacts under `archive/`.

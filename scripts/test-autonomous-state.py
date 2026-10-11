@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import contextlib
 import errno
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -942,6 +944,8 @@ class AutonomousStateTests(unittest.TestCase):
                                  (set(), set(), set()))
 
     def test_controller_persists_sigterm_during_peer_inspection(self) -> None:
+        # The stop no longer cuts the peer read short. The read finishes and the controller
+        # records the interruption at its next checkpoint, so nothing can swallow the stop.
         with tempfile.TemporaryDirectory(prefix="agentsmith peer signal ") as temporary:
             common = Path(temporary)
             peer = common / "agentsmith-runs" / "peer" / "state.json"
@@ -950,10 +954,11 @@ class AutonomousStateTests(unittest.TestCase):
             directory = common / "controller"
             directory.mkdir()
             state = {"run_id": "active", "state_path": str(directory / "state.json"),
-                     "worktree": str(common), "status": "making", "active_pid": 123}
+                     "worktree": str(common), "status": "making", "attempt": 1, "active_pid": None}
 
-            def inspect_peer(_state: dict[str, Any], _manifest: dict[str, Any]) -> int:
+            def inspect_peer(state: dict[str, Any], _manifest: dict[str, Any]) -> int:
                 CONTROLLER.registered_run_git_artifacts(common, "refs/heads/active")
+                CONTROLLER.checkpoint_stage(state, "validating")
                 return 0
 
             def stop_during_read(_path: Path) -> dict[str, Any]:
@@ -966,12 +971,13 @@ class AutonomousStateTests(unittest.TestCase):
                 self.assertEqual(CONTROLLER.run_controller(state, {}), 130)
             durable = json.loads((directory / "state.json").read_text())
             self.assertEqual(durable["status"], "interrupted")
+            self.assertEqual(durable["stage"], "validating")
             self.assertIsNone(durable["active_pid"])
             events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
-            self.assertEqual([event["event"] for event in events], ["run_interrupted"])
+            self.assertEqual([event["event"] for event in events], ["stage_started", "run_interrupted"])
 
-    def stopped_controller_outcome(self, common: Path, *, write_json: Any = None,
-                                   git: Any = None) -> tuple[Any, dict[str, Any], list[str]]:
+    def stopped_controller_outcome(self, common: Path, *, write_json: Any = None, git: Any = None,
+                                   execute: Any = None) -> tuple[Any, dict[str, Any], list[str]]:
         # `stop` ends the role first, so the controller usually learns of the stop from the
         # role's exit. Its own signal arrives afterwards, at a point the caller chooses.
         directory = common / "controller"
@@ -979,7 +985,7 @@ class AutonomousStateTests(unittest.TestCase):
         state = {"run_id": "active", "state_path": str(directory / "state.json"),
                  "worktree": str(common), "status": "making", "active_pid": 123}
         with mock.patch.object(
-            CONTROLLER, "execute", side_effect=CONTROLLER.RunInterrupted("stopped by operator")
+            CONTROLLER, "execute", side_effect=execute or CONTROLLER.RunInterrupted("stopped by operator")
         ), mock.patch.object(
             CONTROLLER, "write_json", side_effect=write_json or CONTROLLER.write_json
         ), mock.patch.object(CONTROLLER, "git", side_effect=git or (lambda *_args, **_kwargs: "a" * 40)):
@@ -1026,6 +1032,381 @@ class AutonomousStateTests(unittest.TestCase):
             self.assertEqual(outcome, 130)
             self.assertEqual(events, ["run_interrupted"])
             self.assertEqual(durable["terminal_head"], "a" * 40)
+
+    def test_stop_signal_inside_the_escalation_record_keeps_the_escalation(self) -> None:
+        # Once the run has decided its own result, a late stop changes nothing.
+        with tempfile.TemporaryDirectory(prefix="agentsmith stop escalation ") as temporary:
+            write_state = CONTROLLER.write_json
+            signalled: list[bool] = []
+
+            def scope_error(_state: dict[str, Any], _manifest: dict[str, Any]) -> int:
+                raise CONTROLLER.RunError("maker changed paths outside scope: forbidden.txt")
+
+            def stop_during_record(path: Path, value: dict[str, Any]) -> None:
+                if value.get("status") == "escalated" and not signalled:
+                    signalled.append(True)
+                    CONTROLLER.signal.raise_signal(CONTROLLER.signal.SIGTERM)
+                write_state(path, value)
+
+            outcome, durable, events = self.stopped_controller_outcome(
+                Path(temporary), execute=scope_error, write_json=stop_during_record)
+            self.assertEqual(signalled, [True])
+            self.assertEqual(outcome, 2)
+            self.assertEqual(events, ["run_escalated"])
+            self.assertEqual(durable["status"], "escalated")
+
+    def test_stop_signal_after_the_acceptance_record_keeps_the_acceptance(self) -> None:
+        for point in ("while reporting", "during terminal cleanup"):
+            with self.subTest(point=point), \
+                    tempfile.TemporaryDirectory(prefix="agentsmith stop acceptance ") as temporary:
+                signalled: list[bool] = []
+
+                def stop_now() -> None:
+                    signalled.append(True)
+                    CONTROLLER.signal.raise_signal(CONTROLLER.signal.SIGTERM)
+
+                def accept(state: dict[str, Any], _manifest: dict[str, Any]) -> int:
+                    # The end of execute(): decide, record, report.
+                    state["status"] = "accepted"
+                    state["stage"] = "accepted"
+                    state["accepted_commit"] = "b" * 40
+                    CONTROLLER.save_state(state, "run_accepted", commit="b" * 40)
+                    if point == "while reporting":
+                        stop_now()
+                    return 0
+
+                def stop_during_cleanup(*_args: Any, **_kwargs: Any) -> str:
+                    stop_now()
+                    return "a" * 40
+
+                outcome, durable, events = self.stopped_controller_outcome(
+                    Path(temporary), execute=accept,
+                    git=stop_during_cleanup if point == "during terminal cleanup" else None)
+                self.assertEqual(signalled, [True])
+                self.assertEqual(outcome, 0)
+                self.assertEqual(events, ["run_accepted"])
+                self.assertEqual(durable["status"], "accepted")
+                self.assertEqual(durable["terminal_head"], "a" * 40)
+
+    def test_stop_signal_after_the_controller_returns_keeps_the_exit_code(self) -> None:
+        # The process still releases its lifecycle lock after the controller returns, so a stop
+        # signal then must not end it by the default action.
+        child = (
+            "import importlib.util, signal, sys, tempfile\n"
+            "from pathlib import Path\n"
+            "from unittest import mock\n"
+            "spec = importlib.util.spec_from_file_location('controller', sys.argv[1])\n"
+            "c = importlib.util.module_from_spec(spec); spec.loader.exec_module(c)\n"
+            "def accept(state, _manifest):\n"
+            "    state['status'] = 'accepted'\n"
+            "    return 0\n"
+            "outcome = accept if sys.argv[2] == 'accepted' else c.RunInterrupted('stopped by operator')\n"
+            "with tempfile.TemporaryDirectory() as temporary:\n"
+            "    directory = Path(temporary) / 'controller'; directory.mkdir()\n"
+            "    state = {'run_id': 'active', 'state_path': str(directory / 'state.json'),\n"
+            "             'worktree': temporary, 'status': 'making', 'active_pid': None}\n"
+            "    with mock.patch.object(c, 'execute', side_effect=outcome), \\\n"
+            "            mock.patch.object(c, 'git', return_value='a' * 40):\n"
+            "        code = c.run_controller(state, {})\n"
+            "    signal.raise_signal(signal.SIGTERM)\n"
+            "    print('lock released', flush=True)\n"
+            "raise SystemExit(code)\n"
+        )
+        for result_name, expected in (("interrupted", 130), ("accepted", 0)):
+            with self.subTest(result=result_name):
+                result = subprocess.run(
+                    [CONTROLLER.sys.executable, "-c", child, str(CONTROLLER_PATH), result_name],
+                    capture_output=True, text=True, check=False, timeout=60)
+                self.assertEqual((result.returncode, result.stdout.strip()),
+                                 (expected, "lock released"), result.stderr)
+
+    def test_stop_signal_during_a_git_call_lets_the_call_finish(self) -> None:
+        # A handler that raises can land inside `subprocess` itself. One stop landed after
+        # `subprocess` had taken its private wait lock during `git worktree remove`; the lock was
+        # never released and the controller waited for five hours. The call must finish, and
+        # the stop is recorded at the next safe point.
+        if os.name == "nt":
+            self.skipTest("Windows ends the controller on SIGTERM without calling a handler")
+        child = (
+            "import importlib.util, json, sys, tempfile\n"
+            "from pathlib import Path\n"
+            "from unittest import mock\n"
+            "spec = importlib.util.spec_from_file_location('controller', sys.argv[1])\n"
+            "c = importlib.util.module_from_spec(spec); spec.loader.exec_module(c)\n"
+            "signaller = 'import os, signal, time; os.kill(os.getppid(), signal.SIGTERM); time.sleep(0.5)'\n"
+            "def work(state, _manifest):\n"
+            "    result = c.run([sys.executable, '-c', signaller], Path(state['worktree']))\n"
+            "    print('call finished', result.returncode, flush=True)\n"
+            "    c.checkpoint_stage(state, 'verifying')\n"
+            "    print('stop not noticed', flush=True)\n"
+            "    return 0\n"
+            "with tempfile.TemporaryDirectory() as temporary:\n"
+            "    directory = Path(temporary) / 'controller'; directory.mkdir()\n"
+            "    state = {'run_id': 'active', 'state_path': str(directory / 'state.json'),\n"
+            "             'worktree': temporary, 'status': 'checking', 'attempt': 1, 'active_pid': None}\n"
+            "    with mock.patch.object(c, 'execute', side_effect=work), \\\n"
+            "            mock.patch.object(c, 'git', return_value='a' * 40):\n"
+            "        code = c.run_controller(state, {})\n"
+            "    durable = json.loads((directory / 'state.json').read_text())\n"
+            "    log = (directory / 'events.jsonl').read_text().splitlines()\n"
+            "    events = ' '.join(json.loads(line)['event'] for line in log)\n"
+            "    print('outcome', code, durable['status'], durable.get('stage'), events, flush=True)\n"
+        )
+        result = subprocess.run([CONTROLLER.sys.executable, "-c", child, str(CONTROLLER_PATH)],
+                                capture_output=True, text=True, check=False, timeout=60)
+        self.assertEqual(result.stdout.splitlines(),
+                         ["call finished 0",
+                          "outcome 130 interrupted verifying stage_started run_interrupted"],
+                         result.stderr)
+
+    def test_stop_ends_a_wait_for_a_git_phase_but_not_its_release(self) -> None:
+        # The handler no longer raises, so a wait to acquire must notice the stop itself. A
+        # release must not: raising there would leave the lease for other runs to wait on.
+        with tempfile.TemporaryDirectory(prefix="agentsmith phase stop ") as temporary:
+            repo = Path(temporary)
+            root = repo / "run-state"
+            phase_dir = root / "git-phases"
+            try:
+                with mock.patch.object(CONTROLLER, "state_root", return_value=root):
+                    with CONTROLLER.git_phase(repo, "writer", timeout_seconds=2):
+                        stop = threading.Timer(0.2, setattr, (CONTROLLER, "_stop_signal_received", True))
+                        started = time.monotonic()
+                        stop.start()
+                        with self.assertRaises(CONTROLLER.RunInterrupted):
+                            with CONTROLLER.git_phase(repo, "checker", timeout_seconds=30):
+                                pass
+                        self.assertLess(time.monotonic() - started, 5)
+                        # A peer holds the coordination lock while this phase is released.
+                        CONTROLLER.coordination_lock_path(root).write_text(
+                            json.dumps({"pid": os.getpid(), "run_id": "coordination", "token": "peer"}),
+                            encoding="utf-8")
+                        free = threading.Timer(0.3, CONTROLLER.coordination_lock_path(root).unlink)
+                        free.start()
+                    free.join()
+                    self.assertEqual(list(phase_dir.glob("*.json")), [])
+            finally:
+                CONTROLLER._stop_signal_received = False
+
+    def test_stop_signal_ends_a_process_that_stop_could_not_see(self) -> None:
+        # `stop` ends the process it finds in state.json. One started just after that read is
+        # ended by the controller: its handler signals the pid it knows in memory, and the wait
+        # notices the stop even when the process ignores that signal.
+        if os.name == "nt":
+            self.skipTest("POSIX process groups")
+        children = {
+            "accepts SIGTERM": "import time; time.sleep(30)",
+            "ignores SIGTERM": "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)",
+        }
+        for name, child in children.items():
+            with self.subTest(child=name), \
+                    tempfile.TemporaryDirectory(prefix="agentsmith stop unseen ") as temporary:
+                directory = Path(temporary) / "controller"
+                directory.mkdir()
+                state = {"run_id": "active", "state_path": str(directory / "state.json"),
+                         "worktree": temporary, "status": "checking", "attempt": 1, "active_pid": None}
+
+                def verify(state: dict[str, Any], _manifest: dict[str, Any]) -> int:
+                    signal_later = threading.Timer(
+                        0.5, os.kill, (os.getpid(), CONTROLLER.signal.SIGTERM))
+                    signal_later.start()
+                    try:
+                        CONTROLLER.verifier_process([CONTROLLER.sys.executable, "-c", child],
+                                                    Path(temporary), 60, dict(os.environ), state)
+                    finally:
+                        signal_later.cancel()
+                    return 0
+
+                started = time.monotonic()
+                with mock.patch.object(CONTROLLER, "execute", side_effect=verify), \
+                        mock.patch.object(CONTROLLER, "git", return_value="a" * 40):
+                    self.assertEqual(CONTROLLER.run_controller(state, {}), 130)
+                self.assertLess(time.monotonic() - started, 15)
+                exit_record = json.loads((directory / "attempt-1-verify-exit.json").read_text())
+                self.assertNotEqual(exit_record["exit_code"], 0)
+                durable = json.loads((directory / "state.json").read_text())
+                self.assertEqual((durable["status"], durable["active_pid"]), ("interrupted", None))
+
+    def test_terminating_a_group_that_holds_only_a_zombie_is_not_an_error(self) -> None:
+        # The stop handler can end a role before the controller's own cleanup runs, so the
+        # cleanup can meet a group whose only member has exited but is not reaped yet.
+        if os.name == "nt":
+            self.skipTest("POSIX process groups")
+        process = subprocess.Popen([CONTROLLER.sys.executable, "-c", "pass"], start_new_session=True)
+        try:
+            for _ in range(500):
+                if not CONTROLLER.process_group_is_live(process.pid):
+                    break
+                time.sleep(0.01)
+            CONTROLLER.terminate_process_tree(process.pid)
+        finally:
+            process.wait(timeout=10)
+
+    def run_with_fake_roles(self, common: Path, *, max_attempts: int, checker_status: str,
+                            stop_during_checker: bool = False,
+                            stop_maker_phase_wait_on_attempt: int = 0) -> tuple[int, dict[str, Any], list[str]]:
+        """Drive the real attempt loop with Git and the roles replaced by fakes, so a stop can be
+        delivered at an exact point of it."""
+        directory = common / "controller"
+        directory.mkdir()
+        worktree = common / "worktree"
+        worktree.mkdir()
+        head = {"value": "a" * 40}
+        state = {"run_id": "active", "state_path": str(directory / "state.json"),
+                 "worktree": str(worktree), "repo": str(common), "branch": "agentsmith/active",
+                 "base_head": "a" * 40, "status": "prepared", "attempt": 0, "active_pid": None,
+                 "deadline_epoch": time.time() + 600}
+        manifest = {"limits": {"max_attempts": max_attempts}, "verify": {"command": "true"},
+                    "spec_path": "docs/specs/task.md", "implementation_ticket": "TASK-1",
+                    "scope": {"allowed_paths": ["a.txt"], "denied_paths": []},
+                    "roles": {"maker": {"runtime": "claude"}, "checker": {"runtime": "claude"}}}
+
+        def fake_git(_repo: Path, *args: str, check: bool = True) -> str:
+            return head["value"] if args == ("rev-parse", "HEAD") else ""
+
+        @contextlib.contextmanager
+        def fake_phase(_repo: Path, phase: str, **_kwargs: Any):
+            if phase == "maker" and state["attempt"] == stop_maker_phase_wait_on_attempt:
+                raise CONTROLLER.RunInterrupted("stopped by operator")  # the stop ends the wait
+            yield
+
+        def fake_role(state: dict[str, Any], _manifest: dict[str, Any], role: str, _prompt: str,
+                      **_kwargs: Any) -> dict[str, Any]:
+            status = "completed"
+            if role == "maker":
+                head["value"] = str(state["attempt"]) * 40
+            else:
+                status = checker_status
+                if stop_during_checker:
+                    # Not os.kill: on Windows it ends this process instead of calling the handler.
+                    CONTROLLER.signal.raise_signal(CONTROLLER.signal.SIGTERM)
+            return {"status": status, "summary": role, "commit": head["value"],
+                    "changed_paths": ["a.txt"], "evidence": ["fake evidence"], "unresolved": [],
+                    "next_state": ""}
+
+        @contextlib.contextmanager
+        def fake_checker_worktree(*args: Any):
+            yield args[-1]
+
+        verified = subprocess.CompletedProcess([], 0, "", "")
+        with contextlib.ExitStack() as fakes:
+            for name, value in {
+                "git": fake_git, "git_phase": fake_phase, "launch_role": fake_role,
+                "checker_worktree_session": fake_checker_worktree,
+                "coordination_lock": lambda *_args, **_kwargs: contextlib.nullcontext(),
+                "git_metadata": lambda *_args, **_kwargs: {"registered_peers": {}},
+                "validate_git_transition": lambda *_args: None,
+                "validate_git_unchanged": lambda *_args: None,
+                "validate_verification_changes": lambda *_args, **_kwargs: None,
+                "verification_binding": lambda *_args: {},
+                "ignored_paths": lambda *_args: set(), "clean": lambda *_args: True,
+                "changed_paths": lambda *_args: ["a.txt"], "path_allowed": lambda *_args: True,
+                "sandboxed_verify": lambda *_args, **_kwargs: verified,
+                "file_digest": lambda *_args: "0" * 64,
+            }.items():
+                fakes.enter_context(mock.patch.object(CONTROLLER, name, side_effect=value))
+            outcome = CONTROLLER.run_controller(state, manifest)
+        durable = json.loads((directory / "state.json").read_text())
+        events = [json.loads(line)["event"] for line in (directory / "events.jsonl").read_text().splitlines()]
+        return outcome, durable, events
+
+    def test_fake_roles_reach_acceptance_without_a_stop(self) -> None:
+        # Control for the cases below: the fakes alone lead to an accepted run.
+        with tempfile.TemporaryDirectory(prefix="agentsmith fake roles ") as temporary:
+            outcome, durable, events = self.run_with_fake_roles(
+                Path(temporary), max_attempts=1, checker_status="accepted")
+            self.assertEqual((outcome, durable["status"], events[-1]), (0, "accepted", "run_accepted"))
+
+    def test_stop_before_the_acceptance_record_interrupts_the_run(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith stop before acceptance ") as temporary:
+            outcome, durable, events = self.run_with_fake_roles(
+                Path(temporary), max_attempts=1, checker_status="accepted", stop_during_checker=True)
+            self.assertEqual((outcome, durable["status"]), (130, "interrupted"))
+            self.assertNotIn("run_accepted", events)
+
+    def test_stop_before_the_attempt_cap_record_interrupts_the_run(self) -> None:
+        # The checker rejects the last attempt while a stop is pending: the stop wins over the
+        # attempt-cap escalation, as it does over acceptance.
+        with tempfile.TemporaryDirectory(prefix="agentsmith stop before cap ") as temporary:
+            outcome, durable, events = self.run_with_fake_roles(
+                Path(temporary), max_attempts=1, checker_status="rejected", stop_during_checker=True)
+            self.assertEqual((outcome, durable["status"]), (130, "interrupted"))
+            self.assertNotIn("run_escalated", events)
+
+    def test_stop_while_an_attempt_waits_for_its_git_phase_keeps_the_run_resumable(self) -> None:
+        # Attempt 1 moves HEAD and is rejected; the stop ends attempt 2's wait for the maker
+        # phase. Resume rejects a `making` checkpoint whose start differs from HEAD, so the
+        # checkpoint must already carry this attempt's start.
+        with tempfile.TemporaryDirectory(prefix="agentsmith stop phase wait ") as temporary:
+            outcome, durable, _events = self.run_with_fake_roles(
+                Path(temporary), max_attempts=2, checker_status="rejected",
+                stop_maker_phase_wait_on_attempt=2)
+            self.assertEqual((outcome, durable["status"], durable["stage"], durable["attempt"]),
+                             (130, "interrupted", "making", 2))
+            self.assertEqual(durable["maker_before_head"], "1" * 40)
+
+    def test_stop_reports_a_run_that_already_finished(self) -> None:
+        for status in ("accepted", "escalated"):
+            with self.subTest(status=status), \
+                    tempfile.TemporaryDirectory(prefix="agentsmith stop finished ") as temporary:
+                run_dir = Path(temporary)
+                state = {"run_id": "done", "state_path": str(run_dir / "state.json"),
+                         "status": status, "active_pid": None}
+                with mock.patch.object(CONTROLLER, "repo_root", return_value=run_dir), \
+                        mock.patch.object(CONTROLLER, "load_run", return_value=state), \
+                        mock.patch.object(CONTROLLER, "read_lock", return_value=None), \
+                        mock.patch("sys.stdout", new_callable=io.StringIO) as output:
+                    self.assertEqual(CONTROLLER.stop(mock.Mock(run_id="done")), 0)
+                self.assertIn(f"done already finished as {status}; the stop changed nothing",
+                              output.getvalue())
+
+    def test_checker_recovery_clears_the_entry_a_stopped_removal_left(self) -> None:
+        # `git worktree remove` deletes the folder before the entry under .git/worktrees, so a
+        # stop between the two leaves the entry. Resume compares Git metadata with the snapshot
+        # taken before the maker, and the leftover entry escalated every resume.
+        for shape in ("complete entry", "entry without gitdir", "foreign entry"):
+            with self.subTest(shape=shape), \
+                    tempfile.TemporaryDirectory(prefix="agentsmith checker recovery ") as temporary:
+                root = Path(temporary).resolve()
+                repo = root / "repo"
+                subprocess.run(["git", "init", "-q", str(repo)], check=True)
+                subprocess.run(["git", "-C", str(repo), "-c", "user.name=Test", "-c",
+                                "user.email=test@example.com", "commit", "-q", "--allow-empty",
+                                "-m", "fixture"], check=True)
+                worktree = root / "run"
+                subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", "-b",
+                                "agentsmith/fixture", str(worktree)], check=True)
+                checker = worktree.with_name(f"{worktree.name}-check-1")
+                entry = repo / ".git" / "worktrees" / checker.name
+                if shape == "foreign entry":
+                    # Another worktree took the checker's entry name; it is not this run's.
+                    foreign = root / "elsewhere" / checker.name
+                    subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", "--detach",
+                                    str(foreign), "HEAD"], check=True)
+                    foreign_gitdir = (entry / "gitdir").read_text(encoding="utf-8")
+                before = CONTROLLER.git_metadata(worktree)
+                if shape != "foreign entry":
+                    subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", "--detach",
+                                    str(checker), "HEAD"], check=True)
+                    shutil.rmtree(checker)
+                    if shape == "entry without gitdir":
+                        (entry / "gitdir").unlink()
+                self.assertTrue(entry.is_dir())
+                run_dir = root / "state"
+                run_dir.mkdir()
+                state = {"repo": str(repo), "worktree": str(worktree), "attempt": 1,
+                         "checker_worktree": str(checker), "state_path": str(run_dir / "state.json")}
+                with mock.patch.object(CONTROLLER, "remaining_seconds", return_value=60):
+                    CONTROLLER.recover_checker_worktree(state, {})
+                self.assertNotIn("checker_worktree", state)
+                after = CONTROLLER.git_metadata(worktree, known_peers=before["registered_peers"])
+                self.assertEqual(after["protected_files"], before["protected_files"])
+                if shape == "foreign entry":
+                    self.assertEqual((entry / "gitdir").read_text(encoding="utf-8"), foreign_gitdir)
+                    continue
+                self.assertFalse(entry.exists())
+                # The next checker session adds the same path again.
+                subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", "--detach",
+                                str(checker), "HEAD"], check=True)
 
     def test_maker_metadata_keeps_only_previously_verified_peer_artifacts(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith peer snapshot ") as temporary:

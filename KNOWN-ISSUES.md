@@ -468,6 +468,8 @@ No callable Orca native-session interface is available in this implementation se
 
 One full verify run stalled after `stopped primary run is durably interrupted` in scripts/test-autonomous-run.sh. Its disposable `legacy` controller remained in `making` with `active_pid: null` and an exited/defunct child while the fixture waited for its runner. The preceding disclosure full suite passed the same unchanged controller. The stalled test tree was terminated; that run is not passing evidence. Controller/NQ-03 fixes remain separate; rerun the full suite and investigate if recurrence persists.
 
+Probable cause, not confirmed (2026-10-11): the same signature as "a stop signal inside a Git call could hang the controller" below. A stop signal that lands inside `subprocess` can leave its wait lock taken, so the exited child is never reaped and the controller waits forever. That fix removes the mechanism. This entry stays open until repeated full gates show no stall.
+
 ### LOCAL-CAPABILITIES: ambiguous memory metadata and truncated references (fixed before release)
 
 Review reproduced duplicate JSON status keys and a boolean metadata version bypassing archive exclusion. Metadata now requires integer version 1 and rejects duplicate keys. Long startup paths are displayed in full or omitted with a diagnostic; bounded warnings retain drift/incompleteness information. Regressions live in scripts/test-project-memory.py.
@@ -537,36 +539,102 @@ stop-signal cases in scripts/test-autonomous-state.py, beside the existing check
 during execution still interrupts, and the traceback check in the stop case of
 scripts/test-autonomous-run.sh.
 
-### RUN-CONTROLLER: a stop signal can still disturb a run outside the interruption record (open)
+### RUN-CONTROLLER: a stopped checker removal blocked every resume (fixed)
 
-Found while fixing the interruption record, and not changed by that fix.
+`git worktree remove` deletes the checker folder before its entry under `.git/worktrees`. A stop
+between the two left the entry, and the state still named the checker. Resume compares Git
+metadata with the snapshot taken before the maker, so the leftover entry escalated it with
+`runtime changed protected Git metadata`, listing whichever entry files the removal had not
+reached yet. Seen in 1 of 80 repetitions of the stop-during-checker case at `19afde4`, and in one
+full gate run as a failed `checking stage recovery`. Resume now removes that entry when the folder
+is gone, by the rule `git worktree prune` uses: unlocked, and its `gitdir` file is missing or
+names the missing folder. An entry another worktree owns stays. A hard crash at the same point
+leaves the same state and is covered too. Regressions: the three shapes in
+scripts/test-autonomous-state.py, and the half-removed checker case in
+scripts/test-autonomous-run.sh, which ended with the same six-file escalation before the change.
 
-Two cases were seen end to end, in repetitions of the stop-during-checker case from
-scripts/test-autonomous-run.sh.
+### RUN-CONTROLLER: a late stop could overturn a run's own result (fixed)
 
-- While the controller removes the disposable checker worktree. The stop signal still raises
-  inside the run, and the removal is left half done: the checker tree is gone, its entry under
-  `.git/worktrees` stays, and the state still names the checker worktree. Resume then escalates
-  with `runtime changed protected Git metadata`. Seen in 1 of 80 repetitions at `19afde4` and in
-  0 of 80 with the interruption fix. It also failed one full gate run made with that fix, in
-  three assertions of that case. Read from the code and not confirmed: the signal raises inside
-  the `git worktree remove` call, which ends the Git process.
-- After the controller function has returned. The default signal action applies again, so a stop
-  signal that arrives before the process ends kills it. The exit status is the signal instead of
-  130, and the record itself is complete. Seen in 1 of 80 repetitions at `19afde4` and in 0 of
-  380 with the fix. Read from the code and not run: the lifecycle lock is left behind, and the
-  next resume replaces a dead owner's lock.
+Reproduced with a controller-level fixture: `execute` is stubbed to reach one outcome, and the
+stop signal is delivered at a chosen point. Inside the escalation record, the handler raised out
+of the controller: a traceback and exit code 1 instead of 2, and no `run_escalated` event. After
+the acceptance record, the controller recorded an interruption over the accepted run: the log
+held `run_accepted` then `run_interrupted`, the exit code was 130, and resume, which refuses
+accepted runs, would have started another attempt on top of the accepted commit. The terminal
+cleanup of an accepted or escalated run raised the same way. The rule is now that a run that has
+recorded `accepted` or `escalated` keeps it: the handler no longer raises once the status says
+so, and `stop` reports the finished result instead of promising a reconciliation. Regressions:
+the escalation, acceptance and finished-run stop cases in scripts/test-autonomous-state.py.
 
-Two more were reproduced only with a controller-level fixture, at `19afde4` and with the fix:
-`execute` is stubbed to reach one outcome, and the signal is delivered at a chosen point.
+### RUN-CONTROLLER: a stop signal after the controller returned ended the process (fixed)
 
-- Inside the escalation record. The handler raises out of the controller, which a command-line
-  run shows as a traceback and exit code 1 instead of 2. The state says `escalated` with its
-  reason, and no `run_escalated` event is written.
-- After the acceptance record. The signal raises inside `execute`, and the controller then
-  records an interruption over a run it has already recorded as accepted. The event log holds
-  `run_accepted` followed by `run_interrupted`, the state says `interrupted`, and the exit code
-  is 130. What a resume does next was read from the code and not run: it starts another attempt
-  on top of the accepted commit, or reaches the attempt cap.
+After the controller function returned, it restored the default signal action, so a stop signal
+that arrived before the process ended killed it while it still released the lifecycle lock. The
+exit status was the signal instead of 130, and the lock stayed for the next resume to replace.
+The record itself was complete. Seen in 1 of 80 repetitions of the stop-during-checker case from
+scripts/test-autonomous-run.sh at `19afde4`. A run that has recorded its result now keeps the
+handler, which ignores a late stop, until the process ends. It is a Python handler, not an
+ignored signal, so processes started afterwards still receive `stop` normally. Regression: the
+after-return case in scripts/test-autonomous-state.py, which sends the signal from inside a real
+child process and expects its own exit code.
 
-The last two need a rule for which outcome wins when a stop meets the run's own result.
+### RUN-CONTROLLER: a stop signal inside a Git call could hang the controller (fixed)
+
+The stop handler raised `RunInterrupted` wherever the controller happened to be. In 1 of 80
+repetitions of the stop-during-checker case from scripts/test-autonomous-run.sh at `6c3b41e` on
+macOS, it landed inside `subprocess.run` while the checker worktree was removed: after
+`subprocess` had taken its private wait lock, and before it could release it. The cleanup of the
+same call then waited on that lock. The controller stayed alive for 5 hours 6 minutes in state
+`checking`, holding the lifecycle lock, and `stop` reported that the controller did not persist
+the interruption. A Python stack read from outside the process showed `Popen._wait` blocked on
+`self._waitpid_lock`, called from `Popen.__exit__`. The Python documentation warns against raising
+from signal handlers for this reason. A second stop signal freed the controller. The window
+fixes above did not cause it; the same path exists at `19afde4`.
+
+The handler now never raises. It records the stop and ends the active role's process group.
+The controller raises `RunInterrupted` at safe points:
+- before each role or verifier process starts, and every half second while one runs, so a
+  process that ignores SIGTERM is killed too;
+- after a non-zero exit;
+- at the `validating`, `verifying` and `checking` checkpoints, once they are saved;
+- before the acceptance record and before the attempt-cap escalation;
+- while it waits to acquire a Git phase or the coordination lock.
+
+A release never acts on a stop. This replaces the rules in the entries above about when the
+handler raises. Their outcomes stay: a run that has recorded `accepted` or `escalated` keeps it.
+
+An independent review of the change found three more gaps. All three are fixed, each with a
+test that failed first:
+- A stop pending when the last attempt was rejected was recorded as the attempt-cap escalation.
+- A stop while a new attempt waited for its Git phase left a `making` checkpoint whose start
+  was still the previous attempt's commit. Resume rejected it. Each `making` checkpoint now
+  carries its own start.
+- A role that ignored SIGTERM ran on until its wall-clock limit.
+
+Ending a role from the handler also exposed a cleanup error. On macOS, signalling a process
+group that holds only an unreaped zombie fails with EPERM. The first signal in the cleanup now
+treats that case as "already gone", as its second signal already did.
+
+Regressions in scripts/test-autonomous-state.py:
+- a real signal sent during a Git call, which failed before the change because the call never
+  returned;
+- a stop during a Git-phase wait and during a release;
+- a stop that only the controller could see, for a role that accepts SIGTERM and one that
+  ignores it;
+- the review cases, driven through the real attempt loop with fake roles;
+- the zombie-only group.
+
+Probes on the final change, macOS, with every wait capped at 120 seconds:
+- the stop-during-checker case with resume: 80 of 80 resumed cleanly, none hung;
+- the stop case: 300 of 300 ended with one event, exit code 130 and no traceback.
+
+Those counts alone cannot rule the hang out, because it was 1 in 80. The proof is the Git-call
+test and the handler that no longer raises.
+
+The first Windows run of these tests in CI (runs `38177003930` and `38177011951`) ended the test
+process inside the fake-role harness. The harness sent its stop with `os.kill` to its own
+process. On Windows, that terminates the process instead of calling the handler. This is the
+second `os.kill` that behaved differently on Windows; the first was the stale-PID probe in the
+lifecycle entry above. The harness now uses `signal.raise_signal`, as the other stop tests do.
+A local shim that gives `os.kill` the Windows behaviour reproduced the failure before the change
+and passed after it.
