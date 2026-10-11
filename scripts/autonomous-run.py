@@ -75,6 +75,17 @@ class RunInterrupted(RuntimeError):
     """Operator cancellation must bypass handlers for invalid run or peer state."""
 
 
+# Set by the controller's stop handler, which never raises: an exception from a signal handler
+# can land anywhere, and one landed inside `subprocess` while it held its private wait lock, so
+# the controller waited for hours. The controller raises RunInterrupted at safe points instead.
+_stop_signal_received = False
+
+
+def raise_if_stopped(run_dir: Path) -> None:
+    if _stop_signal_received or (run_dir / "STOP").exists():
+        raise RunInterrupted("stopped by operator")
+
+
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -320,7 +331,9 @@ def read_coordination_lock(root: Path) -> dict[str, Any] | None:
 
 
 @contextlib.contextmanager
-def coordination_lock(root: Path):
+def coordination_lock(root: Path, *, interruptible: bool = True):
+    """A stop ends a wait to acquire, never a release path: raising there would leave a lease
+    behind and could turn a recorded escalation into an interruption."""
     root.mkdir(parents=True, exist_ok=True)
     path = coordination_lock_path(root)
     token = uuid.uuid4().hex
@@ -339,6 +352,8 @@ def coordination_lock(root: Path):
             )
             if not transient or time.monotonic() >= deadline:
                 raise RunError(f"cannot acquire repository coordination lock {path}: {exc}") from exc
+            if interruptible and _stop_signal_received:
+                raise RunInterrupted("stopped by operator") from exc
             time.sleep(0.02)
             continue
         except FileExistsError:
@@ -350,6 +365,8 @@ def coordination_lock(root: Path):
                     raise RunError(
                         f"repository coordination is still held by live process {existing['pid']}"
                     )
+                if interruptible and _stop_signal_received:
+                    raise RunInterrupted("stopped by operator")
                 time.sleep(0.02)
                 continue
             try:
@@ -417,11 +434,13 @@ def git_phase(repo: Path, phase: str, *, timeout_seconds: float = 60):
         if time.monotonic() >= deadline:
             raise RunError(f"git phase {phase} is still held by live {conflict['phase']} process "
                            f"{conflict['pid']}")
+        if _stop_signal_received:
+            raise RunInterrupted("stopped by operator")
         time.sleep(0.02)
     try:
         yield
     finally:
-        with coordination_lock(root):
+        with coordination_lock(root, interruptible=False):
             if lease.exists():
                 record = load_json(lease)
                 if record.get("token") == token and record.get("pid") == os.getpid():
@@ -1327,6 +1346,12 @@ def terminate_process_tree(pid: int) -> None:
         os.killpg(pid, signal.SIGTERM)
     except ProcessLookupError:
         return
+    except PermissionError:
+        # macOS reports EPERM for a group containing only unreaped zombies; the stop handler
+        # may already have ended the group before this cleanup runs.
+        if process_group_is_live(pid):
+            raise
+        return
     # Kill surviving descendants even if the group leader already exited.
     time.sleep(0.1)
     try:
@@ -1363,9 +1388,20 @@ def supervised_process(command: list[str], cwd: Path, timeout: int, env: dict[st
                         'stage': state.get('stage'), 'started_at': now()})
             state['active_pid'] = process.pid
             save_state(state)
-            if (directory / 'STOP').exists():
-                raise RunInterrupted('stopped by operator')
-            process.wait(timeout=timeout)
+            # A stop that arrived before the handler could see this pid is caught here; one that
+            # arrives later ends this process group through the handler.
+            raise_if_stopped(directory)
+            # Wait in short slices: a pending stop must also end a process that ignores the
+            # handler's SIGTERM, and the cleanup below then kills its whole group.
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    process.wait(timeout=max(0.0, min(0.5, deadline - time.monotonic())))
+                    break
+                except subprocess.TimeoutExpired:
+                    raise_if_stopped(directory)
+                    if time.monotonic() >= deadline:
+                        raise subprocess.TimeoutExpired(command, timeout) from None
         except BaseException as exc:
             error = exc
         finally:
@@ -1388,6 +1424,9 @@ def verifier_process(command: list[str], cwd: Path, timeout: int, env: dict[str,
                                            f"attempt-{state['attempt']}-verify")
         if error is not None:
             raise error
+        if result.returncode:
+            # A verifier that `stop` ended was interrupted; it did not fail verification.
+            raise_if_stopped(Path(state['state_path']).parent)
         return result
 
 
@@ -1416,9 +1455,7 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
     role_cfg = manifest["roles"][role]
     runtime = role_cfg["runtime"]
     run_dir = Path(state["state_path"]).parent
-    stop_file = run_dir / "STOP"
-    if stop_file.exists():
-        raise RunInterrupted("stopped by operator")
+    raise_if_stopped(run_dir)
     archive_artifacts(run_dir, f"attempt-{state['attempt']}-{role}")
     receipt_path = exchange / 'receipt.json'
     schema_path = run_dir / "receipt-schema.json"
@@ -1480,8 +1517,9 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
     if max_tokens and state["codex_tokens_used"] > max_tokens:
         raise RunError("Codex run-wide token budget exceeded")
     if result.returncode:
-        if state.get("status") == "interrupted" or stop_file.exists():
+        if state.get("status") == "interrupted":
             raise RunInterrupted("stopped by operator")
+        raise_if_stopped(run_dir)
         raise RunError(f"{runtime} {role} exited {result.returncode}: {stderr[-500:].strip()}")
     receipt = parse_receipt(receipt_path, stdout)
     write_json(run_dir / f"attempt-{state['attempt']}-{role}-receipt.json", receipt)
@@ -1554,6 +1592,10 @@ def pending_candidate(state: dict[str, Any]) -> bool:
 def checkpoint_stage(state: dict[str, Any], stage: str) -> None:
     state['stage'] = stage
     save_state(state, 'stage_started', stage=stage, attempt=state['attempt'])
+    # Act on a stop only once this checkpoint is durable, so resume keeps a finished role's
+    # result. Not at `making`: resume would compare HEAD with the previous attempt's start.
+    if stage != 'making':
+        raise_if_stopped(Path(state['state_path']).parent)
 
 
 def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
@@ -1561,13 +1603,16 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
     max_attempts = int(manifest["limits"]["max_attempts"])
     prior = state.get("last_checker_receipt")
     while state["attempt"] < max_attempts or pending_candidate(state):
-        if (Path(state["state_path"]).parent / "STOP").exists():
-            raise RunInterrupted("stopped by operator")
+        raise_if_stopped(Path(state["state_path"]).parent)
         if remaining_seconds(state, manifest) <= 0:
             raise RunError("wall-clock budget exhausted")
         if not pending_candidate(state):
             state["attempt"] += 1
             state["status"] = "making"
+            # Resume rejects a `making` checkpoint whose start differs from HEAD. Save this
+            # attempt's start with it, so a stop while the attempt waits for its Git phase
+            # leaves a run that resumes. Only this run's maker moves its branch.
+            state['maker_before_head'] = git(worktree, "rev-parse", "HEAD")
             checkpoint_stage(state, "making")
             with git_phase(worktree, "maker", timeout_seconds=remaining_seconds(state, manifest)):
                 before_head = git(worktree, "rev-parse", "HEAD")
@@ -1680,6 +1725,8 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             proof["checker_status"] = checker["status"]
             write_json(proof_path, proof)
         if acceptance_ready(verify.returncode, checker):
+            # A stop that arrived before the acceptance record still interrupts the run.
+            raise_if_stopped(Path(state["state_path"]).parent)
             state["status"] = "accepted"
             state['stage'] = 'accepted'
             state["accepted_commit"] = checker_head
@@ -1694,6 +1741,8 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
         state["status"] = "retrying"
         state['stage'] = 'retrying'
         save_state(state, "attempt_rejected", attempt=state["attempt"], verify_exit=verify.returncode)
+    # As with acceptance, a stop that arrived before this record still interrupts the run.
+    raise_if_stopped(Path(state["state_path"]).parent)
     state["status"] = "escalated"
     state["reason"] = f"attempt cap reached ({max_attempts})"
     save_state(state, "run_escalated", reason=state["reason"])
@@ -1711,22 +1760,29 @@ def persist_interrupted(state: dict[str, Any]) -> None:
 
 
 def run_controller(state: dict[str, Any], manifest: dict[str, Any]) -> int:
+    global _stop_signal_received
     previous = signal.getsignal(signal.SIGTERM)
-    recording_stop = False
+    _stop_signal_received = False
 
     def interrupted(_signum: int, _frame: Any) -> None:
-        # `stop` ends the role before it signals the controller, so this signal often arrives
-        # after the stop is already caught. Raising again there cuts its record short. A run
-        # that has already recorded its result keeps it; a late stop changes nothing.
-        if recording_stop or state.get("status") in {"accepted", "escalated", "interrupted"}:
+        # Record the stop and end the active role; the controller raises RunInterrupted at its
+        # next safe point. Never raise here (see `_stop_signal_received`). A run that has
+        # already recorded its result keeps it; a late stop changes nothing.
+        global _stop_signal_received
+        if state.get("status") in {"accepted", "escalated", "interrupted"}:
             return
-        raise RunInterrupted("stopped by operator")
+        _stop_signal_received = True
+        active_pid = state.get("active_pid")
+        if active_pid and os.name != "nt":
+            try:
+                os.killpg(int(active_pid), signal.SIGTERM)
+            except (OSError, ValueError):
+                pass
 
     signal.signal(signal.SIGTERM, interrupted)
     try:
         return execute(state, manifest)
     except RunInterrupted:
-        recording_stop = True
         persist_interrupted(state)
         print(f"interrupted: {state['run_id']}; use resume when ready", file=sys.stderr)
         return 130
@@ -1746,6 +1802,7 @@ def run_controller(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             # a late stop, rather than restore a default action that would end the process.
         else:
             signal.signal(signal.SIGTERM, previous)
+        _stop_signal_received = False
 
 
 def start(args: argparse.Namespace) -> int:

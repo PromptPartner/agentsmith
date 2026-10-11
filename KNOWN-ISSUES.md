@@ -468,6 +468,8 @@ No callable Orca native-session interface is available in this implementation se
 
 One full verify run stalled after `stopped primary run is durably interrupted` in scripts/test-autonomous-run.sh. Its disposable `legacy` controller remained in `making` with `active_pid: null` and an exited/defunct child while the fixture waited for its runner. The preceding disclosure full suite passed the same unchanged controller. The stalled test tree was terminated; that run is not passing evidence. Controller/NQ-03 fixes remain separate; rerun the full suite and investigate if recurrence persists.
 
+Probable cause, not confirmed (2026-10-11): the same signature as "a stop signal inside a Git call could hang the controller" below. A stop signal that lands inside `subprocess` can leave its wait lock taken, so the exited child is never reaped and the controller waits forever. That fix removes the mechanism. This entry stays open until repeated full gates show no stall.
+
 ### LOCAL-CAPABILITIES: ambiguous memory metadata and truncated references (fixed before release)
 
 Review reproduced duplicate JSON status keys and a boolean metadata version bypassing archive exclusion. Metadata now requires integer version 1 and rejects duplicate keys. Long startup paths are displayed in full or omitted with a diagnostic; bounded warnings retain drift/incompleteness information. Regressions live in scripts/test-project-memory.py.
@@ -575,3 +577,56 @@ handler, which ignores a late stop, until the process ends. It is a Python handl
 ignored signal, so processes started afterwards still receive `stop` normally. Regression: the
 after-return case in scripts/test-autonomous-state.py, which sends the signal from inside a real
 child process and expects its own exit code.
+
+### RUN-CONTROLLER: a stop signal inside a Git call could hang the controller (fixed)
+
+The stop handler raised `RunInterrupted` wherever the controller happened to be. In 1 of 80
+repetitions of the stop-during-checker case from scripts/test-autonomous-run.sh at `6c3b41e` on
+macOS, it landed inside `subprocess.run` while the checker worktree was removed: after
+`subprocess` had taken its private wait lock, and before it could release it. The cleanup of the
+same call then waited on that lock. The controller stayed alive for 5 hours 6 minutes in state
+`checking`, holding the lifecycle lock, and `stop` reported that the controller did not persist
+the interruption. A Python stack read from outside the process showed `Popen._wait` blocked on
+`self._waitpid_lock`, called from `Popen.__exit__`. The Python documentation warns against raising
+from signal handlers for this reason. A second stop signal freed the controller. The window
+fixes above did not cause it; the same path exists at `19afde4`.
+
+The handler now never raises. It records the stop and ends the active role's process group.
+The controller raises `RunInterrupted` at safe points:
+- before each role or verifier process starts, and every half second while one runs, so a
+  process that ignores SIGTERM is killed too;
+- after a non-zero exit;
+- at the `validating`, `verifying` and `checking` checkpoints, once they are saved;
+- before the acceptance record and before the attempt-cap escalation;
+- while it waits to acquire a Git phase or the coordination lock.
+
+A release never acts on a stop. This replaces the rules in the entries above about when the
+handler raises. Their outcomes stay: a run that has recorded `accepted` or `escalated` keeps it.
+
+An independent review of the change found three more gaps. All three are fixed, each with a
+test that failed first:
+- A stop pending when the last attempt was rejected was recorded as the attempt-cap escalation.
+- A stop while a new attempt waited for its Git phase left a `making` checkpoint whose start
+  was still the previous attempt's commit. Resume rejected it. Each `making` checkpoint now
+  carries its own start.
+- A role that ignored SIGTERM ran on until its wall-clock limit.
+
+Ending a role from the handler also exposed a cleanup error. On macOS, signalling a process
+group that holds only an unreaped zombie fails with EPERM. The first signal in the cleanup now
+treats that case as "already gone", as its second signal already did.
+
+Regressions in scripts/test-autonomous-state.py:
+- a real signal sent during a Git call, which failed before the change because the call never
+  returned;
+- a stop during a Git-phase wait and during a release;
+- a stop that only the controller could see, for a role that accepts SIGTERM and one that
+  ignores it;
+- the review cases, driven through the real attempt loop with fake roles;
+- the zombie-only group.
+
+Probes on the final change, macOS, with every wait capped at 120 seconds:
+- the stop-during-checker case with resume: 80 of 80 resumed cleanly, none hung;
+- the stop case: 300 of 300 ended with one event, exit code 130 and no traceback.
+
+Those counts alone cannot rule the hang out, because it was 1 in 80. The proof is the Git-call
+test and the handler that no longer raises.

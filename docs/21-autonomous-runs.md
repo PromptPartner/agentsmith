@@ -151,7 +151,17 @@ a demonstrably dead
 controller and a stopped run do
 not block new work. `stop <id>` atomically writes a stop
 request, terminates the active process group and signals the controller, then waits up to five seconds for the controller
-to persist `interrupted`. It never writes `state.json` itself. If the controller has already died,
+to persist `interrupted`. The controller's signal handler only records the stop and ends the
+active process group; it never raises, because an exception from a signal handler can land
+inside library code. The controller acts on the stop at its next safe point:
+- while a role or verifier runs, checked every half second; a process that ignores the signal
+  is then killed;
+- a saved stage checkpoint;
+- the moment before the acceptance or attempt-cap record;
+- a wait for a Git phase or the coordination lock.
+
+It never acts inside a Git call or a lock release.
+`stop` never writes `state.json` itself. If the controller has already died,
 the request remains in place and `resume` reconciles the interruption after acquiring the stale
 lock. A run that has already recorded `accepted` or `escalated` keeps that result: a stop that
 arrives later changes nothing, and `stop` reports the finished result instead.
