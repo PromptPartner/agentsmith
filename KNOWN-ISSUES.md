@@ -551,29 +551,24 @@ leaves the same state and is covered too. Regressions: the three shapes in
 scripts/test-autonomous-state.py, and the half-removed checker case in
 scripts/test-autonomous-run.sh, which ended with the same six-file escalation before the change.
 
-### RUN-CONTROLLER: a stop signal can still disturb a run outside the interruption record (open)
+### RUN-CONTROLLER: a late stop could overturn a run's own result (fixed)
 
-Found while fixing the interruption record, and not changed by that fix.
+Reproduced with a controller-level fixture: `execute` is stubbed to reach one outcome, and the
+stop signal is delivered at a chosen point. Inside the escalation record, the handler raised out
+of the controller: a traceback and exit code 1 instead of 2, and no `run_escalated` event. After
+the acceptance record, the controller recorded an interruption over the accepted run: the log
+held `run_accepted` then `run_interrupted`, the exit code was 130, and resume, which refuses
+accepted runs, would have started another attempt on top of the accepted commit. The terminal
+cleanup of an accepted or escalated run raised the same way. The rule is now that a run that has
+recorded `accepted` or `escalated` keeps it: the handler no longer raises once the status says
+so, and `stop` reports the finished result instead of promising a reconciliation. Regressions:
+the escalation, acceptance and finished-run stop cases in scripts/test-autonomous-state.py.
 
-One case was seen end to end, in repetitions of the stop-during-checker case from
-scripts/test-autonomous-run.sh.
+### RUN-CONTROLLER: a stop signal after the controller returns still ends the process (open)
 
-- After the controller function has returned. The default signal action applies again, so a stop
-  signal that arrives before the process ends kills it. The exit status is the signal instead of
-  130, and the record itself is complete. Seen in 1 of 80 repetitions at `19afde4` and in 0 of
-  380 with the fix. Read from the code and not run: the lifecycle lock is left behind, and the
-  next resume replaces a dead owner's lock.
-
-Two more were reproduced only with a controller-level fixture, at `19afde4` and with the fix:
-`execute` is stubbed to reach one outcome, and the signal is delivered at a chosen point.
-
-- Inside the escalation record. The handler raises out of the controller, which a command-line
-  run shows as a traceback and exit code 1 instead of 2. The state says `escalated` with its
-  reason, and no `run_escalated` event is written.
-- After the acceptance record. The signal raises inside `execute`, and the controller then
-  records an interruption over a run it has already recorded as accepted. The event log holds
-  `run_accepted` followed by `run_interrupted`, the state says `interrupted`, and the exit code
-  is 130. What a resume does next was read from the code and not run: it starts another attempt
-  on top of the accepted commit, or reaches the attempt cap.
-
-The last two need a rule for which outcome wins when a stop meets the run's own result.
+Found while fixing the interruption record, and not changed by that fix. After the controller
+function has returned, the default signal action applies again, so a stop signal that arrives
+before the process ends kills it. The exit status is the signal instead of 130, and the record
+itself is complete. Seen in 1 of 80 repetitions of the stop-during-checker case from
+scripts/test-autonomous-run.sh at `19afde4`, and in 0 of 380 with the fix. Read from the code
+and not run: the lifecycle lock is left behind, and the next resume replaces a dead owner's lock.

@@ -1716,8 +1716,9 @@ def run_controller(state: dict[str, Any], manifest: dict[str, Any]) -> int:
 
     def interrupted(_signum: int, _frame: Any) -> None:
         # `stop` ends the role before it signals the controller, so this signal often arrives
-        # after the stop is already caught. Raising again there cuts its record short.
-        if recording_stop:
+        # after the stop is already caught. Raising again there cuts its record short. A run
+        # that has already decided its own result keeps it; a late stop changes nothing.
+        if recording_stop or state.get("status") in {"accepted", "escalated"}:
             return
         raise RunInterrupted("stopped by operator")
 
@@ -1865,6 +1866,8 @@ def stop(args: argparse.Namespace) -> int:
     current = load_run(repo, args.run_id)
     if current.get("status") == "interrupted":
         print(f"stopped {args.run_id}; local worktree retained")
+    elif current.get("status") in {"accepted", "escalated"}:
+        print(f"{args.run_id} already finished as {current['status']}; the stop changed nothing")
     elif not controller_pid or not process_is_live(controller_pid):
         print(f"stop requested for {args.run_id}; controller is gone and resume will reconcile it")
     else:

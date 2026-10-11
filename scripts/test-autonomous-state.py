@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 import errno
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -970,8 +971,8 @@ class AutonomousStateTests(unittest.TestCase):
             events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
             self.assertEqual([event["event"] for event in events], ["run_interrupted"])
 
-    def stopped_controller_outcome(self, common: Path, *, write_json: Any = None,
-                                   git: Any = None) -> tuple[Any, dict[str, Any], list[str]]:
+    def stopped_controller_outcome(self, common: Path, *, write_json: Any = None, git: Any = None,
+                                   execute: Any = None) -> tuple[Any, dict[str, Any], list[str]]:
         # `stop` ends the role first, so the controller usually learns of the stop from the
         # role's exit. Its own signal arrives afterwards, at a point the caller chooses.
         directory = common / "controller"
@@ -979,7 +980,7 @@ class AutonomousStateTests(unittest.TestCase):
         state = {"run_id": "active", "state_path": str(directory / "state.json"),
                  "worktree": str(common), "status": "making", "active_pid": 123}
         with mock.patch.object(
-            CONTROLLER, "execute", side_effect=CONTROLLER.RunInterrupted("stopped by operator")
+            CONTROLLER, "execute", side_effect=execute or CONTROLLER.RunInterrupted("stopped by operator")
         ), mock.patch.object(
             CONTROLLER, "write_json", side_effect=write_json or CONTROLLER.write_json
         ), mock.patch.object(CONTROLLER, "git", side_effect=git or (lambda *_args, **_kwargs: "a" * 40)):
@@ -1026,6 +1027,76 @@ class AutonomousStateTests(unittest.TestCase):
             self.assertEqual(outcome, 130)
             self.assertEqual(events, ["run_interrupted"])
             self.assertEqual(durable["terminal_head"], "a" * 40)
+
+    def test_stop_signal_inside_the_escalation_record_keeps_the_escalation(self) -> None:
+        # Once the run has decided its own result, a late stop changes nothing.
+        with tempfile.TemporaryDirectory(prefix="agentsmith stop escalation ") as temporary:
+            write_state = CONTROLLER.write_json
+            signalled: list[bool] = []
+
+            def scope_error(_state: dict[str, Any], _manifest: dict[str, Any]) -> int:
+                raise CONTROLLER.RunError("maker changed paths outside scope: forbidden.txt")
+
+            def stop_during_record(path: Path, value: dict[str, Any]) -> None:
+                if value.get("status") == "escalated" and not signalled:
+                    signalled.append(True)
+                    CONTROLLER.signal.raise_signal(CONTROLLER.signal.SIGTERM)
+                write_state(path, value)
+
+            outcome, durable, events = self.stopped_controller_outcome(
+                Path(temporary), execute=scope_error, write_json=stop_during_record)
+            self.assertEqual(signalled, [True])
+            self.assertEqual(outcome, 2)
+            self.assertEqual(events, ["run_escalated"])
+            self.assertEqual(durable["status"], "escalated")
+
+    def test_stop_signal_after_the_acceptance_record_keeps_the_acceptance(self) -> None:
+        for point in ("while reporting", "during terminal cleanup"):
+            with self.subTest(point=point), \
+                    tempfile.TemporaryDirectory(prefix="agentsmith stop acceptance ") as temporary:
+                signalled: list[bool] = []
+
+                def stop_now() -> None:
+                    signalled.append(True)
+                    CONTROLLER.signal.raise_signal(CONTROLLER.signal.SIGTERM)
+
+                def accept(state: dict[str, Any], _manifest: dict[str, Any]) -> int:
+                    # The end of execute(): decide, record, report.
+                    state["status"] = "accepted"
+                    state["stage"] = "accepted"
+                    state["accepted_commit"] = "b" * 40
+                    CONTROLLER.save_state(state, "run_accepted", commit="b" * 40)
+                    if point == "while reporting":
+                        stop_now()
+                    return 0
+
+                def stop_during_cleanup(*_args: Any, **_kwargs: Any) -> str:
+                    stop_now()
+                    return "a" * 40
+
+                outcome, durable, events = self.stopped_controller_outcome(
+                    Path(temporary), execute=accept,
+                    git=stop_during_cleanup if point == "during terminal cleanup" else None)
+                self.assertEqual(signalled, [True])
+                self.assertEqual(outcome, 0)
+                self.assertEqual(events, ["run_accepted"])
+                self.assertEqual(durable["status"], "accepted")
+                self.assertEqual(durable["terminal_head"], "a" * 40)
+
+    def test_stop_reports_a_run_that_already_finished(self) -> None:
+        for status in ("accepted", "escalated"):
+            with self.subTest(status=status), \
+                    tempfile.TemporaryDirectory(prefix="agentsmith stop finished ") as temporary:
+                run_dir = Path(temporary)
+                state = {"run_id": "done", "state_path": str(run_dir / "state.json"),
+                         "status": status, "active_pid": None}
+                with mock.patch.object(CONTROLLER, "repo_root", return_value=run_dir), \
+                        mock.patch.object(CONTROLLER, "load_run", return_value=state), \
+                        mock.patch.object(CONTROLLER, "read_lock", return_value=None), \
+                        mock.patch("sys.stdout", new_callable=io.StringIO) as output:
+                    self.assertEqual(CONTROLLER.stop(mock.Mock(run_id="done")), 0)
+                self.assertIn(f"done already finished as {status}; the stop changed nothing",
+                              output.getvalue())
 
     def test_checker_recovery_clears_the_entry_a_stopped_removal_left(self) -> None:
         # `git worktree remove` deletes the folder before the entry under .git/worktrees, so a

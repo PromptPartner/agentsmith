@@ -153,7 +153,8 @@ not block new work. `stop <id>` atomically writes a stop
 request, terminates the active process group and signals the controller, then waits up to five seconds for the controller
 to persist `interrupted`. It never writes `state.json` itself. If the controller has already died,
 the request remains in place and `resume` reconciles the interruption after acquiring the stale
-lock.
+lock. A run that has already recorded `accepted` or `escalated` keeps that result: a stop that
+arrives later changes nothing, and `stop` reports the finished result instead.
 
 `resume <id>` works only when the committed manifest, accepted spec, base commit, recorded branch,
 and worktree still match and the worktree is clean. A changed contract requires a new run ID rather
