@@ -18,7 +18,9 @@ helpers and managed hooks native on macOS, Linux, and Windows without Git Bash o
 - `AGENTS.md` is the canonical project instruction artifact.
 - Claude gets a generated `CLAUDE.md` copy.
 - Gemini CLI, Aider, Continue, and Goose get managed pointers to `AGENTS.md`.
-- Ten other certification targets use the direct `AGENTS.md` adapter.
+- Eleven other certification targets use the direct `AGENTS.md` adapter.
+- `--global` writes user-level rules for Claude, Codex, OpenCode, and Pi, and warns for any other
+  selected agent; see [user-level rules](13-platforms-and-tools.md#user-level-rules---global).
 - Foreign configuration is backed up and preserved; uninstall removes only owned content.
 - Claude receives a default model/directory/context status line only when no explicit choice exists;
   Codex's native default remains active without redundant managed TOML.
@@ -85,7 +87,7 @@ and optional manifest resource keys under a repository coordination lock before 
 
 ## Verification and CI
 
-The repository's strict conformance suite validates the 16-agent contract, registry schema,
+The repository's strict conformance suite validates the 17-agent contract, registry schema,
 selector groups, Python-only launchers and hooks, canonical instructions, Unicode paths, CRLF
 foreign config, idempotence, and uninstall ownership:
 

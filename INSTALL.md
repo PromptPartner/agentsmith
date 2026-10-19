@@ -67,7 +67,7 @@ agentsmith install --agent native --global
 agentsmith install --agent native --profile software-dev --profile-only --target /path/to/project
 ```
 
-Claude loads its user and project `CLAUDE.md` files. Codex loads its user and project `AGENTS.md` files. `agentsmith doctor --target /path/to/project` reports the effective chain and warns about missing or duplicated layers.
+Claude loads its user and project `CLAUDE.md` files. Codex loads its user and project `AGENTS.md` files. `--global` also writes user-level rules for OpenCode (`~/.config/opencode/AGENTS.md`) and Pi (`$PI_CODING_AGENT_DIR/AGENTS.md`, default `~/.pi/agent`) when you select them. Other agents have no user-level file; install them per project. See [user-level rules](docs/13-platforms-and-tools.md#user-level-rules---global). `agentsmith doctor --target /path/to/project` reports the effective chain and warns about missing or duplicated layers.
 
 ## Profiles
 

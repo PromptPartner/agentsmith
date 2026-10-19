@@ -638,3 +638,56 @@ second `os.kill` that behaved differently on Windows; the first was the stale-PI
 lifecycle entry above. The harness now uses `signal.raise_signal`, as the other stop tests do.
 A local shim that gives `os.kill` the Windows behaviour reproduced the failure before the change
 and passed after it.
+
+## OpenCode and Pi user-level rules (2026-10-19)
+
+### GLOBAL-RULES: earlier global OpenCode installs recorded OpenCode but wrote nothing (open)
+
+Up to `v0.3.1`, `install --global --agent opencode` recorded OpenCode in the installation manifest
+and printed "installed for opencode", but wrote no rules file. Global destinations were hard-coded
+for Claude and Codex. Install now writes `~/.config/opencode/AGENTS.md`, and doctor, update, and
+uninstall manage it. Existing installations stay without the file until the operator acts. The
+`v0.3.1` updater cannot repair them: on 2026-10-19 its `update apply` against a release with this
+fix stopped with "Release attempted an update outside the managed surface:
+home:.config/opencode/AGENTS.md" before any real file changed. Fix: rerun `agentsmith install
+--global` with the same agents from the newer release.
+
+### GLOBAL-RULES: OpenCode's `XDG_CONFIG_HOME` is not followed (open)
+
+OpenCode reads `$XDG_CONFIG_HOME/opencode/AGENTS.md` when that variable is set. AgentSmith always
+writes `~/.config/opencode/AGENTS.md`, so with a different `XDG_CONFIG_HOME` OpenCode never loads
+the managed rules. Install warns and doctor reports `opencode-xdg-config-ignored`. Following the
+variable would make the update surface depend on an environment value; that needs its own design.
+
+### GLOBAL-RULES: a symlinked `~/.config` makes update refuse (open)
+
+Dotfile managers often make `~/.config` a symbolic link. Install writes through it, but
+`update plan --global` refuses any managed path with a symbolic-link component, so a global
+OpenCode installation with a linked `~/.config` cannot use the staged updater. Rerun
+`install --global` instead. A test pins the refusal.
+
+### GLOBAL-RULES: Gemini CLI declares a global path that nothing writes (open)
+
+The registry lists `~/.gemini/AGENTS.md` as a Gemini CLI global path, but no installer writes it.
+`install --global` now warns for Gemini CLI, as for every agent without a managed user-level
+file, and leaves it out of the "installed for" line. Either an adapter or a registry correction
+is still needed.
+
+### GLOBAL-RULES: OpenCode and Pi certification is pending (open)
+
+Both entries rest on fixture evidence and on the clients' own documentation (OpenCode 1.19.3,
+Pi 1.3.0). No real OpenCode or Pi run has confirmed that either client loads the managed rules or
+skills. OpenCode's duplicate-skill choice is nondeterministic by inference from its source; doctor
+reports it as `duplicate-skill-discovery`.
+
+### GLOBAL-RULES: `--agent local` expanded to a different list than the registry (fixed)
+
+The CLI expanded `local` to five agents while `config/agents.json` lists eight; Codex, Roo Code,
+and Continue were missing. The code now matches the registry, and a registry test compares every
+group.
+
+### GLOBAL-RULES: safety was recorded for agents that have no safety setting (fixed)
+
+Install recorded `native_safety` for every selected agent. A cautious rerun of a global OpenCode
+install after a trusted one then warned that it was migrating Codex's `config.toml`. Only Claude
+and Codex are recorded now, and stale records for other agents are dropped on the next install.
