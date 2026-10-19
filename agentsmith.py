@@ -8044,8 +8044,20 @@ WIZARD_QUESTIONS: tuple[dict[str, Any], ...] = (
 )
 
 
+def wizard_questions() -> list[dict[str, Any]]:
+    """The question table for this machine: inside a container, safety also offers container mode."""
+    evidence = detect_container()
+    questions = []
+    for question in WIZARD_QUESTIONS:
+        if question["key"] == "safety" and evidence:
+            question = {**question, "prompt_key": "safety_container", "choices": [*question["choices"], "container"],
+                        "default": {"value": "container"}, "evidence": evidence}
+        questions.append(question)
+    return questions
+
+
 def wizard_question(key: str) -> dict[str, Any]:
-    return next(question for question in WIZARD_QUESTIONS if question["key"] == key)
+    return next(question for question in wizard_questions() if question["key"] == key)
 
 
 def wizard_default_agents() -> str:
@@ -8157,6 +8169,9 @@ def apply_wizard_answers(args: argparse.Namespace, input_fn: Any = input) -> dic
     wizard_profile(recommended["profile"])
 
     experience = ask("experience")
+    container = wizard_question("safety").get("evidence")
+    if container:
+        print(messages["container_detected"].format(evidence=", ".join(container)))
     safety = ask("safety")
 
     global_mode = False
@@ -8188,21 +8203,22 @@ def apply_wizard_answers_file(args: argparse.Namespace) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise CliError(f"Wizard answers {path} must contain a JSON object")
     locales = load_wizard_locales()
-    problems = [f"{key}: unknown key" for key in sorted(set(data) - {"schema_version", *(q["key"] for q in WIZARD_QUESTIONS)})]
+    questions = wizard_questions()
+    problems = [f"{key}: unknown key" for key in sorted(set(data) - {"schema_version", *(q["key"] for q in questions)})]
     if data.get("schema_version") != 1:
         problems.append("schema_version: must be 1")
     dry_run = bool(getattr(args, "dry_run", False))
     computed = {"language": getattr(args, "lang", None) or default_wizard_language(),
                 "agent": wizard_default_agents().split(","), "target": None}
     raw: dict[str, Any] = {}
-    for question in WIZARD_QUESTIONS:
+    for question in questions:
         key = question["key"]
         default = question["default"].get("value", computed.get(key))
         if key == "confirm" and not dry_run:
             default = None  # Without a person to confirm, the file must say yes itself.
         raw[key] = data.get(key, default)
     answers: dict[str, Any] = {}
-    for question in WIZARD_QUESTIONS:
+    for question in questions:
         key, kind, value = question["key"], question["kind"], raw[question["key"]]
         conditions = question.get("when", {})
         if any(raw.get(name) != expected for name, expected in conditions.items()):
@@ -8273,7 +8289,7 @@ def wizard_schema(args: argparse.Namespace) -> dict[str, Any]:
     locales = load_wizard_locales()
     profile_names = [item["name"] for item in profile_catalog()]
     questions: list[dict[str, Any]] = []
-    for source in WIZARD_QUESTIONS:
+    for source in wizard_questions():
         question = json.loads(json.dumps(source))
         key = question["key"]
         if key == "language":

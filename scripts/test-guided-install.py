@@ -29,7 +29,7 @@ WIZARD_SCENARIOS = {
 }
 
 
-def record_wizard_scenario(name: str) -> dict:
+def record_wizard_scenario(name: str, container: list[str] | None = None) -> dict:
     """Run one scripted interactive wizard and return its prompts, output and resulting choices."""
     import contextlib
     import io
@@ -43,6 +43,7 @@ def record_wizard_scenario(name: str) -> dict:
         os.chdir(target)
         try:
             with mock.patch.object(agentsmith.shutil, "which", return_value=None), \
+                    mock.patch.object(agentsmith, "detect_container", return_value=container or []), \
                     contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
                 plan = agentsmith.apply_wizard_answers(args, lambda prompt: (prompts.append(prompt), next(answers))[1])
         finally:
@@ -258,6 +259,43 @@ class GuidedInstallContracts(unittest.TestCase):
             self.assertEqual(real.returncode, 0, real.stdout + real.stderr)
             self.assertTrue((target / ".git").is_dir())
             self.assertIn("Profile: Software Development", (target / "AGENTS.md").read_text(encoding="utf-8"))
+
+    def test_wizard_offers_container_safety_only_inside_a_container(self) -> None:
+        # Inside Docker, cautious Codex cannot start its sandbox; the wizard explains and defaults to container.
+        inside = record_wizard_scenario("new-project", container=["/.dockerenv"])
+        self.assertEqual(inside["args"]["safety"], "container")
+        self.assertIn("Agent permissions [cautious/trusted/container] [container]: ", inside["prompts"])
+        self.assertIn("/.dockerenv", inside["output"])
+        outside = record_wizard_scenario("new-project")
+        self.assertEqual(outside["args"]["safety"], "cautious")
+        self.assertNotIn("container", " ".join(outside["prompts"]))
+
+    def test_schema_and_answers_follow_the_container_rule(self) -> None:
+        args = agentsmith.parser().parse_args(["wizard", "schema", "--json"])
+        with mock.patch.object(agentsmith, "detect_container", return_value=[]):
+            outside = {item["key"]: item for item in agentsmith.wizard_schema(args)["questions"]}
+        with mock.patch.object(agentsmith, "detect_container", return_value=["/.dockerenv"]):
+            inside = {item["key"]: item for item in agentsmith.wizard_schema(args)["questions"]}
+        self.assertEqual(outside["safety"]["choices"], ["cautious", "trusted"])
+        self.assertEqual(inside["safety"]["choices"], ["cautious", "trusted", "container"])
+        self.assertEqual(inside["safety"]["default"]["value"], "container")
+        self.assertEqual(inside["safety"]["evidence"], ["/.dockerenv"])
+        with tempfile.TemporaryDirectory() as temporary:
+            answers_file = Path(temporary) / "answers.json"
+            answers_file.write_text(json.dumps({
+                "schema_version": 1, "project_kind": "new", "target": str(Path(temporary) / "fresh"),
+                "agent": ["codex"], "safety": "container", "confirm": "yes",
+            }), encoding="utf-8")
+            install = ["install", "--answers", str(answers_file)]
+            with mock.patch.object(agentsmith, "detect_container", return_value=[]):
+                with self.assertRaises(agentsmith.CliError) as refused:
+                    agentsmith.apply_wizard_answers_file(agentsmith.parser().parse_args(install))
+            self.assertIn("safety", str(refused.exception))
+            args = agentsmith.parser().parse_args(install)
+            with mock.patch.object(agentsmith, "detect_container", return_value=["/.dockerenv"]), \
+                    mock.patch("sys.stdout", new_callable=lambda: __import__("io").StringIO()):
+                agentsmith.apply_wizard_answers_file(args)
+            self.assertEqual(args.safety, "container")
 
     def test_existing_project_recommendation_uses_repository_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
