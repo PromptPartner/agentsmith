@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -43,6 +44,34 @@ class GraphBaseTests(unittest.TestCase):
         self.assertNotIn("hidden-secret-value", reason)
         self.assertNotIn("read_sensitive_value", reason)
         self.assertNotIn("D:\\a", reason)
+
+    def test_controller_refusal_reports_fixed_code_without_refusal_text(self) -> None:
+        for message, code in (
+                ("previous role is still live; stop it before recovery", "previous-role-live"),
+                ("cannot resume a dirty worktree", "dirty-worktree"),
+                ("run a conflicts with live run b: overlapping path scope 'src/**'", "scope-conflict"),
+                ("repository coordination is still held by live process 4242", "coordination-held")):
+            with self.subTest(code=code):
+                reason = GRAPH.child_failure_reason({"status": "making", "reason": None}, 2,
+                                                    f"error: {message} /private/hidden-secret\n")
+                self.assertEqual(reason, "child process exit=2 in making; exception=error; "
+                                         f"refusal={code}; location=unknown")
+        crafted = GRAPH.child_failure_reason({"status": "making", "reason": None}, 2,
+                                             "error: ghp_secret previous role is still live\n")
+        self.assertEqual(crafted, "child process exit=2 in making; exception=error; "
+                                  "refusal=unknown; location=unknown")
+
+    def test_refusal_codes_name_real_controller_refusals(self) -> None:
+        source = (ROOT / "scripts" / "autonomous-run.py").read_text(encoding="utf-8")
+        messages = [re.sub(r"\{[^{}]*\}", "a", match.group(2))
+                    for match in re.finditer(r"RunError\(\s*f?(['\"])(.*?)\1", source)]
+        codes = [code for code, _ in GRAPH.CHILD_REFUSALS]
+        self.assertEqual(len(codes), len(set(codes)))
+        for code, pattern in GRAPH.CHILD_REFUSALS:
+            with self.subTest(code=code):
+                self.assertRegex(code, r"\A[a-z]+(-[a-z]+)*\Z")
+                self.assertTrue(any(pattern.match(message) for message in messages),
+                                f"{code} matches no RunError raised by the controller")
 
     def setUp(self) -> None:
         # These fixtures exercise graph contracts with run_controller stubbed; no

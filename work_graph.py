@@ -658,6 +658,39 @@ def start_graph(contract: dict[str, Any]) -> dict[str, Any]:
         return _run_graph(contract, state, directory)
 
 
+# Known controller refusals, which main() prints as `error: <RunError>`. Only the fixed code
+# enters graph evidence; the refusal text can carry paths or tool output and never does.
+CHILD_REFUSALS = tuple((code, re.compile(pattern)) for code, pattern in (
+    ("accepted-run", r"accepted runs do not resume"),
+    ("no-run-state", r"no run state for "),
+    ("unreadable-json", r"cannot read JSON "),
+    ("coordination-held", r"repository coordination is still held by live process"),
+    ("coordination-lock", r"cannot (acquire|verify|remove) repository coordination lock"),
+    ("controller-live", r"run [A-Za-z0-9_-]{1,64} already has a live controller"),
+    ("lifecycle-lock", r"(could not acquire|cannot verify) lifecycle lock"),
+    ("manifest-changed", r"manifest (changed since start|run_id no longer matches)"),
+    ("spec-changed", r"(original )?spec changed since start"),
+    ("graph-changed", r"(graph contract or |graph context is incomplete|"
+                      r"child base does not match its graph|effective base )"),
+    ("base-changed", r"base_ref changed since start"),
+    ("worktree-changed", r"run worktree is (missing|no longer on its recorded branch)"),
+    ("dirty-worktree", r"cannot resume a dirty worktree"),
+    ("previous-role-live", r"previous role is still live"),
+    ("unsupported-host", r"no supported fail-closed trusted-state sandbox"),
+    ("usage-checkpoint", r"invalid unfinished usage checkpoint"),
+    ("maker-advanced", r"unfinished maker advanced HEAD"),
+    ("no-candidate", r"checking stage has no candidate checkpoint"),
+    ("scope-conflict", r"run [A-Za-z0-9_-]{1,64} conflicts with live run "),
+    ("scope-unverified", r"cannot verify scope for live run "),
+    ("git-phase-held", r"git phase [a-z]+ is still held by live "),
+    ("checker-recovery", r"(unrecognized checker recovery path|checker recovery |"
+                         r"cannot clean up interrupted checker worktree)"),
+    ("dirty-base", r"base worktree must be clean"),
+    ("run-exists", r"run [A-Za-z0-9_-]{1,64} already exists"),
+    ("worktree-exists", r"refusing to overwrite existing branch/worktree"),
+))
+
+
 def child_failure_reason(child: dict[str, Any] | None, returncode: int, stderr: str) -> str:
     """Keep a useful child crash signature without copying process output into graph evidence."""
     known = child.get("reason") if child else None
@@ -672,13 +705,20 @@ def child_failure_reason(child: dict[str, Any] | None, returncode: int, stderr: 
         if match:
             exception = match.group(1)
             break
+    refusal = "unknown"
+    for line in reversed(stderr.splitlines()):
+        if line.startswith("error: "):
+            refusal = next((code for code, pattern in CHILD_REFUSALS
+                            if pattern.match(line[len("error: "):])), "unknown")
+            break
     location = "unknown"
     frames = re.findall(r'File "([^"\r\n]+)", line ([0-9]{1,6}), in [A-Za-z_][A-Za-z0-9_]*', stderr)
     for path, line in reversed(frames):
         if re.split(r"[\\/]", path)[-1] == "autonomous-run.py":
             location = f"autonomous-run.py:{line}"
             break
-    return f"child process exit={returncode} in {status}; exception={exception}; location={location}"
+    return (f"child process exit={returncode} in {status}; exception={exception}; "
+            f"refusal={refusal}; location={location}")
 
 
 def _run_graph(contract: dict[str, Any], state: dict[str, Any], directory: Path,
