@@ -88,6 +88,28 @@ class GuidedInstallContracts(unittest.TestCase):
                 self.assertEqual(list(home.iterdir()), [])
                 self.assertEqual(list(project.iterdir()), [])
 
+    def test_wizard_input_that_ends_early_is_a_clean_refusal(self) -> None:
+        # Windows reports the NUL device as a terminal, and a pipe can end mid-wizard; neither may crash.
+        with mock.patch.object(agentsmith, "stdin_is_interactive", return_value=True), \
+                mock.patch.object(agentsmith, "maybe_report_automatic_update"), \
+                mock.patch.object(agentsmith, "apply_wizard_answers", side_effect=EOFError), \
+                mock.patch("sys.stdout", new_callable=lambda: __import__("io").StringIO()):
+            with self.assertRaises(agentsmith.CliError) as raised:
+                agentsmith.run(["install", "--wizard"])
+        self.assertIn("nothing was changed", str(raised.exception))
+
+    def test_windows_console_check_does_not_trust_isatty_alone(self) -> None:
+        # On Windows, NUL reports isatty() but is not a console; without a console API answer, assume no terminal.
+        fake_stdin = mock.Mock()
+        fake_stdin.isatty.return_value = True
+        fake_stdin.fileno.return_value = 0
+        with mock.patch.object(agentsmith.sys, "stdin", fake_stdin), mock.patch.object(agentsmith.os, "name", "nt"), \
+                mock.patch.dict(sys.modules, {"msvcrt": None}):
+            self.assertFalse(agentsmith.stdin_is_interactive())
+        fake_stdin.isatty.return_value = False
+        with mock.patch.object(agentsmith.sys, "stdin", fake_stdin):
+            self.assertFalse(agentsmith.stdin_is_interactive())
+
     def test_existing_project_recommendation_uses_repository_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             target = Path(temporary)
