@@ -166,6 +166,21 @@ class GuidedInstallContracts(unittest.TestCase):
         python_core = next(line for line in gate.splitlines() if line.startswith("python-core ::"))
         self.assertIn("scripts/test-guided-install.py", python_core)
 
+    def test_docs_describe_only_questions_the_wizard_asks(self) -> None:
+        # The wizard asks no tracker or UI question; docs that say so send users looking for it.
+        stale = {
+            "docs/14-project-tracker-guide.md": "The wizard asks this right after",
+            "docs/11-designing-uis.md": "Does this project have a UI?",
+            "hooks/README.md": "tell the wizard the project has a UI",
+        }
+        for name, phrase in stale.items():
+            text = (ROOT / name).read_text(encoding="utf-8")
+            self.assertFalse(phrase in text, f"{name} still says: {phrase}")
+        install = (ROOT / "INSTALL.md").read_text(encoding="utf-8")
+        self.assertIn("needs an interactive terminal", install)
+        troubleshooting = (ROOT / "docs" / "17-troubleshooting.md").read_text(encoding="utf-8")
+        self.assertIn("needs an interactive terminal", troubleshooting)
+
     def test_standalone_build_covers_the_four_initial_targets(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "standalone.yml").read_text(encoding="utf-8")
         for value in ("ubuntu-24.04", "windows-2025", "macos-15", "macos-15-intel"):
