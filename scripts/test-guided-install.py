@@ -7,6 +7,7 @@ import argparse
 import importlib.util
 import json
 from pathlib import Path
+import re
 import tempfile
 import unittest
 from unittest import mock
@@ -17,6 +18,22 @@ SPEC = importlib.util.spec_from_file_location("agentsmith", ROOT / "agentsmith.p
 assert SPEC and SPEC.loader
 agentsmith = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(agentsmith)
+
+STANDALONE_WORKFLOW = ROOT / ".github" / "workflows" / "standalone.yml"
+RELEASE_ASSETS = (
+    "agentsmith-linux-x86_64",
+    "agentsmith-linux-arm64",
+    "agentsmith-windows-x86_64",
+    "agentsmith-macos-arm64",
+    "agentsmith-macos-x86_64",
+)
+
+
+def standalone_jobs() -> dict[str, str]:
+    """Split the standalone workflow into job bodies without adding a YAML dependency."""
+    body = STANDALONE_WORKFLOW.read_text(encoding="utf-8").split("\njobs:\n", 1)[1]
+    parts = re.split(r"^  ([A-Za-z0-9_-]+):\n", body, flags=re.M)
+    return dict(zip(parts[1::2], parts[2::2]))
 
 
 class GuidedInstallContracts(unittest.TestCase):
@@ -131,13 +148,55 @@ class GuidedInstallContracts(unittest.TestCase):
             self.assertEqual(state["installation"]["runtime"]["path"], "agentsmith")
             self.assertNotIn(str(Path(temporary)), state_text)
 
-    def test_standalone_build_covers_the_four_initial_targets(self) -> None:
-        workflow = (ROOT / ".github" / "workflows" / "standalone.yml").read_text(encoding="utf-8")
-        for value in ("ubuntu-24.04", "windows-2025", "macos-15", "macos-15-intel"):
-            self.assertIn(value, workflow)
+    def test_standalone_build_covers_every_release_target(self) -> None:
+        workflow = STANDALONE_WORKFLOW.read_text(encoding="utf-8")
+        for value in ("ubuntu-24.04", "ubuntu-24.04-arm", "windows-2025", "macos-15", "macos-15-intel"):
+            self.assertIn(f"os: {value}\n", workflow)
+        for asset in RELEASE_ASSETS:
+            self.assertIn(f"asset: {asset}\n", workflow)
         spec = (ROOT / "agentsmith.spec").read_text(encoding="utf-8")
         for data_root in ("core", "profiles", "config", "templates", "skills"):
             self.assertIn(f"'{data_root}'", spec)
+
+    def test_checksums_cover_every_archive_on_every_run(self) -> None:
+        checksums = standalone_jobs()["checksums"]
+        header = checksums.split("steps:", 1)[0]
+        self.assertIn("needs: build", header)
+        self.assertNotIn("if:", header, "pull requests must exercise the checksum job too")
+        self.assertIn("merge-multiple: true", checksums)
+        self.assertIn(f'-eq {len(RELEASE_ASSETS)}', checksums)
+        self.assertIn("sha256sum", checksums)
+        self.assertIn("name: SHA256SUMS", checksums)
+        attest = checksums.split("uses: actions/attest@", 1)
+        self.assertEqual(len(attest), 2, "SHA256SUMS needs a build attestation")
+        self.assertIn("if: github.event_name != 'pull_request'", attest[0].rsplit("- name:", 1)[1])
+        self.assertIn("subject-path: release-assets/SHA256SUMS", attest[1])
+
+    def test_release_job_drafts_only_for_a_tag_that_matches_the_cli_version(self) -> None:
+        workflow = STANDALONE_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("tags: ['v*']", workflow)
+        release = standalone_jobs()["release"]
+        header = release.split("steps:", 1)[0]
+        self.assertIn("needs: checksums", header)
+        self.assertIn("if: startsWith(github.ref, 'refs/tags/v')", header)
+        source = (ROOT / "agentsmith.py").read_text(encoding="utf-8")
+        self.assertEqual(re.findall(r'^VERSION = "([^"]+)"$', source, re.M), [agentsmith.VERSION])
+        self.assertIn('^VERSION = "', release)
+        self.assertIn('"v${version}"', release)
+        self.assertIn("sha256sum -c SHA256SUMS", release)
+        create = release.index("gh release create")
+        self.assertLess(release.index('"v${version}"'), create)
+        self.assertLess(release.index("sha256sum -c SHA256SUMS"), create)
+        self.assertIn("--draft", release[create:])
+        self.assertIn("--verify-tag", release[create:])
+
+    def test_only_the_release_job_can_write_repository_contents(self) -> None:
+        workflow = STANDALONE_WORKFLOW.read_text(encoding="utf-8")
+        self.assertNotIn("contents: write", workflow.split("\njobs:\n", 1)[0])
+        jobs = standalone_jobs()
+        self.assertEqual(set(jobs), {"build", "checksums", "release"})
+        for name, body in jobs.items():
+            self.assertEqual("contents: write" in body, name == "release", name)
 
 
 if __name__ == "__main__":
