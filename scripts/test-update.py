@@ -131,6 +131,16 @@ class UpdateCheckTests(unittest.TestCase):
             env=env,
         )
 
+    @staticmethod
+    def isolated_environment(home: Path, codex_home: Path, **extra: str) -> dict[str, str]:
+        # The operator's own client locations must never leak into a fixture install.
+        environment = {
+            name: value for name, value in os.environ.items()
+            if name not in {"PI_CODING_AGENT_DIR", "XDG_CONFIG_HOME"}
+        }
+        environment.update({"HOME": str(home), "USERPROFILE": str(home), "CODEX_HOME": str(codex_home), **extra})
+        return environment
+
     def test_check_selects_highest_stable_semver_and_excludes_prereleases(self) -> None:
         latest_version = f"{CURRENT_PARTS[0]}.{CURRENT_PARTS[1]}.{CURRENT_PARTS[2] + 7}"
         for version in (
@@ -2026,6 +2036,26 @@ class UpdateCheckTests(unittest.TestCase):
             state["installation"]["capabilities"],
             {"handoff_hooks": True, "hooks": False, "mcp": ["context7"], "skills": True, "ui_design_hook": False},
         )
+
+    def test_global_non_native_install_records_no_native_safety(self) -> None:
+        home = self.root / "non-native-home"
+        environment = self.isolated_environment(home, self.root / "non-native-codex")
+        installed = self.run_core("install", "--agent", "opencode", "--global", "--safety", "trusted", env=environment)
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        state_path = home / ".agentsmith" / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertNotIn("opencode", state.get("native_safety", {}))
+
+        # An earlier release recorded safety for every agent; that record must not
+        # make a cautious rerun announce a migration of Codex's configuration.
+        state["native_safety"] = {"opencode": "trusted"}
+        state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+        rerun = self.run_core("install", "--agent", "opencode", "--global", env=environment)
+
+        self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+        self.assertNotIn("config.toml", rerun.stdout + rerun.stderr)
+        self.assertNotIn("migrating", rerun.stdout + rerun.stderr)
+        self.assertNotIn("opencode", json.loads(state_path.read_text(encoding="utf-8")).get("native_safety", {}))
 
     def test_cautious_rerun_cannot_make_the_next_update_restore_trusted_safety(self) -> None:
         self.commit_and_tag(CURRENT_VERSION)

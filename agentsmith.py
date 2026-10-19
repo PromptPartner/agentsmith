@@ -1566,8 +1566,11 @@ def install_native_config(target: Path, agents: list[str], args: argparse.Namesp
         native_safety = state.get("native_safety", {})
         if not isinstance(native_safety, dict):
             native_safety = {}
+        # Only Claude and Codex have a safety setting; earlier releases recorded every agent.
+        native_safety = {key: value for key, value in native_safety.items() if key in {"claude", "codex"}}
         for agent_id in agents:
-            native_safety[agent_id] = args.safety
+            if agent_id in {"claude", "codex"}:
+                native_safety[agent_id] = args.safety
         record_state(home_dir(), "native_safety", native_safety, dry_run=False)
     if selected_mcp and not args.global_mode:
         if "claude" in agents:
@@ -4010,7 +4013,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     prior_managed_safety: dict[str, str] = {
         agent_id: value
         for agent_id, value in ownership_safety.items()
-        if agent_id in agents and value in {"cautious", "trusted"}
+        if agent_id in agents and agent_id in {"claude", "codex"} and value in {"cautious", "trusted"}
     }
     had_managed_instructions = any(
         path.exists() and managed_markers(path.read_text(encoding="utf-8", errors="replace"))
