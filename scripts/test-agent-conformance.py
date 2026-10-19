@@ -1059,6 +1059,24 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
             "explicit identity fields override recovered values without resetting siblings",
         )
 
+        no_global_root = sandbox / "global without destination"
+        no_global_env = env.copy()
+        no_global_env.update({
+            "HOME": str(no_global_root / "home"),
+            "USERPROFILE": str(no_global_root / "home"),
+            "CODEX_HOME": str(no_global_root / "codex"),
+        })
+        no_global = run_core("install", "--agent", "codex,cursor", "--global", "--assemble-only", env=no_global_env)
+        installed_line = next((line for line in no_global.stdout.splitlines() if "installed for" in line), "")
+        results.check(
+            no_global.returncode == 0
+            and "cursor has no user-level instruction file" in no_global.stdout
+            and "codex" in installed_line
+            and "cursor" not in installed_line,
+            "global install warns for an agent without a user-level instruction file and does not claim it",
+            no_global.stdout[-500:],
+        )
+
     skill_files = sorted((ROOT / "skills").glob("*/SKILL.md"))
     skills_have_metadata = bool(skill_files)
     skills_are_path_neutral = bool(skill_files)

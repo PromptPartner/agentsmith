@@ -73,6 +73,7 @@ class UpdateCheckTests(unittest.TestCase):
         broken_runtime_health: bool = False,
         candidate_execution_probe: Path | None = None,
         statusline_probe: str | None = None,
+        extra_global_rules: str | None = None,
     ) -> None:
         for directory in ("config", "core", "profiles", "scripts", "skills", "templates"):
             destination = self.seed / directory
@@ -105,6 +106,19 @@ class UpdateCheckTests(unittest.TestCase):
                 'if __name__ == "__main__":',
                 1,
             )
+        if extra_global_rules is not None:
+            # A hostile or buggy candidate that writes one more user-level rules file.
+            runtime = runtime.replace(
+                '\nif __name__ == "__main__":',
+                '\n_release_instruction_paths = instruction_paths\n\n'
+                'def instruction_paths(target, agents, global_mode):\n'
+                '    canonical, native = _release_instruction_paths(target, agents, global_mode)\n'
+                '    if global_mode:\n'
+                f'        native.append(home_dir() / {json.dumps(extra_global_rules)})\n'
+                '    return canonical, native\n\n'
+                'if __name__ == "__main__":',
+                1,
+            )
         (self.seed / "agentsmith.py").write_text(runtime, encoding="utf-8")
         if statusline_probe is not None:
             statusline = self.seed / "config" / "statusline.py"
@@ -130,6 +144,20 @@ class UpdateCheckTests(unittest.TestCase):
             check=False,
             env=env,
         )
+
+    def publish_remote(self) -> None:
+        cloned = subprocess.run(
+            ["git", "clone", "-q", "--no-local", "--bare", str(self.seed), str(self.remote)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(cloned.returncode, 0, cloned.stdout + cloned.stderr)
+
+    @staticmethod
+    def receipt_from(applied: subprocess.CompletedProcess[str]) -> Path:
+        receipt_line = next(line for line in applied.stdout.splitlines() if "rollback receipt:" in line)
+        return Path(receipt_line.split("rollback receipt:", 1)[1].strip())
 
     @staticmethod
     def isolated_environment(home: Path, codex_home: Path, **extra: str) -> dict[str, str]:
@@ -2036,6 +2064,100 @@ class UpdateCheckTests(unittest.TestCase):
             state["installation"]["capabilities"],
             {"handoff_hooks": True, "hooks": False, "mcp": ["context7"], "skills": True, "ui_design_hook": False},
         )
+
+    def test_global_opencode_update_applies_and_rolls_back(self) -> None:
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
+        self.publish_remote()
+        home = self.root / "opencode-home"
+        environment = self.isolated_environment(home, self.root / "opencode-codex")
+        installed = self.run_core(
+            "install", "--agent", "opencode", "--global", "--profile", "software-dev", env=environment,
+        )
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        rules = home / ".config" / "opencode" / "AGENTS.md"
+        managed_paths = [home / ".agentsmith" / "state.json", rules]
+        before = {path: path.read_bytes() for path in managed_paths}
+        plan_path = self.root / "opencode-plan.json"
+        planned = self.run_core(
+            "update", "plan", "--global", "--version", NEXT_TAG, "--from", str(self.remote),
+            "--save", str(plan_path), env=environment,
+        )
+        self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        self.assertIn(
+            {"root": "home", "path": ".config/opencode/AGENTS.md"},
+            [{"root": item["root"], "path": item["path"]} for item in plan["proposed_changes"]],
+        )
+
+        applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
+
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        self.assertIn(NEXT_RELEASE_PROBE, rules.read_text(encoding="utf-8"))
+        rolled_back = self.run_core("update", "rollback", "--receipt", str(self.receipt_from(applied)), env=environment)
+        self.assertEqual(rolled_back.returncode, 0, rolled_back.stdout + rolled_back.stderr)
+        self.assertEqual({path: path.read_bytes() for path in managed_paths}, before)
+
+    def test_update_plan_rejects_symlinked_opencode_config(self) -> None:
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
+        self.publish_remote()
+        home = self.root / "linked-config-home"
+        environment = self.isolated_environment(home, self.root / "linked-config-codex")
+        installed = self.run_core("install", "--agent", "opencode", "--global", env=environment)
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        moved_config = self.root / "dotfiles config"
+        shutil.move(str(home / ".config"), moved_config)
+        try:
+            (home / ".config").symlink_to(moved_config, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symbolic links are unavailable: {exc}")
+        rules_before = (moved_config / "opencode" / "AGENTS.md").read_bytes()
+
+        planned = self.run_core(
+            "update", "plan", "--global", "--version", NEXT_TAG, "--from", str(self.remote), env=environment,
+        )
+
+        self.assertNotEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        self.assertIn("symbolic link", planned.stderr)
+        self.assertEqual((moved_config / "opencode" / "AGENTS.md").read_bytes(), rules_before)
+
+    def test_candidate_cannot_write_opencode_rules_for_unselected_agent(self) -> None:
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION, extra_global_rules=".config/opencode/AGENTS.md")
+        self.publish_remote()
+        home = self.root / "unselected-home"
+        codex_home = self.root / "unselected-codex"
+        environment = self.isolated_environment(home, codex_home)
+        installed = self.run_core("install", "--agent", "codex", "--global", env=environment)
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        plan_path = self.root / "unselected-plan.json"
+        planned = self.run_core(
+            "update", "plan", "--global", "--version", NEXT_TAG, "--from", str(self.remote),
+            "--save", str(plan_path), env=environment,
+        )
+        self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        before = {path: path.read_bytes() for path in (home / ".agentsmith" / "state.json", codex_home / "AGENTS.md")}
+
+        applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
+
+        self.assertNotEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        self.assertIn("outside the managed surface: home:.config/opencode/AGENTS.md", applied.stderr)
+        self.assertFalse((home / ".config").exists())
+        self.assertEqual({path: path.read_bytes() for path in before}, before)
+
+    def test_pre_manifest_reconstruction_ignores_new_global_rule_files(self) -> None:
+        # No release before the manifest wrote these files, so they never prove an installation.
+        home = self.root / "pre-manifest-new-rules"
+        environment = self.isolated_environment(home, self.root / "pre-manifest-new-codex")
+        installed = self.run_core("install", "--agent", "opencode", "--global", "--profile", "software-dev", env=environment)
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        (home / ".agentsmith" / "state.json").unlink()
+
+        with mock.patch.dict(os.environ, environment, clear=False), self.assertRaisesRegex(
+            runtime.CliError, "no managed instruction markers"
+        ):
+            runtime.reconstruct_pre_manifest_installation(home.resolve(), "global", {})
 
     def test_global_non_native_install_records_no_native_safety(self) -> None:
         home = self.root / "non-native-home"

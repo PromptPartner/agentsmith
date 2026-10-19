@@ -34,6 +34,9 @@ class DoctorTests(unittest.TestCase):
                 "PYTHONIOENCODING": "utf-8",
             }
         )
+        # Client locations from the operator's own shell must not redirect fixture installs.
+        for name in ("PI_CODING_AGENT_DIR", "XDG_CONFIG_HOME"):
+            self.env.pop(name, None)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -295,6 +298,62 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(reinstalled.returncode, 0, reinstalled.stdout + reinstalled.stderr)
         self.assertEqual(canonical.read_bytes(), canonical_before)
         self.assertEqual(adapter.read_bytes(), canonical.read_bytes())
+
+    def test_global_opencode_install_doctor_and_uninstall(self) -> None:
+        rules = Path(self.env["HOME"]) / ".config" / "opencode" / "AGENTS.md"
+        rules.parent.mkdir(parents=True)
+        rules.write_text("# My own OpenCode rules\n", encoding="utf-8")
+        project = self.root / "unrelated project"
+        project.mkdir()
+
+        installed = self.run_core("install", "--agent", "opencode", "--global", "--profile", "software-dev")
+
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        self.assertIn("installed for opencode", installed.stdout)
+        text = rules.read_text(encoding="utf-8")
+        self.assertIn("<!-- BEGIN AGENTSMITH", text)
+        self.assertIn("<!-- END AGENTSMITH -->", text)
+        self.assertIn("# My own OpenCode rules", text)
+        strict = self.run_core("doctor", "--agent", "opencode", "--target", str(project), "--strict", "--json")
+        self.assertEqual(strict.returncode, 0, strict.stdout + strict.stderr)
+        sources = json.loads(strict.stdout)["opencode"]["instructions"]["sources"]
+        self.assertEqual(Path(sources[0]["path"]), rules.resolve())
+        self.assertEqual((sources[0]["scope"], sources[0]["managed_status"]), ("global", "managed"))
+
+        removed = self.run_core("install", "--agent", "opencode", "--global", "--uninstall")
+
+        self.assertEqual(removed.returncode, 0, removed.stdout + removed.stderr)
+        self.assertEqual(rules.read_text(encoding="utf-8"), "# My own OpenCode rules\n")
+
+    def test_global_install_refuses_two_agents_sharing_one_rules_file(self) -> None:
+        shared = Path(self.env["HOME"]) / ".config" / "opencode"
+        self.env["CODEX_HOME"] = str(shared)
+
+        installed = self.run_core("install", "--agent", "codex,opencode", "--global", "--profile", "software-dev")
+
+        self.assertNotEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        self.assertIn("same instruction file", installed.stderr)
+        self.assertFalse((shared / "AGENTS.md").exists())
+        self.assertFalse((Path(self.env["HOME"]) / ".agentsmith").exists())
+
+    def test_global_opencode_install_reports_an_ignored_xdg_config_home(self) -> None:
+        project = self.root / "xdg project"
+        project.mkdir()
+        self.env["XDG_CONFIG_HOME"] = str(self.root / "xdg config")
+
+        installed = self.run_core("install", "--agent", "opencode", "--global", "--profile", "software-dev")
+
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        self.assertIn("XDG_CONFIG_HOME", installed.stderr)
+        _, payload = self.doctor(project, "opencode")
+        self.assertIn("opencode-xdg-config-ignored", self.warning_codes(payload["opencode"]))
+
+        self.env["XDG_CONFIG_HOME"] = str(Path(self.env["HOME"]) / ".config")
+        matching = self.run_core("install", "--agent", "opencode", "--global", "--profile", "software-dev")
+        self.assertEqual(matching.returncode, 0, matching.stdout + matching.stderr)
+        self.assertNotIn("XDG_CONFIG_HOME", matching.stderr)
+        _, matching_payload = self.doctor(project, "opencode")
+        self.assertNotIn("opencode-xdg-config-ignored", self.warning_codes(matching_payload["opencode"]))
 
     def test_skill_install_refuses_symlinked_adapter_root_before_external_writes(self) -> None:
         project = self.root / "symlinked adapter project"

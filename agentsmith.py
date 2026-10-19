@@ -67,6 +67,15 @@ GROUPS = {
     "local": ("codex", "cline", "roo-code", "aider", "continue", "openhands", "goose", "opencode"),
     "all": AGENT_IDS,
 }
+# User-level rules file per agent: (update root, path inside it). It lives in code, not in
+# config/agents.json, because a staged update reads the candidate release's registry, and
+# release data must not widen where the trusted updater writes. Entry order is the order a
+# global re-run recovers operator identity from.
+GLOBAL_INSTRUCTION_TARGETS: dict[str, tuple[str, str]] = {
+    "codex": ("codex_home", "AGENTS.md"),
+    "claude": ("home", ".claude/CLAUDE.md"),
+    "opencode": ("home", ".config/opencode/AGENTS.md"),
+}
 CODE_PROFILES = {"software-dev", "devops-setup"}
 DEMO_TEMPLATE_FILES = (
     ".harness/verify.conf",
@@ -183,6 +192,26 @@ def home_dir() -> Path:
 
 def codex_home() -> Path:
     return Path(os.environ.get("CODEX_HOME") or home_dir() / ".codex").expanduser()
+
+
+def global_roots() -> dict[str, Path]:
+    return {"home": home_dir(), "codex_home": codex_home()}
+
+
+def global_instruction_path(agent_id: str) -> Path | None:
+    if agent_id not in GLOBAL_INSTRUCTION_TARGETS:
+        return None
+    root_name, relative = GLOBAL_INSTRUCTION_TARGETS[agent_id]
+    return global_roots()[root_name] / relative
+
+
+def ignored_opencode_config_home() -> Path | None:
+    """Return XDG_CONFIG_HOME when OpenCode would read rules there instead of ~/.config."""
+    configured = os.environ.get("XDG_CONFIG_HOME")
+    if not configured:
+        return None
+    path = Path(configured).expanduser()
+    return None if path.resolve() == (home_dir() / ".config").resolve() else path
 
 
 def resolve_central_runtime(runtime_record: dict[str, Any]) -> Path:
@@ -2224,10 +2253,9 @@ def installation_fingerprints(
             if skill_agent == "claude":
                 add_owned_skills("target", target / ".claude" / "skills", classification)
     else:
-        if "claude" in installation["agents"]:
-            add("home", ".claude/CLAUDE.md")
-        if "codex" in installation["agents"]:
-            add("codex_home", "AGENTS.md")
+        for agent_id, (root_name, relative) in GLOBAL_INSTRUCTION_TARGETS.items():
+            if agent_id in installation["agents"]:
+                add(root_name, relative)
         if installation["capabilities"].get("skills"):
             skill_target = roots["home"]
             skill_agent = "claude" if "claude" in installation["agents"] else "codex"
@@ -2842,6 +2870,13 @@ def refresh_translated_statusline_hashes(
         )
 
 
+def selected_global_agent(agent_id: str, installation: dict[str, Any]) -> bool:
+    """A newer user-level rules file is an update surface only for a global install that selected its agent."""
+    if not installation:  # a rollback receipt is checked against its own recorded changes
+        return True
+    return installation.get("scope") == "global" and agent_id in installation.get("agents", [])
+
+
 def allowed_update_path(root_name: str, relative: str, installation: dict[str, Any]) -> bool:
     path = Path(relative)
     if ".." in path.parts or path.is_absolute():
@@ -2863,6 +2898,7 @@ def allowed_update_path(root_name: str, relative: str, installation: dict[str, A
         return (
             relative in {".agentsmith/state.json", *RUNTIME_FILES}
             or relative in {".claude/CLAUDE.md", ".claude/settings.json"}
+            or (relative == ".config/opencode/AGENTS.md" and selected_global_agent("opencode", installation))
             or bool(re.fullmatch(r"\.claude/agentsmith-statusline(?:-\d+)?\.(?:py|ps1)", relative))
             or relative.startswith((".agents/skills/", ".claude/skills/"))
         )
@@ -3063,10 +3099,9 @@ def validate_post_update_health(plan: dict[str, Any]) -> None:
     target = Path(plan["roots"]["target"])
     instruction_paths: list[Path] = []
     if plan["scope"] == "global":
-        if "claude" in installation["agents"]:
-            instruction_paths.append(Path(plan["roots"]["home"]) / ".claude" / "CLAUDE.md")
-        if "codex" in installation["agents"]:
-            instruction_paths.append(Path(plan["roots"]["codex_home"]) / "AGENTS.md")
+        for agent_id, (root_name, relative) in GLOBAL_INSTRUCTION_TARGETS.items():
+            if agent_id in installation["agents"]:
+                instruction_paths.append(Path(plan["roots"][root_name]) / relative)
     else:
         instruction_paths.append(target / "AGENTS.md")
         if "claude" in installation["agents"]:
@@ -3454,7 +3489,8 @@ def maybe_report_automatic_update() -> None:
 def reassemble_managed_targets(args: argparse.Namespace) -> None:
     """Refresh managed instructions in the installation scope selected for self-update."""
     target = Path(args.target or os.getcwd()).expanduser().resolve()
-    global_candidates = [home_dir() / ".claude" / "CLAUDE.md", codex_home() / "AGENTS.md"]
+    roots = global_roots()
+    global_candidates = [roots[root_name] / relative for root_name, relative in GLOBAL_INSTRUCTION_TARGETS.values()]
     project_candidates = [target / "AGENTS.md", target / "CLAUDE.md"]
     if args.global_mode:
         candidates = global_candidates
@@ -3741,13 +3777,13 @@ def scaffold_project(target: Path, profiles: list[str], agents: list[str], args:
 
 def instruction_paths(target: Path, agents: list[str], global_mode: bool) -> tuple[list[Path], list[Path]]:
     if global_mode:
-        canonical = []
-        native: list[Path] = []
-        if "codex" in agents:
-            native.append(codex_home() / "AGENTS.md")
-        if "claude" in agents:
-            native.append(home_dir() / ".claude" / "CLAUDE.md")
-        return canonical, native
+        roots = global_roots()
+        native = [
+            roots[root_name] / relative
+            for agent_id, (root_name, relative) in GLOBAL_INSTRUCTION_TARGETS.items()
+            if agent_id in agents
+        ]
+        return [], native
     canonical = [target / "AGENTS.md"]
     generated = [target / "CLAUDE.md"] if "claude" in agents else []
     return canonical, generated
@@ -4007,6 +4043,29 @@ def cmd_install(args: argparse.Namespace) -> int:
         requested["memory_startup"] = False
     show_capability_effects(requested)
     canonical, generated = instruction_paths(target, agents, args.global_mode)
+    written_agents = agents
+    if args.global_mode:
+        written_agents = [agent_id for agent_id in agents if agent_id in GLOBAL_INSTRUCTION_TARGETS]
+        for agent_id in agents:
+            if agent_id not in written_agents:
+                warn(
+                    f"{agent_id} has no user-level instruction file that AgentSmith manages; --global wrote "
+                    "nothing for it. Install it per project with --target PATH instead."
+                )
+        destinations = [path.resolve() for path in generated]
+        if len(set(destinations)) != len(destinations):
+            raise CliError(
+                "Two selected agents resolve to the same instruction file; give each its own location "
+                "(for example a different CODEX_HOME) or install them separately"
+            )
+        ignored_config = ignored_opencode_config_home()
+        if "opencode" in agents and ignored_config is not None:
+            warn(
+                f"XDG_CONFIG_HOME is {ignored_config}, so OpenCode reads its rules from "
+                f"{ignored_config / 'opencode' / 'AGENTS.md'}, but AgentSmith manages only "
+                f"{home_dir() / '.config' / 'opencode' / 'AGENTS.md'}. Unset XDG_CONFIG_HOME or set it to "
+                f"{home_dir() / '.config'} so OpenCode reads the managed rules."
+            )
     ownership_safety = load_state(home_dir()).get("native_safety", {})
     if not isinstance(ownership_safety, dict):
         ownership_safety = {}
@@ -4062,7 +4121,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         record_state(skill_root, "skills_installed", True, dry_run=args.dry_run)
     install_hooks(target, agents, args)
     record_installation_manifest(target, agents, profiles, args, recovery, installed_skill_directories)
-    ok(f"installed for {', '.join(agents)}; canonical project instructions: AGENTS.md")
+    ok(f"installed for {', '.join(written_agents) or 'no selected agent'}; canonical project instructions: AGENTS.md")
     return 0
 
 
@@ -4792,6 +4851,17 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     "Claude's derived skill adapter differs from canonical content: "
                     + ", ".join(skills["adapter_diverged_names"]),
                     "Re-run install with --with-skills to regenerate owned adapters.",
+                )
+            )
+        ignored_config = ignored_opencode_config_home() if agent_id == "opencode" else None
+        opencode_rules = global_instruction_path("opencode")
+        if ignored_config is not None and opencode_rules is not None and opencode_rules.is_file():
+            warnings.append(
+                doctor_warning(
+                    "opencode-xdg-config-ignored",
+                    f"OpenCode reads user rules from {ignored_config / 'opencode' / 'AGENTS.md'} because "
+                    f"XDG_CONFIG_HOME is set, so {opencode_rules} is not loaded.",
+                    f"Unset XDG_CONFIG_HOME or set it to {home_dir() / '.config'}.",
                 )
             )
         expanded = any(capabilities[name]["state"] == "managed" for name in ("skills", "mcp", "hooks"))
