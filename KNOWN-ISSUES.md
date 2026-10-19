@@ -691,3 +691,33 @@ group.
 Install recorded `native_safety` for every selected agent. A cautious rerun of a global OpenCode
 install after a trusted one then warned that it was migrating Codex's `config.toml`. Only Claude
 and Codex are recorded now, and stale records for other agents are dropped on the next install.
+
+### GLOBAL-RULES: a relative `PI_CODING_AGENT_DIR` corrupted foreign text during updates (fixed)
+
+Found in review on 2026-10-19 and reproduced: the updater translated root paths with the raw
+configured values. With `PI_CODING_AGENT_DIR="."`, an update of a Codex-only global install turned
+`v1.2.3` and `./docs` in the foreign part of `$CODEX_HOME/AGENTS.md` into paths and wrote them to the
+live file. Translation now skips non-absolute roots, the Pi folder is an update root only for a
+global install with Pi, and a global Pi install or update refuses a relative value.
+
+### GLOBAL-RULES: update accepted two agents sharing one rules file (fixed)
+
+Found in review on 2026-10-19 and reproduced: install refused Pi and Codex resolving to one
+`AGENTS.md`, but `update plan` accepted it because each root has its own shadow folder. One
+destination check now serves install, update plan, plan validation, and apply.
+
+### GLOBAL-RULES: global Pi uninstall removed other installations' rules (fixed)
+
+Found in review on 2026-10-19 and reproduced: with `PI_CODING_AGENT_DIR` set to `CODEX_HOME` or to a
+project root, `install --global --agent pi --uninstall` removed Codex's managed rules or the
+project's managed block, because ownership was inferred from markers alone. Install, update, and
+uninstall now refuse a destination that is another agent's rules file or that lies in a project
+installation's root. Uninstall leaves Pi's file in place when the global record does not list Pi.
+
+### GLOBAL-RULES: each global install replaces the recorded agent list (open)
+
+`record_installation_manifest()` stores only the agents of the latest global install. After
+`install --global --agent pi` and then `install --global --agent codex`, the record lists only
+Codex, so a later global uninstall leaves Pi's file in place and update no longer manages it. The
+record cannot prove ownership of Claude, Codex, or OpenCode files for the same reason. Merging
+global selections needs its own design because update replays the record.
