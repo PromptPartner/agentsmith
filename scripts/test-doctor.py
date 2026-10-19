@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -189,6 +190,34 @@ class DoctorTests(unittest.TestCase):
             self.assertTrue(agent["statusline"]["active"])
             self.assertEqual(agent["runtime"]["state"], "current")
             self.assertIn("trusted-expanded-surface", self.warning_codes(agent))
+
+    def test_container_safety_drops_only_the_codex_sandbox(self) -> None:
+        # Inside Docker the Codex sandbox cannot start, so container mode keeps approvals but
+        # lets the container be the isolation boundary (#47).
+        project = self.root / "container project"
+        project.mkdir()
+        subprocess.run(["git", "-C", str(project), "init", "-q"], check=True)
+        base = ("install", "--agent", "native", "--profile", "software-dev", "--target", str(project))
+        installed = self.run_core(*base, "--safety", "container")
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        settings_path = Path(self.env["HOME"]) / ".claude" / "settings.json"
+        codex_path = Path(self.env["CODEX_HOME"]) / "config.toml"
+        self.assertEqual(json.loads(settings_path.read_text(encoding="utf-8"))["permissions"]["defaultMode"], "acceptEdits")
+        codex = codex_path.read_text(encoding="utf-8")
+        self.assertIn('approval_policy = "on-request"', codex)
+        self.assertIn('sandbox_mode = "danger-full-access"', codex)
+        state = json.loads((project / ".agentsmith" / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["installation"]["safety"], {"claude": "container", "codex": "container"})
+        if not load_core().detect_container():
+            self.assertIn("no container was detected", installed.stdout + installed.stderr)
+        for agent_id in ("claude", "codex"):
+            result, payload = self.doctor(project, agent_id)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(payload[agent_id]["safety"]["state"], "container", agent_id)
+        rerun = self.run_core(*base)
+        self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+        self.assertIn("from container to cautious", rerun.stdout + rerun.stderr)
+        self.assertIn('sandbox_mode = "workspace-write"', codex_path.read_text(encoding="utf-8"))
 
     def test_unmanaged_nested_sources_and_missing_custom_global_are_reported(self) -> None:
         project = self.root / "nested repo"
@@ -381,6 +410,36 @@ class ContainerDetectionTests(unittest.TestCase):
         (self.root / ".dockerenv").write_text("", encoding="utf-8")
         self.assertEqual(self.detect({"container": "docker"}, system="Darwin"), [])
         self.assertEqual(self.detect({"container": "docker"}, system="Windows"), [])
+
+
+class SafetyInspectionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.core = load_core()
+        self.temporary = tempfile.TemporaryDirectory()
+        self.home = Path(self.temporary.name)
+        self.environment = unittest.mock.patch.dict(
+            os.environ, {"HOME": str(self.home), "USERPROFILE": str(self.home), "CODEX_HOME": str(self.home / "codex")}
+        )
+        self.environment.start()
+
+    def tearDown(self) -> None:
+        self.environment.stop()
+        self.temporary.cleanup()
+
+    def test_shared_claude_mode_follows_the_recorded_safety(self) -> None:
+        # Claude uses acceptEdits for cautious and container alike; only the record can tell them apart.
+        settings = self.home / ".claude" / "settings.json"
+        settings.parent.mkdir()
+        settings.write_text(json.dumps({"permissions": {"defaultMode": "acceptEdits"}}), encoding="utf-8")
+        self.assertEqual(self.core.inspect_safety("claude")["state"], "cautious")
+        self.assertEqual(self.core.inspect_safety("claude", expected="container")["state"], "container")
+        self.assertEqual(self.core.inspect_safety("claude", expected="trusted")["state"], "cautious")
+
+    def test_codex_container_pair_is_recognized(self) -> None:
+        config = self.home / "codex" / "config.toml"
+        config.parent.mkdir()
+        config.write_text('approval_policy = "on-request"\nsandbox_mode = "danger-full-access"\n', encoding="utf-8")
+        self.assertEqual(self.core.inspect_safety("codex")["state"], "container")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -67,6 +67,18 @@ GROUPS = {
     "local": ("aider", "cline", "openhands", "goose", "opencode"),
     "all": AGENT_IDS,
 }
+SAFETY_MODES = ("cautious", "trusted", "container")
+# The native settings each safety mode writes. Container keeps human approval but turns off the
+# Codex sandbox: bubblewrap cannot create user namespaces in a default Docker container, so the
+# container itself is the isolation boundary there.
+NATIVE_SAFETY = {
+    "cautious": {"claude": {"defaultMode": "acceptEdits"},
+                 "codex": {"approval_policy": "on-request", "sandbox_mode": "workspace-write"}},
+    "trusted": {"claude": {"defaultMode": "bypassPermissions"},
+                "codex": {"approval_policy": "never", "sandbox_mode": "danger-full-access"}},
+    "container": {"claude": {"defaultMode": "acceptEdits"},
+                  "codex": {"approval_policy": "on-request", "sandbox_mode": "danger-full-access"}},
+}
 CODE_PROFILES = {"software-dev", "devops-setup"}
 DEMO_TEMPLATE_FILES = (
     ".harness/verify.conf",
@@ -1310,10 +1322,7 @@ def reconcile_codex_toml(path: Path, safety: str | None, mcp: dict[str, Any], *,
         selected.pop(name)
     lines = [TEXT_BEGIN]
     if safety:
-        lines.extend(
-            ['approval_policy = "on-request"', 'sandbox_mode = "workspace-write"']
-            if safety == "cautious" else ['approval_policy = "never"', 'sandbox_mode = "danger-full-access"']
-        )
+        lines.extend(f'{key} = "{value}"' for key, value in NATIVE_SAFETY[safety]["codex"].items())
     for name, entry in sorted(selected.items()):
         lines.extend(("", f"[mcp_servers.{name}]"))
         for key, value in entry.items():
@@ -1555,7 +1564,8 @@ def install_native_config(target: Path, agents: list[str], args: argparse.Namesp
     selected_mcp = mcp_source(csv(args.with_mcp))
     prior_safety = getattr(args, "prior_managed_safety", {})
     for agent_id in agents:
-        if prior_safety.get(agent_id) == "trusted" and args.safety == "cautious":
+        prior = prior_safety.get(agent_id)
+        if prior in {"trusted", "container"} and args.safety == "cautious":
             destination = (
                 home_dir() / ".claude" / "settings.json"
                 if agent_id == "claude"
@@ -1564,11 +1574,11 @@ def install_native_config(target: Path, agents: list[str], args: argparse.Namesp
             if args.dry_run:
                 say(
                     f"DRY RUN — would migrate AgentSmith-managed {agent_id} safety "
-                    f"from trusted to cautious in {destination}"
+                    f"from {prior} to cautious in {destination}"
                 )
             else:
                 warn(
-                    f"WARNING: migrating AgentSmith-managed {agent_id} safety from trusted to "
+                    f"WARNING: migrating AgentSmith-managed {agent_id} safety from {prior} to "
                     f"cautious; the existing config will be backed up: {destination}"
                 )
     if "claude" in agents and not args.assemble_only:
@@ -1576,9 +1586,12 @@ def install_native_config(target: Path, agents: list[str], args: argparse.Namesp
             permissions = data.setdefault("permissions", {})
             if not isinstance(permissions, dict):
                 raise CliError("Refusing to replace non-object Claude permissions configuration")
-            permissions["defaultMode"] = "acceptEdits" if args.safety == "cautious" else "bypassPermissions"
+            permissions["defaultMode"] = NATIVE_SAFETY[args.safety]["claude"]["defaultMode"]
         merge_json(home_dir() / ".claude" / "settings.json", claude_settings, dry_run=args.dry_run)
     if "codex" in agents and not args.assemble_only:
+        if args.safety == "container" and not detect_container():
+            warn("WARNING: --safety container turns off the Codex sandbox, but no container was detected; "
+                 "on this machine Codex would run commands without a sandbox")
         reconcile_codex_toml(codex_home() / "config.toml", args.safety, {}, dry_run=args.dry_run)
     if not args.assemble_only:
         install_default_statuslines(agents, target, args.global_mode, dry_run=args.dry_run)
@@ -1927,6 +1940,8 @@ def validate_installation_manifest(state: dict[str, Any]) -> dict[str, Any]:
     for name in ("source", "safety", "operator", "tracker", "capabilities"):
         if not isinstance(installation[name], dict):
             raise CliError(f"Installation manifest {name} field must be an object")
+    if any(value not in SAFETY_MODES for value in installation["safety"].values()):
+        raise CliError(f"Installation manifest safety values must be one of {', '.join(SAFETY_MODES)}")
     if not isinstance(installation["managed_files"], list):
         raise CliError("Installation manifest managed_files field must be a list")
     if "effects" in installation and not isinstance(installation["effects"], dict):
@@ -2047,7 +2062,7 @@ def reconstruct_pre_manifest_installation(target: Path, scope: str, state: dict[
         assemble_only = True
         safety: dict[str, str] = {}
     elif native_agents and all(
-        agent_id in native_safety and value in {"cautious", "trusted"}
+        agent_id in native_safety and value in SAFETY_MODES
         for agent_id, value in zip(native_agents, native_evidence, strict=True)
     ):
         assemble_only = False
@@ -3223,7 +3238,7 @@ def validate_post_update_health(plan: dict[str, Any]) -> None:
 
     if not installation["assemble_only"]:
         for agent_id, expected_safety in installation["safety"].items():
-            if inspect_safety(agent_id)["state"] != expected_safety:
+            if inspect_safety(agent_id, expected=expected_safety)["state"] != expected_safety:
                 raise CliError(f"Post-update health check failed: native safety does not match the manifest for {agent_id}")
 
     if "effects" in installed and installed["effects"] != capability_effects(installation["capabilities"]):
@@ -4031,7 +4046,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     prior_managed_safety: dict[str, str] = {
         agent_id: value
         for agent_id, value in ownership_safety.items()
-        if agent_id in agents and value in {"cautious", "trusted"}
+        if agent_id in agents and value in SAFETY_MODES
     }
     had_managed_instructions = any(
         path.exists() and managed_markers(path.read_text(encoding="utf-8", errors="replace"))
@@ -4054,6 +4069,8 @@ def cmd_install(args: argparse.Namespace) -> int:
         )
         if managed and 'approval_policy = "never"' in managed.group(1) and 'sandbox_mode = "danger-full-access"' in managed.group(1):
             prior_managed_safety["codex"] = "trusted"
+        elif managed and 'approval_policy = "on-request"' in managed.group(1) and 'sandbox_mode = "danger-full-access"' in managed.group(1):
+            prior_managed_safety["codex"] = "container"
     args.prior_managed_safety = prior_managed_safety
     recovery = recover_identity([*canonical, *generated])
     block = build_instructions(args, profiles, not args.profile_only, recovery)
@@ -4711,7 +4728,8 @@ def inspect_runtime(agent: dict[str, Any], target: Path) -> dict[str, Any]:
     }
 
 
-def inspect_safety(agent_id: str) -> dict[str, Any]:
+def inspect_safety(agent_id: str, expected: str | None = None) -> dict[str, Any]:
+    """Name the safety mode the native settings show; `expected` decides between modes that share them."""
     if agent_id == "claude":
         path = home_dir() / ".claude" / "settings.json"
         if not path.exists():
@@ -4721,8 +4739,8 @@ def inspect_safety(agent_id: str) -> dict[str, Any]:
         except json.JSONDecodeError:
             return {"state": "malformed", "path": str(path), "values": {}}
         mode = data.get("permissions", {}).get("defaultMode") if isinstance(data.get("permissions", {}), dict) else None
-        state = {"acceptEdits": "cautious", "bypassPermissions": "trusted"}.get(mode, "foreign")
-        return {"state": state, "path": str(path), "values": {"defaultMode": mode}}
+        values = {"defaultMode": mode}
+        return {"state": safety_state("claude", values, expected), "path": str(path), "values": values}
     if agent_id == "codex":
         path = codex_home() / "config.toml"
         if not path.exists():
@@ -4732,12 +4750,15 @@ def inspect_safety(agent_id: str) -> dict[str, Any]:
         except tomllib.TOMLDecodeError:
             return {"state": "malformed", "path": str(path), "values": {}}
         values = {"approval_policy": data.get("approval_policy"), "sandbox_mode": data.get("sandbox_mode")}
-        mapping = {
-            ("on-request", "workspace-write"): "cautious",
-            ("never", "danger-full-access"): "trusted",
-        }
-        return {"state": mapping.get((values["approval_policy"], values["sandbox_mode"]), "foreign"), "path": str(path), "values": values}
+        return {"state": safety_state("codex", values, expected), "path": str(path), "values": values}
     return {"state": "unsupported", "path": "", "values": {}}
+
+
+def safety_state(agent_id: str, values: dict[str, Any], expected: str | None) -> str:
+    matches = [mode for mode in SAFETY_MODES if NATIVE_SAFETY[mode][agent_id] == values]
+    if expected in matches:
+        return str(expected)
+    return matches[0] if matches else "foreign"
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -4754,7 +4775,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         hooks = inspect_hooks(agent_id, agent, target)
         statusline = inspect_statusline(agent_id)
         runtime = inspect_runtime(agent, target)
-        safety = inspect_safety(agent_id)
+        installation = load_state(target).get("installation", {})
+        installation = installation if isinstance(installation, dict) else {}
+        global_installation = load_state(home_dir()).get("installation", {})
+        global_installation = global_installation if isinstance(global_installation, dict) else {}
+        recorded_safety = {**global_installation.get("safety", {}), **installation.get("safety", {})}
+        safety = inspect_safety(agent_id, expected=recorded_safety.get(agent_id))
         capabilities = {
             "instructions": instructions,
             "skills": skills,
@@ -4821,10 +4847,6 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     "Use cautious safety unless this expanded tool surface is deliberately trusted.",
                 )
             )
-        installation = load_state(target).get("installation", {})
-        installation = installation if isinstance(installation, dict) else {}
-        global_installation = load_state(home_dir()).get("installation", {})
-        global_installation = global_installation if isinstance(global_installation, dict) else {}
         selected_capabilities = {**global_installation.get("capabilities", {}), **installation.get("capabilities", {})}
         effect_records = {"project": installation.get("effects", {}), "user": global_installation.get("effects", {})}
         result[agent_id] = {**capabilities, "safety": safety, "warnings": warnings,
@@ -7718,7 +7740,10 @@ def add_common_install_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--target")
     parser.add_argument("--global", dest="global_mode", action="store_true")
     parser.add_argument("--profile-only", action="store_true")
-    parser.add_argument("--assemble-only", action="store_true")
+    parser.add_argument(
+        "--assemble-only", action="store_true",
+        help="write instructions only; leave Claude and Codex permissions, Codex config.toml and statuslines untouched",
+    )
     parser.add_argument("--operator-name")
     parser.add_argument("--operator-role", help="operator responsibility used to calibrate decisions")
     parser.add_argument("--operator-bio", help="operator background and uneven expertise used to calibrate explanations")
@@ -7726,9 +7751,10 @@ def add_common_install_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--tracker-writes", choices=("ask", "allowed"))
     parser.add_argument(
         "--safety",
-        choices=("cautious", "trusted"),
+        choices=SAFETY_MODES,
         default="cautious",
-        help="native-client permission mode (default: cautious; trusted requires explicit opt-in)",
+        help="native-client permission mode (default: cautious; trusted requires explicit opt-in; "
+             "container keeps approvals but turns off the Codex sandbox, for Docker and similar)",
     )
     parser.add_argument("--with-skills", action="store_true")
     parser.add_argument("--with-mcp", action="append")
