@@ -54,6 +54,12 @@ warns, backs up, and moves it to cautious.
 | `trusted` | `bypassPermissions` | `never` / `danger-full-access` | A machine you fully own, where prompts cost more than they protect. |
 | `container` | `acceptEdits` | `on-request` / `danger-full-access` | Inside Docker or a similar container. The Codex sandbox (bubblewrap) usually cannot create user namespaces there, so cautious Codex fails every command. The container is the isolation boundary, and approvals stay on. |
 
+Use `container` only with repositories you trust. Without the Codex sandbox, project code and
+commands can read everything inside the container, including the agent's own credentials; the
+container limits the damage to itself, not to what it holds. This matches OpenAI's guidance for
+running Codex in a container: let the container provide the isolation, and run it only on trusted
+code.
+
 Choose with `--safety cautious|trusted|container`. The wizard offers `container`, and makes it
 the default, only when it detects a container. `agentsmith doctor` reports the active mode and
 warns when cautious Codex runs inside a container.

@@ -101,7 +101,9 @@ class GuidedInstallContracts(unittest.TestCase):
                 operator_bio=None, tracker=None, tracker_writes=None,
                 design_system=None, dry_run=False, wizard=True,
             )
-            plan = agentsmith.apply_wizard_answers(args, lambda _prompt: next(answers))
+            # Pin detection off: inside a container the wizard rightly defaults to container safety.
+            with mock.patch.object(agentsmith, "detect_container", return_value=[]):
+                plan = agentsmith.apply_wizard_answers(args, lambda _prompt: next(answers))
             self.assertFalse(target.exists(), "the wizard must not write before install applies")
             self.assertTrue(plan["confirmed"])
             self.assertEqual(Path(args.target), target.resolve())
@@ -207,6 +209,7 @@ class GuidedInstallContracts(unittest.TestCase):
                 answers_file.write_text(json.dumps(document), encoding="utf-8")
                 args = agentsmith.parser().parse_args(["install", "--answers", str(answers_file)])
                 with mock.patch.object(agentsmith.shutil, "which", return_value=None), \
+                        mock.patch.object(agentsmith, "detect_container", return_value=[]), \
                         mock.patch("sys.stdout", new_callable=lambda: __import__("io").StringIO()):
                     agentsmith.apply_wizard_answers_file(args)
                 expected = golden[name]["args"]
