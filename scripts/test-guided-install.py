@@ -57,7 +57,8 @@ def record_wizard_scenario(name: str, container: list[str] | None = None) -> dic
         def anonymize(value):
             # Replace on the data, not on JSON text, so Windows backslashes match too.
             if isinstance(value, str):
-                return value.replace(str(target), "<TARGET>")
+                value = value.replace(str(target), "<TARGET>")
+                return value.replace("\\", "/") if "<TARGET>" in value else value
             if isinstance(value, list):
                 return [anonymize(item) for item in value]
             if isinstance(value, dict):
@@ -213,7 +214,33 @@ class GuidedInstallContracts(unittest.TestCase):
                     actual = getattr(args, field, None)
                     if isinstance(actual, str):
                         actual = actual.replace(str(target), "<TARGET>")
+                        actual = actual.replace("\\", "/") if "<TARGET>" in actual else actual
                     self.assertEqual(actual, value, field)
+
+    def test_wizard_output_survives_a_legacy_windows_pipe(self) -> None:
+        # A Windows pipe encodes stdout as cp1252, which cannot hold the zh-CN strings.
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary) / "home"
+            home.mkdir()
+            environment = {**os.environ, "HOME": str(home), "USERPROFILE": str(home),
+                           "PYTHONIOENCODING": "cp1252"}
+            schema = subprocess.run(
+                [sys.executable, str(ROOT / "agentsmith.py"), "wizard", "schema", "--json"],
+                env=environment, stdin=subprocess.DEVNULL, capture_output=True, timeout=60,
+            )
+            self.assertEqual(schema.returncode, 0, schema.stderr.decode("utf-8", "replace"))
+            messages = json.loads(schema.stdout.decode("ascii"))["messages"]
+            self.assertEqual(messages["zh-CN"]["language"], agentsmith.load_wizard_locales()["zh-CN"]["language"])
+            answers_file = Path(temporary) / "answers.json"
+            answers_file.write_text(json.dumps({
+                "schema_version": 1, "language": "zh-CN", "project_kind": "new",
+                "target": str(Path(temporary) / "fresh"), "agent": ["github-copilot"],
+            }), encoding="utf-8")
+            install = subprocess.run(
+                [sys.executable, str(ROOT / "agentsmith.py"), "install", "--answers", str(answers_file), "--dry-run"],
+                env=environment, stdin=subprocess.DEVNULL, capture_output=True, timeout=120,
+            )
+            self.assertEqual(install.returncode, 0, install.stderr.decode("utf-8", "replace"))
 
     def test_answers_errors_are_aggregated(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

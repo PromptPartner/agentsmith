@@ -8193,8 +8193,16 @@ def apply_wizard_answers(args: argparse.Namespace, input_fn: Any = input) -> dic
     return apply_wizard_plan(args, plan)
 
 
+def tolerate_narrow_stdout() -> None:
+    """Keep printing when stdout cannot encode a wizard language, as in a cp1252 Windows pipe."""
+    encoding = (getattr(sys.stdout, "encoding", None) or "").lower().replace("-", "")
+    if encoding != "utf8" and hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="backslashreplace")
+
+
 def apply_wizard_answers_file(args: argparse.Namespace) -> dict[str, Any]:
     """Validate a JSON answers file with the wizard's own rules. This function performs no writes."""
+    tolerate_narrow_stdout()
     path = Path(args.answers).expanduser()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -8331,7 +8339,8 @@ def wizard_schema(args: argparse.Namespace) -> dict[str, Any]:
 def cmd_wizard(args: argparse.Namespace) -> int:
     schema = wizard_schema(args)
     if args.json:
-        print(json.dumps(schema, indent=2, ensure_ascii=False))
+        # Escaped JSON is lossless for any reader and safe on a narrow Windows pipe.
+        print(json.dumps(schema, indent=2, ensure_ascii=True))
         return 0
     for question in schema["questions"]:
         choices = "/".join(question.get("choices") or []) or question["kind"]
