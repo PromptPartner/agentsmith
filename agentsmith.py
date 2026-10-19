@@ -231,24 +231,47 @@ def update_roots(target: Path, installation: dict[str, Any]) -> dict[str, Path]:
     return roots
 
 
+def project_installation_at(directory: Path) -> bool:
+    path = state_path(directory)
+    if not path.is_file():
+        return False
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return True  # unreadable ownership state is never treated as the global record
+    installation = state.get("installation") if isinstance(state, dict) else None
+    return not (isinstance(installation, dict) and installation.get("scope") == "global")
+
+
 def global_instruction_destinations(agents: Iterable[str]) -> dict[str, Path]:
-    """Live user-level rules file per selected agent; install, update plan and apply all use this."""
+    """Live user-level rules file per selected agent, for install, update and uninstall alike.
+
+    Markers alone cannot prove which installation owns a file, so refuse a destination that is any
+    other agent's rules file (selected or not) or that sits in a project installation's root."""
     roots = global_roots()
     selected = [agent_id for agent_id in GLOBAL_INSTRUCTION_TARGETS if agent_id in agents]
     if "pi" in selected:
         roots["pi_home"] = absolute_pi_home()
     destinations: dict[str, Path] = {}
-    owners: dict[Path, str] = {}
     for agent_id in selected:
         root_name, relative = GLOBAL_INSTRUCTION_TARGETS[agent_id]
         path = roots[root_name] / relative
         resolved = path.resolve()
-        if resolved in owners:
+        for other, (other_root, other_relative) in GLOBAL_INSTRUCTION_TARGETS.items():
+            if (
+                other != agent_id
+                and roots[other_root].is_absolute()
+                and (roots[other_root] / other_relative).resolve() == resolved
+            ):
+                raise CliError(
+                    f"{agent_id} and {other} resolve to the same instruction file {path}; give each its own "
+                    "location (for example a different CODEX_HOME or PI_CODING_AGENT_DIR) or install them separately"
+                )
+        if project_installation_at(path.parent):
             raise CliError(
-                f"{owners[resolved]} and {agent_id} resolve to the same instruction file {path}; give each its "
-                "own location (for example a different CODEX_HOME or PI_CODING_AGENT_DIR) or install them separately"
+                f"{agent_id}'s user-level rules file {path} lies in the root of a project installation; "
+                f"point {agent_id} at its own folder and rerun"
             )
-        owners[resolved] = agent_id
         destinations[agent_id] = path
     return destinations
 
@@ -3948,6 +3971,18 @@ def remove_owned_skills(
 
 def uninstall(args: argparse.Namespace, agents: list[str], target: Path) -> int:
     ownership = load_state(home_dir() if args.global_mode else target)
+    if args.global_mode:
+        # PI_CODING_AGENT_DIR can point anywhere, so Pi's file is removed only when the global
+        # record says AgentSmith installed Pi. Claude, Codex and OpenCode keep their existing
+        # behaviour: every global install replaces the record, which would block valid uninstalls.
+        record = ownership.get("installation")
+        if "pi" in agents and isinstance(record, dict) and "pi" not in record.get("agents", []):
+            warn(
+                "The global installation record does not list pi, so its rules file is left in place. If "
+                "AgentSmith installed it, run install --global --agent pi first, then uninstall."
+            )
+            agents = [agent_id for agent_id in agents if agent_id != "pi"]
+        global_instruction_destinations(agents)  # refuse before anything is removed
     remove_default_statuslines(agents, target, args.global_mode, dry_run=args.dry_run)
     canonical, generated = instruction_paths(target, agents, args.global_mode)
     for path in [*canonical, *generated]:

@@ -66,8 +66,12 @@ hook or MCP surface to make the matrix look complete.
 
 Other agents have no user-level file that AgentSmith manages. A global install warns for each of
 them, writes nothing for them, and leaves them out of its "installed for" line. Install those agents
-per project with `--target`. A global install, `update plan`, and `update apply` refuse two selected
-agents whose files are the same file, for example when `CODEX_HOME` points at `~/.config/opencode`.
+per project with `--target`. A global install, `update plan`, `update apply`, and a global
+`--uninstall` refuse an agent whose file is another agent's rules file, selected or not, for
+example when `CODEX_HOME` points at `~/.config/opencode`. They also refuse a file in the root of a
+project installation. Uninstall checks this before it removes anything. It also leaves Pi's file in
+place when the global installation record does not list Pi, because `PI_CODING_AGENT_DIR` can point
+anywhere.
 
 These destinations are fixed in code, not read from `config/agents.json`. A staged update reads the
 candidate release's registry, so registry data must not decide where the trusted updater writes.

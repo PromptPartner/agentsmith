@@ -392,6 +392,46 @@ class DoctorTests(unittest.TestCase):
                 self.assertEqual(removed.returncode, 0, removed.stdout + removed.stderr)
                 self.assertFalse(rules.exists())
 
+    def test_global_pi_uninstall_refuses_another_installations_rules(self) -> None:
+        codex_rules = Path(self.env["CODEX_HOME"]) / "AGENTS.md"
+        project = self.root / "project rules"
+        installed = self.install(project, "--agent", "codex", "--profile", "software-dev")
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        self.env["PI_CODING_AGENT_DIR"] = str(self.root / "own pi agent")
+        both = self.run_core("install", "--agent", "codex,pi", "--global", "--profile", "software-dev")
+        self.assertEqual(both.returncode, 0, both.stdout + both.stderr)
+        for label, pi_dir, protected, reason in (
+            ("Codex's folder", Path(self.env["CODEX_HOME"]), codex_rules, "same instruction file"),
+            ("a project installation", project, project / "AGENTS.md", "project installation"),
+        ):
+            with self.subTest(label):
+                before = protected.read_bytes()
+                self.env["PI_CODING_AGENT_DIR"] = str(pi_dir)
+
+                removed = self.run_core("install", "--agent", "pi", "--global", "--uninstall")
+
+                self.assertNotEqual(removed.returncode, 0, removed.stdout + removed.stderr)
+                self.assertIn(reason, removed.stderr)
+                self.assertEqual(protected.read_bytes(), before)
+        self.assertTrue((self.root / "own pi agent" / "AGENTS.md").is_file())
+
+    def test_global_pi_uninstall_leaves_rules_the_global_record_does_not_list(self) -> None:
+        self.env["PI_CODING_AGENT_DIR"] = str(self.root / "unrecorded pi agent")
+        rules = self.root / "unrecorded pi agent" / "AGENTS.md"
+        with_pi = self.run_core("install", "--agent", "pi", "--global", "--profile", "software-dev")
+        self.assertEqual(with_pi.returncode, 0, with_pi.stdout + with_pi.stderr)
+        # Each global install replaces the recorded selection.
+        codex_only = self.run_core("install", "--agent", "codex", "--global", "--profile", "software-dev")
+        self.assertEqual(codex_only.returncode, 0, codex_only.stdout + codex_only.stderr)
+        before = rules.read_bytes()
+
+        removed = self.run_core("install", "--agent", "all", "--global", "--uninstall")
+
+        self.assertEqual(removed.returncode, 0, removed.stdout + removed.stderr)
+        self.assertIn("does not list pi", removed.stderr)
+        self.assertEqual(rules.read_bytes(), before)
+        self.assertFalse((Path(self.env["CODEX_HOME"]) / "AGENTS.md").exists())
+
     def test_opencode_with_claude_reports_duplicate_skill_discovery(self) -> None:
         project = self.root / "skill discovery project"
         project.mkdir()
