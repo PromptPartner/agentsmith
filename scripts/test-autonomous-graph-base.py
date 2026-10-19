@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import importlib.util
 import json
@@ -72,6 +73,52 @@ class GraphBaseTests(unittest.TestCase):
                 self.assertRegex(code, r"\A[a-z]+(-[a-z]+)*\Z")
                 self.assertTrue(any(pattern.match(message) for message in messages),
                                 f"{code} matches no RunError raised by the controller")
+
+    def test_child_state_read_retries_transient_windows_sharing_denial(self) -> None:
+        common = self.repo / ".git"
+        state_file = common / "agentsmith-runs" / "a" / "state.json"
+        state_file.parent.mkdir(parents=True)
+        state_file.write_text(json.dumps({
+            "run_id": "a", "manifest_sha256": self.graph["nodes"][0]["manifest_sha256"],
+            "repo": str(self.repo), "status": "making"}), encoding="utf-8")
+        contract = {"repo": self.repo, "nodes": {"a": self.graph["nodes"][0]}}
+        read_bytes = Path.read_bytes
+        attempts = 0
+
+        def transient_read(path: Path) -> bytes:
+            nonlocal attempts
+            if path == state_file:
+                attempts += 1
+                if attempts <= 3:
+                    error = PermissionError(errno.EACCES, "child is replacing its state")
+                    error.winerror = 32
+                    raise error
+            return read_bytes(path)
+
+        # Patching os.name makes Path() build Windows paths, so the Git lookup is stubbed.
+        with (mock.patch.object(GRAPH, "common_directory", return_value=common),
+              mock.patch.object(GRAPH.os, "name", "nt"),
+              mock.patch.object(Path, "read_bytes", transient_read),
+              mock.patch.object(GRAPH.time, "sleep") as pause):
+            self.assertEqual(GRAPH._child_state(contract, "a")["status"], "making")
+        self.assertEqual(attempts, 4)
+        self.assertEqual(pause.call_count, 3)
+        refused = PermissionError(errno.EPERM, "not a sharing race")
+        with (mock.patch.object(GRAPH, "common_directory", return_value=common),
+              mock.patch.object(GRAPH.os, "name", "nt"),
+              mock.patch.object(Path, "read_bytes", side_effect=refused) as read):
+            with self.assertRaises(PermissionError):
+                GRAPH._child_state(contract, "a")
+        self.assertEqual(read.call_count, 1)
+        persistent = PermissionError(errno.EACCES, "persistent sharing denial")
+        persistent.winerror = 32
+        with (mock.patch.object(GRAPH, "common_directory", return_value=common),
+              mock.patch.object(GRAPH.os, "name", "nt"),
+              mock.patch.object(Path, "read_bytes", side_effect=persistent) as read,
+              mock.patch.object(GRAPH.time, "sleep") as pause):
+            with self.assertRaises(PermissionError):
+                GRAPH._child_state(contract, "a")
+        self.assertEqual((read.call_count, pause.call_count), (500, 499))
 
     def setUp(self) -> None:
         # These fixtures exercise graph contracts with run_controller stubbed; no

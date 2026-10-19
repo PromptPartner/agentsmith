@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import contextlib
+import errno
 import importlib.util
 import json
 import math
@@ -227,13 +228,29 @@ def load_contract(target: str | Path, graph_path: str) -> dict[str, Any]:
     }
 
 
+def _read_bytes(path: Path) -> bytes:
+    """Read a file while tolerating bounded Windows sharing races, as the controller does."""
+    for attempt in range(500):
+        try:
+            return path.read_bytes()
+        except PermissionError as exc:
+            # A child replaces its state atomically; Windows denies opens during the replace.
+            transient_windows_error = os.name == "nt" and (
+                getattr(exc, "winerror", None) in {5, 32} or exc.errno == errno.EACCES
+            )
+            if not transient_windows_error or attempt == 499:
+                raise
+            time.sleep(0.01)
+    raise AssertionError("unreachable")
+
+
 def _child_state(contract: dict[str, Any], run_id: str) -> dict[str, Any] | None:
     path = common_directory(contract["repo"]) / "agentsmith-runs" / run_id / "state.json"
     if not path.exists():
         return None
     if path.is_symlink() or not path.is_file():
         raise GraphError(f"child state for {run_id} is not a regular file")
-    state = _json_object(path.read_bytes(), label=f"child state for {run_id}")
+    state = _json_object(_read_bytes(path), label=f"child state for {run_id}")
     if state.get("run_id") != run_id or state.get("manifest_sha256") != contract["nodes"][run_id]["manifest_sha256"]:
         raise GraphError(f"child state lineage mismatch for {run_id}")
     if state.get("repo") != str(contract["repo"]):
