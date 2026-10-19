@@ -156,6 +156,16 @@ class GuidedInstallContracts(unittest.TestCase):
             self.assertEqual(state["installation"]["runtime"]["path"], "agentsmith")
             self.assertNotIn(str(Path(temporary)), state_text)
 
+    def test_guided_install_contracts_run_in_ci_and_the_compile_gate(self) -> None:
+        # These contracts only ran locally, so a wizard regression could merge with green CI.
+        workflow = (ROOT / ".github" / "workflows" / "verify.yml").read_text(encoding="utf-8")
+        compile_step = next(line for line in workflow.splitlines() if "python -m py_compile" in line)
+        self.assertIn("scripts/test-guided-install.py", compile_step)
+        self.assertIn("run: python scripts/test-guided-install.py", workflow)
+        gate = (ROOT / ".harness" / "verify.conf").read_text(encoding="utf-8")
+        python_core = next(line for line in gate.splitlines() if line.startswith("python-core ::"))
+        self.assertIn("scripts/test-guided-install.py", python_core)
+
     def test_standalone_build_covers_the_four_initial_targets(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "standalone.yml").read_text(encoding="utf-8")
         for value in ("ubuntu-24.04", "windows-2025", "macos-15", "macos-15-intel"):
