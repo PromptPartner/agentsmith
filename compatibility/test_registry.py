@@ -36,6 +36,7 @@ EXPECTED_IDS = {
     "jetbrains-junie",
     "zed",
     "jules",
+    "pi",
 }
 
 
@@ -61,12 +62,26 @@ class RegistryContractTest(unittest.TestCase):
             {"fixture", "observed", "manual"},
         )
 
-    def test_exactly_the_sixteen_planned_targets_are_registered(self) -> None:
+    def test_exactly_the_seventeen_planned_targets_are_registered(self) -> None:
         agents = self.registry["agents"]
         ids = [agent["id"] for agent in agents]
-        self.assertEqual(len(ids), 16)
+        self.assertEqual(len(ids), 17)
         self.assertEqual(len(ids), len(set(ids)))
         self.assertEqual(set(ids), EXPECTED_IDS)
+
+    def test_schema_agent_count_matches_registry(self) -> None:
+        count = len(self.registry["agents"])
+        self.assertEqual(self.schema["properties"]["agents"]["minItems"], count)
+        self.assertEqual(self.schema["properties"]["agents"]["maxItems"], count)
+        contract = json.loads((ROOT / "tests" / "fixtures" / "compatibility" / "contract.json").read_text(encoding="utf-8"))
+        self.assertEqual({agent["id"] for agent in contract["agents"]}, EXPECTED_IDS)
+
+    def test_pi_global_rules_follow_its_agent_folder(self) -> None:
+        pi = next(agent for agent in self.registry["agents"] if agent["id"] == "pi")
+        self.assertEqual(pi["instructions"]["global_paths"], ["$PI_CODING_AGENT_DIR/AGENTS.md"])
+        self.assertIn("~/.agents/skills", pi["skills_tools"]["skill_directories"])
+        self.assertNotIn("pi", self.registry["groups"]["local"])
+        self.assertNotEqual(pi["certification"], "passed")
 
     def test_native_tier_is_limited_to_claude_and_codex(self) -> None:
         native = {

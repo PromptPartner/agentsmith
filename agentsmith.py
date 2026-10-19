@@ -59,7 +59,7 @@ TRACKER_ALLOWED = (
 )
 AGENT_IDS = (
     "claude", "codex", "github-copilot", "cursor", "gemini-cli", "windsurf-devin", "cline", "roo-code", "aider",
-    "continue", "openhands", "goose", "opencode", "jetbrains-junie", "zed", "jules",
+    "continue", "openhands", "goose", "opencode", "jetbrains-junie", "zed", "jules", "pi",
 )
 GROUPS = {
     "native": ("claude", "codex"),
@@ -75,6 +75,7 @@ GLOBAL_INSTRUCTION_TARGETS: dict[str, tuple[str, str]] = {
     "codex": ("codex_home", "AGENTS.md"),
     "claude": ("home", ".claude/CLAUDE.md"),
     "opencode": ("home", ".config/opencode/AGENTS.md"),
+    "pi": ("pi_home", "AGENTS.md"),
 }
 CODE_PROFILES = {"software-dev", "devops-setup"}
 DEMO_TEMPLATE_FILES = (
@@ -194,8 +195,20 @@ def codex_home() -> Path:
     return Path(os.environ.get("CODEX_HOME") or home_dir() / ".codex").expanduser()
 
 
+def pi_home() -> Path:
+    # Pi's agent folder. Pi expands a leading "~" in the variable itself.
+    configured = os.environ.get("PI_CODING_AGENT_DIR")
+    if not configured:
+        return home_dir() / ".pi" / "agent"
+    if configured == "~":
+        return home_dir()
+    if configured.startswith(("~/", "~\\")):
+        return home_dir() / configured[2:]
+    return Path(configured)
+
+
 def global_roots() -> dict[str, Path]:
-    return {"home": home_dir(), "codex_home": codex_home()}
+    return {"home": home_dir(), "codex_home": codex_home(), "pi_home": pi_home()}
 
 
 def global_instruction_path(agent_id: str) -> Path | None:
@@ -2198,6 +2211,7 @@ def installation_fingerprints(
         "target": target,
         "home": home_dir().resolve(),
         "codex_home": codex_home().resolve(),
+        "pi_home": pi_home().resolve(),
     }
     candidates: set[tuple[str, Path]] = set()
     foreign_skill_directories: set[tuple[str, str]] = set()
@@ -2487,9 +2501,10 @@ def validated_plan(path: Path) -> dict[str, Any]:
         "target": str(expected_target),
         "home": str(home_dir().resolve()),
         "codex_home": str(codex_home().resolve()),
+        "pi_home": str(pi_home().resolve()),
     }
     if plan["roots"] != expected_roots or Path(plan["target"]).resolve() != expected_target:
-        raise CliError("Plan roots do not match the current target, HOME, and CODEX_HOME")
+        raise CliError("Plan roots do not match the current target, HOME, CODEX_HOME, and PI_CODING_AGENT_DIR")
     release = plan["release"]
     if not isinstance(release, dict) or set(release) != {"tag", "version", "commit"}:
         raise CliError("Plan release identity is malformed")
@@ -2597,6 +2612,7 @@ def copy_plan_inputs_to_shadow(plan: dict[str, Any], shadow_roots: dict[str, Pat
         "target": Path(plan["target"]),
         "home": home_dir(),
         "codex_home": codex_home(),
+        "pi_home": pi_home(),
     }
     for item in plan["fingerprints"]:
         if item["sha256"] is None:
@@ -2904,6 +2920,8 @@ def allowed_update_path(root_name: str, relative: str, installation: dict[str, A
         )
     if root_name == "codex_home":
         return relative in {"AGENTS.md", "config.toml", "hooks.json"}
+    if root_name == "pi_home":
+        return relative == "AGENTS.md" and selected_global_agent("pi", installation)
     return False
 
 
@@ -2950,6 +2968,7 @@ def stage_planned_update(
         "target": temporary_root / "target",
         "home": temporary_root / "home",
         "codex_home": temporary_root / "codex-home",
+        "pi_home": temporary_root / "pi-home",
     }
     for root in shadow_roots.values():
         root.mkdir(parents=True, exist_ok=True)
@@ -2961,6 +2980,8 @@ def stage_planned_update(
         "HOME": str(shadow_roots["home"]),
         "USERPROFILE": str(shadow_roots["home"]),
         "CODEX_HOME": str(shadow_roots["codex_home"]),
+        # Without this, a staged install would write the user's real Pi agent folder.
+        "PI_CODING_AGENT_DIR": str(shadow_roots["pi_home"]),
         "GIT_TERMINAL_PROMPT": "0",
     }
     install_arguments = install_arguments_from_manifest(plan, shadow_roots["target"])
@@ -3399,6 +3420,9 @@ def cmd_update_rollback(args: argparse.Namespace) -> int:
     expected_codex = str(codex_home().resolve())
     if receipt["roots"].get("home") != expected_home or receipt["roots"].get("codex_home") != expected_codex:
         raise CliError("Rollback receipt does not match the current HOME and CODEX_HOME")
+    # Receipts written before Pi support carry no pi_home root and cannot name one in a change.
+    if "pi_home" in receipt["roots"] and receipt["roots"]["pi_home"] != str(pi_home().resolve()):
+        raise CliError("Rollback receipt does not match the current PI_CODING_AGENT_DIR")
     if receipt["scope"] == "global" and receipt["roots"].get("target") != expected_home:
         raise CliError("Global rollback receipt target does not match HOME")
     for change in receipt["changes"]:
@@ -4210,6 +4234,8 @@ def resolve_doctor_path(value: str, base: Path | None = None) -> Path:
     runtime_home = home_dir()
     rendered = value
     for marker, destination in (
+        ("${PI_CODING_AGENT_DIR}", pi_home()),
+        ("$PI_CODING_AGENT_DIR", pi_home()),
         ("${CODEX_HOME}", codex_home()),
         ("$CODEX_HOME", codex_home()),
         ("${HOME}", runtime_home),

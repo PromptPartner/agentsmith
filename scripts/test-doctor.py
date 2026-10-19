@@ -358,6 +358,40 @@ class DoctorTests(unittest.TestCase):
         _, matching_payload = self.doctor(project, "opencode")
         self.assertNotIn("opencode-xdg-config-ignored", self.warning_codes(matching_payload["opencode"]))
 
+    def test_global_pi_install_honors_pi_coding_agent_dir(self) -> None:
+        home = Path(self.env["HOME"])
+        project = self.root / "pi project"
+        project.mkdir()
+        for configured, folder in (
+            (str(self.root / "pi agent dir ü"), self.root / "pi agent dir ü"),
+            ("~/custom pi ü", home / "custom pi ü"),
+        ):
+            with self.subTest(PI_CODING_AGENT_DIR=configured):
+                self.env["PI_CODING_AGENT_DIR"] = configured
+                rules = folder / "AGENTS.md"
+
+                installed = self.run_core(
+                    "install", "--agent", "pi", "--global", "--profile", "software-dev", "--with-skills",
+                )
+
+                self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+                self.assertIn("installed for pi", installed.stdout)
+                self.assertIn("<!-- BEGIN AGENTSMITH", rules.read_text(encoding="utf-8"))
+                self.assertFalse((home / ".pi").exists())
+                # Pi reads user Agent Skills from HOME, not from its agent folder.
+                self.assertTrue((home / ".agents" / "skills" / "handoff" / "SKILL.md").is_file())
+                self.assertFalse((folder / ".agents").exists())
+                strict = self.run_core("doctor", "--agent", "pi", "--target", str(project), "--strict", "--json")
+                self.assertEqual(strict.returncode, 0, strict.stdout + strict.stderr)
+                source = json.loads(strict.stdout)["pi"]["instructions"]["sources"][0]
+                self.assertEqual(Path(source["path"]), rules.resolve())
+                self.assertEqual((source["scope"], source["managed_status"]), ("global", "managed"))
+
+                removed = self.run_core("install", "--agent", "pi", "--global", "--uninstall")
+
+                self.assertEqual(removed.returncode, 0, removed.stdout + removed.stderr)
+                self.assertFalse(rules.exists())
+
     def test_opencode_with_claude_reports_duplicate_skill_discovery(self) -> None:
         project = self.root / "skill discovery project"
         project.mkdir()

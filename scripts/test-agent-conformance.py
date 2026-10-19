@@ -110,7 +110,7 @@ def validate_fixtures(results: Results, contract: dict[str, Any]) -> None:
     ids = [agent.get("id") for agent in agents]
     results.fixture(contract.get("schema_version") == 1, "contract schema is pinned")
     results.fixture(contract.get("canonical_project_instructions") == "AGENTS.md", "AGENTS.md is canonical")
-    results.fixture(len(ids) == 16 and len(set(ids)) == 16, "exactly 16 unique certification targets")
+    results.fixture(len(ids) == 17 and len(set(ids)) == 17, "exactly 17 unique certification targets")
     results.fixture(
         {agent["id"] for agent in agents if agent.get("tier") == "native"} == {"claude", "codex"},
         "only Claude and Codex are native",
@@ -179,7 +179,7 @@ def validate_registry(results: Results, contract: dict[str, Any]) -> list[dict[s
     agents = as_agent_list(registry)
     expected = {agent["id"]: agent for agent in contract["agents"]}
     actual = {agent.get("id"): agent for agent in agents}
-    results.check(set(actual) == set(expected), "registry contains the exact 16 targets")
+    results.check(set(actual) == set(expected), "registry contains the exact 17 targets")
     results.check(
         all(field(actual.get(agent_id, {}), "target_tier", "tier") == spec["tier"] for agent_id, spec in expected.items()),
         "registry tiers match the certification contract",
@@ -326,7 +326,7 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
     list_run = run_core("agents", "list")
     expected_ids = [agent["id"] for agent in contract["agents"]]
     results.check(list_run.returncode == 0, "agentsmith agents list succeeds", list_run.stdout[-300:])
-    results.check(output_has_all(list_run.stdout, expected_ids), "agents list exposes all 16 targets")
+    results.check(output_has_all(list_run.stdout, expected_ids), "agents list exposes all 17 targets")
 
     compatibility = run_core("compatibility")
     results.check(compatibility.returncode == 0, "agentsmith compatibility succeeds", compatibility.stdout[-300:])

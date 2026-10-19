@@ -2146,11 +2146,130 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertFalse((home / ".config").exists())
         self.assertEqual({path: path.read_bytes() for path in before}, before)
 
+    def test_global_pi_update_uses_pi_home_root_and_rolls_back(self) -> None:
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
+        self.publish_remote()
+        home = self.root / "pi-update-home"
+        pi_home = self.root / "pi agent ü"
+        environment = self.isolated_environment(home, self.root / "pi-update-codex", PI_CODING_AGENT_DIR=str(pi_home))
+        installed = self.run_core("install", "--agent", "pi", "--global", "--profile", "software-dev", env=environment)
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        rules = pi_home / "AGENTS.md"
+        managed_paths = [home / ".agentsmith" / "state.json", rules]
+        before = {path: path.read_bytes() for path in managed_paths}
+        plan_path = self.root / "pi-plan.json"
+        planned = self.run_core(
+            "update", "plan", "--global", "--version", NEXT_TAG, "--from", str(self.remote),
+            "--save", str(plan_path), env=environment,
+        )
+        self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        self.assertEqual(plan["roots"]["pi_home"], str(pi_home.resolve()))
+        self.assertIn(
+            {"root": "pi_home", "path": "AGENTS.md"},
+            [{"root": item["root"], "path": item["path"]} for item in plan["proposed_changes"]],
+        )
+
+        applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
+
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        self.assertIn(NEXT_RELEASE_PROBE, rules.read_text(encoding="utf-8"))
+        self.assertFalse((home / ".pi").exists())
+        rolled_back = self.run_core("update", "rollback", "--receipt", str(self.receipt_from(applied)), env=environment)
+        self.assertEqual(rolled_back.returncode, 0, rolled_back.stdout + rolled_back.stderr)
+        self.assertEqual({path: path.read_bytes() for path in managed_paths}, before)
+
+    def test_global_pi_plan_never_writes_the_live_pi_dir(self) -> None:
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
+        self.publish_remote()
+        home = self.root / "pi-live-home"
+        # An explicit agent folder outside HOME is the case a missing shadow override would hit.
+        pi_home = self.root / "live pi agent"
+        environment = self.isolated_environment(home, self.root / "pi-live-codex", PI_CODING_AGENT_DIR=str(pi_home))
+        installed = self.run_core("install", "--agent", "pi", "--global", "--with-skills", env=environment)
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        (pi_home / "settings.json").write_text('{"user": "owned"}\n', encoding="utf-8")
+
+        def snapshot() -> dict[Path, tuple[bytes, int]]:
+            return {
+                path: (path.read_bytes(), path.stat().st_mode & 0o777)
+                for root in (home, pi_home)
+                for path in root.rglob("*")
+                if path.is_file() and path.name != "update-integrity.key"
+            }
+
+        before = snapshot()
+
+        planned = self.run_core(
+            "update", "plan", "--global", "--version", NEXT_TAG, "--from", str(self.remote),
+            "--save", str(self.root / "pi-live-plan.json"), env=environment,
+        )
+
+        self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        self.assertEqual(snapshot(), before)
+
+    def test_rollback_rejects_receipt_with_changed_pi_home(self) -> None:
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
+        self.publish_remote()
+        home = self.root / "pi-receipt-home"
+        pi_home = self.root / "pi receipt agent"
+        environment = self.isolated_environment(home, self.root / "pi-receipt-codex", PI_CODING_AGENT_DIR=str(pi_home))
+        installed = self.run_core("install", "--agent", "pi", "--global", env=environment)
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        plan_path = self.root / "pi-receipt-plan.json"
+        planned = self.run_core(
+            "update", "plan", "--global", "--version", NEXT_TAG, "--from", str(self.remote),
+            "--save", str(plan_path), env=environment,
+        )
+        self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        updated = (pi_home / "AGENTS.md").read_bytes()
+        moved = {**environment, "PI_CODING_AGENT_DIR": str(self.root / "another pi agent")}
+
+        refused = self.run_core("update", "rollback", "--receipt", str(self.receipt_from(applied)), env=moved)
+
+        self.assertNotEqual(refused.returncode, 0, refused.stdout + refused.stderr)
+        self.assertIn("PI_CODING_AGENT_DIR", refused.stderr)
+        self.assertEqual((pi_home / "AGENTS.md").read_bytes(), updated)
+
+    def test_rollback_accepts_receipt_recorded_before_pi_home(self) -> None:
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
+        self.publish_remote()
+        home = self.root / "old-receipt-home"
+        codex_home = self.root / "old-receipt-codex"
+        environment = self.isolated_environment(home, codex_home)
+        installed = self.run_core("install", "--agent", "codex", "--global", env=environment)
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        before = (codex_home / "AGENTS.md").read_bytes()
+        plan_path = self.root / "old-receipt-plan.json"
+        planned = self.run_core(
+            "update", "plan", "--global", "--version", NEXT_TAG, "--from", str(self.remote),
+            "--save", str(plan_path), env=environment,
+        )
+        self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        receipt_path = self.receipt_from(applied)
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt["roots"].pop("pi_home")
+        receipt["integrity"] = integrity(receipt, (home / ".agentsmith" / "update-integrity.key").read_bytes())
+        receipt_path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+
+        rolled_back = self.run_core("update", "rollback", "--receipt", str(receipt_path), env=environment)
+
+        self.assertEqual(rolled_back.returncode, 0, rolled_back.stdout + rolled_back.stderr)
+        self.assertEqual((codex_home / "AGENTS.md").read_bytes(), before)
+
     def test_pre_manifest_reconstruction_ignores_new_global_rule_files(self) -> None:
         # No release before the manifest wrote these files, so they never prove an installation.
         home = self.root / "pre-manifest-new-rules"
         environment = self.isolated_environment(home, self.root / "pre-manifest-new-codex")
-        installed = self.run_core("install", "--agent", "opencode", "--global", "--profile", "software-dev", env=environment)
+        installed = self.run_core("install", "--agent", "opencode,pi", "--global", "--profile", "software-dev", env=environment)
         self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
         (home / ".agentsmith" / "state.json").unlink()
 

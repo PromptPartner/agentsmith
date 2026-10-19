@@ -15,9 +15,9 @@
   },
   "groups": {
     "native": ["claude", "codex"],
-    "standard": ["github-copilot", "cursor", "gemini-cli", "windsurf-devin", "cline", "roo-code", "aider", "continue", "openhands", "goose", "opencode", "jetbrains-junie", "zed", "jules"],
+    "standard": ["github-copilot", "cursor", "gemini-cli", "windsurf-devin", "cline", "roo-code", "aider", "continue", "openhands", "goose", "opencode", "jetbrains-junie", "zed", "jules", "pi"],
     "local": ["codex", "cline", "roo-code", "aider", "continue", "openhands", "goose", "opencode"],
-    "all": ["claude", "codex", "github-copilot", "cursor", "gemini-cli", "windsurf-devin", "cline", "roo-code", "aider", "continue", "openhands", "goose", "opencode", "jetbrains-junie", "zed", "jules"]
+    "all": ["claude", "codex", "github-copilot", "cursor", "gemini-cli", "windsurf-devin", "cline", "roo-code", "aider", "continue", "openhands", "goose", "opencode", "jetbrains-junie", "zed", "jules", "pi"]
   },
   "exclusions": [
     {
@@ -400,6 +400,27 @@
       "operating_systems": { "targets": ["cloud"], "constraints": ["Cloud-only behavior requires manual evidence and has no local lifecycle surface."] },
       "local_models": { "client_support": "unsupported", "providers": [], "notes": "Cloud service; local-provider certification does not apply." },
       "evidence": [{ "type": "fixture", "scope": "registry contract only", "artifact": null, "client_version": null, "verified_at": null }]
+    },
+    {
+      "id": "pi",
+      "name": "Pi",
+      "target_tier": "certified",
+      "adapter": "direct",
+      "certification": "pending",
+      "instructions": { "discovery": "direct", "global_paths": ["$PI_CODING_AGENT_DIR/AGENTS.md"], "project_paths": ["AGENTS.md"], "adapter_config_paths": [], "nesting": "supported" },
+      "skills_tools": {
+        "agent_skills": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Reads ~/.agents/skills from HOME, not from the agent folder. Project .agents/skills load only after Pi's trust prompt and are skipped without notice in non-interactive runs, so install with --global --with-skills. On a name collision Pi keeps the first skill it finds." },
+        "skill_directories": ["$PI_CODING_AGENT_DIR/skills", "~/.agents/skills", ".pi/skills", ".agents/skills"],
+        "mcp": { "client_support": "supported", "agentsmith_management": "none", "notes": "Built-in MCP client configured in the agent folder's mcp.json and .pi/mcp.json; project servers need Pi's trust prompt." }
+      },
+      "native_runtime": {
+        "hooks": { "client_support": "supported", "agentsmith_management": "none", "notes": "Pi has no hooks file; TypeScript extensions subscribe to events such as tool_call. AgentSmith does not manage extensions." },
+        "doctor": { "client_support": "supported", "agentsmith_management": "native", "notes": "Instruction discovery and the shared skills folder are inspected from disk." },
+        "lifecycle": { "client_support": "supported", "agentsmith_management": "planned", "notes": "--global writes $PI_CODING_AGENT_DIR/AGENTS.md (default ~/.pi/agent/AGENTS.md); update and uninstall manage it. An AGENTS.override.md in that folder makes Pi ignore AGENTS.md." }
+      },
+      "operating_systems": { "targets": ["macos", "linux", "windows"], "constraints": ["Pi requires Node.js 22.19 or newer.", "Python 3.11+ is required by the shared AgentSmith runtime design."] },
+      "local_models": { "client_support": "supported", "providers": ["ollama", "lm-studio", "other-openai-compatible"], "notes": "Pi supports llama.cpp, Ollama and other compatible endpoints through models.json; no AgentSmith client-plus-model scenario has run." },
+      "evidence": [{ "type": "fixture", "scope": "registry contract and global instruction lifecycle", "artifact": null, "client_version": null, "verified_at": null }]
     }
   ]
 }
