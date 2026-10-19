@@ -50,6 +50,12 @@ been authorized, so the entries are kept here.
   any of two parallel makers to log a start but then required `repo-a` to exist. Maker `b` can
   start first, so a stop before `a` creates its worktree is valid. The fixture now checks
   retention for every maker that actually logged a start; native confirmation remains pending.
+- [x] 2026-10-19 — Pull-request run `39275474565` (PR #56, attempt 2) failed native Windows
+  `test_parallel_roots_and_dependent_checkpoint` with `1411.665 not less than 1411.569`: the
+  two root children never overlapped. The fake maker slept a default 1 s, shorter than the gap
+  between dispatching the two roots on a loaded Windows runner. A 0.01 s maker reproduced the
+  same assertion on macOS. Fixed: the test gives each maker 4 s, as its sibling tests do. The
+  product dispatch was not at fault.
 - [ ] 2026-09-21 — Final-tree manual run `35623269366` passed Linux and macOS native work-graph
   lifecycle but failed eight of ten Windows dispatch tests. The Windows report binds commit
   `00461bf`, tree `8d0c00f`, and records a clean checkout; its lifecycle phase exited 1.
