@@ -6,7 +6,10 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -62,6 +65,28 @@ class GuidedInstallContracts(unittest.TestCase):
             self.assertEqual(args.safety, "cautious")
             self.assertTrue(args.initialize_git)
             self.assertIn("daily Git", args.operator_bio)
+
+    def test_wizard_without_terminal_fails_before_output(self) -> None:
+        # A script that pipes stdin must not read "exit 0" as a finished install.
+        for argv in ([], ["install", "--wizard"]):
+            with self.subTest(argv=argv), tempfile.TemporaryDirectory() as temporary:
+                home = Path(temporary) / "home"
+                project = Path(temporary) / "project"
+                home.mkdir()
+                project.mkdir()
+                environment = {**os.environ, "HOME": str(home), "USERPROFILE": str(home),
+                               "CODEX_HOME": str(home / ".codex")}
+                result = subprocess.run(
+                    [sys.executable, str(ROOT / "agentsmith.py"), *argv],
+                    cwd=project, env=environment, stdin=subprocess.DEVNULL,
+                    capture_output=True, text=True, timeout=60,
+                )
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertIn("--agent", result.stderr)
+                self.assertIn("--profile", result.stderr)
+                self.assertEqual(list(home.iterdir()), [])
+                self.assertEqual(list(project.iterdir()), [])
 
     def test_existing_project_recommendation_uses_repository_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

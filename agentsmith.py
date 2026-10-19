@@ -8049,10 +8049,14 @@ def run(argv: list[str] | None = None) -> int:
         maybe_report_automatic_update()
     if args.command == "install":
         if args.wizard:
-            print("Agentsmith interactive wizard is intentionally minimal in non-interactive automation.")
-            print("Which assistant should receive native rules? [claude]")
+            # Without a terminal nobody can answer, so fail loudly: an automation step that sees
+            # exit 0 here would treat the installation as done.
             if not sys.stdin.isatty():
-                return 0
+                raise CliError(
+                    "install --wizard needs an interactive terminal; nothing was changed. "
+                    "Pass the choices as flags instead, for example: agentsmith install "
+                    "--agent <id> --profile <name> --target <path> (see install --help)"
+                )
             apply_wizard_answers(args)
         return cmd_install(args)
     if args.command == "update":
