@@ -176,6 +176,27 @@ def resolve_agents(agent_values: Iterable[str] | None, platform: str | None) -> 
     return expanded
 
 
+def detect_container(root: Path = Path("/"), environ: dict[str, str] | None = None,
+                     system: str | None = None) -> list[str]:
+    """Return evidence that this Linux process runs inside a container; empty means none found."""
+    if (system or platform.system()) != "Linux":
+        return []
+    environ = os.environ if environ is None else environ
+    evidence = [f"/{name}" for name in (".dockerenv", "run/.containerenv") if (root / name).exists()]
+    if environ.get("container"):
+        evidence.append(f"container={environ['container']}")
+    if environ.get("KUBERNETES_SERVICE_HOST"):
+        evidence.append("KUBERNETES_SERVICE_HOST")
+    try:
+        cgroup = (root / "proc" / "1" / "cgroup").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        cgroup = ""
+    markers = [marker for marker in ("docker", "kubepods", "containerd", "libpod", "lxc") if marker in cgroup]
+    if markers:
+        evidence.append(f"/proc/1/cgroup: {', '.join(markers)}")
+    return evidence
+
+
 def home_dir() -> Path:
     # PowerShell passes HOME through on every OS; Path.home() can ignore that on Windows.
     return Path(os.environ.get("HOME") or os.environ.get("USERPROFILE") or str(Path.home())).expanduser()

@@ -337,5 +337,50 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(skills["adapter_diverged_names"], ["handoff"])
 
 
+
+def load_core():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("agentsmith_doctor_core", CORE)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class ContainerDetectionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.core = load_core()
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        (self.root / "proc" / "1").mkdir(parents=True)
+        (self.root / "run").mkdir()
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def detect(self, environ: dict[str, str] | None = None, system: str = "Linux") -> list[str]:
+        return self.core.detect_container(root=self.root, environ=environ or {}, system=system)
+
+    def test_plain_linux_host_is_not_a_container(self) -> None:
+        (self.root / "proc" / "1" / "cgroup").write_text("0::/init.scope\n", encoding="utf-8")
+        self.assertEqual(self.detect(), [])
+
+    def test_each_container_signal_is_reported_as_evidence(self) -> None:
+        (self.root / ".dockerenv").write_text("", encoding="utf-8")
+        self.assertEqual(self.detect(), ["/.dockerenv"])
+        (self.root / ".dockerenv").unlink()
+        (self.root / "run" / ".containerenv").write_text("", encoding="utf-8")
+        self.assertEqual(self.detect(), ["/run/.containerenv"])
+        (self.root / "run" / ".containerenv").unlink()
+        self.assertEqual(self.detect({"container": "podman"}), ["container=podman"])
+        self.assertEqual(self.detect({"KUBERNETES_SERVICE_HOST": "10.0.0.1"}), ["KUBERNETES_SERVICE_HOST"])
+        (self.root / "proc" / "1" / "cgroup").write_text("0::/system.slice/docker-1a2b.scope\n", encoding="utf-8")
+        self.assertEqual(self.detect(), ["/proc/1/cgroup: docker"])
+
+    def test_other_systems_never_report_a_container(self) -> None:
+        (self.root / ".dockerenv").write_text("", encoding="utf-8")
+        self.assertEqual(self.detect({"container": "docker"}, system="Darwin"), [])
+        self.assertEqual(self.detect({"container": "docker"}, system="Windows"), [])
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
