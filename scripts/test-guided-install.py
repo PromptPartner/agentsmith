@@ -108,6 +108,14 @@ class GuidedInstallContracts(unittest.TestCase):
             r'<a href="https://promptpartner\.ai/" target="_blank" rel="noopener noreferrer">promptpartner\.ai</a>',
         )
 
+    def test_release_docs_name_the_current_version(self) -> None:
+        # A release bump that forgets these sends users to the previous tag.
+        tag = f"v{agentsmith.VERSION}"
+        update_guide = (ROOT / "docs" / "23-updating-existing-installations.md").read_text(encoding="utf-8")
+        self.assertIn(f"The current stable release is `{tag}`.", update_guide)
+        self.assertIn(f"--branch {tag}", update_guide)
+        self.assertIn(f"placeholder: {tag} ", (ROOT / ".github" / "ISSUE_TEMPLATE" / "bug.yml").read_text(encoding="utf-8"))
+
     def test_frozen_cli_remains_central_instead_of_copying_python_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             binary = Path(temporary) / "agentsmith"

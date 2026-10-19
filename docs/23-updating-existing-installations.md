@@ -6,7 +6,16 @@ the existing installation, and keep planning separate from applying.
 
 ## Current release and legacy blockers
 
-The current stable release is `v0.3.1`.
+The current stable release is `v0.4.0`.
+
+`v0.4.0` adds `install --answers` and `agentsmith wizard schema --json` for setup from another
+program, a `container` safety mode for Docker-style containers, user-level rules for OpenCode and
+the new Pi agent, and checksummed, attested release downloads that include Linux arm64. It also
+fixes intermittent native-Windows work-graph failures. One behaviour change: without an
+interactive terminal, `install --wizard` (and a bare `agentsmith`) now exits with code 2 instead
+of 0, because it changed nothing. Earlier global OpenCode installs recorded OpenCode but wrote no
+rules file; run `agentsmith install --global --agent opencode` once with `v0.4.0`, because the
+`v0.3.1` updater refuses the new file.
 
 `v0.3.1` adds a conditional MCP/integration validation checkpoint, a static non-launching
 configuration validator, explicit verification-tree provenance, and durable pre-gate recovery
@@ -39,7 +48,7 @@ installation fingerprints. This ownership defect is fixed in `v0.2.4`.
 `v0.2.4` can still preserve a stale AgentSmith-owned `.claude/skills` adapter when its canonical
 `.agents/skills` source changes. Claude discovers the stale adapter, while strict Doctor can report
 it as healthy. This ownership defect is fixed in `v0.2.5`.
-Use `v0.3.1` for the complete legacy global update chain: foreign skill contents are preserved and
+Use `v0.4.0` for the complete legacy global update chain: foreign skill contents are preserved and
 ignored, canonical customizations are retained and mirrored to Claude, and symlinks escaping an
 owned inventory root remain rejected.
 
@@ -67,7 +76,7 @@ installation that does not have one yet.
 ```bash
 AGENTSMITH_BOOTSTRAP_DIR="$(mktemp -d)"
 
-git clone --depth 1 --branch v0.3.1 \
+git clone --depth 1 --branch v0.4.0 \
   https://github.com/PromptPartner/agentsmith.git \
   "$AGENTSMITH_BOOTSTRAP_DIR"
 
@@ -75,7 +84,7 @@ git -C "$AGENTSMITH_BOOTSTRAP_DIR" rev-parse HEAD
 git -C "$AGENTSMITH_BOOTSTRAP_DIR" describe --tags --exact-match
 ```
 
-The final command must print `v0.3.1`. This proves the bootstrap is the immutable release tag rather
+The final command must print `v0.4.0`. This proves the bootstrap is the immutable release tag rather
 than an unreviewed branch checkout.
 
 ## Update one project installation
@@ -85,13 +94,13 @@ but does not modify the target.
 
 ```bash
 AGENTSMITH_TARGET="/absolute/path/to/project"
-AGENTSMITH_PLAN="/tmp/agentsmith-project-name-v0.3.1-plan.json"
+AGENTSMITH_PLAN="/tmp/agentsmith-project-name-v0.4.0-plan.json"
 
 git -C "$AGENTSMITH_TARGET" status --short
 
 python3 "$AGENTSMITH_BOOTSTRAP_DIR/agentsmith.py" update plan \
   --target "$AGENTSMITH_TARGET" \
-  --version v0.3.1 \
+  --version v0.4.0 \
   --save "$AGENTSMITH_PLAN"
 
 python3 -m json.tool "$AGENTSMITH_PLAN" | less
@@ -125,11 +134,11 @@ python3 "$AGENTSMITH_TARGET/.agentsmith/agentsmith.py" doctor \
 Global scope is separate from every project scope. Create and inspect its own plan:
 
 ```bash
-AGENTSMITH_PLAN="/tmp/agentsmith-global-v0.3.1-plan.json"
+AGENTSMITH_PLAN="/tmp/agentsmith-global-v0.4.0-plan.json"
 
 python3 "$AGENTSMITH_BOOTSTRAP_DIR/agentsmith.py" update plan \
   --global \
-  --version v0.3.1 \
+  --version v0.4.0 \
   --save "$AGENTSMITH_PLAN"
 
 python3 -m json.tool "$AGENTSMITH_PLAN" | less
