@@ -231,6 +231,28 @@ def update_roots(target: Path, installation: dict[str, Any]) -> dict[str, Path]:
     return roots
 
 
+def global_instruction_destinations(agents: Iterable[str]) -> dict[str, Path]:
+    """Live user-level rules file per selected agent; install, update plan and apply all use this."""
+    roots = global_roots()
+    selected = [agent_id for agent_id in GLOBAL_INSTRUCTION_TARGETS if agent_id in agents]
+    if "pi" in selected:
+        roots["pi_home"] = absolute_pi_home()
+    destinations: dict[str, Path] = {}
+    owners: dict[Path, str] = {}
+    for agent_id in selected:
+        root_name, relative = GLOBAL_INSTRUCTION_TARGETS[agent_id]
+        path = roots[root_name] / relative
+        resolved = path.resolve()
+        if resolved in owners:
+            raise CliError(
+                f"{owners[resolved]} and {agent_id} resolve to the same instruction file {path}; give each its "
+                "own location (for example a different CODEX_HOME or PI_CODING_AGENT_DIR) or install them separately"
+            )
+        owners[resolved] = agent_id
+        destinations[agent_id] = path
+    return destinations
+
+
 def global_instruction_path(agent_id: str) -> Path | None:
     if agent_id not in GLOBAL_INSTRUCTION_TARGETS:
         return None
@@ -2282,9 +2304,8 @@ def installation_fingerprints(
             if skill_agent == "claude":
                 add_owned_skills("target", target / ".claude" / "skills", classification)
     else:
-        for agent_id, (root_name, relative) in GLOBAL_INSTRUCTION_TARGETS.items():
-            if agent_id in installation["agents"]:
-                add(root_name, relative)
+        for agent_id in global_instruction_destinations(installation["agents"]):
+            add(*GLOBAL_INSTRUCTION_TARGETS[agent_id])
         if installation["capabilities"].get("skills"):
             skill_target = roots["home"]
             skill_agent = "claude" if "claude" in installation["agents"] else "codex"
@@ -2525,6 +2546,8 @@ def validated_plan(path: Path) -> dict[str, Any]:
     expected_roots = {name: str(root) for name, root in update_roots(expected_target, installation).items()}
     if plan["roots"] != expected_roots or Path(plan["target"]).resolve() != expected_target:
         raise CliError("Plan roots do not match the current target, HOME, CODEX_HOME, and PI_CODING_AGENT_DIR")
+    if plan["scope"] == "global":
+        global_instruction_destinations(installation["agents"])
     if not isinstance(plan["fingerprints"], list):
         raise CliError("Plan fingerprints must be a list")
     for item in plan["fingerprints"]:
@@ -3342,6 +3365,8 @@ def cmd_update_apply(args: argparse.Namespace) -> int:
             raise CliError(
                 "Update refused: staged managed changes do not match the authenticated plan: " + detail
             )
+        if plan["scope"] == "global":
+            global_instruction_destinations(plan["installation"]["agents"])  # re-check just before writing
         try:
             for root_name, relative, content, mode in proposed:
                 actual = safe_update_path(Path(plan["roots"][root_name]), relative)
@@ -3821,15 +3846,7 @@ def scaffold_project(target: Path, profiles: list[str], agents: list[str], args:
 
 def instruction_paths(target: Path, agents: list[str], global_mode: bool) -> tuple[list[Path], list[Path]]:
     if global_mode:
-        roots = global_roots()
-        if "pi" in agents:
-            roots["pi_home"] = absolute_pi_home()
-        native = [
-            roots[root_name] / relative
-            for agent_id, (root_name, relative) in GLOBAL_INSTRUCTION_TARGETS.items()
-            if agent_id in agents
-        ]
-        return [], native
+        return [], list(global_instruction_destinations(agents).values())
     canonical = [target / "AGENTS.md"]
     generated = [target / "CLAUDE.md"] if "claude" in agents else []
     return canonical, generated
@@ -4098,12 +4115,6 @@ def cmd_install(args: argparse.Namespace) -> int:
                     f"{agent_id} has no user-level instruction file that AgentSmith manages; --global wrote "
                     "nothing for it. Install it per project with --target PATH instead."
                 )
-        destinations = [path.resolve() for path in generated]
-        if len(set(destinations)) != len(destinations):
-            raise CliError(
-                "Two selected agents resolve to the same instruction file; give each its own location "
-                "(for example a different CODEX_HOME) or install them separately"
-            )
         ignored_config = ignored_opencode_config_home()
         if "opencode" in agents and ignored_config is not None:
             warn(

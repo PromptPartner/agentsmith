@@ -66,8 +66,8 @@ hook or MCP surface to make the matrix look complete.
 
 Other agents have no user-level file that AgentSmith manages. A global install warns for each of
 them, writes nothing for them, and leaves them out of its "installed for" line. Install those agents
-per project with `--target`. A global install refuses two selected agents whose files are the same
-file, for example when `CODEX_HOME` points at `~/.config/opencode`.
+per project with `--target`. A global install, `update plan`, and `update apply` refuse two selected
+agents whose files are the same file, for example when `CODEX_HOME` points at `~/.config/opencode`.
 
 These destinations are fixed in code, not read from `config/agents.json`. A staged update reads the
 candidate release's registry, so registry data must not decide where the trusted updater writes.

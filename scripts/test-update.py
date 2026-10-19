@@ -2241,6 +2241,26 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertIn(NEXT_RELEASE_PROBE, text)
         self.assertTrue(text.endswith(foreign), text[-300:])
 
+    def test_update_plan_refuses_pi_and_codex_sharing_one_rules_file(self) -> None:
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
+        self.publish_remote()
+        home = self.root / "shared-rules-home"
+        codex_home = self.root / "shared-rules-codex"
+        environment = self.isolated_environment(home, codex_home, PI_CODING_AGENT_DIR=str(self.root / "own pi agent"))
+        installed = self.run_core("install", "--agent", "codex,pi", "--global", env=environment)
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        shared = {**environment, "PI_CODING_AGENT_DIR": str(codex_home)}
+        before = (codex_home / "AGENTS.md").read_bytes()
+
+        planned = self.run_core(
+            "update", "plan", "--global", "--version", NEXT_TAG, "--from", str(self.remote), env=shared,
+        )
+
+        self.assertNotEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        self.assertIn("same instruction file", planned.stderr)
+        self.assertEqual((codex_home / "AGENTS.md").read_bytes(), before)
+
     def test_global_pi_refuses_a_relative_agent_dir(self) -> None:
         self.commit_and_tag(CURRENT_VERSION)
         self.commit_and_tag(NEXT_VERSION)
