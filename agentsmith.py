@@ -7738,6 +7738,8 @@ def add_common_install_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--from", dest="update_from")
     parser.add_argument("--no-reassemble", action="store_true")
     parser.add_argument("--wizard", action="store_true")
+    parser.add_argument("--answers", help="apply wizard answers from a JSON file; works without a terminal "
+                        "(questions: agentsmith wizard schema --json)")
     parser.add_argument("--lang", choices=WIZARD_LANGUAGES, help="wizard language")
 
 
@@ -8115,6 +8117,96 @@ def apply_wizard_answers(args: argparse.Namespace, input_fn: Any = input) -> dic
     return apply_wizard_plan(args, plan)
 
 
+def apply_wizard_answers_file(args: argparse.Namespace) -> dict[str, Any]:
+    """Validate a JSON answers file with the wizard's own rules. This function performs no writes."""
+    path = Path(args.answers).expanduser()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CliError(f"Cannot read wizard answers {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise CliError(f"Wizard answers {path} must contain a JSON object")
+    locales = load_wizard_locales()
+    problems = [f"{key}: unknown key" for key in sorted(set(data) - {"schema_version", *(q["key"] for q in WIZARD_QUESTIONS)})]
+    if data.get("schema_version") != 1:
+        problems.append("schema_version: must be 1")
+    dry_run = bool(getattr(args, "dry_run", False))
+    computed = {"language": getattr(args, "lang", None) or default_wizard_language(),
+                "agent": wizard_default_agents().split(","), "target": None}
+    raw: dict[str, Any] = {}
+    for question in WIZARD_QUESTIONS:
+        key = question["key"]
+        default = question["default"].get("value", computed.get(key))
+        if key == "confirm" and not dry_run:
+            default = None  # Without a person to confirm, the file must say yes itself.
+        raw[key] = data.get(key, default)
+    answers: dict[str, Any] = {}
+    for question in WIZARD_QUESTIONS:
+        key, kind, value = question["key"], question["kind"], raw[question["key"]]
+        conditions = question.get("when", {})
+        if any(raw.get(name) != expected for name, expected in conditions.items()):
+            if key in data:
+                problems.append(f"{key}: does not apply unless " +
+                                " and ".join(f"{name} is {expected!r}" for name, expected in conditions.items()))
+            continue
+        try:
+            if value is None:
+                raise CliError("is required")
+            if kind == "choice":
+                if not isinstance(value, str):
+                    raise CliError(f"must be one of the strings {'/'.join(question['choices'])}, "
+                                   f"got {type(value).__name__} {value!r}")
+                if value not in question["choices"]:
+                    raise CliError(f"must be one of {'/'.join(question['choices'])}, got {value!r}")
+                answers[key] = value
+            elif kind == "path":
+                if not isinstance(value, str) or not value.strip():
+                    raise CliError("must be a folder path")
+                if answers.get("project_kind") in {"existing", "new"}:
+                    messages = locales[answers.get("language", "en")]
+                    answers[key] = wizard_target(answers["project_kind"], value, messages)
+            elif kind in {"agent_list", "profile_list", "capability_list"}:
+                if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+                    raise CliError("must be a JSON array of names")
+                if kind == "agent_list":
+                    if not value:
+                        raise CliError("must name at least one agent")
+                    resolve_agents([",".join(value)], None)
+                    answers[key] = ",".join(value)
+                elif kind == "profile_list":
+                    answers[key] = [wizard_profile(item) for item in value]
+                else:
+                    answers[key] = wizard_capabilities(value)
+            elif kind == "profile":
+                if not isinstance(value, str):
+                    raise CliError("must be 'recommended' or a profile name")
+                if value != "recommended":
+                    answers[key] = wizard_profile(value)
+                elif isinstance(answers.get("target"), Path):
+                    answers[key] = wizard_profile_recommendation(answers["target"])["profile"]
+        except CliError as exc:
+            problems.append(f"{key}: {exc}")
+    if answers.get("confirm") == "no":
+        problems.append("confirm: is 'no', so nothing was installed")
+    if problems:
+        raise CliError(f"Wizard answers {path} are not valid:\n  " + "\n  ".join(problems))
+
+    kind = answers["project_kind"]
+    profiles = [WIZARD_GOAL_PROFILES[answers["goal"]] if kind == "new" else answers["profile"]]
+    for profile in answers.get("extra_profiles", []):
+        if profile not in profiles:
+            profiles.append(profile)
+    advanced = answers["advanced"] == "y"
+    plan = {"kind": kind, "target": answers["target"], "agents": answers["agent"], "profiles": profiles,
+            "experience": answers["experience"], "safety": answers["safety"],
+            "global_mode": advanced and answers["scope"] == "user",
+            "capabilities": answers.get("capabilities", set()) if advanced else None,
+            "language": answers["language"]}
+    apply_wizard_capabilities(args, plan["capabilities"])
+    print_wizard_summary(args, locales[plan["language"]], plan)
+    return apply_wizard_plan(args, plan)
+
+
 def wizard_schema(args: argparse.Namespace) -> dict[str, Any]:
     """Describe the wizard for another program; computed defaults are resolved on this machine."""
     locales = load_wizard_locales()
@@ -8181,6 +8273,11 @@ def run(argv: list[str] | None = None) -> int:
     if args.command not in {"update", "validate-integration", "graph", "status", "demo", "resume", "wizard"} and not verification_plan_operation and not profile_operation:
         maybe_report_automatic_update()
     if args.command == "install":
+        if getattr(args, "answers", None):
+            if args.wizard:
+                raise CliError("--answers and --wizard cannot be combined: --answers already holds the wizard's answers")
+            apply_wizard_answers_file(args)
+            return cmd_install(args)
         if args.wizard:
             # Without a terminal nobody can answer, so fail loudly: an automation step that sees
             # exit 0 here would treat the installation as done.
@@ -8188,7 +8285,9 @@ def run(argv: list[str] | None = None) -> int:
                 raise CliError(
                     "install --wizard needs an interactive terminal; nothing was changed. "
                     "Pass the choices as flags instead, for example: agentsmith install "
-                    "--agent <id> --profile <name> --target <path> (see install --help)"
+                    "--agent <id> --profile <name> --target <path> (see install --help), "
+                    "or as a file: agentsmith install --answers answers.json "
+                    "(questions: agentsmith wizard schema --json)"
                 )
             apply_wizard_answers(args)
         return cmd_install(args)

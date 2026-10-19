@@ -183,6 +183,82 @@ class GuidedInstallContracts(unittest.TestCase):
             self.assertEqual(json.loads(result.stdout)["schema_version"], 1)
             self.assertEqual(state.read_text(encoding="utf-8"), before)
 
+    def test_answers_match_interactive_plan(self) -> None:
+        # The answers file must produce exactly what the same answers produce interactively.
+        cases = {
+            "new-project": {"language": "en", "project_kind": "new", "target": "<TARGET>/fresh",
+                            "agent": ["codex"], "goal": "1", "experience": "2", "confirm": "yes"},
+            "advanced-user-scope": {"language": "en", "project_kind": "existing", "target": "<TARGET>",
+                                    "agent": ["github-copilot"], "profile": "recommended", "experience": "3",
+                                    "safety": "trusted", "advanced": "y", "scope": "user",
+                                    "extra_profiles": ["deep-research"], "capabilities": ["skills", "hooks"],
+                                    "confirm": "yes"},
+        }
+        golden = json.loads(WIZARD_GOLDEN.read_text(encoding="utf-8"))
+        for name, answers in cases.items():
+            with self.subTest(scenario=name), tempfile.TemporaryDirectory() as temporary:
+                target = Path(temporary).resolve()
+                document = {"schema_version": 1,
+                            **{key: value.replace("<TARGET>", str(target)) if isinstance(value, str) else value
+                               for key, value in answers.items()}}
+                answers_file = target / "answers.json"
+                answers_file.write_text(json.dumps(document), encoding="utf-8")
+                args = agentsmith.parser().parse_args(["install", "--answers", str(answers_file)])
+                with mock.patch.object(agentsmith.shutil, "which", return_value=None), \
+                        mock.patch("sys.stdout", new_callable=lambda: __import__("io").StringIO()):
+                    agentsmith.apply_wizard_answers_file(args)
+                expected = golden[name]["args"]
+                for field, value in expected.items():
+                    actual = getattr(args, field, None)
+                    if isinstance(actual, str):
+                        actual = actual.replace(str(target), "<TARGET>")
+                    self.assertEqual(actual, value, field)
+
+    def test_answers_errors_are_aggregated(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            answers_file = Path(temporary) / "answers.json"
+            answers_file.write_text(json.dumps({
+                "schema_version": 2, "safty": "trusted", "safety": "reckless",
+                "scope": "user", "experience": 2,
+            }), encoding="utf-8")
+            args = agentsmith.parser().parse_args(["install", "--answers", str(answers_file)])
+            with self.assertRaises(agentsmith.CliError) as raised:
+                agentsmith.apply_wizard_answers_file(args)
+        message = str(raised.exception)
+        for fragment in ("schema_version", "safty", "safety", "scope", "experience", "target", "confirm"):
+            self.assertIn(fragment, message)
+
+    def test_answers_install_without_terminal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary) / "home"
+            home.mkdir()
+            target = Path(temporary) / "fresh"
+            answers_file = Path(temporary) / "answers.json"
+            answers_file.write_text(json.dumps({
+                "schema_version": 1, "project_kind": "new", "target": str(target),
+                "agent": ["github-copilot"], "goal": "1", "confirm": "yes",
+            }), encoding="utf-8")
+            environment = {**os.environ, "HOME": str(home), "USERPROFILE": str(home),
+                           "CODEX_HOME": str(home / ".codex")}
+
+            def install(*extra: str) -> subprocess.CompletedProcess:
+                return subprocess.run(
+                    [sys.executable, str(ROOT / "agentsmith.py"), "install", "--answers", str(answers_file), *extra],
+                    cwd=temporary, env=environment, stdin=subprocess.DEVNULL,
+                    capture_output=True, text=True, timeout=120,
+                )
+
+            dry = install("--dry-run")
+            self.assertEqual(dry.returncode, 0, dry.stdout + dry.stderr)
+            self.assertFalse(target.exists(), "a dry run must not create the project")
+            both = install("--wizard")
+            self.assertEqual(both.returncode, 2)
+            self.assertIn("--answers", both.stderr)
+            real = install()
+            self.assertEqual(real.returncode, 0, real.stdout + real.stderr)
+            self.assertTrue((target / ".git").is_dir())
+            self.assertIn("Profile: Software Development", (target / "AGENTS.md").read_text(encoding="utf-8"))
+
     def test_existing_project_recommendation_uses_repository_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             target = Path(temporary)
