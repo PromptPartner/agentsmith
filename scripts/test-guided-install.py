@@ -175,6 +175,12 @@ class GuidedInstallContracts(unittest.TestCase):
             self.assertNotRegex(text, r"(?i)\bsigned\b|platform signature", name)
             self.assertIn("SHA256SUMS", text, name)
             self.assertIn("gh attestation verify", text, name)
+        # `--repo` alone accepts any workflow run in the repository, including a manual branch build,
+        # so every guide pins the release workflow and the release tag.
+        guides["RELEASING.md"] = (ROOT / "RELEASING.md").read_text(encoding="utf-8")
+        for name, text in guides.items():
+            self.assertIn("--signer-workflow PromptPartner/agentsmith/.github/workflows/standalone.yml", text, name)
+            self.assertIn("--source-ref refs/tags/", text, name)
         for asset in RELEASE_ASSETS:
             self.assertIn(asset, guides["INSTALL.md"])
         # (states the builds are unsigned, retired claim that they are signed)

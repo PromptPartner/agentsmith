@@ -6,7 +6,7 @@ Use this guide when a user asks you to install AgentSmith. Keep the experience c
 
 - Inspect the target statically. Do not run project code, package scripts, or dependency installers to choose a profile.
 - Download only an official stable release from `PromptPartner/agentsmith`.
-- Match the release asset to the current operating system and CPU architecture. Verify it against the release's `SHA256SUMS` file before running it and, when the GitHub CLI is available, with `gh attestation verify <file> --repo PromptPartner/agentsmith`. If either check fails, do not run the file; report it. The builds are currently unsigned, so macOS and Windows may warn before the first run. Explain the warning to the user instead of suppressing it.
+- Match the release asset to the current operating system and CPU architecture. Verify it against the release's `SHA256SUMS` file before running it and, when the GitHub CLI is available, with `gh attestation verify <file> --repo PromptPartner/agentsmith --signer-workflow PromptPartner/agentsmith/.github/workflows/standalone.yml --source-ref refs/tags/<version>`, using the release tag as `<version>`. If either check fails, do not run the file; report it. The builds are currently unsigned, so macOS and Windows may warn before the first run. Explain the warning to the user instead of suppressing it.
 - Never place credentials in project files or command history.
 - Show one concrete plan before the first write. Ask once to apply it. Availability of GitHub, a tracker, or any external service is not authorization to write there.
 

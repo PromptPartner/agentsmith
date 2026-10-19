@@ -22,7 +22,10 @@ published until a maintainer reviews that draft.
 6. Open the draft release. Confirm it holds `SHA256SUMS` and five archives: `agentsmith-linux-x86_64.tar.gz`,
    `agentsmith-linux-arm64.tar.gz`, `agentsmith-macos-arm64.tar.gz`, `agentsmith-macos-x86_64.tar.gz`, and
    `agentsmith-windows-x86_64.zip`. Download one and run `sha256sum -c --ignore-missing SHA256SUMS` and
-   `gh attestation verify <file> --repo PromptPartner/agentsmith`.
+
+   ```console
+   gh attestation verify <file> --repo PromptPartner/agentsmith --signer-workflow PromptPartner/agentsmith/.github/workflows/standalone.yml --source-ref refs/tags/<version>
+   ```
 7. Edit the generated notes, then publish the release.
 
 The builds are not code-signed. Do not describe them as signed in release notes or documentation.
