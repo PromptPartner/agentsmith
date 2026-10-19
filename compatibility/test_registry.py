@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import unittest
 from pathlib import Path
@@ -10,6 +11,13 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 CONFIG = HERE.parent / "config"
 ROOT = HERE.parent
+
+
+def load_cli() -> object:
+    spec = importlib.util.spec_from_file_location("agentsmith_registry_probe", ROOT / "agentsmith.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 EXPECTED_IDS = {
     "claude",
@@ -75,6 +83,15 @@ class RegistryContractTest(unittest.TestCase):
         self.assertEqual(set(groups["all"]), EXPECTED_IDS)
         self.assertTrue(set(groups["standard"]) <= EXPECTED_IDS)
         self.assertTrue(set(groups["local"]) <= EXPECTED_IDS)
+
+    def test_cli_groups_match_registry_groups(self) -> None:
+        # --agent expands groups from the code, while docs and doctor read the registry.
+        cli = load_cli()
+        self.assertEqual(list(cli.AGENT_IDS), [agent["id"] for agent in self.registry["agents"]])
+        self.assertEqual(
+            {name: list(members) for name, members in cli.GROUPS.items()},
+            self.registry["groups"],
+        )
 
     def test_no_fixture_only_target_is_certified(self) -> None:
         for agent in self.registry["agents"]:

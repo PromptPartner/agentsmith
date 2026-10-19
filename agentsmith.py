@@ -64,7 +64,7 @@ AGENT_IDS = (
 GROUPS = {
     "native": ("claude", "codex"),
     "standard": AGENT_IDS[2:],
-    "local": ("aider", "cline", "openhands", "goose", "opencode"),
+    "local": ("codex", "cline", "roo-code", "aider", "continue", "openhands", "goose", "opencode"),
     "all": AGENT_IDS,
 }
 CODE_PROFILES = {"software-dev", "devops-setup"}
