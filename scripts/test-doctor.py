@@ -441,5 +441,12 @@ class SafetyInspectionTests(unittest.TestCase):
         config.write_text('approval_policy = "on-request"\nsandbox_mode = "danger-full-access"\n', encoding="utf-8")
         self.assertEqual(self.core.inspect_safety("codex")["state"], "container")
 
+    def test_cautious_codex_in_a_container_gets_an_advisory(self) -> None:
+        advisory = self.core.container_safety_advisory
+        self.assertEqual(advisory("codex", "cautious", ["/.dockerenv"])["code"], "codex-cautious-in-container")
+        self.assertIsNone(advisory("codex", "cautious", []))
+        for agent_id, state in (("codex", "container"), ("codex", "trusted"), ("claude", "cautious")):
+            self.assertIsNone(advisory(agent_id, state, ["/.dockerenv"]), (agent_id, state))
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

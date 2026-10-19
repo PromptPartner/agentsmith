@@ -4761,6 +4761,17 @@ def safety_state(agent_id: str, values: dict[str, Any], expected: str | None) ->
     return matches[0] if matches else "foreign"
 
 
+def container_safety_advisory(agent_id: str, state: str, evidence: list[str]) -> dict[str, str] | None:
+    """Cautious Codex inside a container cannot start its sandbox, so every command would fail."""
+    if agent_id != "codex" or state != "cautious" or not evidence:
+        return None
+    return doctor_warning(
+        "codex-cautious-in-container",
+        f"Codex cautious safety needs its sandbox, which usually cannot start in a container ({', '.join(evidence)}).",
+        "Re-run install with --safety container, or with --assemble-only to keep your own Codex settings.",
+    )
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     selected = resolve_agents(args.agent, args.platform)
     target = Path(args.target or os.getcwd()).resolve()
@@ -4839,6 +4850,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 )
             )
         expanded = any(capabilities[name]["state"] == "managed" for name in ("skills", "mcp", "hooks"))
+        advisory = container_safety_advisory(agent_id, safety["state"], detect_container())
+        if advisory:
+            warnings.append(advisory)
         if safety["state"] == "trusted" and expanded:
             warnings.append(
                 doctor_warning(
