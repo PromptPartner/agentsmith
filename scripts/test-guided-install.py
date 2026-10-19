@@ -396,6 +396,24 @@ class GuidedInstallContracts(unittest.TestCase):
             for phrase in ("--answers", "wizard schema --json"):
                 self.assertTrue(phrase in text, f"{name} does not mention {phrase}")
 
+    def test_safety_docs_point_to_a_section_that_exists(self) -> None:
+        # Seven places pointed to README sections that do not exist; they now share one real section.
+        broken = ("Permissions and trusted mode", "Permissions & dangerous mode")
+        for path in [*ROOT.glob("*.md"), *(ROOT / "docs").glob("*.md"), *(ROOT / "templates").glob("*.md"),
+                     *(ROOT / "config").glob("*.example")]:
+            text = path.read_text(encoding="utf-8")
+            for phrase in broken:
+                self.assertFalse(phrase in text, f"{path.relative_to(ROOT)} still points to: {phrase}")
+        model = (ROOT / "docs" / "15-safety-model.md").read_text(encoding="utf-8")
+        self.assertIn("## Safety modes", model)
+        for phrase in ("`container`", "--assemble-only", "danger-full-access"):
+            self.assertIn(phrase, model)
+        troubleshooting = (ROOT / "docs" / "17-troubleshooting.md").read_text(encoding="utf-8")
+        self.assertIn("No permissions to create a new namespace", troubleshooting)
+        help_text = " ".join(agentsmith.parser()._subparsers._group_actions[0].choices["install"].format_help().split())
+        self.assertIn("container", help_text)
+        self.assertIn("leave Claude and Codex permissions", help_text)
+
     def test_standalone_build_covers_the_four_initial_targets(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "standalone.yml").read_text(encoding="utf-8")
         for value in ("ubuntu-24.04", "windows-2025", "macos-15", "macos-15-intel"):

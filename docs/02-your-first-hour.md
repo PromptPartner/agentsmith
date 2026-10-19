@@ -144,7 +144,7 @@ decide (credentials, external-service surprises, the first write to a system out
 If that autonomy is more than you want, the **cautious** safety mode — the guided setup
 default — keeps higher-risk actions behind a prompt and Codex writes inside its workspace sandbox
 while you build trust; see
-README → "Permissions and trusted mode."
+[`15-safety-model.md` → Safety modes](15-safety-model.md#safety-modes).
 
 ## Minutes 50–60: the first handoff
 
