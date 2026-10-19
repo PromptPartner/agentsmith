@@ -7738,7 +7738,7 @@ def add_common_install_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--from", dest="update_from")
     parser.add_argument("--no-reassemble", action="store_true")
     parser.add_argument("--wizard", action="store_true")
-    parser.add_argument("--lang", choices=("en", "de", "es", "fr", "zh-CN"), help="wizard language")
+    parser.add_argument("--lang", choices=WIZARD_LANGUAGES, help="wizard language")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -7935,6 +7935,114 @@ def wizard_choice(input_fn: Any, prompt: str, allowed: set[str], default: str, i
         warn(invalid.format(choices="/".join(sorted(allowed))))
 
 
+WIZARD_LANGUAGES = ("en", "de", "es", "fr", "zh-CN")
+WIZARD_GOAL_PROFILES = {
+    "1": "software-dev", "2": "devops-setup", "3": "marketing-outreach",
+    "4": "document-creation", "5": "data-crunching", "6": "general-admin",
+    "7": "deep-research", "8": "creative-design",
+}
+WIZARD_BIOS = {
+    "1": "I am new to programming and AI agents. Explain technical terms, why each step is needed, what changes, the main risks, and how to undo it.",
+    "2": "I am comfortable with daily Git, tests, and command-line tools. I am new to AI programming agents. Explain agent-specific choices and history-changing operations before commands.",
+    "3": "I am experienced with software and AI agents. Be concise on routine work and explain non-obvious trade-offs, failure modes, and hard-to-reverse changes.",
+}
+WIZARD_CAPABILITIES = ("skills", "mcp", "hooks", "handoff-hooks", "ui-design-hook", "memory-startup")
+# One table drives the interactive wizard, `wizard schema` and `install --answers`, so a host
+# product can ask the same questions in its own UI without re-implementing them per release.
+WIZARD_QUESTIONS: tuple[dict[str, Any], ...] = (
+    {"key": "language", "prompt_key": "language", "kind": "choice", "choices": list(WIZARD_LANGUAGES),
+     "default": {"computed": "locale_environment"}},
+    {"key": "project_kind", "prompt_key": "project_kind", "kind": "choice", "choices": ["existing", "new"],
+     "default": {"value": "existing"}},
+    {"key": "target", "prompt_key": "target", "kind": "path", "default": {"computed": "current_directory"}},
+    {"key": "agent", "prompt_key": "agent", "kind": "agent_list", "default": {"computed": "agent_detection"}},
+    {"key": "goal", "prompt_key": "new_goal", "kind": "choice", "choices": list(WIZARD_GOAL_PROFILES),
+     "default": {"value": "1"}, "when": {"project_kind": "new"}},
+    {"key": "profile", "prompt_key": "profile", "kind": "profile",
+     "default": {"value": "recommended", "computed": "profile_recommendation"}, "when": {"project_kind": "existing"}},
+    {"key": "experience", "prompt_key": "experience", "kind": "choice", "choices": list(WIZARD_BIOS),
+     "default": {"value": "2"}},
+    {"key": "safety", "prompt_key": "safety", "kind": "choice", "choices": ["cautious", "trusted"],
+     "default": {"value": "cautious"}},
+    {"key": "advanced", "prompt_key": "advanced", "kind": "choice", "choices": ["y", "n"], "default": {"value": "n"}},
+    {"key": "scope", "prompt_key": "scope", "kind": "choice", "choices": ["project", "user"],
+     "default": {"value": "project"}, "when": {"advanced": "y"}},
+    {"key": "extra_profiles", "prompt_key": "extra_profiles", "kind": "profile_list", "default": {"value": []},
+     "when": {"advanced": "y"}},
+    {"key": "capabilities", "prompt_key": "capabilities", "kind": "capability_list",
+     "choices": list(WIZARD_CAPABILITIES), "default": {"value": []}, "when": {"advanced": "y"}},
+    {"key": "confirm", "prompt_key": "confirm", "kind": "choice", "choices": ["yes", "no"], "default": {"value": "yes"}},
+)
+
+
+def wizard_question(key: str) -> dict[str, Any]:
+    return next(question for question in WIZARD_QUESTIONS if question["key"] == key)
+
+
+def wizard_default_agents() -> str:
+    detected = [name for name in ("claude", "codex") if shutil.which(name)]
+    return ",".join(detected) if detected else "native"
+
+
+def wizard_target(kind: str, raw: str, messages: dict[str, str]) -> Path:
+    target = Path(raw).expanduser().resolve()
+    if kind == "existing" and not target.is_dir():
+        raise CliError(messages["target_missing"].format(target=target))
+    if kind == "new" and target.exists() and (not target.is_dir() or any(target.iterdir())):
+        raise CliError(messages["target_not_empty"].format(target=target))
+    return target
+
+
+def wizard_profile(name: str) -> str:
+    if name not in {item["name"] for item in profile_catalog()}:
+        raise CliError(f"Unknown profile '{name}'. Run 'agentsmith profiles list'.")
+    return name
+
+
+def wizard_capabilities(values: list[str]) -> set[str]:
+    capabilities = set(values)
+    unknown = capabilities - set(WIZARD_CAPABILITIES)
+    if unknown:
+        raise CliError(f"Unknown optional capability: {', '.join(sorted(unknown))}")
+    return capabilities
+
+
+def apply_wizard_capabilities(args: argparse.Namespace, capabilities: set[str] | None) -> None:
+    if capabilities is None:
+        return
+    args.with_skills = "skills" in capabilities
+    args.with_mcp = ["playwright,context7"] if "mcp" in capabilities else None
+    args.with_hooks = "hooks" in capabilities
+    args.with_handoff_hooks = "handoff-hooks" in capabilities
+    args.with_ui_design_hook = "ui-design-hook" in capabilities
+    args.with_memory_startup = "memory-startup" in capabilities
+
+
+def print_wizard_summary(args: argparse.Namespace, messages: dict[str, str], plan: dict[str, Any]) -> None:
+    print(f"\n{messages['summary']}")
+    print(f"  {messages['git_init'] if plan['kind'] == 'new' else messages['existing_use']}: {plan['target']}")
+    print(f"  {messages['scope_user'] if plan['global_mode'] else messages['scope_project']}")
+    print(f"  Agent: {plan['agents']}")
+    print(f"  Profile: {', '.join(plan['profiles'])}")
+    print(f"  Safety: {plan['safety']}")
+    show_capability_effects({name: bool(getattr(args, "with_" + name, False)) for name in CAPABILITY_EFFECTS})
+
+
+def apply_wizard_plan(args: argparse.Namespace, plan: dict[str, Any]) -> dict[str, Any]:
+    """Turn one confirmed wizard plan into install arguments. This function performs no writes."""
+    args.agent = [plan["agents"]]
+    args.profile = [] if plan["global_mode"] else plan["profiles"]
+    args.target = None if plan["global_mode"] else str(plan["target"])
+    args.global_mode = plan["global_mode"]
+    args.profile_only = False
+    args.operator_bio = WIZARD_BIOS[plan["experience"]]
+    args.safety = plan["safety"]
+    args.initialize_git = plan["kind"] == "new" and not plan["global_mode"]
+    args.wizard_language = plan["language"]
+    args.wizard = False
+    return {"confirmed": True, "project_kind": plan["kind"], "target": str(plan["target"]), "language": plan["language"]}
+
+
 def apply_wizard_answers(args: argparse.Namespace, input_fn: Any = input) -> dict[str, Any]:
     """Collect one reviewed installation plan. This function performs no writes."""
     locales = load_wizard_locales()
@@ -7946,27 +8054,23 @@ def apply_wizard_answers(args: argparse.Namespace, input_fn: Any = input) -> dic
     print(messages["welcome"])
     invalid = messages["invalid"]
 
-    kind = wizard_choice(input_fn, messages["project_kind"], {"existing", "new"}, "existing", invalid)
-    default_target = str(Path.cwd())
-    target = Path(input_fn(messages["target"].format(default=default_target)).strip() or default_target).expanduser().resolve()
-    if kind == "existing" and not target.is_dir():
-        raise CliError(messages["target_missing"].format(target=target))
-    if kind == "new" and target.exists() and (not target.is_dir() or any(target.iterdir())):
-        raise CliError(messages["target_not_empty"].format(target=target))
+    def ask(key: str) -> str:
+        question = wizard_question(key)
+        return wizard_choice(input_fn, messages[question["prompt_key"]], set(question["choices"]),
+                             question["default"]["value"], invalid)
 
-    detected_agents = [name for name in ("claude", "codex") if shutil.which(name)]
-    agent_default = ",".join(detected_agents) if detected_agents else "native"
+    kind = ask("project_kind")
+    default_target = str(Path.cwd())
+    target = wizard_target(kind, input_fn(messages["target"].format(default=default_target)).strip() or default_target,
+                           messages)
+
+    agent_default = wizard_default_agents()
     chosen_agents = input_fn(messages["agent"].format(default=agent_default)).strip() or agent_default
     resolve_agents([chosen_agents], None)
 
-    goal_profiles = {
-        "1": "software-dev", "2": "devops-setup", "3": "marketing-outreach",
-        "4": "document-creation", "5": "data-crunching", "6": "general-admin",
-        "7": "deep-research", "8": "creative-design",
-    }
     if kind == "new":
-        goal = wizard_choice(input_fn, messages["new_goal"], set(goal_profiles), "1", invalid)
-        recommended = {"profile": goal_profiles[goal], "evidence": ["stated project goal"]}
+        goal = ask("goal")
+        recommended = {"profile": WIZARD_GOAL_PROFILES[goal], "evidence": ["stated project goal"]}
     else:
         recommended = wizard_profile_recommendation(target)
         print(messages["profile_recommendation"].format(
@@ -7981,61 +8085,28 @@ def apply_wizard_answers(args: argparse.Namespace, input_fn: Any = input) -> dic
             selected = input_fn(messages["profile"]).strip() or "recommended"
         if selected != "recommended":
             recommended["profile"] = selected
-    if recommended["profile"] not in {item["name"] for item in profile_catalog()}:
-        raise CliError(f"Unknown profile '{recommended['profile']}'. Run 'agentsmith profiles list'.")
+    wizard_profile(recommended["profile"])
 
-    experience = wizard_choice(input_fn, messages["experience"], {"1", "2", "3"}, "2", invalid)
-    bios = {
-        "1": "I am new to programming and AI agents. Explain technical terms, why each step is needed, what changes, the main risks, and how to undo it.",
-        "2": "I am comfortable with daily Git, tests, and command-line tools. I am new to AI programming agents. Explain agent-specific choices and history-changing operations before commands.",
-        "3": "I am experienced with software and AI agents. Be concise on routine work and explain non-obvious trade-offs, failure modes, and hard-to-reverse changes.",
-    }
-    safety = wizard_choice(input_fn, messages["safety"], {"cautious", "trusted"}, "cautious", invalid)
+    experience = ask("experience")
+    safety = ask("safety")
 
     global_mode = False
     profiles = [recommended["profile"]]
-    if wizard_choice(input_fn, messages["advanced"], {"y", "n"}, "n", invalid) == "y":
-        scope = wizard_choice(input_fn, messages["scope"], {"project", "user"}, "project", invalid)
-        global_mode = scope == "user"
-        extras = csv([input_fn(messages["extra_profiles"]).strip()])
-        for profile in extras:
-            if profile not in {item["name"] for item in profile_catalog()}:
-                raise CliError(f"Unknown profile '{profile}'. Run 'agentsmith profiles list'.")
-            if profile not in profiles:
+    capabilities: set[str] | None = None
+    if ask("advanced") == "y":
+        global_mode = ask("scope") == "user"
+        for profile in csv([input_fn(messages["extra_profiles"]).strip()]):
+            if wizard_profile(profile) not in profiles:
                 profiles.append(profile)
-        capabilities = set(csv([input_fn(messages["capabilities"]).strip()]))
-        unknown = capabilities - {"skills", "mcp", "hooks", "handoff-hooks", "ui-design-hook", "memory-startup"}
-        if unknown:
-            raise CliError(f"Unknown optional capability: {', '.join(sorted(unknown))}")
-        args.with_skills = "skills" in capabilities
-        args.with_mcp = ["playwright,context7"] if "mcp" in capabilities else None
-        args.with_hooks = "hooks" in capabilities
-        args.with_handoff_hooks = "handoff-hooks" in capabilities
-        args.with_ui_design_hook = "ui-design-hook" in capabilities
-        args.with_memory_startup = "memory-startup" in capabilities
+        capabilities = wizard_capabilities(csv([input_fn(messages["capabilities"]).strip()]))
 
-    print(f"\n{messages['summary']}")
-    print(f"  {messages['git_init'] if kind == 'new' else messages['existing_use']}: {target}")
-    print(f"  {messages['scope_user'] if global_mode else messages['scope_project']}")
-    print(f"  Agent: {chosen_agents}")
-    print(f"  Profile: {', '.join(profiles)}")
-    print(f"  Safety: {safety}")
-    show_capability_effects({name: bool(getattr(args, "with_" + name, False)) for name in CAPABILITY_EFFECTS})
-    confirmed = wizard_choice(input_fn, messages["confirm"], {"yes", "no"}, "yes", invalid) == "yes"
-    if not confirmed:
+    plan = {"kind": kind, "target": target, "agents": chosen_agents, "profiles": profiles, "experience": experience,
+            "safety": safety, "global_mode": global_mode, "capabilities": capabilities, "language": language}
+    apply_wizard_capabilities(args, capabilities)
+    print_wizard_summary(args, messages, plan)
+    if ask("confirm") != "yes":
         raise CliError(messages["cancelled"])
-
-    args.agent = [chosen_agents]
-    args.profile = [] if global_mode else profiles
-    args.target = None if global_mode else str(target)
-    args.global_mode = global_mode
-    args.profile_only = False
-    args.operator_bio = bios[experience]
-    args.safety = safety
-    args.initialize_git = kind == "new" and not global_mode
-    args.wizard_language = language
-    args.wizard = False
-    return {"confirmed": True, "project_kind": kind, "target": str(target), "language": language}
+    return apply_wizard_plan(args, plan)
 
 
 def run(argv: list[str] | None = None) -> int:
