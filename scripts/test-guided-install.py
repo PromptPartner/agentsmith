@@ -148,6 +148,48 @@ class GuidedInstallContracts(unittest.TestCase):
             self.assertEqual(state["installation"]["runtime"]["path"], "agentsmith")
             self.assertNotIn(str(Path(temporary)), state_text)
 
+    def test_standalone_update_refusal_points_to_a_verified_release_download(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            binary = Path(temporary) / "agentsmith"
+            binary.write_bytes(b"standalone")
+            target = Path(temporary) / "project"
+            with mock.patch.object(agentsmith.sys, "frozen", True, create=True), mock.patch.object(
+                agentsmith.sys, "executable", str(binary)
+            ):
+                args = agentsmith.parser().parse_args([
+                    "install", "--agent", "github-copilot", "--profile", "software-dev", "--target", str(target)
+                ])
+                target.mkdir()
+                agentsmith.record_installation_manifest(
+                    target, ["github-copilot"], ["software-dev"], args, {}, []
+                )
+            with self.assertRaises(agentsmith.CliError) as raised:
+                agentsmith.cmd_update_plan(argparse.Namespace(global_mode=False, target=str(target)))
+        message = str(raised.exception)
+        self.assertNotRegex(message, r"(?i)\bsigned\b")
+        self.assertIn("SHA256SUMS", message)
+
+    def test_release_download_guidance_matches_unsigned_checksummed_assets(self) -> None:
+        guides = {name: (ROOT / name).read_text(encoding="utf-8") for name in ("INSTALL.md", "AGENT-INSTALL.md")}
+        for name, text in guides.items():
+            self.assertNotRegex(text, r"(?i)\bsigned\b|platform signature", name)
+            self.assertIn("SHA256SUMS", text, name)
+            self.assertIn("gh attestation verify", text, name)
+        for asset in RELEASE_ASSETS:
+            self.assertIn(asset, guides["INSTALL.md"])
+        # (states the builds are unsigned, retired claim that they are signed)
+        readmes = {
+            "README.md": ("unsigned", "signed installer"),
+            "README.de.md": ("nicht signiert", "signierte Installationsprogramm"),
+            "README.es.md": ("no están firmad", "instalador firmado"),
+            "README.fr.md": ("pas signés", "installation signé"),
+            "README.zh-CN.md": ("未签名", "已签名安装程序"),
+        }
+        for name, (unsigned, retired) in readmes.items():
+            text = (ROOT / name).read_text(encoding="utf-8")
+            self.assertIn(unsigned, text, name)
+            self.assertNotIn(retired, text, name)
+
     def test_standalone_build_covers_every_release_target(self) -> None:
         workflow = STANDALONE_WORKFLOW.read_text(encoding="utf-8")
         for value in ("ubuntu-24.04", "ubuntu-24.04-arm", "windows-2025", "macos-15", "macos-15-intel"):

@@ -6,14 +6,14 @@ Use this guide when a user asks you to install AgentSmith. Keep the experience c
 
 - Inspect the target statically. Do not run project code, package scripts, or dependency installers to choose a profile.
 - Download only an official stable release from `PromptPartner/agentsmith`.
-- Match the release asset to the current operating system and CPU architecture. Verify it against `SHA256SUMS` before running it. On macOS and Windows, also verify the platform signature.
+- Match the release asset to the current operating system and CPU architecture. Verify it against the release's `SHA256SUMS` file before running it and, when the GitHub CLI is available, with `gh attestation verify <file> --repo PromptPartner/agentsmith`. If either check fails, do not run the file; report it. The builds are currently unsigned, so macOS and Windows may warn before the first run. Explain the warning to the user instead of suppressing it.
 - Never place credentials in project files or command history.
 - Show one concrete plan before the first write. Ask once to apply it. Availability of GitHub, a tracker, or any external service is not authorization to write there.
 
 ## The guided procedure
 
 1. **Identify the starting point.** Ask whether this is an existing project or a new project. For a new project, ask for an absent or empty folder. Explain that AgentSmith initializes Git but does not select an application framework.
-2. **Install the CLI if needed.** Use the latest signed release for macOS, Windows, or Linux. Do not clone the source repository for an ordinary user install. If no supported signed asset exists for this platform, stop and explain that source installation is the advanced fallback.
+2. **Install the CLI if needed.** Use the latest release asset for macOS, Windows, or Linux, verified as described above. Do not clone the source repository for an ordinary user install. If the latest release has no asset for this platform, stop and explain that source installation is the advanced fallback.
 3. **Identify the agent.** Detect Claude Code, Codex, and other supported clients already present. Confirm which should read the rules. Do not claim native certification beyond the evidence in `config/agents.json`.
 4. **Recommend one profile.** For an existing project, run `agentsmith profiles recommend --target <path>` and explain the leading recommendation using the reported files. For an empty project, ask what the project will mainly produce and map that answer to the profile table in the main README. Show the full list only when requested or when the evidence is ambiguous. Treat `autonomous-loops` as an optional modifier.
 5. **Calibrate explanations.** Ask whether the user is new to programming, is an experienced developer new to AI agents, or already works deeply with AI agents. Do not infer one universal technical level.
