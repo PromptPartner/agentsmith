@@ -84,6 +84,17 @@ class RegistryContractTest(unittest.TestCase):
         self.assertTrue(set(groups["standard"]) <= EXPECTED_IDS)
         self.assertTrue(set(groups["local"]) <= EXPECTED_IDS)
 
+    def test_opencode_declares_every_skill_directory_it_reads(self) -> None:
+        # OpenCode also loads Claude's skill folders, so a Claude adapter is a second copy for it.
+        opencode = next(agent for agent in self.registry["agents"] if agent["id"] == "opencode")
+        self.assertEqual(
+            set(opencode["skills_tools"]["skill_directories"]),
+            {
+                "~/.config/opencode/skills", "~/.claude/skills", "~/.agents/skills",
+                ".opencode/skills", ".claude/skills", ".agents/skills",
+            },
+        )
+
     def test_cli_groups_match_registry_groups(self) -> None:
         # --agent expands groups from the code, while docs and doctor read the registry.
         cli = load_cli()

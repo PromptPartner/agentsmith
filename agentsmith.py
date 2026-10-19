@@ -4516,6 +4516,23 @@ def inspect_skills(agent_id: str, agent: dict[str, Any], target: Path) -> dict[s
     }
 
 
+def opencode_duplicate_skill_names(target: Path) -> list[str]:
+    """Return skill names OpenCode discovers in both a Claude and an Agent Skills folder."""
+    switches = ("OPENCODE_DISABLE_CLAUDE_CODE", "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS", "OPENCODE_DISABLE_EXTERNAL_SKILLS")
+    if any(os.environ.get(name, "").strip().lower() in {"1", "true"} for name in switches):
+        return []
+
+    def names(folder: str) -> set[str]:
+        found: set[str] = set()
+        for base in (home_dir(), target):
+            root = base / folder / "skills"
+            if root.is_dir():
+                found.update(entry.name for entry in root.iterdir() if entry.is_dir())
+        return found
+
+    return sorted(names(".claude") & names(".agents"))
+
+
 def inspect_mcp(agent_id: str, agent: dict[str, Any], target: Path) -> dict[str, Any]:
     declared = str(agent.get("skills_tools", {}).get("mcp", {}).get("client_support", "unverified"))
     managed_names: list[str] = []
@@ -4851,6 +4868,16 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     "Claude's derived skill adapter differs from canonical content: "
                     + ", ".join(skills["adapter_diverged_names"]),
                     "Re-run install with --with-skills to regenerate owned adapters.",
+                )
+            )
+        duplicate_skills = opencode_duplicate_skill_names(target) if agent_id == "opencode" else []
+        if duplicate_skills:
+            warnings.append(
+                doctor_warning(
+                    "duplicate-skill-discovery",
+                    "OpenCode finds these skills in both .claude/skills and .agents/skills and keeps one "
+                    "copy at random: " + ", ".join(duplicate_skills),
+                    "Set OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1 in OpenCode's environment so it reads only .agents/skills.",
                 )
             )
         ignored_config = ignored_opencode_config_home() if agent_id == "opencode" else None

@@ -1105,7 +1105,7 @@
         "agent_skills": {
           "agentsmith_management": "planned",
           "client_support": "supported",
-          "notes": "Uses the canonical .agents/skills pack."
+          "notes": "Uses the canonical .agents/skills pack. OpenCode also loads Claude's .claude/skills folders, so with Claude selected it finds each AgentSmith skill twice and keeps one copy at random; set OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1 for OpenCode."
         },
         "mcp": {
           "agentsmith_management": "planned",
@@ -1113,7 +1113,11 @@
           "notes": "Managed keys must preserve foreign configuration."
         },
         "skill_directories": [
+          "~/.config/opencode/skills",
+          "~/.claude/skills",
           "~/.agents/skills",
+          ".opencode/skills",
+          ".claude/skills",
           ".agents/skills"
         ]
       },

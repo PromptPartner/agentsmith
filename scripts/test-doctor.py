@@ -34,8 +34,11 @@ class DoctorTests(unittest.TestCase):
                 "PYTHONIOENCODING": "utf-8",
             }
         )
-        # Client locations from the operator's own shell must not redirect fixture installs.
-        for name in ("PI_CODING_AGENT_DIR", "XDG_CONFIG_HOME"):
+        # Client settings from the operator's own shell must not redirect or silence fixtures.
+        for name in (
+            "PI_CODING_AGENT_DIR", "XDG_CONFIG_HOME", "OPENCODE_DISABLE_CLAUDE_CODE",
+            "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS",
+        ):
             self.env.pop(name, None)
 
     def tearDown(self) -> None:
@@ -354,6 +357,31 @@ class DoctorTests(unittest.TestCase):
         self.assertNotIn("XDG_CONFIG_HOME", matching.stderr)
         _, matching_payload = self.doctor(project, "opencode")
         self.assertNotIn("opencode-xdg-config-ignored", self.warning_codes(matching_payload["opencode"]))
+
+    def test_opencode_with_claude_reports_duplicate_skill_discovery(self) -> None:
+        project = self.root / "skill discovery project"
+        project.mkdir()
+        alone = self.run_core("install", "--agent", "opencode", "--global", "--with-skills")
+        self.assertEqual(alone.returncode, 0, alone.stdout + alone.stderr)
+        _, alone_payload = self.doctor(project, "opencode")
+        self.assertNotIn("duplicate-skill-discovery", self.warning_codes(alone_payload["opencode"]))
+
+        both = self.run_core("install", "--agent", "claude,opencode", "--global", "--with-skills")
+        self.assertEqual(both.returncode, 0, both.stdout + both.stderr)
+        strict = self.run_core("doctor", "--agent", "opencode", "--target", str(project), "--strict", "--json")
+        self.assertEqual(strict.returncode, 0, strict.stdout + strict.stderr)
+        warning = next(
+            warning for warning in json.loads(strict.stdout)["opencode"]["warnings"]
+            if warning["code"] == "duplicate-skill-discovery"
+        )
+        self.assertIn("handoff", warning["message"])
+        self.assertIn("OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1", warning["recommendation"])
+        _, claude_payload = self.doctor(project, "claude")
+        self.assertNotIn("duplicate-skill-discovery", self.warning_codes(claude_payload["claude"]))
+
+        self.env["OPENCODE_DISABLE_CLAUDE_CODE_SKILLS"] = "1"
+        _, disabled_payload = self.doctor(project, "opencode")
+        self.assertNotIn("duplicate-skill-discovery", self.warning_codes(disabled_payload["opencode"]))
 
     def test_skill_install_refuses_symlinked_adapter_root_before_external_writes(self) -> None:
         project = self.root / "symlinked adapter project"

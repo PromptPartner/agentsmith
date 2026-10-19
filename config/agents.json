@@ -325,8 +325,8 @@
       "certification": "pending",
       "instructions": { "discovery": "direct", "global_paths": ["~/.config/opencode/AGENTS.md"], "project_paths": ["AGENTS.md"], "adapter_config_paths": ["~/.config/opencode/opencode.json", "opencode.json"], "nesting": "unverified" },
       "skills_tools": {
-        "agent_skills": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Uses the canonical .agents/skills pack." },
-        "skill_directories": ["~/.agents/skills", ".agents/skills"],
+        "agent_skills": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Uses the canonical .agents/skills pack. OpenCode also loads Claude's .claude/skills folders, so with Claude selected it finds each AgentSmith skill twice and keeps one copy at random; set OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1 for OpenCode." },
+        "skill_directories": ["~/.config/opencode/skills", "~/.claude/skills", "~/.agents/skills", ".opencode/skills", ".claude/skills", ".agents/skills"],
         "mcp": { "client_support": "supported", "agentsmith_management": "planned", "notes": "Managed keys must preserve foreign configuration." }
       },
       "native_runtime": {
