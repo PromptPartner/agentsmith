@@ -1,0 +1,125 @@
+{
+  "advanced-user-scope": {
+    "args": {
+      "agent": [
+        "github-copilot"
+      ],
+      "global_mode": true,
+      "initialize_git": false,
+      "operator_bio": "I am experienced with software and AI agents. Be concise on routine work and explain non-obvious trade-offs, failure modes, and hard-to-reverse changes.",
+      "profile": [],
+      "safety": "trusted",
+      "target": null,
+      "with_handoff_hooks": false,
+      "with_hooks": true,
+      "with_mcp": null,
+      "with_memory_startup": false,
+      "with_skills": true,
+      "with_ui_design_hook": false,
+      "wizard_language": "en"
+    },
+    "output": "AgentSmith guided setup\nRecommended profile: software-dev. Evidence: <TARGET>\n\nInstallation plan\n  Configure the existing project: <TARGET>\n  User-wide rules apply to projects on this computer\n  Agent: github-copilot\n  Profile: software-dev, deep-research\n  Safety: trusted\n» Capability hooks (effects v1):\n»   files: Git pre-commit launcher and local runtime\n»   process_control: may reject a commit containing secrets\n»   egress: none\n»   context: none\n»   records: installation ownership and backups\n» Capability skills (effects v1):\n»   files: portable skills and client adapters\n»   process_control: agent may invoke skill procedures\n»   egress: existing agent provider processes skill context; procedures may call services\n»   context: skill instructions on discovery/invocation\n»   records: procedure-dependent; ownership and backups\n",
+    "plan": {
+      "confirmed": true,
+      "language": "en",
+      "project_kind": "existing",
+      "target": "<TARGET>"
+    },
+    "prompts": [
+      "Language [en/de/es/fr/zh-CN] [en]: ",
+      "Are you setting up an existing project or a new folder? [existing/new] [existing]: ",
+      "Project folder [<TARGET>]: ",
+      "Which agent should use these rules? [native]: ",
+      "Use this profile, enter another name, or type 'all' [recommended]: ",
+      "Your background: 1 new to programming, 2 developer new to AI agents, 3 experienced with AI agents [2]: ",
+      "Agent permissions [cautious/trusted] [cautious]: ",
+      "Configure advanced options such as user-wide rules, extra profiles, skills, MCP, or hooks? [y/N]: ",
+      "Rule scope [project/user] [project]: ",
+      "Extra profile names, comma separated [none]: ",
+      "Optional capabilities, comma separated: skills,mcp,hooks,handoff-hooks,ui-design-hook,memory-startup [none]: ",
+      "Apply this plan? [yes/no] [yes]: "
+    ]
+  },
+  "existing-all-and-reprompt": {
+    "args": {
+      "agent": [
+        "claude"
+      ],
+      "global_mode": false,
+      "initialize_git": false,
+      "operator_bio": "I am comfortable with daily Git, tests, and command-line tools. I am new to AI programming agents. Explain agent-specific choices and history-changing operations before commands.",
+      "profile": [
+        "general-admin"
+      ],
+      "safety": "cautious",
+      "target": "<TARGET>",
+      "with_handoff_hooks": false,
+      "with_hooks": false,
+      "with_mcp": null,
+      "with_memory_startup": false,
+      "with_skills": false,
+      "with_ui_design_hook": false,
+      "wizard_language": "en"
+    },
+    "output": "AgentSmith guided setup\nRecommended profile: software-dev. Evidence: <TARGET>\nAvailable primary profiles:\n  creative-design: Create visual and brand artifacts. Examples: diagram, slide deck, brand asset, generated image.\n  data-crunching: Clean, transform, join, analyze, and report data. Examples: SQL analysis, ETL, spreadsheet model, metrics.\n  deep-research: Investigate questions across multiple credible sources. Examples: market analysis, due diligence, competitive research, cited briefing.\n  devops-setup: Provision, configure, deploy, and operate systems. Examples: CI pipeline, Docker setup, server deployment, installer.\n  document-creation: Create structured written deliverables. Examples: proposal, manual, specification, report.\n  general-admin: Handle routine coordination and operational tasks. Examples: file organization, scheduling, triage, summary.\n  marketing-outreach: Create and operate campaigns and customer communication. Examples: email sequence, landing copy, newsletter, campaign.\n  security-audit: Assess security and deliver evidence-backed findings. Examples: threat model, code audit, penetration test, IAM review.\n  software-dev: Build, change, review, and test software. Examples: web application, CLI, library, bug fix.\n  ! Please enter one of: cautious/trusted.\n\nInstallation plan\n  Configure the existing project: <TARGET>\n  Project rules travel with this repository\n  Agent: claude\n  Profile: general-admin\n  Safety: cautious\n",
+    "plan": {
+      "confirmed": true,
+      "language": "en",
+      "project_kind": "existing",
+      "target": "<TARGET>"
+    },
+    "prompts": [
+      "Language [en/de/es/fr/zh-CN] [en]: ",
+      "Are you setting up an existing project or a new folder? [existing/new] [existing]: ",
+      "Project folder [<TARGET>]: ",
+      "Which agent should use these rules? [native]: ",
+      "Use this profile, enter another name, or type 'all' [recommended]: ",
+      "Use this profile, enter another name, or type 'all' [recommended]: ",
+      "Your background: 1 new to programming, 2 developer new to AI agents, 3 experienced with AI agents [2]: ",
+      "Agent permissions [cautious/trusted] [cautious]: ",
+      "Agent permissions [cautious/trusted] [cautious]: ",
+      "Configure advanced options such as user-wide rules, extra profiles, skills, MCP, or hooks? [y/N]: ",
+      "Apply this plan? [yes/no] [yes]: "
+    ]
+  },
+  "new-project": {
+    "args": {
+      "agent": [
+        "codex"
+      ],
+      "global_mode": false,
+      "initialize_git": true,
+      "operator_bio": "I am comfortable with daily Git, tests, and command-line tools. I am new to AI programming agents. Explain agent-specific choices and history-changing operations before commands.",
+      "profile": [
+        "software-dev"
+      ],
+      "safety": "cautious",
+      "target": "<TARGET>/fresh",
+      "with_handoff_hooks": false,
+      "with_hooks": false,
+      "with_mcp": null,
+      "with_memory_startup": false,
+      "with_skills": false,
+      "with_ui_design_hook": false,
+      "wizard_language": "en"
+    },
+    "output": "AgentSmith guided setup\n\nInstallation plan\n  Create the folder and initialize Git: <TARGET>/fresh\n  Project rules travel with this repository\n  Agent: codex\n  Profile: software-dev\n  Safety: cautious\n",
+    "plan": {
+      "confirmed": true,
+      "language": "en",
+      "project_kind": "new",
+      "target": "<TARGET>/fresh"
+    },
+    "prompts": [
+      "Language [en/de/es/fr/zh-CN] [en]: ",
+      "Are you setting up an existing project or a new folder? [existing/new] [existing]: ",
+      "Project folder [<TARGET>]: ",
+      "Which agent should use these rules? [native]: ",
+      "What will this project mainly do? 1 software, 2 systems/deployments, 3 marketing, 4 documents, 5 data, 6 administration, 7 research, 8 visual design [1]: ",
+      "Your background: 1 new to programming, 2 developer new to AI agents, 3 experienced with AI agents [2]: ",
+      "Agent permissions [cautious/trusted] [cautious]: ",
+      "Configure advanced options such as user-wide rules, extra profiles, skills, MCP, or hooks? [y/N]: ",
+      "Apply this plan? [yes/no] [yes]: "
+    ]
+  }
+}

@@ -20,6 +20,49 @@ SPEC = importlib.util.spec_from_file_location("agentsmith", ROOT / "agentsmith.p
 assert SPEC and SPEC.loader
 agentsmith = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(agentsmith)
+WIZARD_GOLDEN = ROOT / "tests" / "fixtures" / "wizard" / "interactive-golden.json"
+WIZARD_SCENARIOS = {
+    "new-project": ["en", "new", "<TARGET>/fresh", "codex", "1", "2", "", "", "yes"],
+    "existing-all-and-reprompt": ["", "", "", "claude", "all", "general-admin", "2", "invalid", "", "", "yes"],
+    "advanced-user-scope": ["en", "existing", "<TARGET>", "github-copilot", "recommended", "3", "trusted",
+                            "y", "user", "deep-research", "skills,hooks", "yes"],
+}
+
+
+def record_wizard_scenario(name: str) -> dict:
+    """Run one scripted interactive wizard and return its prompts, output and resulting choices."""
+    import contextlib
+    import io
+    with tempfile.TemporaryDirectory() as temporary:
+        target = Path(temporary).resolve()
+        answers = iter(value.replace("<TARGET>", str(target)) for value in WIZARD_SCENARIOS[name])
+        prompts: list[str] = []
+        args = agentsmith.parser().parse_args(["install", "--wizard", "--lang", "en"])
+        output = io.StringIO()
+        previous = Path.cwd()
+        os.chdir(target)
+        try:
+            with mock.patch.object(agentsmith.shutil, "which", return_value=None), \
+                    contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+                plan = agentsmith.apply_wizard_answers(args, lambda prompt: (prompts.append(prompt), next(answers))[1])
+        finally:
+            os.chdir(previous)
+        fields = ("agent", "profile", "target", "global_mode", "operator_bio", "safety", "initialize_git",
+                  "wizard_language", "with_skills", "with_mcp", "with_hooks", "with_handoff_hooks",
+                  "with_ui_design_hook", "with_memory_startup")
+        result = {"prompts": prompts, "output": output.getvalue(), "plan": plan,
+                  "args": {field: getattr(args, field, None) for field in fields}}
+
+        def anonymize(value):
+            # Replace on the data, not on JSON text, so Windows backslashes match too.
+            if isinstance(value, str):
+                return value.replace(str(target), "<TARGET>")
+            if isinstance(value, list):
+                return [anonymize(item) for item in value]
+            if isinstance(value, dict):
+                return {key: anonymize(item) for key, item in value.items()}
+            return value
+        return anonymize(json.loads(json.dumps(result)))
 
 
 class GuidedInstallContracts(unittest.TestCase):
@@ -87,6 +130,14 @@ class GuidedInstallContracts(unittest.TestCase):
                 self.assertIn("--profile", result.stderr)
                 self.assertEqual(list(home.iterdir()), [])
                 self.assertEqual(list(project.iterdir()), [])
+
+    def test_interactive_prompt_sequence_is_stable(self) -> None:
+        # Pins the interactive wizard while the answers file and schema share its question table.
+        golden = json.loads(WIZARD_GOLDEN.read_text(encoding="utf-8"))
+        self.assertEqual(set(golden), set(WIZARD_SCENARIOS))
+        for name in WIZARD_SCENARIOS:
+            with self.subTest(scenario=name):
+                self.assertEqual(record_wizard_scenario(name), golden[name])
 
     def test_existing_project_recommendation_uses_repository_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
