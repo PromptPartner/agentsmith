@@ -7797,6 +7797,12 @@ def parser() -> argparse.ArgumentParser:
     profile_switch.add_argument("--target", required=True)
     profile_switch.add_argument("--profile", action="append", required=True)
     profile_switch.add_argument("--dry-run", action="store_true")
+    wizard = sub.add_parser("wizard", help="describe the install wizard for programs that ask its questions")
+    wizard_sub = wizard.add_subparsers(dest="wizard_command", required=True)
+    wizard_schema_parser = wizard_sub.add_parser("schema", help="print the wizard questions, choices and defaults")
+    wizard_schema_parser.add_argument("--json", action="store_true")
+    wizard_schema_parser.add_argument("--target", help="resolve the profile recommendation for this folder")
+    wizard_schema_parser.add_argument("--lang", choices=WIZARD_LANGUAGES, help="language for the computed default")
     compatibility = sub.add_parser("compatibility", help="print the evidence-backed compatibility matrix")
     compatibility.add_argument("--agent", action="append")
     compatibility.add_argument("--json", action="store_true")
@@ -7891,7 +7897,7 @@ def parser() -> argparse.ArgumentParser:
 def normalize_legacy_argv(argv: list[str]) -> list[str]:
     if not argv:
         return ["install", "--wizard"]
-    commands = {"install", "update", "agents", "doctor", "status", "profiles", "compatibility", "verify", "validate-integration", "graph", "demo", "resume", "handoff", "new-feedback", "new-research", "secret-scan", "hook", "memory", "audit-config", "evaluate"}
+    commands = {"install", "update", "agents", "doctor", "status", "profiles", "wizard", "compatibility", "verify", "validate-integration", "graph", "demo", "resume", "handoff", "new-feedback", "new-research", "secret-scan", "hook", "memory", "audit-config", "evaluate"}
     if argv[0] in commands or argv[0] in {"-h", "--help", "--version"}:
         return argv
     if "--doctor" in argv:
@@ -8109,6 +8115,62 @@ def apply_wizard_answers(args: argparse.Namespace, input_fn: Any = input) -> dic
     return apply_wizard_plan(args, plan)
 
 
+def wizard_schema(args: argparse.Namespace) -> dict[str, Any]:
+    """Describe the wizard for another program; computed defaults are resolved on this machine."""
+    locales = load_wizard_locales()
+    profile_names = [item["name"] for item in profile_catalog()]
+    questions: list[dict[str, Any]] = []
+    for source in WIZARD_QUESTIONS:
+        question = json.loads(json.dumps(source))
+        key = question["key"]
+        if key == "language":
+            question["default"]["value"] = getattr(args, "lang", None) or default_wizard_language()
+        elif key == "target":
+            question["default"]["value"] = None
+            question["required_in_answers"] = True
+        elif key == "agent":
+            question["choices"] = [*GROUPS, *AGENT_IDS]
+            question["default"]["value"] = wizard_default_agents().split(",")
+        elif key == "goal":
+            question["profiles"] = dict(WIZARD_GOAL_PROFILES)
+        elif key == "profile":
+            question["choices"] = ["recommended", *profile_names]
+            question["default"]["resolved"] = None
+            question["default"]["evidence"] = []
+            target = getattr(args, "target", None)
+            if target and Path(target).expanduser().is_dir():
+                recommendation = wizard_profile_recommendation(Path(target).expanduser().resolve())
+                question["default"]["resolved"] = recommendation["profile"]
+                question["default"]["evidence"] = recommendation["evidence"]
+        elif key == "extra_profiles":
+            question["choices"] = profile_names
+        questions.append(question)
+    return {
+        "schema_version": 1,
+        "agentsmith_version": VERSION,
+        "answers": {
+            "schema_version": 1,
+            "required": ["schema_version", "target"],
+            "list_keys": ["agent", "extra_profiles", "capabilities"],
+            "confirm": "required as \"yes\" unless --dry-run is given",
+        },
+        "questions": questions,
+        "messages": {language: locales[language] for language in WIZARD_LANGUAGES if language in locales},
+    }
+
+
+def cmd_wizard(args: argparse.Namespace) -> int:
+    schema = wizard_schema(args)
+    if args.json:
+        print(json.dumps(schema, indent=2, ensure_ascii=False))
+        return 0
+    for question in schema["questions"]:
+        choices = "/".join(question.get("choices") or []) or question["kind"]
+        when = ", ".join(f"{key}={value}" for key, value in question.get("when", {}).items())
+        print(f"{question['key']}: {choices}" + (f" (when {when})" if when else ""))
+    return 0
+
+
 def run(argv: list[str] | None = None) -> int:
     require_python()
     args = parser().parse_args(normalize_legacy_argv(list(argv if argv is not None else sys.argv[1:])))
@@ -8116,7 +8178,7 @@ def run(argv: list[str] | None = None) -> int:
         args.command == "verify" and getattr(args, "verify_action", None) in {"discover", "apply"}
     )
     profile_operation = args.command == "profiles"
-    if args.command not in {"update", "validate-integration", "graph", "status", "demo", "resume"} and not verification_plan_operation and not profile_operation:
+    if args.command not in {"update", "validate-integration", "graph", "status", "demo", "resume", "wizard"} and not verification_plan_operation and not profile_operation:
         maybe_report_automatic_update()
     if args.command == "install":
         if args.wizard:
@@ -8148,6 +8210,8 @@ def run(argv: list[str] | None = None) -> int:
         return cmd_doctor(args)
     if args.command == "status":
         return cmd_status(args)
+    if args.command == "wizard":
+        return cmd_wizard(args)
     if args.command == "profiles":
         if args.profiles_command == "list":
             return cmd_profiles_list(args)

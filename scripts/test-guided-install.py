@@ -139,6 +139,50 @@ class GuidedInstallContracts(unittest.TestCase):
             with self.subTest(scenario=name):
                 self.assertEqual(record_wizard_scenario(name), golden[name])
 
+    def test_wizard_schema_is_versioned_and_complete(self) -> None:
+        # A host product renders these questions itself, so the schema must match the wizard.
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary)
+            (target / "pyproject.toml").write_text("[project]\nname='sample'\n", encoding="utf-8")
+            args = agentsmith.parser().parse_args(["wizard", "schema", "--json", "--target", str(target)])
+            schema = agentsmith.wizard_schema(args)
+        self.assertEqual(schema["schema_version"], 1)
+        self.assertEqual(schema["agentsmith_version"], agentsmith.VERSION)
+        self.assertEqual([item["key"] for item in schema["questions"]],
+                         [item["key"] for item in agentsmith.WIZARD_QUESTIONS])
+        self.assertEqual(set(schema["messages"]), set(agentsmith.WIZARD_LANGUAGES))
+        for item in schema["questions"]:
+            self.assertIn(item["prompt_key"], schema["messages"]["en"], item["key"])
+        questions = {item["key"]: item for item in schema["questions"]}
+        self.assertEqual(questions["language"]["default"]["computed"], "locale_environment")
+        self.assertEqual(questions["agent"]["default"]["computed"], "agent_detection")
+        self.assertIsInstance(questions["agent"]["default"]["value"], list)
+        self.assertIn("native", questions["agent"]["choices"])
+        self.assertTrue(questions["target"]["required_in_answers"])
+        self.assertEqual(questions["goal"]["when"], {"project_kind": "new"})
+        self.assertEqual(questions["goal"]["profiles"]["1"], "software-dev")
+        self.assertEqual(questions["profile"]["default"]["resolved"], "software-dev")
+        self.assertTrue(any("pyproject.toml" in item for item in questions["profile"]["default"]["evidence"]))
+        self.assertIn("recommended", questions["profile"]["choices"])
+        self.assertEqual(questions["capabilities"]["choices"], list(agentsmith.WIZARD_CAPABILITIES))
+
+    def test_wizard_schema_cli_prints_only_json_and_skips_the_update_check(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            state = home / ".agentsmith" / "state.json"
+            state.parent.mkdir()
+            # A due weekly update check would print to stdout and record an attempt.
+            state.write_text(json.dumps({"update_policy": {"auto_check": "weekly"}}), encoding="utf-8")
+            before = state.read_text(encoding="utf-8")
+            environment = {**os.environ, "HOME": str(home), "USERPROFILE": str(home)}
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "agentsmith.py"), "wizard", "schema", "--json"],
+                env=environment, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["schema_version"], 1)
+            self.assertEqual(state.read_text(encoding="utf-8"), before)
+
     def test_existing_project_recommendation_uses_repository_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             target = Path(temporary)
