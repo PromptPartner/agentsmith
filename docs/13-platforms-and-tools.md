@@ -71,8 +71,10 @@ file, for example when `CODEX_HOME` points at `~/.config/opencode`.
 
 These destinations are fixed in code, not read from `config/agents.json`. A staged update reads the
 candidate release's registry, so registry data must not decide where the trusted updater writes.
-Plans and rollback receipts record `PI_CODING_AGENT_DIR`; run `update apply` and `update rollback`
-with the same value that `update plan` saw.
+For a global install with Pi, plans and rollback receipts record `PI_CODING_AGENT_DIR`; run
+`update apply` and `update rollback` with the same value that `update plan` saw. The value must be
+absolute or start with `~/`. AgentSmith refuses a relative value, because Pi resolves it against
+its own working directory.
 
 **OpenCode notes**
 

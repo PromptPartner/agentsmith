@@ -207,8 +207,28 @@ def pi_home() -> Path:
     return Path(configured)
 
 
+def absolute_pi_home() -> Path:
+    """Pi's agent folder for a managed write or update; a relative setting is refused."""
+    path = pi_home()
+    if not path.is_absolute():
+        raise CliError(
+            f"PI_CODING_AGENT_DIR is a relative path ({os.environ.get('PI_CODING_AGENT_DIR')!r}); Pi resolves "
+            "it against its own working directory, so AgentSmith cannot know where Pi reads its rules. "
+            "Set an absolute path or one that starts with ~/ and rerun."
+        )
+    return path
+
+
 def global_roots() -> dict[str, Path]:
     return {"home": home_dir(), "codex_home": codex_home(), "pi_home": pi_home()}
+
+
+def update_roots(target: Path, installation: dict[str, Any]) -> dict[str, Path]:
+    """Resolved roots an update may touch. Pi's folder is one only for a global install with Pi."""
+    roots = {"target": target, "home": home_dir().resolve(), "codex_home": codex_home().resolve()}
+    if installation["scope"] == "global" and "pi" in installation["agents"]:
+        roots["pi_home"] = absolute_pi_home().resolve()
+    return roots
 
 
 def global_instruction_path(agent_id: str) -> Path | None:
@@ -2207,12 +2227,7 @@ def inventory_files(root: Path, directory: Path) -> list[Path]:
 def installation_fingerprints(
     target: Path, installation: dict[str, Any], *, infer_legacy_skill_ownership: bool
 ) -> tuple[dict[str, str], list[dict[str, Any]], list[dict[str, str]]]:
-    roots = {
-        "target": target,
-        "home": home_dir().resolve(),
-        "codex_home": codex_home().resolve(),
-        "pi_home": pi_home().resolve(),
-    }
+    roots = update_roots(target, installation)
     candidates: set[tuple[str, Path]] = set()
     foreign_skill_directories: set[tuple[str, str]] = set()
 
@@ -2497,14 +2512,6 @@ def validated_plan(path: Path) -> dict[str, Any]:
     if not isinstance(plan["target"], str) or not isinstance(plan["remote"], str) or not plan["remote"]:
         raise CliError("Plan target and remote must be non-empty strings")
     expected_target = home_dir().resolve() if plan["scope"] == "global" else Path(plan["target"]).resolve()
-    expected_roots = {
-        "target": str(expected_target),
-        "home": str(home_dir().resolve()),
-        "codex_home": str(codex_home().resolve()),
-        "pi_home": str(pi_home().resolve()),
-    }
-    if plan["roots"] != expected_roots or Path(plan["target"]).resolve() != expected_target:
-        raise CliError("Plan roots do not match the current target, HOME, CODEX_HOME, and PI_CODING_AGENT_DIR")
     release = plan["release"]
     if not isinstance(release, dict) or set(release) != {"tag", "version", "commit"}:
         raise CliError("Plan release identity is malformed")
@@ -2515,6 +2522,9 @@ def validated_plan(path: Path) -> dict[str, Any]:
     installation = validate_installation_manifest({"schema_version": 1, "installation": plan["installation"]})
     if installation["scope"] != plan["scope"]:
         raise CliError("Plan scope and installation manifest disagree")
+    expected_roots = {name: str(root) for name, root in update_roots(expected_target, installation).items()}
+    if plan["roots"] != expected_roots or Path(plan["target"]).resolve() != expected_target:
+        raise CliError("Plan roots do not match the current target, HOME, CODEX_HOME, and PI_CODING_AGENT_DIR")
     if not isinstance(plan["fingerprints"], list):
         raise CliError("Plan fingerprints must be a list")
     for item in plan["fingerprints"]:
@@ -2608,11 +2618,12 @@ def recheck_plan_fingerprints(plan: dict[str, Any]) -> None:
 
 
 def copy_plan_inputs_to_shadow(plan: dict[str, Any], shadow_roots: dict[str, Path]) -> None:
+    current = {"target": Path(plan["target"]), "home": home_dir(), "codex_home": codex_home(), "pi_home": pi_home()}
+    # Installed files spell roots as configured, so translate that spelling too, but only for a
+    # planned root and only when it is absolute: a relative setting such as "." is not a path in text.
     live_roots = {
-        "target": Path(plan["target"]),
-        "home": home_dir(),
-        "codex_home": codex_home(),
-        "pi_home": pi_home(),
+        name: current[name] if current[name].is_absolute() else Path(planned)
+        for name, planned in plan["roots"].items()
     }
     for item in plan["fingerprints"]:
         if item["sha256"] is None:
@@ -2808,6 +2819,8 @@ def translate_root_paths(
     replacements: set[tuple[str, str]] = set()
     for root_name, source_root_value in source_roots.items():
         source_root = Path(source_root_value)
+        if not source_root.is_absolute():
+            continue  # "." or "pi" would rewrite ordinary text, not a path
         destination_root = Path(destination_roots[root_name])
         resolved_source = source_root.resolve()
         for old, new in (
@@ -3009,15 +3022,18 @@ def stage_planned_update(
         trusted_stage_install(checkout, plan["release"]["version"], install_arguments, shadow_env)
     retain_customized_skill_baselines(plan, shadow_roots, preserved_skills)
     retain_reconstructed_skill_baselines(plan, shadow_roots)
+    # The Pi shadow folder always exists so a candidate never reaches the real one, but it maps
+    # back to a live root only when the plan has one.
+    planned_shadow = {name: shadow_roots[name] for name in plan["roots"]}
     translated_files: dict[str, dict[str, tuple[bytes, int]]] = {}
     for root_name, shadow_root in shadow_roots.items():
         translated_files[root_name] = {}
         for relative, (content, mode) in shadow_files(shadow_root).items():
-            if not allowed_update_path(root_name, relative, plan["installation"]):
+            if root_name not in plan["roots"] or not allowed_update_path(root_name, relative, plan["installation"]):
                 raise CliError(f"Release attempted an update outside the managed surface: {root_name}:{relative}")
             is_hook_configuration = relative in {".claude/settings.json", ".codex/hooks.json", "hooks.json"}
             translated_files[root_name][relative] = (
-                translate_hook_configuration(content, shadow_roots, plan["roots"]) if is_hook_configuration else translate_root_paths(content, shadow_roots, plan["roots"]),
+                translate_hook_configuration(content, planned_shadow, plan["roots"]) if is_hook_configuration else translate_root_paths(content, planned_shadow, plan["roots"]),
                 mode,
             )
     refresh_translated_statusline_hashes(plan, translated_files)
@@ -3514,7 +3530,11 @@ def reassemble_managed_targets(args: argparse.Namespace) -> None:
     """Refresh managed instructions in the installation scope selected for self-update."""
     target = Path(args.target or os.getcwd()).expanduser().resolve()
     roots = global_roots()
-    global_candidates = [roots[root_name] / relative for root_name, relative in GLOBAL_INSTRUCTION_TARGETS.values()]
+    global_candidates = [
+        roots[root_name] / relative
+        for root_name, relative in GLOBAL_INSTRUCTION_TARGETS.values()
+        if roots[root_name].is_absolute()  # a relative Pi folder could name a project file
+    ]
     project_candidates = [target / "AGENTS.md", target / "CLAUDE.md"]
     if args.global_mode:
         candidates = global_candidates
@@ -3802,6 +3822,8 @@ def scaffold_project(target: Path, profiles: list[str], agents: list[str], args:
 def instruction_paths(target: Path, agents: list[str], global_mode: bool) -> tuple[list[Path], list[Path]]:
     if global_mode:
         roots = global_roots()
+        if "pi" in agents:
+            roots["pi_home"] = absolute_pi_home()
         native = [
             roots[root_name] / relative
             for agent_id, (root_name, relative) in GLOBAL_INSTRUCTION_TARGETS.items()

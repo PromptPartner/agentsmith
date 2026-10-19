@@ -136,13 +136,16 @@ class UpdateCheckTests(unittest.TestCase):
         self.git("commit", "-qm", f"release {version}")
         self.git("tag", f"v{version}")
 
-    def run_core(self, *arguments: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    def run_core(
+        self, *arguments: str, env: dict[str, str] | None = None, cwd: Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, str(CORE), *arguments],
             text=True,
             capture_output=True,
             check=False,
             env=env,
+            cwd=cwd,
         )
 
     def publish_remote(self) -> None:
@@ -2210,6 +2213,60 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
         self.assertEqual(snapshot(), before)
 
+    def test_relative_pi_dir_leaves_foreign_text_intact_in_a_non_pi_update(self) -> None:
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
+        self.publish_remote()
+        home = self.root / "relative-pi-home"
+        codex_home = self.root / "relative-pi-codex"
+        # Pi is not installed, so its folder setting must not affect this update at all.
+        environment = self.isolated_environment(home, codex_home, PI_CODING_AGENT_DIR=".")
+        installed = self.run_core("install", "--agent", "codex", "--global", env=environment, cwd=self.root)
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        rules = codex_home / "AGENTS.md"
+        foreign = "\nMy notes live in keep.me and release v1.2.3 (see ./docs).\n"
+        rules.write_text(rules.read_text(encoding="utf-8") + foreign, encoding="utf-8")
+        plan_path = self.root / "relative-pi-plan.json"
+        planned = self.run_core(
+            "update", "plan", "--global", "--version", NEXT_TAG, "--from", str(self.remote),
+            "--save", str(plan_path), env=environment, cwd=self.root,
+        )
+        self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        self.assertNotIn("pi_home", json.loads(plan_path.read_text(encoding="utf-8"))["roots"])
+
+        applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment, cwd=self.root)
+
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        text = rules.read_text(encoding="utf-8")
+        self.assertIn(NEXT_RELEASE_PROBE, text)
+        self.assertTrue(text.endswith(foreign), text[-300:])
+
+    def test_global_pi_refuses_a_relative_agent_dir(self) -> None:
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
+        self.publish_remote()
+        home = self.root / "relative-agent-home"
+        environment = self.isolated_environment(
+            home, self.root / "relative-agent-codex", PI_CODING_AGENT_DIR="relative pi agent",
+        )
+
+        refused = self.run_core("install", "--agent", "pi", "--global", env=environment, cwd=self.root)
+
+        self.assertNotEqual(refused.returncode, 0, refused.stdout + refused.stderr)
+        self.assertIn("PI_CODING_AGENT_DIR", refused.stderr)
+        self.assertFalse((self.root / "relative pi agent").exists())
+        self.assertFalse((home / ".agentsmith").exists())
+
+        absolute = {**environment, "PI_CODING_AGENT_DIR": str(self.root / "absolute pi agent")}
+        installed = self.run_core("install", "--agent", "pi", "--global", env=absolute, cwd=self.root)
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        planned = self.run_core(
+            "update", "plan", "--global", "--version", NEXT_TAG, "--from", str(self.remote),
+            env=environment, cwd=self.root,
+        )
+        self.assertNotEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        self.assertIn("PI_CODING_AGENT_DIR", planned.stderr)
+
     def test_rollback_rejects_receipt_with_changed_pi_home(self) -> None:
         self.commit_and_tag(CURRENT_VERSION)
         self.commit_and_tag(NEXT_VERSION)
@@ -2255,10 +2312,10 @@ class UpdateCheckTests(unittest.TestCase):
         applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
         self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
         receipt_path = self.receipt_from(applied)
-        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-        receipt["roots"].pop("pi_home")
-        receipt["integrity"] = integrity(receipt, (home / ".agentsmith" / "update-integrity.key").read_bytes())
-        receipt_path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+        # Without Pi the receipt keeps the earlier shape: no pi_home root at all.
+        self.assertEqual(
+            set(json.loads(receipt_path.read_text(encoding="utf-8"))["roots"]), {"target", "home", "codex_home"},
+        )
 
         rolled_back = self.run_core("update", "rollback", "--receipt", str(receipt_path), env=environment)
 
