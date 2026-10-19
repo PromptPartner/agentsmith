@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import hashlib
 import contextlib
 import errno
@@ -708,6 +709,21 @@ CHILD_REFUSALS = tuple((code, re.compile(pattern)) for code, pattern in (
 ))
 
 
+# Labels a child's last stderr line may contribute: the controller's own prefixes and exception
+# classes, and Python's. Anything else could be tool output or a secret, so it becomes "unknown".
+CHILD_EXCEPTION_LABELS = frozenset({
+    "error", "escalated", "interrupted", "RunError", "RunInterrupted", "GraphError",
+    "subprocess.CalledProcessError", "subprocess.TimeoutExpired", "json.decoder.JSONDecodeError",
+})
+
+
+def _child_exception_label(name: str) -> str:
+    builtin = getattr(builtins, name, None)
+    if name in CHILD_EXCEPTION_LABELS or (isinstance(builtin, type) and issubclass(builtin, BaseException)):
+        return name
+    return "unknown"
+
+
 def child_failure_reason(child: dict[str, Any] | None, returncode: int, stderr: str) -> str:
     """Keep a useful child crash signature without copying process output into graph evidence."""
     known = child.get("reason") if child else None
@@ -720,7 +736,7 @@ def child_failure_reason(child: dict[str, Any] | None, returncode: int, stderr: 
     for line in reversed(stderr.splitlines()):
         match = re.match(r"^([A-Za-z_][A-Za-z0-9_.]{0,63})(?::|$)", line)
         if match:
-            exception = match.group(1)
+            exception = _child_exception_label(match.group(1))
             break
     refusal = "unknown"
     for line in reversed(stderr.splitlines()):

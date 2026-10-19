@@ -22,6 +22,11 @@ been authorized, so the entries are kept here.
   the controller with `TerminateProcess`, so no handler records the interruption), a scope
   conflict with the sibling resumed in parallel, and a dirty worktree. The next native failure
   will report its refusal code. Native Windows confirmation of all three fixes is pending.
+  An independent review of this fix found an older leak in the same function: any
+  identifier-shaped word that started the child's last stderr line, such as
+  `ghp_attackerSecret123: …`, became the `exception=` label in graph evidence. The 2026-09-22
+  crafted-label hardening covered only a test helper. Fixed: the label is now a Python exception
+  name or one of the controller's own prefixes, and anything else is `unknown`.
 - [ ] 2026-10-02 — German, Spanish, French, and Simplified Chinese manual-setup instructions
   describe signed installers, while the English README states macOS and Windows standalone builds
   are unsigned. This predates the introduction update; align translated setup text with the

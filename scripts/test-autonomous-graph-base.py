@@ -62,6 +62,21 @@ class GraphBaseTests(unittest.TestCase):
         self.assertEqual(crafted, "child process exit=2 in making; exception=error; "
                                   "refusal=unknown; location=unknown")
 
+    def test_exception_label_is_a_known_name_not_free_stderr_text(self) -> None:
+        # Any identifier-shaped word at the start of a stderr line used to become the label.
+        for stderr, label in (
+                ("ghp_attackerSecret123: free text\n", "unknown"),
+                ("hidden_customer_name\n", "unknown"),
+                ("Traceback (most recent call last):\nPermissionError: [Errno 13] denied\n", "PermissionError"),
+                ("json.decoder.JSONDecodeError: Expecting value\n", "json.decoder.JSONDecodeError"),
+                ("error: cannot resume a dirty worktree\n", "error"),
+                ("RunError: boom\n", "RunError")):
+            with self.subTest(label=label, stderr=stderr[:20]):
+                reason = GRAPH.child_failure_reason({"status": "making", "reason": None}, 1, stderr)
+                self.assertIn(f"exception={label};", reason)
+                self.assertNotIn("ghp_", reason)
+                self.assertNotIn("customer", reason)
+
     def test_refusal_codes_name_real_controller_refusals(self) -> None:
         source = (ROOT / "scripts" / "autonomous-run.py").read_text(encoding="utf-8")
         messages = [re.sub(r"\{[^{}]*\}", "a", match.group(2))
