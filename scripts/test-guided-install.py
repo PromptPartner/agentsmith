@@ -352,6 +352,12 @@ class GuidedInstallContracts(unittest.TestCase):
         troubleshooting = (ROOT / "docs" / "17-troubleshooting.md").read_text(encoding="utf-8")
         self.assertIn("needs an interactive terminal", troubleshooting)
 
+    def test_install_docs_explain_the_answers_file_and_schema(self) -> None:
+        for name in ("INSTALL.md", "AGENT-INSTALL.md", "docs/12-whats-built-in.md"):
+            text = (ROOT / name).read_text(encoding="utf-8")
+            for phrase in ("--answers", "wizard schema --json"):
+                self.assertTrue(phrase in text, f"{name} does not mention {phrase}")
+
     def test_standalone_build_covers_the_four_initial_targets(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "standalone.yml").read_text(encoding="utf-8")
         for value in ("ubuntu-24.04", "windows-2025", "macos-15", "macos-15-intel"):

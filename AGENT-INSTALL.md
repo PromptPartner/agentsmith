@@ -35,6 +35,8 @@ agentsmith doctor --agent <id-or-group> --target <project>
 
 For a new project, initialize the approved empty directory with Git before the real install. For user-wide or layered setups, follow the explicit commands in [INSTALL.md](INSTALL.md#where-the-rules-live).
 
+When another program already collected the wizard's answers, run `agentsmith install --answers <file> --dry-run`, then the same command without `--dry-run` after approval. The questions and their valid answers come from `agentsmith wizard schema --json`.
+
 ## Report format
 
 Tell the user:
