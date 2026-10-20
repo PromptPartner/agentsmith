@@ -3,6 +3,30 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [ ] 2026-10-19 — The native Windows work-graph lifecycle failed intermittently in three different
+  tests on trees whose push runs passed. Pull-request run `38178585204` on `23e5889`, attempt 1:
+  graph `start` read a child `state.json` while the child replaced it atomically and got
+  `PermissionError` (Errno 13). Attempt 2: a child verifier's sandbox failed `GetFileSecurityW`
+  with Windows error 5 on `.git/agentsmith-runs/coordination.lock` while the parallel child removed
+  it, and the run escalated. PR #44 changed neither path. Master run `38182506232` on `0901316`:
+  `test_stop_then_resume_preserves_partial_work_and_limits` failed because child `a` refused to
+  resume (`exit=2 in making; exception=error`). Graph evidence kept no refusal text, so the cause
+  is unknown. Fixed now, each with a test that failed first: `_child_state` retries Windows sharing
+  denials within the controller's 5-second bound. The sandbox's DACL snapshot and restore re-check
+  error 5 for the same bound, skip a file that is then gone, and still fail closed on a lasting
+  denial; the 2026-09-21 fix below covered only errors 2 and 3. The sandbox tests replay Windows
+  error codes, so they run on every operating system. A graph failure event now names a known
+  controller refusal with a fixed code, such as `refusal=previous-role-live`,
+  `refusal=dirty-worktree` or `refusal=scope-conflict`, and never copies the refusal text. Still
+  open: the stop-then-resume refusal. Candidates are a role still live after `stop` (Windows ends
+  the controller with `TerminateProcess`, so no handler records the interruption), a scope
+  conflict with the sibling resumed in parallel, and a dirty worktree. The next native failure
+  will report its refusal code. Native Windows confirmation of all three fixes is pending.
+  An independent review of this fix found an older leak in the same function: any
+  identifier-shaped word that started the child's last stderr line, such as
+  `ghp_attackerSecret123: …`, became the `exception=` label in graph evidence. The 2026-09-22
+  crafted-label hardening covered only a test helper. Fixed: the label is now a Python exception
+  name or one of the controller's own prefixes, and anything else is `unknown`.
 - [ ] 2026-10-02 — German, Spanish, French, and Simplified Chinese manual-setup instructions
   describe signed installers, while the English README states macOS and Windows standalone builds
   are unsigned. `INSTALL.md` and `AGENT-INSTALL.md` also promised signed downloads checked against
@@ -54,6 +78,12 @@ been authorized, so the entries are kept here.
   any of two parallel makers to log a start but then required `repo-a` to exist. Maker `b` can
   start first, so a stop before `a` creates its worktree is valid. The fixture now checks
   retention for every maker that actually logged a start; native confirmation remains pending.
+- [x] 2026-10-19 — Pull-request run `39275474565` (PR #56, attempt 2) failed native Windows
+  `test_parallel_roots_and_dependent_checkpoint` with `1411.665 not less than 1411.569`: the
+  two root children never overlapped. The fake maker slept a default 1 s, shorter than the gap
+  between dispatching the two roots on a loaded Windows runner. A 0.01 s maker reproduced the
+  same assertion on macOS. Fixed: the test gives each maker 4 s, as its sibling tests do. The
+  product dispatch was not at fault.
 - [ ] 2026-09-21 — Final-tree manual run `35623269366` passed Linux and macOS native work-graph
   lifecycle but failed eight of ten Windows dispatch tests. The Windows report binds commit
   `00461bf`, tree `8d0c00f`, and records a clean checkout; its lifecycle phase exited 1.
