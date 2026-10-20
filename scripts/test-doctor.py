@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -190,6 +191,34 @@ class DoctorTests(unittest.TestCase):
             self.assertEqual(agent["runtime"]["state"], "current")
             self.assertIn("trusted-expanded-surface", self.warning_codes(agent))
 
+    def test_container_safety_drops_only_the_codex_sandbox(self) -> None:
+        # Inside Docker the Codex sandbox cannot start, so container mode keeps approvals but
+        # lets the container be the isolation boundary (#47).
+        project = self.root / "container project"
+        project.mkdir()
+        subprocess.run(["git", "-C", str(project), "init", "-q"], check=True)
+        base = ("install", "--agent", "native", "--profile", "software-dev", "--target", str(project))
+        installed = self.run_core(*base, "--safety", "container")
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        settings_path = Path(self.env["HOME"]) / ".claude" / "settings.json"
+        codex_path = Path(self.env["CODEX_HOME"]) / "config.toml"
+        self.assertEqual(json.loads(settings_path.read_text(encoding="utf-8"))["permissions"]["defaultMode"], "acceptEdits")
+        codex = codex_path.read_text(encoding="utf-8")
+        self.assertIn('approval_policy = "on-request"', codex)
+        self.assertIn('sandbox_mode = "danger-full-access"', codex)
+        state = json.loads((project / ".agentsmith" / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["installation"]["safety"], {"claude": "container", "codex": "container"})
+        if not load_core().detect_container():
+            self.assertIn("no container was detected", installed.stdout + installed.stderr)
+        for agent_id in ("claude", "codex"):
+            result, payload = self.doctor(project, agent_id)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(payload[agent_id]["safety"]["state"], "container", agent_id)
+        rerun = self.run_core(*base)
+        self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+        self.assertIn("from container to cautious", rerun.stdout + rerun.stderr)
+        self.assertIn('sandbox_mode = "workspace-write"', codex_path.read_text(encoding="utf-8"))
+
     def test_unmanaged_nested_sources_and_missing_custom_global_are_reported(self) -> None:
         project = self.root / "nested repo"
         nested = project / "packages" / "apï"
@@ -335,6 +364,112 @@ class DoctorTests(unittest.TestCase):
         self.assertNotEqual(strict.returncode, 0, strict.stdout + strict.stderr)
         skills = json.loads(strict.stdout)["claude"]["skills"]
         self.assertEqual(skills["adapter_diverged_names"], ["handoff"])
+
+
+
+def load_core():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("agentsmith_doctor_core", CORE)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class ContainerDetectionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.core = load_core()
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        (self.root / "proc" / "1").mkdir(parents=True)
+        (self.root / "run").mkdir()
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def detect(self, environ: dict[str, str] | None = None, system: str = "Linux") -> list[str]:
+        return self.core.detect_container(root=self.root, environ=environ or {}, system=system)
+
+    def test_plain_linux_host_is_not_a_container(self) -> None:
+        (self.root / "proc" / "1" / "cgroup").write_text("0::/init.scope\n", encoding="utf-8")
+        self.assertEqual(self.detect(), [])
+
+    def test_each_container_signal_is_reported_as_evidence(self) -> None:
+        (self.root / ".dockerenv").write_text("", encoding="utf-8")
+        self.assertEqual(self.detect(), ["/.dockerenv"])
+        (self.root / ".dockerenv").unlink()
+        (self.root / "run" / ".containerenv").write_text("", encoding="utf-8")
+        self.assertEqual(self.detect(), ["/run/.containerenv"])
+        (self.root / "run" / ".containerenv").unlink()
+        self.assertEqual(self.detect({"container": "podman"}), ["container=podman"])
+        self.assertEqual(self.detect({"KUBERNETES_SERVICE_HOST": "10.0.0.1"}), ["KUBERNETES_SERVICE_HOST"])
+        (self.root / "proc" / "1" / "cgroup").write_text("0::/system.slice/docker-1a2b.scope\n", encoding="utf-8")
+        self.assertEqual(self.detect(), ["/proc/1/cgroup: docker"])
+
+    def test_other_systems_never_report_a_container(self) -> None:
+        (self.root / ".dockerenv").write_text("", encoding="utf-8")
+        self.assertEqual(self.detect({"container": "docker"}, system="Darwin"), [])
+        self.assertEqual(self.detect({"container": "docker"}, system="Windows"), [])
+
+
+class SafetyInspectionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.core = load_core()
+        self.temporary = tempfile.TemporaryDirectory()
+        self.home = Path(self.temporary.name)
+        self.environment = unittest.mock.patch.dict(
+            os.environ, {"HOME": str(self.home), "USERPROFILE": str(self.home), "CODEX_HOME": str(self.home / "codex")}
+        )
+        self.environment.start()
+
+    def tearDown(self) -> None:
+        self.environment.stop()
+        self.temporary.cleanup()
+
+    def test_shared_claude_mode_follows_the_recorded_safety(self) -> None:
+        # Claude uses acceptEdits for cautious and container alike; only the record can tell them apart.
+        settings = self.home / ".claude" / "settings.json"
+        settings.parent.mkdir()
+        settings.write_text(json.dumps({"permissions": {"defaultMode": "acceptEdits"}}), encoding="utf-8")
+        self.assertEqual(self.core.inspect_safety("claude")["state"], "cautious")
+        self.assertEqual(self.core.inspect_safety("claude", expected="container")["state"], "container")
+        self.assertEqual(self.core.inspect_safety("claude", expected="trusted")["state"], "cautious")
+
+    def test_codex_container_pair_is_recognized(self) -> None:
+        config = self.home / "codex" / "config.toml"
+        config.parent.mkdir()
+        config.write_text('approval_policy = "on-request"\nsandbox_mode = "danger-full-access"\n', encoding="utf-8")
+        self.assertEqual(self.core.inspect_safety("codex")["state"], "container")
+
+    def test_cautious_codex_in_a_container_gets_an_advisory(self) -> None:
+        advisory = self.core.container_safety_advisory
+        self.assertEqual(advisory("codex", "cautious", ["/.dockerenv"])["code"], "codex-cautious-in-container")
+        self.assertIsNone(advisory("codex", "cautious", []))
+        for agent_id, state in (("codex", "container"), ("codex", "trusted"), ("claude", "cautious")):
+            self.assertIsNone(advisory(agent_id, state, ["/.dockerenv"]), (agent_id, state))
+
+    def test_doctor_runs_without_git(self) -> None:
+        # Slim container images often ship without Git; doctor must still run there, or the advisory never shows.
+        target = self.home / "project"
+        target.mkdir()
+        real_which, real_run = self.core.shutil.which, self.core.subprocess.run
+
+        def run_without_git(command, *rest, **kw):
+            if command and command[0] == "git":
+                raise FileNotFoundError(2, "No such file or directory", "git")
+            return real_run(command, *rest, **kw)
+
+        # A missing Git is both absent from PATH and impossible to start.
+        no_git_on_path = unittest.mock.patch.object(
+            self.core.shutil, "which", side_effect=lambda name, *rest, **kw: None if name == "git" else real_which(name, *rest, **kw)
+        )
+        git_cannot_start = unittest.mock.patch.object(self.core.subprocess, "run", side_effect=run_without_git)
+        args = self.core.parser().parse_args(["doctor", "--agent", "codex", "--target", str(target), "--json"])
+        with no_git_on_path, git_cannot_start, \
+                unittest.mock.patch("sys.stdout", new_callable=lambda: __import__("io").StringIO()) as output:
+            self.core.cmd_doctor(args)
+            self.assertEqual(self.core.doctor_project_root(target), target.resolve())
+        self.assertIn("codex", json.loads(output.getvalue()))
 
 
 if __name__ == "__main__":

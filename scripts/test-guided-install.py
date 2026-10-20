@@ -30,7 +30,7 @@ WIZARD_SCENARIOS = {
 }
 
 
-def record_wizard_scenario(name: str) -> dict:
+def record_wizard_scenario(name: str, container: list[str] | None = None) -> dict:
     """Run one scripted interactive wizard and return its prompts, output and resulting choices."""
     import contextlib
     import io
@@ -44,6 +44,7 @@ def record_wizard_scenario(name: str) -> dict:
         os.chdir(target)
         try:
             with mock.patch.object(agentsmith.shutil, "which", return_value=None), \
+                    mock.patch.object(agentsmith, "detect_container", return_value=container or []), \
                     contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
                 plan = agentsmith.apply_wizard_answers(args, lambda prompt: (prompts.append(prompt), next(answers))[1])
         finally:
@@ -117,7 +118,9 @@ class GuidedInstallContracts(unittest.TestCase):
                 operator_bio=None, tracker=None, tracker_writes=None,
                 design_system=None, dry_run=False, wizard=True,
             )
-            plan = agentsmith.apply_wizard_answers(args, lambda _prompt: next(answers))
+            # Pin detection off: inside a container the wizard rightly defaults to container safety.
+            with mock.patch.object(agentsmith, "detect_container", return_value=[]):
+                plan = agentsmith.apply_wizard_answers(args, lambda _prompt: next(answers))
             self.assertFalse(target.exists(), "the wizard must not write before install applies")
             self.assertTrue(plan["confirmed"])
             self.assertEqual(Path(args.target), target.resolve())
@@ -223,6 +226,7 @@ class GuidedInstallContracts(unittest.TestCase):
                 answers_file.write_text(json.dumps(document), encoding="utf-8")
                 args = agentsmith.parser().parse_args(["install", "--answers", str(answers_file)])
                 with mock.patch.object(agentsmith.shutil, "which", return_value=None), \
+                        mock.patch.object(agentsmith, "detect_container", return_value=[]), \
                         mock.patch("sys.stdout", new_callable=lambda: __import__("io").StringIO()):
                     agentsmith.apply_wizard_answers_file(args)
                 expected = golden[name]["args"]
@@ -324,6 +328,43 @@ class GuidedInstallContracts(unittest.TestCase):
         with mock.patch.object(agentsmith.sys, "stdin", fake_stdin):
             self.assertFalse(agentsmith.stdin_is_interactive())
 
+    def test_wizard_offers_container_safety_only_inside_a_container(self) -> None:
+        # Inside Docker, cautious Codex cannot start its sandbox; the wizard explains and defaults to container.
+        inside = record_wizard_scenario("new-project", container=["/.dockerenv"])
+        self.assertEqual(inside["args"]["safety"], "container")
+        self.assertIn("Agent permissions [cautious/trusted/container] [container]: ", inside["prompts"])
+        self.assertIn("/.dockerenv", inside["output"])
+        outside = record_wizard_scenario("new-project")
+        self.assertEqual(outside["args"]["safety"], "cautious")
+        self.assertNotIn("container", " ".join(outside["prompts"]))
+
+    def test_schema_and_answers_follow_the_container_rule(self) -> None:
+        args = agentsmith.parser().parse_args(["wizard", "schema", "--json"])
+        with mock.patch.object(agentsmith, "detect_container", return_value=[]):
+            outside = {item["key"]: item for item in agentsmith.wizard_schema(args)["questions"]}
+        with mock.patch.object(agentsmith, "detect_container", return_value=["/.dockerenv"]):
+            inside = {item["key"]: item for item in agentsmith.wizard_schema(args)["questions"]}
+        self.assertEqual(outside["safety"]["choices"], ["cautious", "trusted"])
+        self.assertEqual(inside["safety"]["choices"], ["cautious", "trusted", "container"])
+        self.assertEqual(inside["safety"]["default"]["value"], "container")
+        self.assertEqual(inside["safety"]["evidence"], ["/.dockerenv"])
+        with tempfile.TemporaryDirectory() as temporary:
+            answers_file = Path(temporary) / "answers.json"
+            answers_file.write_text(json.dumps({
+                "schema_version": 1, "project_kind": "new", "target": str(Path(temporary) / "fresh"),
+                "agent": ["codex"], "safety": "container", "confirm": "yes",
+            }), encoding="utf-8")
+            install = ["install", "--answers", str(answers_file)]
+            with mock.patch.object(agentsmith, "detect_container", return_value=[]):
+                with self.assertRaises(agentsmith.CliError) as refused:
+                    agentsmith.apply_wizard_answers_file(agentsmith.parser().parse_args(install))
+            self.assertIn("safety", str(refused.exception))
+            args = agentsmith.parser().parse_args(install)
+            with mock.patch.object(agentsmith, "detect_container", return_value=["/.dockerenv"]), \
+                    mock.patch("sys.stdout", new_callable=lambda: __import__("io").StringIO()):
+                agentsmith.apply_wizard_answers_file(args)
+            self.assertEqual(args.safety, "container")
+
     def test_existing_project_recommendation_uses_repository_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             target = Path(temporary)
@@ -422,6 +463,24 @@ class GuidedInstallContracts(unittest.TestCase):
             text = (ROOT / name).read_text(encoding="utf-8")
             for phrase in ("--answers", "wizard schema --json"):
                 self.assertTrue(phrase in text, f"{name} does not mention {phrase}")
+
+    def test_safety_docs_point_to_a_section_that_exists(self) -> None:
+        # Seven places pointed to README sections that do not exist; they now share one real section.
+        broken = ("Permissions and trusted mode", "Permissions & dangerous mode")
+        for path in [*ROOT.glob("*.md"), *(ROOT / "docs").glob("*.md"), *(ROOT / "templates").glob("*.md"),
+                     *(ROOT / "config").glob("*.example")]:
+            text = path.read_text(encoding="utf-8")
+            for phrase in broken:
+                self.assertFalse(phrase in text, f"{path.relative_to(ROOT)} still points to: {phrase}")
+        model = (ROOT / "docs" / "15-safety-model.md").read_text(encoding="utf-8")
+        self.assertIn("## Safety modes", model)
+        for phrase in ("`container`", "--assemble-only", "danger-full-access"):
+            self.assertIn(phrase, model)
+        troubleshooting = (ROOT / "docs" / "17-troubleshooting.md").read_text(encoding="utf-8")
+        self.assertIn("No permissions to create a new namespace", troubleshooting)
+        help_text = " ".join(agentsmith.parser()._subparsers._group_actions[0].choices["install"].format_help().split())
+        self.assertIn("container", help_text)
+        self.assertIn("leave Claude and Codex permissions", help_text)
 
     def test_standalone_update_refusal_points_to_a_verified_release_download(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

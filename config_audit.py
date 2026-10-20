@@ -295,7 +295,7 @@ def audit_config(root: Path | str, *, include_user: bool = False,
                 if key in {'defaultMode', 'permissionMode', 'defaultPermissionMode'} and value == 'bypassPermissions':
                     finding('permission-bypass', 'high', display, location, 'Permission checks are bypassed (may be intentional trusted mode).', 'Review trusted-mode intent and use a narrower permission mode where appropriate.')
                 if (key == 'sandbox_mode' and value == 'danger-full-access') or (key in {'dangerouslySkipPermissions', 'dangerously_skip_permissions'} and value is True):
-                    finding('trusted-mode', 'high', display, location, 'Intentional trusted mode: containment or permission checks are disabled.', 'Confirm trusted-mode intent; use workspace isolation or a narrower sandbox when required.')
+                    finding('trusted-mode', 'high', display, location, 'Sandbox or permission checks are disabled: intentional trusted mode, or container mode where a container is the isolation boundary.', 'Confirm trusted-mode intent, or that a container really isolates this agent; otherwise use workspace isolation or a narrower sandbox.')
                 if key == 'approval_policy' and value == 'never':
                     finding('permission-bypass', 'medium', display, location, 'Approval prompts are disabled; sandbox settings still apply.', 'Review the approval policy together with sandbox_mode.')
                 if '.allow[' in location and isinstance(value, str) and re.fullmatch(r'\*|(?:Bash|Shell|Exec)(?:\(\*\)|\(:\*\))?', value, re.I):

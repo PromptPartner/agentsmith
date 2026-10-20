@@ -39,7 +39,7 @@ The wizard asks for:
 3. the AI agent that should read the rules;
 4. a work profile, recommended from static project evidence;
 5. your relevant experience, so explanations match what you know;
-6. cautious or trusted permissions;
+6. cautious or trusted permissions (and container mode when it runs inside a container);
 7. optional advanced settings;
 8. confirmation of the exact plan.
 
@@ -143,7 +143,7 @@ Updates touch managed blocks and recorded files only. Existing files are backed 
 
 ## Safety and experience
 
-`cautious` is the default. Claude uses edit approval and Codex uses approval on request in its workspace sandbox. `trusted` is an explicit opt-in for a repository and machine you fully control.
+`cautious` is the default. Claude uses edit approval and Codex uses approval on request in its workspace sandbox. `trusted` is an explicit opt-in for a repository and machine you fully control. Inside Docker or a similar container, use `container`: approvals stay on, and the container replaces the Codex sandbox that cannot start there. To leave Claude's and Codex's own settings untouched, install with `--assemble-only`. See [Safety modes](docs/15-safety-model.md#safety-modes).
 
 The wizard asks about experience in the relevant domain instead of assigning one universal skill level. Choose the closest starting point and adjust the generated operator text later if needed. This affects explanations and confirmation detail; it does not weaken safety or verification rules.
 

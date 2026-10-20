@@ -35,7 +35,9 @@ helpers and managed hooks native on macOS, Linux, and Windows without Git Bash o
   be overwritten.
 - Omitted `--safety` maps native clients to cautious approval/workspace settings;
   `--safety trusted` is an explicit opt-in. Managed trusted updates warn and back up before the
-  cautious migration.
+  cautious migration. `--safety container` keeps approvals but turns off the Codex sandbox for
+  Docker-style containers; `--assemble-only` leaves native settings untouched
+  ([Safety modes](15-safety-model.md#safety-modes)).
 
 Capabilities without a documented stable client interface stay disabled. AgentSmith does not
 emulate hooks or MCP to make matrix cells green.
