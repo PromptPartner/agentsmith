@@ -225,6 +225,9 @@ class GraphDispatchTests(unittest.TestCase):
         self.assertFalse((self.fake_client.parent / "starts.log").exists())
 
     def test_parallel_roots_and_dependent_checkpoint(self) -> None:
+        # Overlap is only observable while a maker still runs when its sibling starts. The 1 s default
+        # was shorter than the dispatch gap on a loaded Windows runner, so give each maker 4 s.
+        (self.fake_client.parent / "sleep-seconds.txt").write_text("4", encoding="utf-8")
         started = self.invoke("start")
         self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
         status = self.invoke("status")
