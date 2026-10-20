@@ -52,7 +52,8 @@
     {"id": "opencode", "name": "OpenCode", "tier": "certified", "adapter": "direct"},
     {"id": "jetbrains-junie", "name": "JetBrains Junie", "tier": "certified", "adapter": "direct"},
     {"id": "zed", "name": "Zed", "tier": "certified", "adapter": "direct"},
-    {"id": "jules", "name": "Jules", "tier": "certified", "adapter": "direct"}
+    {"id": "jules", "name": "Jules", "tier": "certified", "adapter": "direct"},
+    {"id": "pi", "name": "Pi", "tier": "certified", "adapter": "direct"}
   ],
   "excluded_backends": ["lm-studio", "tabby"],
   "selection_cases": [

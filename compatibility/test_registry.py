@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import unittest
 from pathlib import Path
@@ -10,6 +11,13 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 CONFIG = HERE.parent / "config"
 ROOT = HERE.parent
+
+
+def load_cli() -> object:
+    spec = importlib.util.spec_from_file_location("agentsmith_registry_probe", ROOT / "agentsmith.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 EXPECTED_IDS = {
     "claude",
@@ -28,6 +36,7 @@ EXPECTED_IDS = {
     "jetbrains-junie",
     "zed",
     "jules",
+    "pi",
 }
 
 
@@ -53,12 +62,26 @@ class RegistryContractTest(unittest.TestCase):
             {"fixture", "observed", "manual"},
         )
 
-    def test_exactly_the_sixteen_planned_targets_are_registered(self) -> None:
+    def test_exactly_the_seventeen_planned_targets_are_registered(self) -> None:
         agents = self.registry["agents"]
         ids = [agent["id"] for agent in agents]
-        self.assertEqual(len(ids), 16)
+        self.assertEqual(len(ids), 17)
         self.assertEqual(len(ids), len(set(ids)))
         self.assertEqual(set(ids), EXPECTED_IDS)
+
+    def test_schema_agent_count_matches_registry(self) -> None:
+        count = len(self.registry["agents"])
+        self.assertEqual(self.schema["properties"]["agents"]["minItems"], count)
+        self.assertEqual(self.schema["properties"]["agents"]["maxItems"], count)
+        contract = json.loads((ROOT / "tests" / "fixtures" / "compatibility" / "contract.json").read_text(encoding="utf-8"))
+        self.assertEqual({agent["id"] for agent in contract["agents"]}, EXPECTED_IDS)
+
+    def test_pi_global_rules_follow_its_agent_folder(self) -> None:
+        pi = next(agent for agent in self.registry["agents"] if agent["id"] == "pi")
+        self.assertEqual(pi["instructions"]["global_paths"], ["$PI_CODING_AGENT_DIR/AGENTS.md"])
+        self.assertIn("~/.agents/skills", pi["skills_tools"]["skill_directories"])
+        self.assertNotIn("pi", self.registry["groups"]["local"])
+        self.assertNotEqual(pi["certification"], "passed")
 
     def test_native_tier_is_limited_to_claude_and_codex(self) -> None:
         native = {
@@ -75,6 +98,26 @@ class RegistryContractTest(unittest.TestCase):
         self.assertEqual(set(groups["all"]), EXPECTED_IDS)
         self.assertTrue(set(groups["standard"]) <= EXPECTED_IDS)
         self.assertTrue(set(groups["local"]) <= EXPECTED_IDS)
+
+    def test_opencode_declares_every_skill_directory_it_reads(self) -> None:
+        # OpenCode also loads Claude's skill folders, so a Claude adapter is a second copy for it.
+        opencode = next(agent for agent in self.registry["agents"] if agent["id"] == "opencode")
+        self.assertEqual(
+            set(opencode["skills_tools"]["skill_directories"]),
+            {
+                "~/.config/opencode/skills", "~/.claude/skills", "~/.agents/skills",
+                ".opencode/skills", ".claude/skills", ".agents/skills",
+            },
+        )
+
+    def test_cli_groups_match_registry_groups(self) -> None:
+        # --agent expands groups from the code, while docs and doctor read the registry.
+        cli = load_cli()
+        self.assertEqual(list(cli.AGENT_IDS), [agent["id"] for agent in self.registry["agents"]])
+        self.assertEqual(
+            {name: list(members) for name, members in cli.GROUPS.items()},
+            self.registry["groups"],
+        )
 
     def test_no_fixture_only_target_is_certified(self) -> None:
         for agent in self.registry["agents"]:

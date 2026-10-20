@@ -1105,7 +1105,7 @@
         "agent_skills": {
           "agentsmith_management": "planned",
           "client_support": "supported",
-          "notes": "Uses the canonical .agents/skills pack."
+          "notes": "Uses the canonical .agents/skills pack. OpenCode also loads Claude's .claude/skills folders, so with Claude selected it finds each AgentSmith skill twice and keeps one copy at random; set OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1 for OpenCode."
         },
         "mcp": {
           "agentsmith_management": "planned",
@@ -1113,7 +1113,11 @@
           "notes": "Managed keys must preserve foreign configuration."
         },
         "skill_directories": [
+          "~/.config/opencode/skills",
+          "~/.claude/skills",
           "~/.agents/skills",
+          ".opencode/skills",
+          ".claude/skills",
           ".agents/skills"
         ]
       },
@@ -1327,6 +1331,88 @@
           "notes": "No MCP integration is claimed."
         },
         "skill_directories": [
+          ".agents/skills"
+        ]
+      },
+      "target_tier": "certified"
+    },
+    {
+      "adapter": "direct",
+      "certification": "pending",
+      "evidence": [
+        {
+          "artifact": null,
+          "client_version": null,
+          "scope": "registry contract and global instruction lifecycle",
+          "type": "fixture",
+          "verified_at": null
+        }
+      ],
+      "id": "pi",
+      "instructions": {
+        "adapter_config_paths": [],
+        "discovery": "direct",
+        "global_paths": [
+          "$PI_CODING_AGENT_DIR/AGENTS.md"
+        ],
+        "nesting": "supported",
+        "project_paths": [
+          "AGENTS.md"
+        ]
+      },
+      "local_models": {
+        "client_support": "supported",
+        "notes": "Pi supports llama.cpp, Ollama and other compatible endpoints through models.json; no AgentSmith client-plus-model scenario has run.",
+        "providers": [
+          "ollama",
+          "lm-studio",
+          "other-openai-compatible"
+        ]
+      },
+      "name": "Pi",
+      "native_runtime": {
+        "doctor": {
+          "agentsmith_management": "native",
+          "client_support": "supported",
+          "notes": "Instruction discovery and the shared skills folder are inspected from disk."
+        },
+        "hooks": {
+          "agentsmith_management": "none",
+          "client_support": "supported",
+          "notes": "Pi has no hooks file; TypeScript extensions subscribe to events such as tool_call. AgentSmith does not manage extensions."
+        },
+        "lifecycle": {
+          "agentsmith_management": "planned",
+          "client_support": "supported",
+          "notes": "--global writes $PI_CODING_AGENT_DIR/AGENTS.md (default ~/.pi/agent/AGENTS.md); update and uninstall manage it. An AGENTS.override.md in that folder makes Pi ignore AGENTS.md."
+        }
+      },
+      "operating_systems": {
+        "constraints": [
+          "Pi requires Node.js 22.19 or newer.",
+          "Python 3.11+ is required by the shared AgentSmith runtime design."
+        ],
+        "targets": [
+          "macos",
+          "linux",
+          "windows"
+        ]
+      },
+      "skills_tools": {
+        "agent_skills": {
+          "agentsmith_management": "planned",
+          "client_support": "supported",
+          "notes": "Reads ~/.agents/skills from HOME, not from the agent folder. Project .agents/skills load only after Pi's trust prompt and are skipped without notice in non-interactive runs, so install with --global --with-skills. On a name collision Pi keeps the first skill it finds."
+        },
+        "mcp": {
+          "agentsmith_management": "none",
+          "client_support": "supported",
+          "notes": "Built-in MCP client configured in the agent folder's mcp.json and .pi/mcp.json; project servers need Pi's trust prompt."
+        },
+        "skill_directories": [
+          "$PI_CODING_AGENT_DIR/skills",
+          "~/.agents/skills",
+          ".pi/skills",
           ".agents/skills"
         ]
       },

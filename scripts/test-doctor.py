@@ -35,6 +35,12 @@ class DoctorTests(unittest.TestCase):
                 "PYTHONIOENCODING": "utf-8",
             }
         )
+        # Client settings from the operator's own shell must not redirect or silence fixtures.
+        for name in (
+            "PI_CODING_AGENT_DIR", "XDG_CONFIG_HOME", "OPENCODE_DISABLE_CLAUDE_CODE",
+            "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS",
+        ):
+            self.env.pop(name, None)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -324,6 +330,161 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(reinstalled.returncode, 0, reinstalled.stdout + reinstalled.stderr)
         self.assertEqual(canonical.read_bytes(), canonical_before)
         self.assertEqual(adapter.read_bytes(), canonical.read_bytes())
+
+    def test_global_opencode_install_doctor_and_uninstall(self) -> None:
+        rules = Path(self.env["HOME"]) / ".config" / "opencode" / "AGENTS.md"
+        rules.parent.mkdir(parents=True)
+        rules.write_text("# My own OpenCode rules\n", encoding="utf-8")
+        project = self.root / "unrelated project"
+        project.mkdir()
+
+        installed = self.run_core("install", "--agent", "opencode", "--global", "--profile", "software-dev")
+
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        self.assertIn("installed for opencode", installed.stdout)
+        text = rules.read_text(encoding="utf-8")
+        self.assertIn("<!-- BEGIN AGENTSMITH", text)
+        self.assertIn("<!-- END AGENTSMITH -->", text)
+        self.assertIn("# My own OpenCode rules", text)
+        strict = self.run_core("doctor", "--agent", "opencode", "--target", str(project), "--strict", "--json")
+        self.assertEqual(strict.returncode, 0, strict.stdout + strict.stderr)
+        sources = json.loads(strict.stdout)["opencode"]["instructions"]["sources"]
+        self.assertEqual(Path(sources[0]["path"]), rules.resolve())
+        self.assertEqual((sources[0]["scope"], sources[0]["managed_status"]), ("global", "managed"))
+
+        removed = self.run_core("install", "--agent", "opencode", "--global", "--uninstall")
+
+        self.assertEqual(removed.returncode, 0, removed.stdout + removed.stderr)
+        self.assertEqual(rules.read_text(encoding="utf-8"), "# My own OpenCode rules\n")
+
+    def test_global_install_refuses_two_agents_sharing_one_rules_file(self) -> None:
+        shared = Path(self.env["HOME"]) / ".config" / "opencode"
+        self.env["CODEX_HOME"] = str(shared)
+
+        installed = self.run_core("install", "--agent", "codex,opencode", "--global", "--profile", "software-dev")
+
+        self.assertNotEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        self.assertIn("same instruction file", installed.stderr)
+        self.assertFalse((shared / "AGENTS.md").exists())
+        self.assertFalse((Path(self.env["HOME"]) / ".agentsmith").exists())
+
+    def test_global_opencode_install_reports_an_ignored_xdg_config_home(self) -> None:
+        project = self.root / "xdg project"
+        project.mkdir()
+        self.env["XDG_CONFIG_HOME"] = str(self.root / "xdg config")
+
+        installed = self.run_core("install", "--agent", "opencode", "--global", "--profile", "software-dev")
+
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        self.assertIn("XDG_CONFIG_HOME", installed.stderr)
+        _, payload = self.doctor(project, "opencode")
+        self.assertIn("opencode-xdg-config-ignored", self.warning_codes(payload["opencode"]))
+
+        self.env["XDG_CONFIG_HOME"] = str(Path(self.env["HOME"]) / ".config")
+        matching = self.run_core("install", "--agent", "opencode", "--global", "--profile", "software-dev")
+        self.assertEqual(matching.returncode, 0, matching.stdout + matching.stderr)
+        self.assertNotIn("XDG_CONFIG_HOME", matching.stderr)
+        _, matching_payload = self.doctor(project, "opencode")
+        self.assertNotIn("opencode-xdg-config-ignored", self.warning_codes(matching_payload["opencode"]))
+
+    def test_global_pi_install_honors_pi_coding_agent_dir(self) -> None:
+        home = Path(self.env["HOME"])
+        project = self.root / "pi project"
+        project.mkdir()
+        for configured, folder in (
+            (str(self.root / "pi agent dir ü"), self.root / "pi agent dir ü"),
+            ("~/custom pi ü", home / "custom pi ü"),
+        ):
+            with self.subTest(PI_CODING_AGENT_DIR=configured):
+                self.env["PI_CODING_AGENT_DIR"] = configured
+                rules = folder / "AGENTS.md"
+
+                installed = self.run_core(
+                    "install", "--agent", "pi", "--global", "--profile", "software-dev", "--with-skills",
+                )
+
+                self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+                self.assertIn("installed for pi", installed.stdout)
+                self.assertIn("<!-- BEGIN AGENTSMITH", rules.read_text(encoding="utf-8"))
+                self.assertFalse((home / ".pi").exists())
+                # Pi reads user Agent Skills from HOME, not from its agent folder.
+                self.assertTrue((home / ".agents" / "skills" / "handoff" / "SKILL.md").is_file())
+                self.assertFalse((folder / ".agents").exists())
+                strict = self.run_core("doctor", "--agent", "pi", "--target", str(project), "--strict", "--json")
+                self.assertEqual(strict.returncode, 0, strict.stdout + strict.stderr)
+                source = json.loads(strict.stdout)["pi"]["instructions"]["sources"][0]
+                self.assertEqual(Path(source["path"]), rules.resolve())
+                self.assertEqual((source["scope"], source["managed_status"]), ("global", "managed"))
+
+                removed = self.run_core("install", "--agent", "pi", "--global", "--uninstall")
+
+                self.assertEqual(removed.returncode, 0, removed.stdout + removed.stderr)
+                self.assertFalse(rules.exists())
+
+    def test_global_pi_uninstall_refuses_another_installations_rules(self) -> None:
+        codex_rules = Path(self.env["CODEX_HOME"]) / "AGENTS.md"
+        project = self.root / "project rules"
+        installed = self.install(project, "--agent", "codex", "--profile", "software-dev")
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        self.env["PI_CODING_AGENT_DIR"] = str(self.root / "own pi agent")
+        both = self.run_core("install", "--agent", "codex,pi", "--global", "--profile", "software-dev")
+        self.assertEqual(both.returncode, 0, both.stdout + both.stderr)
+        for label, pi_dir, protected, reason in (
+            ("Codex's folder", Path(self.env["CODEX_HOME"]), codex_rules, "same instruction file"),
+            ("a project installation", project, project / "AGENTS.md", "project installation"),
+        ):
+            with self.subTest(label):
+                before = protected.read_bytes()
+                self.env["PI_CODING_AGENT_DIR"] = str(pi_dir)
+
+                removed = self.run_core("install", "--agent", "pi", "--global", "--uninstall")
+
+                self.assertNotEqual(removed.returncode, 0, removed.stdout + removed.stderr)
+                self.assertIn(reason, removed.stderr)
+                self.assertEqual(protected.read_bytes(), before)
+        self.assertTrue((self.root / "own pi agent" / "AGENTS.md").is_file())
+
+    def test_global_pi_uninstall_leaves_rules_the_global_record_does_not_list(self) -> None:
+        self.env["PI_CODING_AGENT_DIR"] = str(self.root / "unrecorded pi agent")
+        rules = self.root / "unrecorded pi agent" / "AGENTS.md"
+        with_pi = self.run_core("install", "--agent", "pi", "--global", "--profile", "software-dev")
+        self.assertEqual(with_pi.returncode, 0, with_pi.stdout + with_pi.stderr)
+        # Each global install replaces the recorded selection.
+        codex_only = self.run_core("install", "--agent", "codex", "--global", "--profile", "software-dev")
+        self.assertEqual(codex_only.returncode, 0, codex_only.stdout + codex_only.stderr)
+        before = rules.read_bytes()
+
+        removed = self.run_core("install", "--agent", "all", "--global", "--uninstall")
+
+        self.assertEqual(removed.returncode, 0, removed.stdout + removed.stderr)
+        self.assertIn("does not list pi", removed.stderr)
+        self.assertEqual(rules.read_bytes(), before)
+        self.assertFalse((Path(self.env["CODEX_HOME"]) / "AGENTS.md").exists())
+
+    def test_opencode_with_claude_reports_duplicate_skill_discovery(self) -> None:
+        project = self.root / "skill discovery project"
+        project.mkdir()
+        alone = self.run_core("install", "--agent", "opencode", "--global", "--with-skills")
+        self.assertEqual(alone.returncode, 0, alone.stdout + alone.stderr)
+        _, alone_payload = self.doctor(project, "opencode")
+        self.assertNotIn("duplicate-skill-discovery", self.warning_codes(alone_payload["opencode"]))
+
+        both = self.run_core("install", "--agent", "claude,opencode", "--global", "--with-skills")
+        self.assertEqual(both.returncode, 0, both.stdout + both.stderr)
+        strict = self.run_core("doctor", "--agent", "opencode", "--target", str(project), "--strict", "--json")
+        self.assertEqual(strict.returncode, 0, strict.stdout + strict.stderr)
+        warning = next(
+            warning for warning in json.loads(strict.stdout)["opencode"]["warnings"]
+            if warning["code"] == "duplicate-skill-discovery"
+        )
+        self.assertIn("handoff", warning["message"])
+        self.assertIn("OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1", warning["recommendation"])
+        _, claude_payload = self.doctor(project, "claude")
+        self.assertNotIn("duplicate-skill-discovery", self.warning_codes(claude_payload["claude"]))
+
+        self.env["OPENCODE_DISABLE_CLAUDE_CODE_SKILLS"] = "1"
+        _, disabled_payload = self.doctor(project, "opencode")
+        self.assertNotIn("duplicate-skill-discovery", self.warning_codes(disabled_payload["opencode"]))
 
     def test_skill_install_refuses_symlinked_adapter_root_before_external_writes(self) -> None:
         project = self.root / "symlinked adapter project"

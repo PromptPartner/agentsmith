@@ -28,7 +28,7 @@ claim.
 
 Claude Code and Codex are the native-tier targets. The certified-tier matrix contains GitHub
 Copilot, Cursor, Gemini CLI, Windsurf/Devin, Cline, Roo Code, Aider, Continue, OpenHands, Goose,
-OpenCode, JetBrains Junie, Zed, and Jules. Tabby and LM Studio are not agent targets: they are
+OpenCode, JetBrains Junie, Zed, Jules, and Pi. Tabby and LM Studio are not agent targets: they are
 model backends. LM Studio, Ollama, and other local providers are reported only as part of a
 client-plus-model scenario.
 
@@ -40,12 +40,21 @@ read it unchanged. Claude receives a generated `CLAUDE.md` copy. Gemini is confi
 it. Generated or configured surfaces must not introduce symlinks, proprietary imports, or a
 second editable copy of the core.
 
+Registry `global_paths` say where a client reads user-level rules; doctor and status inspect them.
+The files `install --global` writes are a separate, smaller set fixed in code: Claude, Codex,
+OpenCode, and Pi (see [user-level rules](13-platforms-and-tools.md#user-level-rules---global)). A
+staged update reads the candidate release's registry, so registry data never decides where the
+trusted updater writes. A declared global path that no installer writes, such as Gemini CLI's,
+is reported by doctor but not managed.
+
 The canonical Agent Skills pack lives in `.agents/skills`. A runtime-specific copy is allowed
 only when the client genuinely requires it; Claude's `.claude/skills` adapter is the known native
 case. Registry `skill_directories` list only paths the client discovers;
 `managed_skill_directories` separately lists every canonical or derived surface AgentSmith owns.
 Claude discovers only `.claude/skills`; AgentSmith preserves canonical customizations in
-`.agents/skills` and regenerates the Claude adapter from those effective bytes. A skill's behavior
+`.agents/skills` and regenerates the Claude adapter from those effective bytes. OpenCode discovers
+both the Claude and the Agent Skills folders, so for OpenCode the Claude adapter is a second copy;
+doctor reports that as `duplicate-skill-discovery`. A skill's behavior
 must come from its declared compatibility metadata, never merely from the directory in which it
 happens to be installed.
 

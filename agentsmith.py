@@ -59,13 +59,23 @@ TRACKER_ALLOWED = (
 )
 AGENT_IDS = (
     "claude", "codex", "github-copilot", "cursor", "gemini-cli", "windsurf-devin", "cline", "roo-code", "aider",
-    "continue", "openhands", "goose", "opencode", "jetbrains-junie", "zed", "jules",
+    "continue", "openhands", "goose", "opencode", "jetbrains-junie", "zed", "jules", "pi",
 )
 GROUPS = {
     "native": ("claude", "codex"),
     "standard": AGENT_IDS[2:],
-    "local": ("aider", "cline", "openhands", "goose", "opencode"),
+    "local": ("codex", "cline", "roo-code", "aider", "continue", "openhands", "goose", "opencode"),
     "all": AGENT_IDS,
+}
+# User-level rules file per agent: (update root, path inside it). It lives in code, not in
+# config/agents.json, because a staged update reads the candidate release's registry, and
+# release data must not widen where the trusted updater writes. Entry order is the order a
+# global re-run recovers operator identity from.
+GLOBAL_INSTRUCTION_TARGETS: dict[str, tuple[str, str]] = {
+    "codex": ("codex_home", "AGENTS.md"),
+    "claude": ("home", ".claude/CLAUDE.md"),
+    "opencode": ("home", ".config/opencode/AGENTS.md"),
+    "pi": ("pi_home", "AGENTS.md"),
 }
 SAFETY_MODES = ("cautious", "trusted", "container")
 # The native settings each safety mode writes. Container keeps human approval but turns off the
@@ -216,6 +226,103 @@ def home_dir() -> Path:
 
 def codex_home() -> Path:
     return Path(os.environ.get("CODEX_HOME") or home_dir() / ".codex").expanduser()
+
+
+def pi_home() -> Path:
+    # Pi's agent folder. Pi expands a leading "~" in the variable itself.
+    configured = os.environ.get("PI_CODING_AGENT_DIR")
+    if not configured:
+        return home_dir() / ".pi" / "agent"
+    if configured == "~":
+        return home_dir()
+    if configured.startswith(("~/", "~\\")):
+        return home_dir() / configured[2:]
+    return Path(configured)
+
+
+def absolute_pi_home() -> Path:
+    """Pi's agent folder for a managed write or update; a relative setting is refused."""
+    path = pi_home()
+    if not path.is_absolute():
+        raise CliError(
+            f"PI_CODING_AGENT_DIR is a relative path ({os.environ.get('PI_CODING_AGENT_DIR')!r}); Pi resolves "
+            "it against its own working directory, so AgentSmith cannot know where Pi reads its rules. "
+            "Set an absolute path or one that starts with ~/ and rerun."
+        )
+    return path
+
+
+def global_roots() -> dict[str, Path]:
+    return {"home": home_dir(), "codex_home": codex_home(), "pi_home": pi_home()}
+
+
+def update_roots(target: Path, installation: dict[str, Any]) -> dict[str, Path]:
+    """Resolved roots an update may touch. Pi's folder is one only for a global install with Pi."""
+    roots = {"target": target, "home": home_dir().resolve(), "codex_home": codex_home().resolve()}
+    if installation["scope"] == "global" and "pi" in installation["agents"]:
+        roots["pi_home"] = absolute_pi_home().resolve()
+    return roots
+
+
+def project_installation_at(directory: Path) -> bool:
+    path = state_path(directory)
+    if not path.is_file():
+        return False
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return True  # unreadable ownership state is never treated as the global record
+    installation = state.get("installation") if isinstance(state, dict) else None
+    return not (isinstance(installation, dict) and installation.get("scope") == "global")
+
+
+def global_instruction_destinations(agents: Iterable[str]) -> dict[str, Path]:
+    """Live user-level rules file per selected agent, for install, update and uninstall alike.
+
+    Markers alone cannot prove which installation owns a file, so refuse a destination that is any
+    other agent's rules file (selected or not) or that sits in a project installation's root."""
+    roots = global_roots()
+    selected = [agent_id for agent_id in GLOBAL_INSTRUCTION_TARGETS if agent_id in agents]
+    if "pi" in selected:
+        roots["pi_home"] = absolute_pi_home()
+    destinations: dict[str, Path] = {}
+    for agent_id in selected:
+        root_name, relative = GLOBAL_INSTRUCTION_TARGETS[agent_id]
+        path = roots[root_name] / relative
+        resolved = path.resolve()
+        for other, (other_root, other_relative) in GLOBAL_INSTRUCTION_TARGETS.items():
+            if (
+                other != agent_id
+                and roots[other_root].is_absolute()
+                and (roots[other_root] / other_relative).resolve() == resolved
+            ):
+                raise CliError(
+                    f"{agent_id} and {other} resolve to the same instruction file {path}; give each its own "
+                    "location (for example a different CODEX_HOME or PI_CODING_AGENT_DIR) or install them separately"
+                )
+        if project_installation_at(path.parent):
+            raise CliError(
+                f"{agent_id}'s user-level rules file {path} lies in the root of a project installation; "
+                f"point {agent_id} at its own folder and rerun"
+            )
+        destinations[agent_id] = path
+    return destinations
+
+
+def global_instruction_path(agent_id: str) -> Path | None:
+    if agent_id not in GLOBAL_INSTRUCTION_TARGETS:
+        return None
+    root_name, relative = GLOBAL_INSTRUCTION_TARGETS[agent_id]
+    return global_roots()[root_name] / relative
+
+
+def ignored_opencode_config_home() -> Path | None:
+    """Return XDG_CONFIG_HOME when OpenCode would read rules there instead of ~/.config."""
+    configured = os.environ.get("XDG_CONFIG_HOME")
+    if not configured:
+        return None
+    path = Path(configured).expanduser()
+    return None if path.resolve() == (home_dir() / ".config").resolve() else path
 
 
 def resolve_central_runtime(runtime_record: dict[str, Any]) -> Path:
@@ -1600,8 +1707,11 @@ def install_native_config(target: Path, agents: list[str], args: argparse.Namesp
         native_safety = state.get("native_safety", {})
         if not isinstance(native_safety, dict):
             native_safety = {}
+        # Only Claude and Codex have a safety setting; earlier releases recorded every agent.
+        native_safety = {key: value for key, value in native_safety.items() if key in {"claude", "codex"}}
         for agent_id in agents:
-            native_safety[agent_id] = args.safety
+            if agent_id in {"claude", "codex"}:
+                native_safety[agent_id] = args.safety
         record_state(home_dir(), "native_safety", native_safety, dry_run=False)
     if selected_mcp and not args.global_mode:
         if "claude" in agents:
@@ -2198,11 +2308,7 @@ def inventory_files(root: Path, directory: Path) -> list[Path]:
 def installation_fingerprints(
     target: Path, installation: dict[str, Any], *, infer_legacy_skill_ownership: bool
 ) -> tuple[dict[str, str], list[dict[str, Any]], list[dict[str, str]]]:
-    roots = {
-        "target": target,
-        "home": home_dir().resolve(),
-        "codex_home": codex_home().resolve(),
-    }
+    roots = update_roots(target, installation)
     candidates: set[tuple[str, Path]] = set()
     foreign_skill_directories: set[tuple[str, str]] = set()
 
@@ -2257,10 +2363,8 @@ def installation_fingerprints(
             if skill_agent == "claude":
                 add_owned_skills("target", target / ".claude" / "skills", classification)
     else:
-        if "claude" in installation["agents"]:
-            add("home", ".claude/CLAUDE.md")
-        if "codex" in installation["agents"]:
-            add("codex_home", "AGENTS.md")
+        for agent_id in global_instruction_destinations(installation["agents"]):
+            add(*GLOBAL_INSTRUCTION_TARGETS[agent_id])
         if installation["capabilities"].get("skills"):
             skill_target = roots["home"]
             skill_agent = "claude" if "claude" in installation["agents"] else "codex"
@@ -2489,13 +2593,6 @@ def validated_plan(path: Path) -> dict[str, Any]:
     if not isinstance(plan["target"], str) or not isinstance(plan["remote"], str) or not plan["remote"]:
         raise CliError("Plan target and remote must be non-empty strings")
     expected_target = home_dir().resolve() if plan["scope"] == "global" else Path(plan["target"]).resolve()
-    expected_roots = {
-        "target": str(expected_target),
-        "home": str(home_dir().resolve()),
-        "codex_home": str(codex_home().resolve()),
-    }
-    if plan["roots"] != expected_roots or Path(plan["target"]).resolve() != expected_target:
-        raise CliError("Plan roots do not match the current target, HOME, and CODEX_HOME")
     release = plan["release"]
     if not isinstance(release, dict) or set(release) != {"tag", "version", "commit"}:
         raise CliError("Plan release identity is malformed")
@@ -2506,6 +2603,11 @@ def validated_plan(path: Path) -> dict[str, Any]:
     installation = validate_installation_manifest({"schema_version": 1, "installation": plan["installation"]})
     if installation["scope"] != plan["scope"]:
         raise CliError("Plan scope and installation manifest disagree")
+    expected_roots = {name: str(root) for name, root in update_roots(expected_target, installation).items()}
+    if plan["roots"] != expected_roots or Path(plan["target"]).resolve() != expected_target:
+        raise CliError("Plan roots do not match the current target, HOME, CODEX_HOME, and PI_CODING_AGENT_DIR")
+    if plan["scope"] == "global":
+        global_instruction_destinations(installation["agents"])
     if not isinstance(plan["fingerprints"], list):
         raise CliError("Plan fingerprints must be a list")
     for item in plan["fingerprints"]:
@@ -2599,10 +2701,12 @@ def recheck_plan_fingerprints(plan: dict[str, Any]) -> None:
 
 
 def copy_plan_inputs_to_shadow(plan: dict[str, Any], shadow_roots: dict[str, Path]) -> None:
+    current = {"target": Path(plan["target"]), "home": home_dir(), "codex_home": codex_home(), "pi_home": pi_home()}
+    # Installed files spell roots as configured, so translate that spelling too, but only for a
+    # planned root and only when it is absolute: a relative setting such as "." is not a path in text.
     live_roots = {
-        "target": Path(plan["target"]),
-        "home": home_dir(),
-        "codex_home": codex_home(),
+        name: current[name] if current[name].is_absolute() else Path(planned)
+        for name, planned in plan["roots"].items()
     }
     for item in plan["fingerprints"]:
         if item["sha256"] is None:
@@ -2798,6 +2902,8 @@ def translate_root_paths(
     replacements: set[tuple[str, str]] = set()
     for root_name, source_root_value in source_roots.items():
         source_root = Path(source_root_value)
+        if not source_root.is_absolute():
+            continue  # "." or "pi" would rewrite ordinary text, not a path
         destination_root = Path(destination_roots[root_name])
         resolved_source = source_root.resolve()
         for old, new in (
@@ -2876,6 +2982,13 @@ def refresh_translated_statusline_hashes(
         )
 
 
+def selected_global_agent(agent_id: str, installation: dict[str, Any]) -> bool:
+    """A newer user-level rules file is an update surface only for a global install that selected its agent."""
+    if not installation:  # a rollback receipt is checked against its own recorded changes
+        return True
+    return installation.get("scope") == "global" and agent_id in installation.get("agents", [])
+
+
 def allowed_update_path(root_name: str, relative: str, installation: dict[str, Any]) -> bool:
     path = Path(relative)
     if ".." in path.parts or path.is_absolute():
@@ -2897,11 +3010,14 @@ def allowed_update_path(root_name: str, relative: str, installation: dict[str, A
         return (
             relative in {".agentsmith/state.json", *RUNTIME_FILES}
             or relative in {".claude/CLAUDE.md", ".claude/settings.json"}
+            or (relative == ".config/opencode/AGENTS.md" and selected_global_agent("opencode", installation))
             or bool(re.fullmatch(r"\.claude/agentsmith-statusline(?:-\d+)?\.(?:py|ps1)", relative))
             or relative.startswith((".agents/skills/", ".claude/skills/"))
         )
     if root_name == "codex_home":
         return relative in {"AGENTS.md", "config.toml", "hooks.json"}
+    if root_name == "pi_home":
+        return relative == "AGENTS.md" and selected_global_agent("pi", installation)
     return False
 
 
@@ -2948,6 +3064,7 @@ def stage_planned_update(
         "target": temporary_root / "target",
         "home": temporary_root / "home",
         "codex_home": temporary_root / "codex-home",
+        "pi_home": temporary_root / "pi-home",
     }
     for root in shadow_roots.values():
         root.mkdir(parents=True, exist_ok=True)
@@ -2959,6 +3076,8 @@ def stage_planned_update(
         "HOME": str(shadow_roots["home"]),
         "USERPROFILE": str(shadow_roots["home"]),
         "CODEX_HOME": str(shadow_roots["codex_home"]),
+        # Without this, a staged install would write the user's real Pi agent folder.
+        "PI_CODING_AGENT_DIR": str(shadow_roots["pi_home"]),
         "GIT_TERMINAL_PROMPT": "0",
     }
     install_arguments = install_arguments_from_manifest(plan, shadow_roots["target"])
@@ -2986,15 +3105,18 @@ def stage_planned_update(
         trusted_stage_install(checkout, plan["release"]["version"], install_arguments, shadow_env)
     retain_customized_skill_baselines(plan, shadow_roots, preserved_skills)
     retain_reconstructed_skill_baselines(plan, shadow_roots)
+    # The Pi shadow folder always exists so a candidate never reaches the real one, but it maps
+    # back to a live root only when the plan has one.
+    planned_shadow = {name: shadow_roots[name] for name in plan["roots"]}
     translated_files: dict[str, dict[str, tuple[bytes, int]]] = {}
     for root_name, shadow_root in shadow_roots.items():
         translated_files[root_name] = {}
         for relative, (content, mode) in shadow_files(shadow_root).items():
-            if not allowed_update_path(root_name, relative, plan["installation"]):
+            if root_name not in plan["roots"] or not allowed_update_path(root_name, relative, plan["installation"]):
                 raise CliError(f"Release attempted an update outside the managed surface: {root_name}:{relative}")
             is_hook_configuration = relative in {".claude/settings.json", ".codex/hooks.json", "hooks.json"}
             translated_files[root_name][relative] = (
-                translate_hook_configuration(content, shadow_roots, plan["roots"]) if is_hook_configuration else translate_root_paths(content, shadow_roots, plan["roots"]),
+                translate_hook_configuration(content, planned_shadow, plan["roots"]) if is_hook_configuration else translate_root_paths(content, planned_shadow, plan["roots"]),
                 mode,
             )
     refresh_translated_statusline_hashes(plan, translated_files)
@@ -3097,10 +3219,9 @@ def validate_post_update_health(plan: dict[str, Any]) -> None:
     target = Path(plan["roots"]["target"])
     instruction_paths: list[Path] = []
     if plan["scope"] == "global":
-        if "claude" in installation["agents"]:
-            instruction_paths.append(Path(plan["roots"]["home"]) / ".claude" / "CLAUDE.md")
-        if "codex" in installation["agents"]:
-            instruction_paths.append(Path(plan["roots"]["codex_home"]) / "AGENTS.md")
+        for agent_id, (root_name, relative) in GLOBAL_INSTRUCTION_TARGETS.items():
+            if agent_id in installation["agents"]:
+                instruction_paths.append(Path(plan["roots"][root_name]) / relative)
     else:
         instruction_paths.append(target / "AGENTS.md")
         if "claude" in installation["agents"]:
@@ -3304,6 +3425,8 @@ def cmd_update_apply(args: argparse.Namespace) -> int:
             raise CliError(
                 "Update refused: staged managed changes do not match the authenticated plan: " + detail
             )
+        if plan["scope"] == "global":
+            global_instruction_destinations(plan["installation"]["agents"])  # re-check just before writing
         try:
             for root_name, relative, content, mode in proposed:
                 actual = safe_update_path(Path(plan["roots"][root_name]), relative)
@@ -3398,6 +3521,9 @@ def cmd_update_rollback(args: argparse.Namespace) -> int:
     expected_codex = str(codex_home().resolve())
     if receipt["roots"].get("home") != expected_home or receipt["roots"].get("codex_home") != expected_codex:
         raise CliError("Rollback receipt does not match the current HOME and CODEX_HOME")
+    # Receipts written before Pi support carry no pi_home root and cannot name one in a change.
+    if "pi_home" in receipt["roots"] and receipt["roots"]["pi_home"] != str(pi_home().resolve()):
+        raise CliError("Rollback receipt does not match the current PI_CODING_AGENT_DIR")
     if receipt["scope"] == "global" and receipt["roots"].get("target") != expected_home:
         raise CliError("Global rollback receipt target does not match HOME")
     for change in receipt["changes"]:
@@ -3488,7 +3614,12 @@ def maybe_report_automatic_update() -> None:
 def reassemble_managed_targets(args: argparse.Namespace) -> None:
     """Refresh managed instructions in the installation scope selected for self-update."""
     target = Path(args.target or os.getcwd()).expanduser().resolve()
-    global_candidates = [home_dir() / ".claude" / "CLAUDE.md", codex_home() / "AGENTS.md"]
+    roots = global_roots()
+    global_candidates = [
+        roots[root_name] / relative
+        for root_name, relative in GLOBAL_INSTRUCTION_TARGETS.values()
+        if roots[root_name].is_absolute()  # a relative Pi folder could name a project file
+    ]
     project_candidates = [target / "AGENTS.md", target / "CLAUDE.md"]
     if args.global_mode:
         candidates = global_candidates
@@ -3775,13 +3906,7 @@ def scaffold_project(target: Path, profiles: list[str], agents: list[str], args:
 
 def instruction_paths(target: Path, agents: list[str], global_mode: bool) -> tuple[list[Path], list[Path]]:
     if global_mode:
-        canonical = []
-        native: list[Path] = []
-        if "codex" in agents:
-            native.append(codex_home() / "AGENTS.md")
-        if "claude" in agents:
-            native.append(home_dir() / ".claude" / "CLAUDE.md")
-        return canonical, native
+        return [], list(global_instruction_destinations(agents).values())
     canonical = [target / "AGENTS.md"]
     generated = [target / "CLAUDE.md"] if "claude" in agents else []
     return canonical, generated
@@ -3883,6 +4008,18 @@ def remove_owned_skills(
 
 def uninstall(args: argparse.Namespace, agents: list[str], target: Path) -> int:
     ownership = load_state(home_dir() if args.global_mode else target)
+    if args.global_mode:
+        # PI_CODING_AGENT_DIR can point anywhere, so Pi's file is removed only when the global
+        # record says AgentSmith installed Pi. Claude, Codex and OpenCode keep their existing
+        # behaviour: every global install replaces the record, which would block valid uninstalls.
+        record = ownership.get("installation")
+        if "pi" in agents and isinstance(record, dict) and "pi" not in record.get("agents", []):
+            warn(
+                "The global installation record does not list pi, so its rules file is left in place. If "
+                "AgentSmith installed it, run install --global --agent pi first, then uninstall."
+            )
+            agents = [agent_id for agent_id in agents if agent_id != "pi"]
+        global_instruction_destinations(agents)  # refuse before anything is removed
     remove_default_statuslines(agents, target, args.global_mode, dry_run=args.dry_run)
     canonical, generated = instruction_paths(target, agents, args.global_mode)
     for path in [*canonical, *generated]:
@@ -4041,13 +4178,30 @@ def cmd_install(args: argparse.Namespace) -> int:
         requested["memory_startup"] = False
     show_capability_effects(requested)
     canonical, generated = instruction_paths(target, agents, args.global_mode)
+    written_agents = agents
+    if args.global_mode:
+        written_agents = [agent_id for agent_id in agents if agent_id in GLOBAL_INSTRUCTION_TARGETS]
+        for agent_id in agents:
+            if agent_id not in written_agents:
+                warn(
+                    f"{agent_id} has no user-level instruction file that AgentSmith manages; --global wrote "
+                    "nothing for it. Install it per project with --target PATH instead."
+                )
+        ignored_config = ignored_opencode_config_home()
+        if "opencode" in agents and ignored_config is not None:
+            warn(
+                f"XDG_CONFIG_HOME is {ignored_config}, so OpenCode reads its rules from "
+                f"{ignored_config / 'opencode' / 'AGENTS.md'}, but AgentSmith manages only "
+                f"{home_dir() / '.config' / 'opencode' / 'AGENTS.md'}. Unset XDG_CONFIG_HOME or set it to "
+                f"{home_dir() / '.config'} so OpenCode reads the managed rules."
+            )
     ownership_safety = load_state(home_dir()).get("native_safety", {})
     if not isinstance(ownership_safety, dict):
         ownership_safety = {}
     prior_managed_safety: dict[str, str] = {
         agent_id: value
         for agent_id, value in ownership_safety.items()
-        if agent_id in agents and value in SAFETY_MODES
+        if agent_id in agents and agent_id in {"claude", "codex"} and value in SAFETY_MODES
     }
     had_managed_instructions = any(
         path.exists() and managed_markers(path.read_text(encoding="utf-8", errors="replace"))
@@ -4098,7 +4252,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         record_state(skill_root, "skills_installed", True, dry_run=args.dry_run)
     install_hooks(target, agents, args)
     record_installation_manifest(target, agents, profiles, args, recovery, installed_skill_directories)
-    ok(f"installed for {', '.join(agents)}; canonical project instructions: AGENTS.md")
+    ok(f"installed for {', '.join(written_agents) or 'no selected agent'}; canonical project instructions: AGENTS.md")
     return 0
 
 
@@ -4194,6 +4348,8 @@ def resolve_doctor_path(value: str, base: Path | None = None) -> Path:
     runtime_home = home_dir()
     rendered = value
     for marker, destination in (
+        ("${PI_CODING_AGENT_DIR}", pi_home()),
+        ("$PI_CODING_AGENT_DIR", pi_home()),
         ("${CODEX_HOME}", codex_home()),
         ("$CODEX_HOME", codex_home()),
         ("${HOME}", runtime_home),
@@ -4498,6 +4654,23 @@ def inspect_skills(agent_id: str, agent: dict[str, Any], target: Path) -> dict[s
         "adapter_diverged_names": sorted(adapter_diverged_names),
         "foreign_names": sorted(foreign_names),
     }
+
+
+def opencode_duplicate_skill_names(target: Path) -> list[str]:
+    """Return skill names OpenCode discovers in both a Claude and an Agent Skills folder."""
+    switches = ("OPENCODE_DISABLE_CLAUDE_CODE", "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS", "OPENCODE_DISABLE_EXTERNAL_SKILLS")
+    if any(os.environ.get(name, "").strip().lower() in {"1", "true"} for name in switches):
+        return []
+
+    def names(folder: str) -> set[str]:
+        found: set[str] = set()
+        for base in (home_dir(), target):
+            root = base / folder / "skills"
+            if root.is_dir():
+                found.update(entry.name for entry in root.iterdir() if entry.is_dir())
+        return found
+
+    return sorted(names(".claude") & names(".agents"))
 
 
 def inspect_mcp(agent_id: str, agent: dict[str, Any], target: Path) -> dict[str, Any]:
@@ -4848,6 +5021,27 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     "Claude's derived skill adapter differs from canonical content: "
                     + ", ".join(skills["adapter_diverged_names"]),
                     "Re-run install with --with-skills to regenerate owned adapters.",
+                )
+            )
+        duplicate_skills = opencode_duplicate_skill_names(target) if agent_id == "opencode" else []
+        if duplicate_skills:
+            warnings.append(
+                doctor_warning(
+                    "duplicate-skill-discovery",
+                    "OpenCode finds these skills in both .claude/skills and .agents/skills and keeps one "
+                    "copy at random: " + ", ".join(duplicate_skills),
+                    "Set OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1 in OpenCode's environment so it reads only .agents/skills.",
+                )
+            )
+        ignored_config = ignored_opencode_config_home() if agent_id == "opencode" else None
+        opencode_rules = global_instruction_path("opencode")
+        if ignored_config is not None and opencode_rules is not None and opencode_rules.is_file():
+            warnings.append(
+                doctor_warning(
+                    "opencode-xdg-config-ignored",
+                    f"OpenCode reads user rules from {ignored_config / 'opencode' / 'AGENTS.md'} because "
+                    f"XDG_CONFIG_HOME is set, so {opencode_rules} is not loaded.",
+                    f"Unset XDG_CONFIG_HOME or set it to {home_dir() / '.config'}.",
                 )
             )
         expanded = any(capabilities[name]["state"] == "managed" for name in ("skills", "mcp", "hooks"))
