@@ -59,8 +59,9 @@ checkpoint, and passes that exact checkpoint OID to the child. A merge conflict 
 checkpoint worktree and all source branches; it never guesses a base or rewrites a source. Failed
 or rejected children block descendants, while unrelated ready nodes may finish.
 If a child exits unexpectedly before writing a terminal reason, its graph failure event records
-the exit code, last child phase, exception class, and controller source line. It does not copy
-raw child output into graph audit state.
+the exit code, last child phase, exception class, a fixed code for a known controller refusal
+(such as `refusal=previous-role-live`, or `refusal=unknown`), and controller source line. It does
+not copy raw child output into graph audit state.
 
 To interrupt, use `agentsmith graph stop --graph .harness/work-graph.json`; repeated requests are
 safe. It asks active child controllers to stop and retains state, logs, receipts, branches, and
