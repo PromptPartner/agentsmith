@@ -118,10 +118,10 @@ Claude `Edit`/`Write`/`MultiEdit` file paths and every affected path in a Codex 
 `additionalContext`: it never blocks or auto-approves the edit. Unknown or malformed patch input
 is a silent no-op.
 
-Install it at setup, when you tell the wizard the project has a UI:
+Install it at setup with `--with-ui-design-hook` (the wizard lists it under advanced capabilities):
 
 ```bash
-./setup.sh --profile software-dev --design-system stub      # scaffolds DESIGN.md, then offers the hook
+./setup.sh --profile software-dev --design-system stub --with-ui-design-hook   # DESIGN.md + the hook
 ```
 
 Or wire it by hand (global `~/.claude/settings.json`):

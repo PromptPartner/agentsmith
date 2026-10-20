@@ -8039,6 +8039,22 @@ def apply_wizard_answers(args: argparse.Namespace, input_fn: Any = input) -> dic
     return {"confirmed": True, "project_kind": kind, "target": str(target), "language": language}
 
 
+def stdin_is_interactive() -> bool:
+    """True only for a real terminal. Windows reports the NUL device as a tty, so ask the console."""
+    try:
+        if sys.stdin is None or not sys.stdin.isatty():
+            return False
+        if os.name != "nt":
+            return True
+        import ctypes
+        import msvcrt
+        mode = ctypes.c_uint32()
+        handle = msvcrt.get_osfhandle(sys.stdin.fileno())
+        return bool(ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(mode)))
+    except (AttributeError, ImportError, OSError, ValueError):
+        return False
+
+
 def run(argv: list[str] | None = None) -> int:
     require_python()
     args = parser().parse_args(normalize_legacy_argv(list(argv if argv is not None else sys.argv[1:])))
@@ -8050,11 +8066,20 @@ def run(argv: list[str] | None = None) -> int:
         maybe_report_automatic_update()
     if args.command == "install":
         if args.wizard:
-            print("Agentsmith interactive wizard is intentionally minimal in non-interactive automation.")
-            print("Which assistant should receive native rules? [claude]")
-            if not sys.stdin.isatty():
-                return 0
-            apply_wizard_answers(args)
+            # Without a terminal nobody can answer, so fail loudly: an automation step that sees
+            # exit 0 here would treat the installation as done.
+            if not stdin_is_interactive():
+                raise CliError(
+                    "install --wizard needs an interactive terminal; nothing was changed. "
+                    "Pass the choices as flags instead, for example: agentsmith install "
+                    "--agent <id> --profile <name> --target <path> (see install --help)"
+                )
+            try:
+                apply_wizard_answers(args)
+            except EOFError as exc:
+                # apply_wizard_answers writes nothing, so ending here leaves no partial install.
+                raise CliError("the wizard's input ended before every question was answered; "
+                               "nothing was changed") from exc
         return cmd_install(args)
     if args.command == "update":
         if args.update_command == "check":

@@ -47,6 +47,8 @@ No project file changes before the final confirmation. For a new project, AgentS
 
 Use `agentsmith install --wizard --lang de` to start directly in German. Supported wizard languages are English (`en`), German (`de`), Spanish (`es`), French (`fr`), and Simplified Chinese (`zh-CN`).
 
+The wizard needs an interactive terminal. In a script, CI job or `docker exec` without `-t`, it exits with code 2 and changes nothing. There, pass the choices as flags instead: `agentsmith install --agent <id> --profile <name> --target <path>`.
+
 ## Option 2: agent-guided setup
 
 Give your coding agent this prompt:

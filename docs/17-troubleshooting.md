@@ -19,6 +19,11 @@ it from above with
 `--org-policy` for Claude ([`15-safety-model.md`](15-safety-model.md)). Codex organization policy
 is out of scope; the installer rejects platform `codex` or `both` with `--org-policy`.
 
+**"`agentsmith` exits with code 2: the wizard needs an interactive terminal."** Its input is
+not a terminal: a pipe, a CI job, or `docker exec` without `-t`. Nobody can answer the questions,
+so it stops before changing anything. Run it in a terminal (`docker exec -it …`), or pass the
+choices as flags: `agentsmith install --agent <id> --profile <name> --target <path>`.
+
 **"An update says trusted safety will migrate to cautious."** The prior AgentSmith-managed config
 used bypass/no-approval settings and the current command did not explicitly opt back into them.
 That warning is the `0.2.0` safety correction, not loss of foreign config: the installer backs up
