@@ -47,7 +47,30 @@ No project file changes before the final confirmation. For a new project, AgentS
 
 Use `agentsmith install --wizard --lang de` to start directly in German. Supported wizard languages are English (`en`), German (`de`), Spanish (`es`), French (`fr`), and Simplified Chinese (`zh-CN`).
 
-The wizard needs an interactive terminal. In a script, CI job or `docker exec` without `-t`, it exits with code 2 and changes nothing. There, pass the choices as flags instead: `agentsmith install --agent <id> --profile <name> --target <path>`.
+The wizard needs an interactive terminal. In a script, CI job or `docker exec` without `-t`, it exits with code 2 and changes nothing. There, pass the choices as flags (`agentsmith install --agent <id> --profile <name> --target <path>`) or as an answers file.
+
+### Setup from another program
+
+A program that wants to ask the wizard's questions in its own interface can read them, with their choices, conditions, computed defaults and all five translations:
+
+```console
+agentsmith wizard schema --json --target /path/to/project
+```
+
+It then hands the answers over as one JSON file. AgentSmith checks the file with the wizard's own rules, and it works without a terminal:
+
+```console
+agentsmith install --answers answers.json --dry-run
+agentsmith install --answers answers.json
+```
+
+For example, a new project for Codex:
+
+```json
+{"schema_version": 1, "project_kind": "new", "target": "/work/app", "agent": ["codex"], "goal": "1", "confirm": "yes"}
+```
+
+`target` is required, and missing keys take the wizard's defaults. `agent`, `extra_profiles` and `capabilities` are JSON arrays. `confirm` must be `"yes"` unless `--dry-run` is given. Every problem in the file is reported in one error, with exit code 2.
 
 ## Option 2: agent-guided setup
 

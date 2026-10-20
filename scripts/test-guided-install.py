@@ -21,6 +21,50 @@ SPEC = importlib.util.spec_from_file_location("agentsmith", ROOT / "agentsmith.p
 assert SPEC and SPEC.loader
 agentsmith = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(agentsmith)
+WIZARD_GOLDEN = ROOT / "tests" / "fixtures" / "wizard" / "interactive-golden.json"
+WIZARD_SCENARIOS = {
+    "new-project": ["en", "new", "<TARGET>/fresh", "codex", "1", "2", "", "", "yes"],
+    "existing-all-and-reprompt": ["", "", "", "claude", "all", "general-admin", "2", "invalid", "", "", "yes"],
+    "advanced-user-scope": ["en", "existing", "<TARGET>", "github-copilot", "recommended", "3", "trusted",
+                            "y", "user", "deep-research", "skills,hooks", "yes"],
+}
+
+
+def record_wizard_scenario(name: str) -> dict:
+    """Run one scripted interactive wizard and return its prompts, output and resulting choices."""
+    import contextlib
+    import io
+    with tempfile.TemporaryDirectory() as temporary:
+        target = Path(temporary).resolve()
+        answers = iter(value.replace("<TARGET>", str(target)) for value in WIZARD_SCENARIOS[name])
+        prompts: list[str] = []
+        args = agentsmith.parser().parse_args(["install", "--wizard", "--lang", "en"])
+        output = io.StringIO()
+        previous = Path.cwd()
+        os.chdir(target)
+        try:
+            with mock.patch.object(agentsmith.shutil, "which", return_value=None), \
+                    contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+                plan = agentsmith.apply_wizard_answers(args, lambda prompt: (prompts.append(prompt), next(answers))[1])
+        finally:
+            os.chdir(previous)
+        fields = ("agent", "profile", "target", "global_mode", "operator_bio", "safety", "initialize_git",
+                  "wizard_language", "with_skills", "with_mcp", "with_hooks", "with_handoff_hooks",
+                  "with_ui_design_hook", "with_memory_startup")
+        result = {"prompts": prompts, "output": output.getvalue(), "plan": plan,
+                  "args": {field: getattr(args, field, None) for field in fields}}
+
+        def anonymize(value):
+            # Replace on the data, not on JSON text, so Windows backslashes match too.
+            if isinstance(value, str):
+                value = value.replace(str(target), "<TARGET>")
+                return value.replace("\\", "/") if "<TARGET>" in value else value
+            if isinstance(value, list):
+                return [anonymize(item) for item in value]
+            if isinstance(value, dict):
+                return {key: anonymize(item) for key, item in value.items()}
+            return value
+        return anonymize(json.loads(json.dumps(result)))
 
 STANDALONE_WORKFLOW = ROOT / ".github" / "workflows" / "standalone.yml"
 RELEASE_ASSETS = (
@@ -105,6 +149,159 @@ class GuidedInstallContracts(unittest.TestCase):
                 self.assertEqual(list(home.iterdir()), [])
                 self.assertEqual(list(project.iterdir()), [])
 
+    def test_interactive_prompt_sequence_is_stable(self) -> None:
+        # Pins the interactive wizard while the answers file and schema share its question table.
+        golden = json.loads(WIZARD_GOLDEN.read_text(encoding="utf-8"))
+        self.assertEqual(set(golden), set(WIZARD_SCENARIOS))
+        for name in WIZARD_SCENARIOS:
+            with self.subTest(scenario=name):
+                self.assertEqual(record_wizard_scenario(name), golden[name])
+
+    def test_wizard_schema_is_versioned_and_complete(self) -> None:
+        # A host product renders these questions itself, so the schema must match the wizard.
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary)
+            (target / "pyproject.toml").write_text("[project]\nname='sample'\n", encoding="utf-8")
+            args = agentsmith.parser().parse_args(["wizard", "schema", "--json", "--target", str(target)])
+            schema = agentsmith.wizard_schema(args)
+        self.assertEqual(schema["schema_version"], 1)
+        self.assertEqual(schema["agentsmith_version"], agentsmith.VERSION)
+        self.assertEqual([item["key"] for item in schema["questions"]],
+                         [item["key"] for item in agentsmith.WIZARD_QUESTIONS])
+        self.assertEqual(set(schema["messages"]), set(agentsmith.WIZARD_LANGUAGES))
+        for item in schema["questions"]:
+            self.assertIn(item["prompt_key"], schema["messages"]["en"], item["key"])
+        questions = {item["key"]: item for item in schema["questions"]}
+        self.assertEqual(questions["language"]["default"]["computed"], "locale_environment")
+        self.assertEqual(questions["agent"]["default"]["computed"], "agent_detection")
+        self.assertIsInstance(questions["agent"]["default"]["value"], list)
+        self.assertIn("native", questions["agent"]["choices"])
+        self.assertTrue(questions["target"]["required_in_answers"])
+        self.assertEqual(questions["goal"]["when"], {"project_kind": "new"})
+        self.assertEqual(questions["goal"]["profiles"]["1"], "software-dev")
+        self.assertEqual(questions["profile"]["default"]["resolved"], "software-dev")
+        self.assertTrue(any("pyproject.toml" in item for item in questions["profile"]["default"]["evidence"]))
+        self.assertIn("recommended", questions["profile"]["choices"])
+        self.assertEqual(questions["capabilities"]["choices"], list(agentsmith.WIZARD_CAPABILITIES))
+
+    def test_wizard_schema_cli_prints_only_json_and_skips_the_update_check(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            state = home / ".agentsmith" / "state.json"
+            state.parent.mkdir()
+            # A due weekly update check would print to stdout and record an attempt.
+            state.write_text(json.dumps({"update_policy": {"auto_check": "weekly"}}), encoding="utf-8")
+            before = state.read_text(encoding="utf-8")
+            environment = {**os.environ, "HOME": str(home), "USERPROFILE": str(home)}
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "agentsmith.py"), "wizard", "schema", "--json"],
+                env=environment, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["schema_version"], 1)
+            self.assertEqual(state.read_text(encoding="utf-8"), before)
+
+    def test_answers_match_interactive_plan(self) -> None:
+        # The answers file must produce exactly what the same answers produce interactively.
+        cases = {
+            "new-project": {"language": "en", "project_kind": "new", "target": "<TARGET>/fresh",
+                            "agent": ["codex"], "goal": "1", "experience": "2", "confirm": "yes"},
+            "advanced-user-scope": {"language": "en", "project_kind": "existing", "target": "<TARGET>",
+                                    "agent": ["github-copilot"], "profile": "recommended", "experience": "3",
+                                    "safety": "trusted", "advanced": "y", "scope": "user",
+                                    "extra_profiles": ["deep-research"], "capabilities": ["skills", "hooks"],
+                                    "confirm": "yes"},
+        }
+        golden = json.loads(WIZARD_GOLDEN.read_text(encoding="utf-8"))
+        for name, answers in cases.items():
+            with self.subTest(scenario=name), tempfile.TemporaryDirectory() as temporary:
+                target = Path(temporary).resolve()
+                document = {"schema_version": 1,
+                            **{key: value.replace("<TARGET>", str(target)) if isinstance(value, str) else value
+                               for key, value in answers.items()}}
+                answers_file = target / "answers.json"
+                answers_file.write_text(json.dumps(document), encoding="utf-8")
+                args = agentsmith.parser().parse_args(["install", "--answers", str(answers_file)])
+                with mock.patch.object(agentsmith.shutil, "which", return_value=None), \
+                        mock.patch("sys.stdout", new_callable=lambda: __import__("io").StringIO()):
+                    agentsmith.apply_wizard_answers_file(args)
+                expected = golden[name]["args"]
+                for field, value in expected.items():
+                    actual = getattr(args, field, None)
+                    if isinstance(actual, str):
+                        actual = actual.replace(str(target), "<TARGET>")
+                        actual = actual.replace("\\", "/") if "<TARGET>" in actual else actual
+                    self.assertEqual(actual, value, field)
+
+    def test_wizard_output_survives_a_legacy_windows_pipe(self) -> None:
+        # A Windows pipe encodes stdout as cp1252, which cannot hold the zh-CN strings.
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary) / "home"
+            home.mkdir()
+            environment = {**os.environ, "HOME": str(home), "USERPROFILE": str(home),
+                           "PYTHONIOENCODING": "cp1252"}
+            schema = subprocess.run(
+                [sys.executable, str(ROOT / "agentsmith.py"), "wizard", "schema", "--json"],
+                env=environment, stdin=subprocess.DEVNULL, capture_output=True, timeout=60,
+            )
+            self.assertEqual(schema.returncode, 0, schema.stderr.decode("utf-8", "replace"))
+            messages = json.loads(schema.stdout.decode("ascii"))["messages"]
+            self.assertEqual(messages["zh-CN"]["language"], agentsmith.load_wizard_locales()["zh-CN"]["language"])
+            answers_file = Path(temporary) / "answers.json"
+            answers_file.write_text(json.dumps({
+                "schema_version": 1, "language": "zh-CN", "project_kind": "new",
+                "target": str(Path(temporary) / "fresh"), "agent": ["github-copilot"],
+            }), encoding="utf-8")
+            install = subprocess.run(
+                [sys.executable, str(ROOT / "agentsmith.py"), "install", "--answers", str(answers_file), "--dry-run"],
+                env=environment, stdin=subprocess.DEVNULL, capture_output=True, timeout=120,
+            )
+            self.assertEqual(install.returncode, 0, install.stderr.decode("utf-8", "replace"))
+
+    def test_answers_errors_are_aggregated(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            answers_file = Path(temporary) / "answers.json"
+            answers_file.write_text(json.dumps({
+                "schema_version": 2, "safty": "trusted", "safety": "reckless",
+                "scope": "user", "experience": 2,
+            }), encoding="utf-8")
+            args = agentsmith.parser().parse_args(["install", "--answers", str(answers_file)])
+            with self.assertRaises(agentsmith.CliError) as raised:
+                agentsmith.apply_wizard_answers_file(args)
+        message = str(raised.exception)
+        for fragment in ("schema_version", "safty", "safety", "scope", "experience", "target", "confirm"):
+            self.assertIn(fragment, message)
+
+    def test_answers_install_without_terminal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary) / "home"
+            home.mkdir()
+            target = Path(temporary) / "fresh"
+            answers_file = Path(temporary) / "answers.json"
+            answers_file.write_text(json.dumps({
+                "schema_version": 1, "project_kind": "new", "target": str(target),
+                "agent": ["github-copilot"], "goal": "1", "confirm": "yes",
+            }), encoding="utf-8")
+            environment = {**os.environ, "HOME": str(home), "USERPROFILE": str(home),
+                           "CODEX_HOME": str(home / ".codex")}
+
+            def install(*extra: str) -> subprocess.CompletedProcess:
+                return subprocess.run(
+                    [sys.executable, str(ROOT / "agentsmith.py"), "install", "--answers", str(answers_file), *extra],
+                    cwd=temporary, env=environment, stdin=subprocess.DEVNULL,
+                    capture_output=True, text=True, timeout=120,
+                )
+
+            dry = install("--dry-run")
+            self.assertEqual(dry.returncode, 0, dry.stdout + dry.stderr)
+            self.assertFalse(target.exists(), "a dry run must not create the project")
+            both = install("--wizard")
+            self.assertEqual(both.returncode, 2)
+            self.assertIn("--answers", both.stderr)
+            real = install()
+            self.assertEqual(real.returncode, 0, real.stdout + real.stderr)
+            self.assertTrue((target / ".git").is_dir())
+            self.assertIn("Profile: Software Development", (target / "AGENTS.md").read_text(encoding="utf-8"))
     def test_wizard_input_that_ends_early_is_a_clean_refusal(self) -> None:
         # Windows reports the NUL device as a terminal, and a pipe can end mid-wizard; neither may crash.
         with mock.patch.object(agentsmith, "stdin_is_interactive", return_value=True), \
@@ -219,6 +416,12 @@ class GuidedInstallContracts(unittest.TestCase):
         self.assertIn("needs an interactive terminal", install)
         troubleshooting = (ROOT / "docs" / "17-troubleshooting.md").read_text(encoding="utf-8")
         self.assertIn("needs an interactive terminal", troubleshooting)
+
+    def test_install_docs_explain_the_answers_file_and_schema(self) -> None:
+        for name in ("INSTALL.md", "AGENT-INSTALL.md", "docs/12-whats-built-in.md"):
+            text = (ROOT / name).read_text(encoding="utf-8")
+            for phrase in ("--answers", "wizard schema --json"):
+                self.assertTrue(phrase in text, f"{name} does not mention {phrase}")
 
     def test_standalone_update_refusal_points_to_a_verified_release_download(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
