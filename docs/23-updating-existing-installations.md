@@ -11,7 +11,8 @@ The current stable release is `v0.4.0`.
 `v0.4.0` adds `install --answers` and `agentsmith wizard schema --json` for setup from another
 program, a `container` safety mode for Docker-style containers, user-level rules for OpenCode and
 the new Pi agent, and checksummed, attested release downloads that include Linux arm64. It also
-fixes intermittent native-Windows work-graph failures. One behaviour change: without an
+fixes intermittent native-Windows work-graph failures, and `doctor` no longer crashes where Git is not
+installed (common in slim container images). One behaviour change: without an
 interactive terminal, `install --wizard` (and a bare `agentsmith`) now exits with code 2 instead
 of 0, because it changed nothing. Earlier global OpenCode installs recorded OpenCode but wrote no
 rules file; run `agentsmith install --global --agent opencode` once with `v0.4.0`, because the
