@@ -21,7 +21,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 30 || 20 }}
+    # Windows runs took 21-30 minutes in October 2026, and four hit a 30-minute cap mid-step.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 20 }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
