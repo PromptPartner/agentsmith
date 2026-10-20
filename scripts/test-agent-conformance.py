@@ -643,6 +643,7 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
                     "import importlib.util,json;"
                     f"s=importlib.util.spec_from_file_location('agentsmith_core',{str(CORE_PATH)!r});"
                     "m=importlib.util.module_from_spec(s);s.loader.exec_module(m);"
+                    "m.detect_container=lambda *a,**k:[];"
                     "a=m.parser().parse_args(['install','--wizard']);"
                     "answers=iter(['','','','claude','general-admin','2','invalid','','','yes']);prompts=[];"
                     "m.apply_wizard_answers(a,lambda p:(prompts.append(p),next(answers))[1]);"

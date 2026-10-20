@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import builtins
 import hashlib
 import contextlib
+import errno
 import importlib.util
 import json
 import math
@@ -227,13 +229,29 @@ def load_contract(target: str | Path, graph_path: str) -> dict[str, Any]:
     }
 
 
+def _read_bytes(path: Path) -> bytes:
+    """Read a file while tolerating bounded Windows sharing races, as the controller does."""
+    for attempt in range(500):
+        try:
+            return path.read_bytes()
+        except PermissionError as exc:
+            # A child replaces its state atomically; Windows denies opens during the replace.
+            transient_windows_error = os.name == "nt" and (
+                getattr(exc, "winerror", None) in {5, 32} or exc.errno == errno.EACCES
+            )
+            if not transient_windows_error or attempt == 499:
+                raise
+            time.sleep(0.01)
+    raise AssertionError("unreachable")
+
+
 def _child_state(contract: dict[str, Any], run_id: str) -> dict[str, Any] | None:
     path = common_directory(contract["repo"]) / "agentsmith-runs" / run_id / "state.json"
     if not path.exists():
         return None
     if path.is_symlink() or not path.is_file():
         raise GraphError(f"child state for {run_id} is not a regular file")
-    state = _json_object(path.read_bytes(), label=f"child state for {run_id}")
+    state = _json_object(_read_bytes(path), label=f"child state for {run_id}")
     if state.get("run_id") != run_id or state.get("manifest_sha256") != contract["nodes"][run_id]["manifest_sha256"]:
         raise GraphError(f"child state lineage mismatch for {run_id}")
     if state.get("repo") != str(contract["repo"]):
@@ -658,6 +676,54 @@ def start_graph(contract: dict[str, Any]) -> dict[str, Any]:
         return _run_graph(contract, state, directory)
 
 
+# Known controller refusals, which main() prints as `error: <RunError>`. Only the fixed code
+# enters graph evidence; the refusal text can carry paths or tool output and never does.
+CHILD_REFUSALS = tuple((code, re.compile(pattern)) for code, pattern in (
+    ("accepted-run", r"accepted runs do not resume"),
+    ("no-run-state", r"no run state for "),
+    ("unreadable-json", r"cannot read JSON "),
+    ("coordination-held", r"repository coordination is still held by live process"),
+    ("coordination-lock", r"cannot (acquire|verify|remove) repository coordination lock"),
+    ("controller-live", r"run [A-Za-z0-9_-]{1,64} already has a live controller"),
+    ("lifecycle-lock", r"(could not acquire|cannot verify) lifecycle lock"),
+    ("manifest-changed", r"manifest (changed since start|run_id no longer matches)"),
+    ("spec-changed", r"(original )?spec changed since start"),
+    ("graph-changed", r"(graph contract or |graph context is incomplete|"
+                      r"child base does not match its graph|effective base )"),
+    ("base-changed", r"base_ref changed since start"),
+    ("worktree-changed", r"run worktree is (missing|no longer on its recorded branch)"),
+    ("dirty-worktree", r"cannot resume a dirty worktree"),
+    ("previous-role-live", r"previous role is still live"),
+    ("unsupported-host", r"no supported fail-closed trusted-state sandbox"),
+    ("usage-checkpoint", r"invalid unfinished usage checkpoint"),
+    ("maker-advanced", r"unfinished maker advanced HEAD"),
+    ("no-candidate", r"checking stage has no candidate checkpoint"),
+    ("scope-conflict", r"run [A-Za-z0-9_-]{1,64} conflicts with live run "),
+    ("scope-unverified", r"cannot verify scope for live run "),
+    ("git-phase-held", r"git phase [a-z]+ is still held by live "),
+    ("checker-recovery", r"(unrecognized checker recovery path|checker recovery |"
+                         r"cannot clean up interrupted checker worktree)"),
+    ("dirty-base", r"base worktree must be clean"),
+    ("run-exists", r"run [A-Za-z0-9_-]{1,64} already exists"),
+    ("worktree-exists", r"refusing to overwrite existing branch/worktree"),
+))
+
+
+# Labels a child's last stderr line may contribute: the controller's own prefixes and exception
+# classes, and Python's. Anything else could be tool output or a secret, so it becomes "unknown".
+CHILD_EXCEPTION_LABELS = frozenset({
+    "error", "escalated", "interrupted", "RunError", "RunInterrupted", "GraphError",
+    "subprocess.CalledProcessError", "subprocess.TimeoutExpired", "json.decoder.JSONDecodeError",
+})
+
+
+def _child_exception_label(name: str) -> str:
+    builtin = getattr(builtins, name, None)
+    if name in CHILD_EXCEPTION_LABELS or (isinstance(builtin, type) and issubclass(builtin, BaseException)):
+        return name
+    return "unknown"
+
+
 def child_failure_reason(child: dict[str, Any] | None, returncode: int, stderr: str) -> str:
     """Keep a useful child crash signature without copying process output into graph evidence."""
     known = child.get("reason") if child else None
@@ -670,7 +736,13 @@ def child_failure_reason(child: dict[str, Any] | None, returncode: int, stderr: 
     for line in reversed(stderr.splitlines()):
         match = re.match(r"^([A-Za-z_][A-Za-z0-9_.]{0,63})(?::|$)", line)
         if match:
-            exception = match.group(1)
+            exception = _child_exception_label(match.group(1))
+            break
+    refusal = "unknown"
+    for line in reversed(stderr.splitlines()):
+        if line.startswith("error: "):
+            refusal = next((code for code, pattern in CHILD_REFUSALS
+                            if pattern.match(line[len("error: "):])), "unknown")
             break
     location = "unknown"
     frames = re.findall(r'File "([^"\r\n]+)", line ([0-9]{1,6}), in [A-Za-z_][A-Za-z0-9_]*', stderr)
@@ -678,7 +750,8 @@ def child_failure_reason(child: dict[str, Any] | None, returncode: int, stderr: 
         if re.split(r"[\\/]", path)[-1] == "autonomous-run.py":
             location = f"autonomous-run.py:{line}"
             break
-    return f"child process exit={returncode} in {status}; exception={exception}; location={location}"
+    return (f"child process exit={returncode} in {status}; exception={exception}; "
+            f"refusal={refusal}; location={location}")
 
 
 def _run_graph(contract: dict[str, Any], state: dict[str, Any], directory: Path,

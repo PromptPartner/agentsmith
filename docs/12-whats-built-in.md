@@ -37,7 +37,9 @@ helpers and managed hooks native on macOS, Linux, and Windows without Git Bash o
   be overwritten.
 - Omitted `--safety` maps native clients to cautious approval/workspace settings;
   `--safety trusted` is an explicit opt-in. Managed trusted updates warn and back up before the
-  cautious migration.
+  cautious migration. `--safety container` keeps approvals but turns off the Codex sandbox for
+  Docker-style containers; `--assemble-only` leaves native settings untouched
+  ([Safety modes](15-safety-model.md#safety-modes)).
 
 Capabilities without a documented stable client interface stay disabled. AgentSmith does not
 emulate hooks or MCP to make matrix cells green.
@@ -48,6 +50,8 @@ emulate hooks or MCP to make matrix cells green.
 |---|---|
 | `agentsmith demo first-loop --target <new-path>` | Copy the deterministic dependency-free launch-readiness exercise into a new or empty explicit target; refuse broad, non-empty, or symbolic targets. |
 | `agentsmith status [--target <path>] [--json]` | Explain effective topology, profiles, instruction sources, managed capabilities, verification coverage, and one reasoned next action without changing state. |
+| `agentsmith wizard schema --json [--target <path>] [--lang <code>]` | Print the install wizard's questions, choices, conditions, computed defaults and translations, so another program can ask them. |
+| `agentsmith install --answers <file> [--dry-run]` | Apply wizard answers from a JSON file without a terminal, checked with the wizard's own rules; every problem is reported at once. |
 | `agentsmith profiles list [--json]` | List the shipped work profiles from their source files and name each verification preset. |
 | `agentsmith profiles recommend [--target <path>] [--json]` | Rank deterministic profile choices from repository evidence without calling a model or changing files. |
 | `agentsmith profiles switch --target <path> --profile <name[,name...]> [--dry-run]` | Preview or update only managed instructions and the existing profile selection; preserve foreign instruction bytes and custom verification. |

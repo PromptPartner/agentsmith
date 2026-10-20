@@ -1187,6 +1187,35 @@ class UpdateCheckTests(unittest.TestCase):
                 self.assertTrue(updated["assemble_only"])
                 self.assertEqual(updated["safety"], {})
 
+    def test_container_safety_survives_update_health(self) -> None:
+        # Claude reports acceptEdits for container too; the health check must not call that cautious.
+        self.commit_and_tag(NEXT_VERSION)
+        cloned = subprocess.run(
+            ["git", "clone", "-q", "--no-local", "--bare", str(self.seed), str(self.remote)],
+            text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(cloned.returncode, 0, cloned.stdout + cloned.stderr)
+        target = self.root / "container-project"
+        target.mkdir()
+        home = self.root / "container-home"
+        environment = {**os.environ, "HOME": str(home), "USERPROFILE": str(home),
+                       "CODEX_HOME": str(self.root / "container-codex")}
+        installed = self.run_core(
+            "install", "--agent", "claude,codex", "--profile", "software-dev", "--safety", "container",
+            "--target", str(target), env=environment,
+        )
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        plan_path = self.root / "container-plan.json"
+        planned = self.run_core(
+            "update", "plan", "--target", str(target), "--version", NEXT_TAG,
+            "--from", str(self.remote), "--save", str(plan_path), env=environment,
+        )
+        self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        state = json.loads((target / ".agentsmith" / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["installation"]["safety"], {"claude": "container", "codex": "container"})
+
     def test_assemble_only_migration_requires_unambiguous_native_ownership(self) -> None:
         self.commit_and_tag(NEXT_VERSION)
         cloned = subprocess.run(

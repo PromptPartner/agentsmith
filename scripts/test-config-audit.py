@@ -43,6 +43,13 @@ class AuditTests(unittest.TestCase):
         report = self.audit()
         self.assertIn('trusted-mode', {f['rule_id'] for f in report['findings']})
         self.assertIn('package-unpinned', {f['rule_id'] for f in report['findings']})
+    def test_container_mode_is_reported_as_sandbox_off_with_approvals(self):
+        # Container mode turns the sandbox off on purpose; the finding must say so, not only "trusted".
+        self.write('.codex/config.toml', 'approval_policy = "on-request"\nsandbox_mode = "danger-full-access"\n')
+        findings = [f for f in self.audit()['findings'] if f['rule_id'] == 'trusted-mode']
+        self.assertEqual(len(findings), 1)
+        self.assertIn('container', findings[0]['message'])
+        self.assertNotIn('permission-bypass', {f['rule_id'] for f in self.audit()['findings']})
     def test_malformed_and_symlink_are_incomplete(self):
         self.write('.claude/settings.json', '{broken')
         other = self.write('outside.json', '{}')

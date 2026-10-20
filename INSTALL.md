@@ -4,13 +4,29 @@ There are two supported entry points. Both end in the same reviewed installation
 
 ## Option 1: manual guided setup
 
-Download the signed installer for your operating system from the [latest release](https://github.com/PromptPartner/agentsmith/releases/latest):
+Download the standalone build for your operating system from the [latest release](https://github.com/PromptPartner/agentsmith/releases/latest):
 
-- macOS: Apple silicon (`arm64`) or Intel (`x86_64`)
-- Windows: 64-bit (`x86_64`)
-- Linux: 64-bit (`x86_64`)
+- macOS: Apple silicon (`agentsmith-macos-arm64.tar.gz`) or Intel (`agentsmith-macos-x86_64.tar.gz`)
+- Windows: 64-bit (`agentsmith-windows-x86_64.zip`)
+- Linux: 64-bit x86 (`agentsmith-linux-x86_64.tar.gz`) or 64-bit Arm (`agentsmith-linux-arm64.tar.gz`)
 
-Install it, open a terminal, and run:
+The builds are currently unsigned, so macOS and Windows may warn and ask you to confirm before the first run.
+Before you run a download, check it against the release's `SHA256SUMS` file:
+
+```console
+shasum -a 256 -c SHA256SUMS --ignore-missing   # macOS
+sha256sum -c --ignore-missing SHA256SUMS       # Linux
+```
+
+On Windows, run `Get-FileHash agentsmith-windows-x86_64.zip` in PowerShell and compare the hash with that
+file's line in `SHA256SUMS` (letter case does not matter). With the GitHub CLI you can also confirm that
+this repository's release workflow built the file from the release tag:
+`gh attestation verify <file> --repo PromptPartner/agentsmith --signer-workflow PromptPartner/agentsmith/.github/workflows/standalone.yml --source-ref refs/tags/<version>`, where `<version>` is the release tag, for example `v0.4.0`. Do not run a file that fails either check.
+
+If the latest release has no downloads yet, use the [source installation](#source-installation-for-contributors)
+described below.
+
+Extract the archive, put `agentsmith` (`agentsmith.exe` on Windows) on your `PATH`, open a terminal, and run:
 
 ```console
 agentsmith
@@ -23,13 +39,38 @@ The wizard asks for:
 3. the AI agent that should read the rules;
 4. a work profile, recommended from static project evidence;
 5. your relevant experience, so explanations match what you know;
-6. cautious or trusted permissions;
+6. cautious or trusted permissions (and container mode when it runs inside a container);
 7. optional advanced settings;
 8. confirmation of the exact plan.
 
 No project file changes before the final confirmation. For a new project, AgentSmith creates the folder and initializes Git only after confirmation. It does not generate an application framework.
 
 Use `agentsmith install --wizard --lang de` to start directly in German. Supported wizard languages are English (`en`), German (`de`), Spanish (`es`), French (`fr`), and Simplified Chinese (`zh-CN`).
+
+The wizard needs an interactive terminal. In a script, CI job or `docker exec` without `-t`, it exits with code 2 and changes nothing. There, pass the choices as flags (`agentsmith install --agent <id> --profile <name> --target <path>`) or as an answers file.
+
+### Setup from another program
+
+A program that wants to ask the wizard's questions in its own interface can read them, with their choices, conditions, computed defaults and all five translations:
+
+```console
+agentsmith wizard schema --json --target /path/to/project
+```
+
+It then hands the answers over as one JSON file. AgentSmith checks the file with the wizard's own rules, and it works without a terminal:
+
+```console
+agentsmith install --answers answers.json --dry-run
+agentsmith install --answers answers.json
+```
+
+For example, a new project for Codex:
+
+```json
+{"schema_version": 1, "project_kind": "new", "target": "/work/app", "agent": ["codex"], "goal": "1", "confirm": "yes"}
+```
+
+`target` is required, and missing keys take the wizard's defaults. `agent`, `extra_profiles` and `capabilities` are JSON arrays. `confirm` must be `"yes"` unless `--dry-run` is given. Every problem in the file is reported in one error, with exit code 2.
 
 ## Option 2: agent-guided setup
 
@@ -42,7 +83,7 @@ Inspect the project first, explain your profile recommendation in plain language
 show me the exact installation plan, and ask once before applying it.
 ```
 
-The agent follows the same decisions as the manual wizard. It verifies the official release checksum, inspects without executing project code, previews managed destinations, waits for one approval, applies the setup, and runs `agentsmith doctor`.
+The agent follows the same decisions as the manual wizard. It checks the release download against `SHA256SUMS`, inspects without executing project code, previews managed destinations, waits for one approval, applies the setup, and runs `agentsmith doctor`.
 
 ## Existing and new projects
 
@@ -102,7 +143,7 @@ Updates touch managed blocks and recorded files only. Existing files are backed 
 
 ## Safety and experience
 
-`cautious` is the default. Claude uses edit approval and Codex uses approval on request in its workspace sandbox. `trusted` is an explicit opt-in for a repository and machine you fully control.
+`cautious` is the default. Claude uses edit approval and Codex uses approval on request in its workspace sandbox. `trusted` is an explicit opt-in for a repository and machine you fully control. Inside Docker or a similar container, use `container`: approvals stay on, and the container replaces the Codex sandbox that cannot start there. To leave Claude's and Codex's own settings untouched, install with `--assemble-only`. See [Safety modes](docs/15-safety-model.md#safety-modes).
 
 The wizard asks about experience in the relevant domain instead of assigning one universal skill level. Choose the closest starting point and adjust the generated operator text later if needed. This affects explanations and confirmation detail; it does not weaken safety or verification rules.
 
@@ -134,12 +175,12 @@ cd agentsmith
 python3 agentsmith.py
 ```
 
-On Windows, use `py -3 agentsmith.py`. The shell and PowerShell launchers are compatibility wrappers around the same Python program. End users should prefer the signed standalone release.
+On Windows, use `py -3 agentsmith.py`. The shell and PowerShell launchers are compatibility wrappers around the same Python program. End users should prefer the standalone release.
 
 ### Updates and rollback
 
-Standalone users update the central CLI with the next signed operating-system installer, then run
-`agentsmith status --target /path/to/project`. Project rules and state remain in place.
+Standalone users update the central CLI by downloading and checking the next release build as in Option 1,
+then run `agentsmith status --target /path/to/project`. Project rules and state remain in place.
 
 Source-based installations use staged, authenticated update plans:
 
