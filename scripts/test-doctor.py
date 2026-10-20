@@ -448,5 +448,29 @@ class SafetyInspectionTests(unittest.TestCase):
         for agent_id, state in (("codex", "container"), ("codex", "trusted"), ("claude", "cautious")):
             self.assertIsNone(advisory(agent_id, state, ["/.dockerenv"]), (agent_id, state))
 
+    def test_doctor_runs_without_git(self) -> None:
+        # Slim container images often ship without Git; doctor must still run there, or the advisory never shows.
+        target = self.home / "project"
+        target.mkdir()
+        real_which, real_run = self.core.shutil.which, self.core.subprocess.run
+
+        def run_without_git(command, *rest, **kw):
+            if command and command[0] == "git":
+                raise FileNotFoundError(2, "No such file or directory", "git")
+            return real_run(command, *rest, **kw)
+
+        # A missing Git is both absent from PATH and impossible to start.
+        no_git_on_path = unittest.mock.patch.object(
+            self.core.shutil, "which", side_effect=lambda name, *rest, **kw: None if name == "git" else real_which(name, *rest, **kw)
+        )
+        git_cannot_start = unittest.mock.patch.object(self.core.subprocess, "run", side_effect=run_without_git)
+        args = self.core.parser().parse_args(["doctor", "--agent", "codex", "--target", str(target), "--json"])
+        with no_git_on_path, git_cannot_start, \
+                unittest.mock.patch("sys.stdout", new_callable=lambda: __import__("io").StringIO()) as output:
+            self.core.cmd_doctor(args)
+            self.assertEqual(self.core.doctor_project_root(target), target.resolve())
+        self.assertIn("codex", json.loads(output.getvalue()))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

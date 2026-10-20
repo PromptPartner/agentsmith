@@ -4168,16 +4168,23 @@ def doctor_warning(code: str, message: str, recommendation: str = "") -> dict[st
     return {"code": code, "message": message, "recommendation": recommendation}
 
 
-def doctor_project_root(target: Path) -> Path:
-    discovered = subprocess.run(
-        ["git", "-C", str(target), "rev-parse", "--show-toplevel"],
+def doctor_git(directory: Path, *arguments: str) -> subprocess.CompletedProcess[str] | None:
+    """Run a read-only Git query for doctor; None when Git is not installed (common in slim container images)."""
+    if not shutil.which("git"):
+        return None
+    return subprocess.run(
+        ["git", "-C", str(directory), *arguments],
         text=True,
         encoding="utf-8",
         errors="replace",
         capture_output=True,
         check=False,
     )
-    if discovered.returncode == 0 and discovered.stdout.strip():
+
+
+def doctor_project_root(target: Path) -> Path:
+    discovered = doctor_git(target, "rev-parse", "--show-toplevel")
+    if discovered and discovered.returncode == 0 and discovered.stdout.strip():
         return Path(discovered.stdout.strip()).resolve()
     return target.resolve()
 
@@ -4569,15 +4576,8 @@ def inspect_hooks(agent_id: str, agent: dict[str, Any], target: Path) -> dict[st
     git_hook = ""
     scanner_current = False
     git_root = doctor_project_root(target)
-    hook_dir = subprocess.run(
-        ["git", "-C", str(git_root), "rev-parse", "--git-path", "hooks"],
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-        check=False,
-    )
-    if hook_dir.returncode == 0:
+    hook_dir = doctor_git(git_root, "rev-parse", "--git-path", "hooks")
+    if hook_dir and hook_dir.returncode == 0:
         resolved = Path(hook_dir.stdout.strip())
         if not resolved.is_absolute():
             resolved = git_root / resolved
