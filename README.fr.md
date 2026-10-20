@@ -43,7 +43,7 @@ Choisissez l’une des deux méthodes. Toutes deux utilisent la même configurat
 
 ### 1. Configuration manuelle
 
-1. Téléchargez le programme d’installation signé pour macOS, Windows ou Linux depuis la [dernière version](https://github.com/PromptPartner/agentsmith/releases/latest).
+1. Téléchargez l’application autonome pour macOS, Windows ou Linux depuis la [dernière version](https://github.com/PromptPartner/agentsmith/releases/latest). Les exécutables macOS et Windows ne sont actuellement pas signés ; votre système d’exploitation peut donc vous demander une confirmation avant de les lancer.
 2. Ouvrez un terminal et exécutez `agentsmith`.
 3. Répondez aux questions guidées. AgentSmith affiche le plan exact avant d’écrire quoi que ce soit.
 

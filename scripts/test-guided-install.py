@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -65,6 +66,22 @@ def record_wizard_scenario(name: str, container: list[str] | None = None) -> dic
                 return {key: anonymize(item) for key, item in value.items()}
             return value
         return anonymize(json.loads(json.dumps(result)))
+
+STANDALONE_WORKFLOW = ROOT / ".github" / "workflows" / "standalone.yml"
+RELEASE_ASSETS = (
+    "agentsmith-linux-x86_64",
+    "agentsmith-linux-arm64",
+    "agentsmith-windows-x86_64",
+    "agentsmith-macos-arm64",
+    "agentsmith-macos-x86_64",
+)
+
+
+def standalone_jobs() -> dict[str, str]:
+    """Split the standalone workflow into job bodies without adding a YAML dependency."""
+    body = STANDALONE_WORKFLOW.read_text(encoding="utf-8").split("\njobs:\n", 1)[1]
+    parts = re.split(r"^  ([A-Za-z0-9_-]+):\n", body, flags=re.M)
+    return dict(zip(parts[1::2], parts[2::2]))
 
 
 class GuidedInstallContracts(unittest.TestCase):
@@ -465,13 +482,103 @@ class GuidedInstallContracts(unittest.TestCase):
         self.assertIn("container", help_text)
         self.assertIn("leave Claude and Codex permissions", help_text)
 
-    def test_standalone_build_covers_the_four_initial_targets(self) -> None:
-        workflow = (ROOT / ".github" / "workflows" / "standalone.yml").read_text(encoding="utf-8")
-        for value in ("ubuntu-24.04", "windows-2025", "macos-15", "macos-15-intel"):
-            self.assertIn(value, workflow)
+    def test_standalone_update_refusal_points_to_a_verified_release_download(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            binary = Path(temporary) / "agentsmith"
+            binary.write_bytes(b"standalone")
+            target = Path(temporary) / "project"
+            with mock.patch.object(agentsmith.sys, "frozen", True, create=True), mock.patch.object(
+                agentsmith.sys, "executable", str(binary)
+            ):
+                args = agentsmith.parser().parse_args([
+                    "install", "--agent", "github-copilot", "--profile", "software-dev", "--target", str(target)
+                ])
+                target.mkdir()
+                agentsmith.record_installation_manifest(
+                    target, ["github-copilot"], ["software-dev"], args, {}, []
+                )
+            with self.assertRaises(agentsmith.CliError) as raised:
+                agentsmith.cmd_update_plan(argparse.Namespace(global_mode=False, target=str(target)))
+        message = str(raised.exception)
+        self.assertNotRegex(message, r"(?i)\bsigned\b")
+        self.assertIn("SHA256SUMS", message)
+
+    def test_release_download_guidance_matches_unsigned_checksummed_assets(self) -> None:
+        guides = {name: (ROOT / name).read_text(encoding="utf-8") for name in ("INSTALL.md", "AGENT-INSTALL.md")}
+        for name, text in guides.items():
+            self.assertNotRegex(text, r"(?i)\bsigned\b|platform signature", name)
+            self.assertIn("SHA256SUMS", text, name)
+            self.assertIn("gh attestation verify", text, name)
+        # `--repo` alone accepts any workflow run in the repository, including a manual branch build,
+        # so every guide pins the release workflow and the release tag.
+        guides["RELEASING.md"] = (ROOT / "RELEASING.md").read_text(encoding="utf-8")
+        for name, text in guides.items():
+            self.assertIn("--signer-workflow PromptPartner/agentsmith/.github/workflows/standalone.yml", text, name)
+            self.assertIn("--source-ref refs/tags/", text, name)
+        for asset in RELEASE_ASSETS:
+            self.assertIn(asset, guides["INSTALL.md"])
+        # (states the builds are unsigned, retired claim that they are signed)
+        readmes = {
+            "README.md": ("unsigned", "signed installer"),
+            "README.de.md": ("nicht signiert", "signierte Installationsprogramm"),
+            "README.es.md": ("no están firmad", "instalador firmado"),
+            "README.fr.md": ("pas signés", "installation signé"),
+            "README.zh-CN.md": ("未签名", "已签名安装程序"),
+        }
+        for name, (unsigned, retired) in readmes.items():
+            text = (ROOT / name).read_text(encoding="utf-8")
+            self.assertIn(unsigned, text, name)
+            self.assertNotIn(retired, text, name)
+
+    def test_standalone_build_covers_every_release_target(self) -> None:
+        workflow = STANDALONE_WORKFLOW.read_text(encoding="utf-8")
+        for value in ("ubuntu-24.04", "ubuntu-24.04-arm", "windows-2025", "macos-15", "macos-15-intel"):
+            self.assertIn(f"os: {value}\n", workflow)
+        for asset in RELEASE_ASSETS:
+            self.assertIn(f"asset: {asset}\n", workflow)
         spec = (ROOT / "agentsmith.spec").read_text(encoding="utf-8")
         for data_root in ("core", "profiles", "config", "templates", "skills"):
             self.assertIn(f"'{data_root}'", spec)
+
+    def test_checksums_cover_every_archive_on_every_run(self) -> None:
+        checksums = standalone_jobs()["checksums"]
+        header = checksums.split("steps:", 1)[0]
+        self.assertIn("needs: build", header)
+        self.assertNotIn("if:", header, "pull requests must exercise the checksum job too")
+        self.assertIn("merge-multiple: true", checksums)
+        self.assertIn(f'-eq {len(RELEASE_ASSETS)}', checksums)
+        self.assertIn("sha256sum", checksums)
+        self.assertIn("name: SHA256SUMS", checksums)
+        attest = checksums.split("uses: actions/attest@", 1)
+        self.assertEqual(len(attest), 2, "SHA256SUMS needs a build attestation")
+        self.assertIn("if: github.event_name != 'pull_request'", attest[0].rsplit("- name:", 1)[1])
+        self.assertIn("subject-path: release-assets/SHA256SUMS", attest[1])
+
+    def test_release_job_drafts_only_for_a_tag_that_matches_the_cli_version(self) -> None:
+        workflow = STANDALONE_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("tags: ['v*']", workflow)
+        release = standalone_jobs()["release"]
+        header = release.split("steps:", 1)[0]
+        self.assertIn("needs: checksums", header)
+        self.assertIn("if: startsWith(github.ref, 'refs/tags/v')", header)
+        source = (ROOT / "agentsmith.py").read_text(encoding="utf-8")
+        self.assertEqual(re.findall(r'^VERSION = "([^"]+)"$', source, re.M), [agentsmith.VERSION])
+        self.assertIn('^VERSION = "', release)
+        self.assertIn('"v${version}"', release)
+        self.assertIn("sha256sum -c SHA256SUMS", release)
+        create = release.index("gh release create")
+        self.assertLess(release.index('"v${version}"'), create)
+        self.assertLess(release.index("sha256sum -c SHA256SUMS"), create)
+        self.assertIn("--draft", release[create:])
+        self.assertIn("--verify-tag", release[create:])
+
+    def test_only_the_release_job_can_write_repository_contents(self) -> None:
+        workflow = STANDALONE_WORKFLOW.read_text(encoding="utf-8")
+        self.assertNotIn("contents: write", workflow.split("\njobs:\n", 1)[0])
+        jobs = standalone_jobs()
+        self.assertEqual(set(jobs), {"build", "checksums", "release"})
+        for name, body in jobs.items():
+            self.assertEqual("contents: write" in body, name == "release", name)
 
 
 if __name__ == "__main__":

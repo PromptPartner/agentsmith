@@ -2395,8 +2395,9 @@ def cmd_update_plan(args: argparse.Namespace) -> int:
         raise CliError(f"Installation manifest scope is {installation['scope']!r}, not {expected_scope!r}")
     if installation.get("runtime", {}).get("mode") == "central-standalone":
         raise CliError(
-            "Standalone CLI updates use the signed operating-system installer; download the latest release, "
-            "then rerun 'agentsmith status'. The staged source updater is for source-based installations."
+            "Standalone CLI updates use the release download; download the latest release, check it against "
+            "its SHA256SUMS file, then rerun 'agentsmith status'. The staged source updater is for source-based "
+            "installations."
         )
     if expected_scope == "global" and installation["capabilities"].get("mcp"):
         raise CliError(
