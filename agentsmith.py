@@ -59,13 +59,35 @@ TRACKER_ALLOWED = (
 )
 AGENT_IDS = (
     "claude", "codex", "github-copilot", "cursor", "gemini-cli", "windsurf-devin", "cline", "roo-code", "aider",
-    "continue", "openhands", "goose", "opencode", "jetbrains-junie", "zed", "jules",
+    "continue", "openhands", "goose", "opencode", "jetbrains-junie", "zed", "jules", "pi",
 )
 GROUPS = {
     "native": ("claude", "codex"),
     "standard": AGENT_IDS[2:],
-    "local": ("aider", "cline", "openhands", "goose", "opencode"),
+    "local": ("codex", "cline", "roo-code", "aider", "continue", "openhands", "goose", "opencode"),
     "all": AGENT_IDS,
+}
+# User-level rules file per agent: (update root, path inside it). It lives in code, not in
+# config/agents.json, because a staged update reads the candidate release's registry, and
+# release data must not widen where the trusted updater writes. Entry order is the order a
+# global re-run recovers operator identity from.
+GLOBAL_INSTRUCTION_TARGETS: dict[str, tuple[str, str]] = {
+    "codex": ("codex_home", "AGENTS.md"),
+    "claude": ("home", ".claude/CLAUDE.md"),
+    "opencode": ("home", ".config/opencode/AGENTS.md"),
+    "pi": ("pi_home", "AGENTS.md"),
+}
+SAFETY_MODES = ("cautious", "trusted", "container")
+# The native settings each safety mode writes. Container keeps human approval but turns off the
+# Codex sandbox: bubblewrap cannot create user namespaces in a default Docker container, so the
+# container itself is the isolation boundary there.
+NATIVE_SAFETY = {
+    "cautious": {"claude": {"defaultMode": "acceptEdits"},
+                 "codex": {"approval_policy": "on-request", "sandbox_mode": "workspace-write"}},
+    "trusted": {"claude": {"defaultMode": "bypassPermissions"},
+                "codex": {"approval_policy": "never", "sandbox_mode": "danger-full-access"}},
+    "container": {"claude": {"defaultMode": "acceptEdits"},
+                  "codex": {"approval_policy": "on-request", "sandbox_mode": "danger-full-access"}},
 }
 CODE_PROFILES = {"software-dev", "devops-setup"}
 DEMO_TEMPLATE_FILES = (
@@ -176,6 +198,27 @@ def resolve_agents(agent_values: Iterable[str] | None, platform: str | None) -> 
     return expanded
 
 
+def detect_container(root: Path = Path("/"), environ: dict[str, str] | None = None,
+                     system: str | None = None) -> list[str]:
+    """Return evidence that this Linux process runs inside a container; empty means none found."""
+    if (system or platform.system()) != "Linux":
+        return []
+    environ = os.environ if environ is None else environ
+    evidence = [f"/{name}" for name in (".dockerenv", "run/.containerenv") if (root / name).exists()]
+    if environ.get("container"):
+        evidence.append(f"container={environ['container']}")
+    if environ.get("KUBERNETES_SERVICE_HOST"):
+        evidence.append("KUBERNETES_SERVICE_HOST")
+    try:
+        cgroup = (root / "proc" / "1" / "cgroup").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        cgroup = ""
+    markers = [marker for marker in ("docker", "kubepods", "containerd", "libpod", "lxc") if marker in cgroup]
+    if markers:
+        evidence.append(f"/proc/1/cgroup: {', '.join(markers)}")
+    return evidence
+
+
 def home_dir() -> Path:
     # PowerShell passes HOME through on every OS; Path.home() can ignore that on Windows.
     return Path(os.environ.get("HOME") or os.environ.get("USERPROFILE") or str(Path.home())).expanduser()
@@ -183,6 +226,103 @@ def home_dir() -> Path:
 
 def codex_home() -> Path:
     return Path(os.environ.get("CODEX_HOME") or home_dir() / ".codex").expanduser()
+
+
+def pi_home() -> Path:
+    # Pi's agent folder. Pi expands a leading "~" in the variable itself.
+    configured = os.environ.get("PI_CODING_AGENT_DIR")
+    if not configured:
+        return home_dir() / ".pi" / "agent"
+    if configured == "~":
+        return home_dir()
+    if configured.startswith(("~/", "~\\")):
+        return home_dir() / configured[2:]
+    return Path(configured)
+
+
+def absolute_pi_home() -> Path:
+    """Pi's agent folder for a managed write or update; a relative setting is refused."""
+    path = pi_home()
+    if not path.is_absolute():
+        raise CliError(
+            f"PI_CODING_AGENT_DIR is a relative path ({os.environ.get('PI_CODING_AGENT_DIR')!r}); Pi resolves "
+            "it against its own working directory, so AgentSmith cannot know where Pi reads its rules. "
+            "Set an absolute path or one that starts with ~/ and rerun."
+        )
+    return path
+
+
+def global_roots() -> dict[str, Path]:
+    return {"home": home_dir(), "codex_home": codex_home(), "pi_home": pi_home()}
+
+
+def update_roots(target: Path, installation: dict[str, Any]) -> dict[str, Path]:
+    """Resolved roots an update may touch. Pi's folder is one only for a global install with Pi."""
+    roots = {"target": target, "home": home_dir().resolve(), "codex_home": codex_home().resolve()}
+    if installation["scope"] == "global" and "pi" in installation["agents"]:
+        roots["pi_home"] = absolute_pi_home().resolve()
+    return roots
+
+
+def project_installation_at(directory: Path) -> bool:
+    path = state_path(directory)
+    if not path.is_file():
+        return False
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return True  # unreadable ownership state is never treated as the global record
+    installation = state.get("installation") if isinstance(state, dict) else None
+    return not (isinstance(installation, dict) and installation.get("scope") == "global")
+
+
+def global_instruction_destinations(agents: Iterable[str]) -> dict[str, Path]:
+    """Live user-level rules file per selected agent, for install, update and uninstall alike.
+
+    Markers alone cannot prove which installation owns a file, so refuse a destination that is any
+    other agent's rules file (selected or not) or that sits in a project installation's root."""
+    roots = global_roots()
+    selected = [agent_id for agent_id in GLOBAL_INSTRUCTION_TARGETS if agent_id in agents]
+    if "pi" in selected:
+        roots["pi_home"] = absolute_pi_home()
+    destinations: dict[str, Path] = {}
+    for agent_id in selected:
+        root_name, relative = GLOBAL_INSTRUCTION_TARGETS[agent_id]
+        path = roots[root_name] / relative
+        resolved = path.resolve()
+        for other, (other_root, other_relative) in GLOBAL_INSTRUCTION_TARGETS.items():
+            if (
+                other != agent_id
+                and roots[other_root].is_absolute()
+                and (roots[other_root] / other_relative).resolve() == resolved
+            ):
+                raise CliError(
+                    f"{agent_id} and {other} resolve to the same instruction file {path}; give each its own "
+                    "location (for example a different CODEX_HOME or PI_CODING_AGENT_DIR) or install them separately"
+                )
+        if project_installation_at(path.parent):
+            raise CliError(
+                f"{agent_id}'s user-level rules file {path} lies in the root of a project installation; "
+                f"point {agent_id} at its own folder and rerun"
+            )
+        destinations[agent_id] = path
+    return destinations
+
+
+def global_instruction_path(agent_id: str) -> Path | None:
+    if agent_id not in GLOBAL_INSTRUCTION_TARGETS:
+        return None
+    root_name, relative = GLOBAL_INSTRUCTION_TARGETS[agent_id]
+    return global_roots()[root_name] / relative
+
+
+def ignored_opencode_config_home() -> Path | None:
+    """Return XDG_CONFIG_HOME when OpenCode would read rules there instead of ~/.config."""
+    configured = os.environ.get("XDG_CONFIG_HOME")
+    if not configured:
+        return None
+    path = Path(configured).expanduser()
+    return None if path.resolve() == (home_dir() / ".config").resolve() else path
 
 
 def resolve_central_runtime(runtime_record: dict[str, Any]) -> Path:
@@ -1289,10 +1429,7 @@ def reconcile_codex_toml(path: Path, safety: str | None, mcp: dict[str, Any], *,
         selected.pop(name)
     lines = [TEXT_BEGIN]
     if safety:
-        lines.extend(
-            ['approval_policy = "on-request"', 'sandbox_mode = "workspace-write"']
-            if safety == "cautious" else ['approval_policy = "never"', 'sandbox_mode = "danger-full-access"']
-        )
+        lines.extend(f'{key} = "{value}"' for key, value in NATIVE_SAFETY[safety]["codex"].items())
     for name, entry in sorted(selected.items()):
         lines.extend(("", f"[mcp_servers.{name}]"))
         for key, value in entry.items():
@@ -1534,7 +1671,8 @@ def install_native_config(target: Path, agents: list[str], args: argparse.Namesp
     selected_mcp = mcp_source(csv(args.with_mcp))
     prior_safety = getattr(args, "prior_managed_safety", {})
     for agent_id in agents:
-        if prior_safety.get(agent_id) == "trusted" and args.safety == "cautious":
+        prior = prior_safety.get(agent_id)
+        if prior in {"trusted", "container"} and args.safety == "cautious":
             destination = (
                 home_dir() / ".claude" / "settings.json"
                 if agent_id == "claude"
@@ -1543,11 +1681,11 @@ def install_native_config(target: Path, agents: list[str], args: argparse.Namesp
             if args.dry_run:
                 say(
                     f"DRY RUN — would migrate AgentSmith-managed {agent_id} safety "
-                    f"from trusted to cautious in {destination}"
+                    f"from {prior} to cautious in {destination}"
                 )
             else:
                 warn(
-                    f"WARNING: migrating AgentSmith-managed {agent_id} safety from trusted to "
+                    f"WARNING: migrating AgentSmith-managed {agent_id} safety from {prior} to "
                     f"cautious; the existing config will be backed up: {destination}"
                 )
     if "claude" in agents and not args.assemble_only:
@@ -1555,9 +1693,12 @@ def install_native_config(target: Path, agents: list[str], args: argparse.Namesp
             permissions = data.setdefault("permissions", {})
             if not isinstance(permissions, dict):
                 raise CliError("Refusing to replace non-object Claude permissions configuration")
-            permissions["defaultMode"] = "acceptEdits" if args.safety == "cautious" else "bypassPermissions"
+            permissions["defaultMode"] = NATIVE_SAFETY[args.safety]["claude"]["defaultMode"]
         merge_json(home_dir() / ".claude" / "settings.json", claude_settings, dry_run=args.dry_run)
     if "codex" in agents and not args.assemble_only:
+        if args.safety == "container" and not detect_container():
+            warn("WARNING: --safety container turns off the Codex sandbox, but no container was detected; "
+                 "on this machine Codex would run commands without a sandbox")
         reconcile_codex_toml(codex_home() / "config.toml", args.safety, {}, dry_run=args.dry_run)
     if not args.assemble_only:
         install_default_statuslines(agents, target, args.global_mode, dry_run=args.dry_run)
@@ -1566,8 +1707,11 @@ def install_native_config(target: Path, agents: list[str], args: argparse.Namesp
         native_safety = state.get("native_safety", {})
         if not isinstance(native_safety, dict):
             native_safety = {}
+        # Only Claude and Codex have a safety setting; earlier releases recorded every agent.
+        native_safety = {key: value for key, value in native_safety.items() if key in {"claude", "codex"}}
         for agent_id in agents:
-            native_safety[agent_id] = args.safety
+            if agent_id in {"claude", "codex"}:
+                native_safety[agent_id] = args.safety
         record_state(home_dir(), "native_safety", native_safety, dry_run=False)
     if selected_mcp and not args.global_mode:
         if "claude" in agents:
@@ -1906,6 +2050,8 @@ def validate_installation_manifest(state: dict[str, Any]) -> dict[str, Any]:
     for name in ("source", "safety", "operator", "tracker", "capabilities"):
         if not isinstance(installation[name], dict):
             raise CliError(f"Installation manifest {name} field must be an object")
+    if any(value not in SAFETY_MODES for value in installation["safety"].values()):
+        raise CliError(f"Installation manifest safety values must be one of {', '.join(SAFETY_MODES)}")
     if not isinstance(installation["managed_files"], list):
         raise CliError("Installation manifest managed_files field must be a list")
     if "effects" in installation and not isinstance(installation["effects"], dict):
@@ -2026,7 +2172,7 @@ def reconstruct_pre_manifest_installation(target: Path, scope: str, state: dict[
         assemble_only = True
         safety: dict[str, str] = {}
     elif native_agents and all(
-        agent_id in native_safety and value in {"cautious", "trusted"}
+        agent_id in native_safety and value in SAFETY_MODES
         for agent_id, value in zip(native_agents, native_evidence, strict=True)
     ):
         assemble_only = False
@@ -2162,11 +2308,7 @@ def inventory_files(root: Path, directory: Path) -> list[Path]:
 def installation_fingerprints(
     target: Path, installation: dict[str, Any], *, infer_legacy_skill_ownership: bool
 ) -> tuple[dict[str, str], list[dict[str, Any]], list[dict[str, str]]]:
-    roots = {
-        "target": target,
-        "home": home_dir().resolve(),
-        "codex_home": codex_home().resolve(),
-    }
+    roots = update_roots(target, installation)
     candidates: set[tuple[str, Path]] = set()
     foreign_skill_directories: set[tuple[str, str]] = set()
 
@@ -2221,10 +2363,8 @@ def installation_fingerprints(
             if skill_agent == "claude":
                 add_owned_skills("target", target / ".claude" / "skills", classification)
     else:
-        if "claude" in installation["agents"]:
-            add("home", ".claude/CLAUDE.md")
-        if "codex" in installation["agents"]:
-            add("codex_home", "AGENTS.md")
+        for agent_id in global_instruction_destinations(installation["agents"]):
+            add(*GLOBAL_INSTRUCTION_TARGETS[agent_id])
         if installation["capabilities"].get("skills"):
             skill_target = roots["home"]
             skill_agent = "claude" if "claude" in installation["agents"] else "codex"
@@ -2359,8 +2499,9 @@ def cmd_update_plan(args: argparse.Namespace) -> int:
         raise CliError(f"Installation manifest scope is {installation['scope']!r}, not {expected_scope!r}")
     if installation.get("runtime", {}).get("mode") == "central-standalone":
         raise CliError(
-            "Standalone CLI updates use the signed operating-system installer; download the latest release, "
-            "then rerun 'agentsmith status'. The staged source updater is for source-based installations."
+            "Standalone CLI updates use the release download; download the latest release, check it against "
+            "its SHA256SUMS file, then rerun 'agentsmith status'. The staged source updater is for source-based "
+            "installations."
         )
     if expected_scope == "global" and installation["capabilities"].get("mcp"):
         raise CliError(
@@ -2452,13 +2593,6 @@ def validated_plan(path: Path) -> dict[str, Any]:
     if not isinstance(plan["target"], str) or not isinstance(plan["remote"], str) or not plan["remote"]:
         raise CliError("Plan target and remote must be non-empty strings")
     expected_target = home_dir().resolve() if plan["scope"] == "global" else Path(plan["target"]).resolve()
-    expected_roots = {
-        "target": str(expected_target),
-        "home": str(home_dir().resolve()),
-        "codex_home": str(codex_home().resolve()),
-    }
-    if plan["roots"] != expected_roots or Path(plan["target"]).resolve() != expected_target:
-        raise CliError("Plan roots do not match the current target, HOME, and CODEX_HOME")
     release = plan["release"]
     if not isinstance(release, dict) or set(release) != {"tag", "version", "commit"}:
         raise CliError("Plan release identity is malformed")
@@ -2469,6 +2603,11 @@ def validated_plan(path: Path) -> dict[str, Any]:
     installation = validate_installation_manifest({"schema_version": 1, "installation": plan["installation"]})
     if installation["scope"] != plan["scope"]:
         raise CliError("Plan scope and installation manifest disagree")
+    expected_roots = {name: str(root) for name, root in update_roots(expected_target, installation).items()}
+    if plan["roots"] != expected_roots or Path(plan["target"]).resolve() != expected_target:
+        raise CliError("Plan roots do not match the current target, HOME, CODEX_HOME, and PI_CODING_AGENT_DIR")
+    if plan["scope"] == "global":
+        global_instruction_destinations(installation["agents"])
     if not isinstance(plan["fingerprints"], list):
         raise CliError("Plan fingerprints must be a list")
     for item in plan["fingerprints"]:
@@ -2562,10 +2701,12 @@ def recheck_plan_fingerprints(plan: dict[str, Any]) -> None:
 
 
 def copy_plan_inputs_to_shadow(plan: dict[str, Any], shadow_roots: dict[str, Path]) -> None:
+    current = {"target": Path(plan["target"]), "home": home_dir(), "codex_home": codex_home(), "pi_home": pi_home()}
+    # Installed files spell roots as configured, so translate that spelling too, but only for a
+    # planned root and only when it is absolute: a relative setting such as "." is not a path in text.
     live_roots = {
-        "target": Path(plan["target"]),
-        "home": home_dir(),
-        "codex_home": codex_home(),
+        name: current[name] if current[name].is_absolute() else Path(planned)
+        for name, planned in plan["roots"].items()
     }
     for item in plan["fingerprints"]:
         if item["sha256"] is None:
@@ -2761,6 +2902,8 @@ def translate_root_paths(
     replacements: set[tuple[str, str]] = set()
     for root_name, source_root_value in source_roots.items():
         source_root = Path(source_root_value)
+        if not source_root.is_absolute():
+            continue  # "." or "pi" would rewrite ordinary text, not a path
         destination_root = Path(destination_roots[root_name])
         resolved_source = source_root.resolve()
         for old, new in (
@@ -2839,6 +2982,13 @@ def refresh_translated_statusline_hashes(
         )
 
 
+def selected_global_agent(agent_id: str, installation: dict[str, Any]) -> bool:
+    """A newer user-level rules file is an update surface only for a global install that selected its agent."""
+    if not installation:  # a rollback receipt is checked against its own recorded changes
+        return True
+    return installation.get("scope") == "global" and agent_id in installation.get("agents", [])
+
+
 def allowed_update_path(root_name: str, relative: str, installation: dict[str, Any]) -> bool:
     path = Path(relative)
     if ".." in path.parts or path.is_absolute():
@@ -2860,11 +3010,14 @@ def allowed_update_path(root_name: str, relative: str, installation: dict[str, A
         return (
             relative in {".agentsmith/state.json", *RUNTIME_FILES}
             or relative in {".claude/CLAUDE.md", ".claude/settings.json"}
+            or (relative == ".config/opencode/AGENTS.md" and selected_global_agent("opencode", installation))
             or bool(re.fullmatch(r"\.claude/agentsmith-statusline(?:-\d+)?\.(?:py|ps1)", relative))
             or relative.startswith((".agents/skills/", ".claude/skills/"))
         )
     if root_name == "codex_home":
         return relative in {"AGENTS.md", "config.toml", "hooks.json"}
+    if root_name == "pi_home":
+        return relative == "AGENTS.md" and selected_global_agent("pi", installation)
     return False
 
 
@@ -2911,6 +3064,7 @@ def stage_planned_update(
         "target": temporary_root / "target",
         "home": temporary_root / "home",
         "codex_home": temporary_root / "codex-home",
+        "pi_home": temporary_root / "pi-home",
     }
     for root in shadow_roots.values():
         root.mkdir(parents=True, exist_ok=True)
@@ -2922,6 +3076,8 @@ def stage_planned_update(
         "HOME": str(shadow_roots["home"]),
         "USERPROFILE": str(shadow_roots["home"]),
         "CODEX_HOME": str(shadow_roots["codex_home"]),
+        # Without this, a staged install would write the user's real Pi agent folder.
+        "PI_CODING_AGENT_DIR": str(shadow_roots["pi_home"]),
         "GIT_TERMINAL_PROMPT": "0",
     }
     install_arguments = install_arguments_from_manifest(plan, shadow_roots["target"])
@@ -2949,15 +3105,18 @@ def stage_planned_update(
         trusted_stage_install(checkout, plan["release"]["version"], install_arguments, shadow_env)
     retain_customized_skill_baselines(plan, shadow_roots, preserved_skills)
     retain_reconstructed_skill_baselines(plan, shadow_roots)
+    # The Pi shadow folder always exists so a candidate never reaches the real one, but it maps
+    # back to a live root only when the plan has one.
+    planned_shadow = {name: shadow_roots[name] for name in plan["roots"]}
     translated_files: dict[str, dict[str, tuple[bytes, int]]] = {}
     for root_name, shadow_root in shadow_roots.items():
         translated_files[root_name] = {}
         for relative, (content, mode) in shadow_files(shadow_root).items():
-            if not allowed_update_path(root_name, relative, plan["installation"]):
+            if root_name not in plan["roots"] or not allowed_update_path(root_name, relative, plan["installation"]):
                 raise CliError(f"Release attempted an update outside the managed surface: {root_name}:{relative}")
             is_hook_configuration = relative in {".claude/settings.json", ".codex/hooks.json", "hooks.json"}
             translated_files[root_name][relative] = (
-                translate_hook_configuration(content, shadow_roots, plan["roots"]) if is_hook_configuration else translate_root_paths(content, shadow_roots, plan["roots"]),
+                translate_hook_configuration(content, planned_shadow, plan["roots"]) if is_hook_configuration else translate_root_paths(content, planned_shadow, plan["roots"]),
                 mode,
             )
     refresh_translated_statusline_hashes(plan, translated_files)
@@ -3060,10 +3219,9 @@ def validate_post_update_health(plan: dict[str, Any]) -> None:
     target = Path(plan["roots"]["target"])
     instruction_paths: list[Path] = []
     if plan["scope"] == "global":
-        if "claude" in installation["agents"]:
-            instruction_paths.append(Path(plan["roots"]["home"]) / ".claude" / "CLAUDE.md")
-        if "codex" in installation["agents"]:
-            instruction_paths.append(Path(plan["roots"]["codex_home"]) / "AGENTS.md")
+        for agent_id, (root_name, relative) in GLOBAL_INSTRUCTION_TARGETS.items():
+            if agent_id in installation["agents"]:
+                instruction_paths.append(Path(plan["roots"][root_name]) / relative)
     else:
         instruction_paths.append(target / "AGENTS.md")
         if "claude" in installation["agents"]:
@@ -3202,7 +3360,7 @@ def validate_post_update_health(plan: dict[str, Any]) -> None:
 
     if not installation["assemble_only"]:
         for agent_id, expected_safety in installation["safety"].items():
-            if inspect_safety(agent_id)["state"] != expected_safety:
+            if inspect_safety(agent_id, expected=expected_safety)["state"] != expected_safety:
                 raise CliError(f"Post-update health check failed: native safety does not match the manifest for {agent_id}")
 
     if "effects" in installed and installed["effects"] != capability_effects(installation["capabilities"]):
@@ -3267,6 +3425,8 @@ def cmd_update_apply(args: argparse.Namespace) -> int:
             raise CliError(
                 "Update refused: staged managed changes do not match the authenticated plan: " + detail
             )
+        if plan["scope"] == "global":
+            global_instruction_destinations(plan["installation"]["agents"])  # re-check just before writing
         try:
             for root_name, relative, content, mode in proposed:
                 actual = safe_update_path(Path(plan["roots"][root_name]), relative)
@@ -3361,6 +3521,9 @@ def cmd_update_rollback(args: argparse.Namespace) -> int:
     expected_codex = str(codex_home().resolve())
     if receipt["roots"].get("home") != expected_home or receipt["roots"].get("codex_home") != expected_codex:
         raise CliError("Rollback receipt does not match the current HOME and CODEX_HOME")
+    # Receipts written before Pi support carry no pi_home root and cannot name one in a change.
+    if "pi_home" in receipt["roots"] and receipt["roots"]["pi_home"] != str(pi_home().resolve()):
+        raise CliError("Rollback receipt does not match the current PI_CODING_AGENT_DIR")
     if receipt["scope"] == "global" and receipt["roots"].get("target") != expected_home:
         raise CliError("Global rollback receipt target does not match HOME")
     for change in receipt["changes"]:
@@ -3451,7 +3614,12 @@ def maybe_report_automatic_update() -> None:
 def reassemble_managed_targets(args: argparse.Namespace) -> None:
     """Refresh managed instructions in the installation scope selected for self-update."""
     target = Path(args.target or os.getcwd()).expanduser().resolve()
-    global_candidates = [home_dir() / ".claude" / "CLAUDE.md", codex_home() / "AGENTS.md"]
+    roots = global_roots()
+    global_candidates = [
+        roots[root_name] / relative
+        for root_name, relative in GLOBAL_INSTRUCTION_TARGETS.values()
+        if roots[root_name].is_absolute()  # a relative Pi folder could name a project file
+    ]
     project_candidates = [target / "AGENTS.md", target / "CLAUDE.md"]
     if args.global_mode:
         candidates = global_candidates
@@ -3738,13 +3906,7 @@ def scaffold_project(target: Path, profiles: list[str], agents: list[str], args:
 
 def instruction_paths(target: Path, agents: list[str], global_mode: bool) -> tuple[list[Path], list[Path]]:
     if global_mode:
-        canonical = []
-        native: list[Path] = []
-        if "codex" in agents:
-            native.append(codex_home() / "AGENTS.md")
-        if "claude" in agents:
-            native.append(home_dir() / ".claude" / "CLAUDE.md")
-        return canonical, native
+        return [], list(global_instruction_destinations(agents).values())
     canonical = [target / "AGENTS.md"]
     generated = [target / "CLAUDE.md"] if "claude" in agents else []
     return canonical, generated
@@ -3846,6 +4008,18 @@ def remove_owned_skills(
 
 def uninstall(args: argparse.Namespace, agents: list[str], target: Path) -> int:
     ownership = load_state(home_dir() if args.global_mode else target)
+    if args.global_mode:
+        # PI_CODING_AGENT_DIR can point anywhere, so Pi's file is removed only when the global
+        # record says AgentSmith installed Pi. Claude, Codex and OpenCode keep their existing
+        # behaviour: every global install replaces the record, which would block valid uninstalls.
+        record = ownership.get("installation")
+        if "pi" in agents and isinstance(record, dict) and "pi" not in record.get("agents", []):
+            warn(
+                "The global installation record does not list pi, so its rules file is left in place. If "
+                "AgentSmith installed it, run install --global --agent pi first, then uninstall."
+            )
+            agents = [agent_id for agent_id in agents if agent_id != "pi"]
+        global_instruction_destinations(agents)  # refuse before anything is removed
     remove_default_statuslines(agents, target, args.global_mode, dry_run=args.dry_run)
     canonical, generated = instruction_paths(target, agents, args.global_mode)
     for path in [*canonical, *generated]:
@@ -4004,13 +4178,30 @@ def cmd_install(args: argparse.Namespace) -> int:
         requested["memory_startup"] = False
     show_capability_effects(requested)
     canonical, generated = instruction_paths(target, agents, args.global_mode)
+    written_agents = agents
+    if args.global_mode:
+        written_agents = [agent_id for agent_id in agents if agent_id in GLOBAL_INSTRUCTION_TARGETS]
+        for agent_id in agents:
+            if agent_id not in written_agents:
+                warn(
+                    f"{agent_id} has no user-level instruction file that AgentSmith manages; --global wrote "
+                    "nothing for it. Install it per project with --target PATH instead."
+                )
+        ignored_config = ignored_opencode_config_home()
+        if "opencode" in agents and ignored_config is not None:
+            warn(
+                f"XDG_CONFIG_HOME is {ignored_config}, so OpenCode reads its rules from "
+                f"{ignored_config / 'opencode' / 'AGENTS.md'}, but AgentSmith manages only "
+                f"{home_dir() / '.config' / 'opencode' / 'AGENTS.md'}. Unset XDG_CONFIG_HOME or set it to "
+                f"{home_dir() / '.config'} so OpenCode reads the managed rules."
+            )
     ownership_safety = load_state(home_dir()).get("native_safety", {})
     if not isinstance(ownership_safety, dict):
         ownership_safety = {}
     prior_managed_safety: dict[str, str] = {
         agent_id: value
         for agent_id, value in ownership_safety.items()
-        if agent_id in agents and value in {"cautious", "trusted"}
+        if agent_id in agents and agent_id in {"claude", "codex"} and value in SAFETY_MODES
     }
     had_managed_instructions = any(
         path.exists() and managed_markers(path.read_text(encoding="utf-8", errors="replace"))
@@ -4033,6 +4224,8 @@ def cmd_install(args: argparse.Namespace) -> int:
         )
         if managed and 'approval_policy = "never"' in managed.group(1) and 'sandbox_mode = "danger-full-access"' in managed.group(1):
             prior_managed_safety["codex"] = "trusted"
+        elif managed and 'approval_policy = "on-request"' in managed.group(1) and 'sandbox_mode = "danger-full-access"' in managed.group(1):
+            prior_managed_safety["codex"] = "container"
     args.prior_managed_safety = prior_managed_safety
     recovery = recover_identity([*canonical, *generated])
     block = build_instructions(args, profiles, not args.profile_only, recovery)
@@ -4059,7 +4252,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         record_state(skill_root, "skills_installed", True, dry_run=args.dry_run)
     install_hooks(target, agents, args)
     record_installation_manifest(target, agents, profiles, args, recovery, installed_skill_directories)
-    ok(f"installed for {', '.join(agents)}; canonical project instructions: AGENTS.md")
+    ok(f"installed for {', '.join(written_agents) or 'no selected agent'}; canonical project instructions: AGENTS.md")
     return 0
 
 
@@ -4130,16 +4323,23 @@ def doctor_warning(code: str, message: str, recommendation: str = "") -> dict[st
     return {"code": code, "message": message, "recommendation": recommendation}
 
 
-def doctor_project_root(target: Path) -> Path:
-    discovered = subprocess.run(
-        ["git", "-C", str(target), "rev-parse", "--show-toplevel"],
+def doctor_git(directory: Path, *arguments: str) -> subprocess.CompletedProcess[str] | None:
+    """Run a read-only Git query for doctor; None when Git is not installed (common in slim container images)."""
+    if not shutil.which("git"):
+        return None
+    return subprocess.run(
+        ["git", "-C", str(directory), *arguments],
         text=True,
         encoding="utf-8",
         errors="replace",
         capture_output=True,
         check=False,
     )
-    if discovered.returncode == 0 and discovered.stdout.strip():
+
+
+def doctor_project_root(target: Path) -> Path:
+    discovered = doctor_git(target, "rev-parse", "--show-toplevel")
+    if discovered and discovered.returncode == 0 and discovered.stdout.strip():
         return Path(discovered.stdout.strip()).resolve()
     return target.resolve()
 
@@ -4148,6 +4348,8 @@ def resolve_doctor_path(value: str, base: Path | None = None) -> Path:
     runtime_home = home_dir()
     rendered = value
     for marker, destination in (
+        ("${PI_CODING_AGENT_DIR}", pi_home()),
+        ("$PI_CODING_AGENT_DIR", pi_home()),
         ("${CODEX_HOME}", codex_home()),
         ("$CODEX_HOME", codex_home()),
         ("${HOME}", runtime_home),
@@ -4454,6 +4656,23 @@ def inspect_skills(agent_id: str, agent: dict[str, Any], target: Path) -> dict[s
     }
 
 
+def opencode_duplicate_skill_names(target: Path) -> list[str]:
+    """Return skill names OpenCode discovers in both a Claude and an Agent Skills folder."""
+    switches = ("OPENCODE_DISABLE_CLAUDE_CODE", "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS", "OPENCODE_DISABLE_EXTERNAL_SKILLS")
+    if any(os.environ.get(name, "").strip().lower() in {"1", "true"} for name in switches):
+        return []
+
+    def names(folder: str) -> set[str]:
+        found: set[str] = set()
+        for base in (home_dir(), target):
+            root = base / folder / "skills"
+            if root.is_dir():
+                found.update(entry.name for entry in root.iterdir() if entry.is_dir())
+        return found
+
+    return sorted(names(".claude") & names(".agents"))
+
+
 def inspect_mcp(agent_id: str, agent: dict[str, Any], target: Path) -> dict[str, Any]:
     declared = str(agent.get("skills_tools", {}).get("mcp", {}).get("client_support", "unverified"))
     managed_names: list[str] = []
@@ -4531,15 +4750,8 @@ def inspect_hooks(agent_id: str, agent: dict[str, Any], target: Path) -> dict[st
     git_hook = ""
     scanner_current = False
     git_root = doctor_project_root(target)
-    hook_dir = subprocess.run(
-        ["git", "-C", str(git_root), "rev-parse", "--git-path", "hooks"],
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-        check=False,
-    )
-    if hook_dir.returncode == 0:
+    hook_dir = doctor_git(git_root, "rev-parse", "--git-path", "hooks")
+    if hook_dir and hook_dir.returncode == 0:
         resolved = Path(hook_dir.stdout.strip())
         if not resolved.is_absolute():
             resolved = git_root / resolved
@@ -4690,7 +4902,8 @@ def inspect_runtime(agent: dict[str, Any], target: Path) -> dict[str, Any]:
     }
 
 
-def inspect_safety(agent_id: str) -> dict[str, Any]:
+def inspect_safety(agent_id: str, expected: str | None = None) -> dict[str, Any]:
+    """Name the safety mode the native settings show; `expected` decides between modes that share them."""
     if agent_id == "claude":
         path = home_dir() / ".claude" / "settings.json"
         if not path.exists():
@@ -4700,8 +4913,8 @@ def inspect_safety(agent_id: str) -> dict[str, Any]:
         except json.JSONDecodeError:
             return {"state": "malformed", "path": str(path), "values": {}}
         mode = data.get("permissions", {}).get("defaultMode") if isinstance(data.get("permissions", {}), dict) else None
-        state = {"acceptEdits": "cautious", "bypassPermissions": "trusted"}.get(mode, "foreign")
-        return {"state": state, "path": str(path), "values": {"defaultMode": mode}}
+        values = {"defaultMode": mode}
+        return {"state": safety_state("claude", values, expected), "path": str(path), "values": values}
     if agent_id == "codex":
         path = codex_home() / "config.toml"
         if not path.exists():
@@ -4711,12 +4924,26 @@ def inspect_safety(agent_id: str) -> dict[str, Any]:
         except tomllib.TOMLDecodeError:
             return {"state": "malformed", "path": str(path), "values": {}}
         values = {"approval_policy": data.get("approval_policy"), "sandbox_mode": data.get("sandbox_mode")}
-        mapping = {
-            ("on-request", "workspace-write"): "cautious",
-            ("never", "danger-full-access"): "trusted",
-        }
-        return {"state": mapping.get((values["approval_policy"], values["sandbox_mode"]), "foreign"), "path": str(path), "values": values}
+        return {"state": safety_state("codex", values, expected), "path": str(path), "values": values}
     return {"state": "unsupported", "path": "", "values": {}}
+
+
+def safety_state(agent_id: str, values: dict[str, Any], expected: str | None) -> str:
+    matches = [mode for mode in SAFETY_MODES if NATIVE_SAFETY[mode][agent_id] == values]
+    if expected in matches:
+        return str(expected)
+    return matches[0] if matches else "foreign"
+
+
+def container_safety_advisory(agent_id: str, state: str, evidence: list[str]) -> dict[str, str] | None:
+    """Cautious Codex inside a container cannot start its sandbox, so every command would fail."""
+    if agent_id != "codex" or state != "cautious" or not evidence:
+        return None
+    return doctor_warning(
+        "codex-cautious-in-container",
+        f"Codex cautious safety needs its sandbox, which usually cannot start in a container ({', '.join(evidence)}).",
+        "Re-run install with --safety container, or with --assemble-only to keep your own Codex settings.",
+    )
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -4733,7 +4960,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         hooks = inspect_hooks(agent_id, agent, target)
         statusline = inspect_statusline(agent_id)
         runtime = inspect_runtime(agent, target)
-        safety = inspect_safety(agent_id)
+        installation = load_state(target).get("installation", {})
+        installation = installation if isinstance(installation, dict) else {}
+        global_installation = load_state(home_dir()).get("installation", {})
+        global_installation = global_installation if isinstance(global_installation, dict) else {}
+        recorded_safety = {**global_installation.get("safety", {}), **installation.get("safety", {})}
+        safety = inspect_safety(agent_id, expected=recorded_safety.get(agent_id))
         capabilities = {
             "instructions": instructions,
             "skills": skills,
@@ -4791,7 +5023,31 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     "Re-run install with --with-skills to regenerate owned adapters.",
                 )
             )
+        duplicate_skills = opencode_duplicate_skill_names(target) if agent_id == "opencode" else []
+        if duplicate_skills:
+            warnings.append(
+                doctor_warning(
+                    "duplicate-skill-discovery",
+                    "OpenCode finds these skills in both .claude/skills and .agents/skills and keeps one "
+                    "copy at random: " + ", ".join(duplicate_skills),
+                    "Set OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1 in OpenCode's environment so it reads only .agents/skills.",
+                )
+            )
+        ignored_config = ignored_opencode_config_home() if agent_id == "opencode" else None
+        opencode_rules = global_instruction_path("opencode")
+        if ignored_config is not None and opencode_rules is not None and opencode_rules.is_file():
+            warnings.append(
+                doctor_warning(
+                    "opencode-xdg-config-ignored",
+                    f"OpenCode reads user rules from {ignored_config / 'opencode' / 'AGENTS.md'} because "
+                    f"XDG_CONFIG_HOME is set, so {opencode_rules} is not loaded.",
+                    f"Unset XDG_CONFIG_HOME or set it to {home_dir() / '.config'}.",
+                )
+            )
         expanded = any(capabilities[name]["state"] == "managed" for name in ("skills", "mcp", "hooks"))
+        advisory = container_safety_advisory(agent_id, safety["state"], detect_container())
+        if advisory:
+            warnings.append(advisory)
         if safety["state"] == "trusted" and expanded:
             warnings.append(
                 doctor_warning(
@@ -4800,10 +5056,6 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     "Use cautious safety unless this expanded tool surface is deliberately trusted.",
                 )
             )
-        installation = load_state(target).get("installation", {})
-        installation = installation if isinstance(installation, dict) else {}
-        global_installation = load_state(home_dir()).get("installation", {})
-        global_installation = global_installation if isinstance(global_installation, dict) else {}
         selected_capabilities = {**global_installation.get("capabilities", {}), **installation.get("capabilities", {})}
         effect_records = {"project": installation.get("effects", {}), "user": global_installation.get("effects", {})}
         result[agent_id] = {**capabilities, "safety": safety, "warnings": warnings,
@@ -7697,7 +7949,10 @@ def add_common_install_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--target")
     parser.add_argument("--global", dest="global_mode", action="store_true")
     parser.add_argument("--profile-only", action="store_true")
-    parser.add_argument("--assemble-only", action="store_true")
+    parser.add_argument(
+        "--assemble-only", action="store_true",
+        help="write instructions only; leave Claude and Codex permissions, Codex config.toml and statuslines untouched",
+    )
     parser.add_argument("--operator-name")
     parser.add_argument("--operator-role", help="operator responsibility used to calibrate decisions")
     parser.add_argument("--operator-bio", help="operator background and uneven expertise used to calibrate explanations")
@@ -7705,9 +7960,10 @@ def add_common_install_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--tracker-writes", choices=("ask", "allowed"))
     parser.add_argument(
         "--safety",
-        choices=("cautious", "trusted"),
+        choices=SAFETY_MODES,
         default="cautious",
-        help="native-client permission mode (default: cautious; trusted requires explicit opt-in)",
+        help="native-client permission mode (default: cautious; trusted requires explicit opt-in; "
+             "container keeps approvals but turns off the Codex sandbox, for Docker and similar)",
     )
     parser.add_argument("--with-skills", action="store_true")
     parser.add_argument("--with-mcp", action="append")
@@ -7738,7 +7994,9 @@ def add_common_install_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--from", dest="update_from")
     parser.add_argument("--no-reassemble", action="store_true")
     parser.add_argument("--wizard", action="store_true")
-    parser.add_argument("--lang", choices=("en", "de", "es", "fr", "zh-CN"), help="wizard language")
+    parser.add_argument("--answers", help="apply wizard answers from a JSON file; works without a terminal "
+                        "(questions: agentsmith wizard schema --json)")
+    parser.add_argument("--lang", choices=WIZARD_LANGUAGES, help="wizard language")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -7797,6 +8055,12 @@ def parser() -> argparse.ArgumentParser:
     profile_switch.add_argument("--target", required=True)
     profile_switch.add_argument("--profile", action="append", required=True)
     profile_switch.add_argument("--dry-run", action="store_true")
+    wizard = sub.add_parser("wizard", help="describe the install wizard for programs that ask its questions")
+    wizard_sub = wizard.add_subparsers(dest="wizard_command", required=True)
+    wizard_schema_parser = wizard_sub.add_parser("schema", help="print the wizard questions, choices and defaults")
+    wizard_schema_parser.add_argument("--json", action="store_true")
+    wizard_schema_parser.add_argument("--target", help="resolve the profile recommendation for this folder")
+    wizard_schema_parser.add_argument("--lang", choices=WIZARD_LANGUAGES, help="language for the computed default")
     compatibility = sub.add_parser("compatibility", help="print the evidence-backed compatibility matrix")
     compatibility.add_argument("--agent", action="append")
     compatibility.add_argument("--json", action="store_true")
@@ -7891,7 +8155,7 @@ def parser() -> argparse.ArgumentParser:
 def normalize_legacy_argv(argv: list[str]) -> list[str]:
     if not argv:
         return ["install", "--wizard"]
-    commands = {"install", "update", "agents", "doctor", "status", "profiles", "compatibility", "verify", "validate-integration", "graph", "demo", "resume", "handoff", "new-feedback", "new-research", "secret-scan", "hook", "memory", "audit-config", "evaluate"}
+    commands = {"install", "update", "agents", "doctor", "status", "profiles", "wizard", "compatibility", "verify", "validate-integration", "graph", "demo", "resume", "handoff", "new-feedback", "new-research", "secret-scan", "hook", "memory", "audit-config", "evaluate"}
     if argv[0] in commands or argv[0] in {"-h", "--help", "--version"}:
         return argv
     if "--doctor" in argv:
@@ -7935,6 +8199,126 @@ def wizard_choice(input_fn: Any, prompt: str, allowed: set[str], default: str, i
         warn(invalid.format(choices="/".join(sorted(allowed))))
 
 
+WIZARD_LANGUAGES = ("en", "de", "es", "fr", "zh-CN")
+WIZARD_GOAL_PROFILES = {
+    "1": "software-dev", "2": "devops-setup", "3": "marketing-outreach",
+    "4": "document-creation", "5": "data-crunching", "6": "general-admin",
+    "7": "deep-research", "8": "creative-design",
+}
+WIZARD_BIOS = {
+    "1": "I am new to programming and AI agents. Explain technical terms, why each step is needed, what changes, the main risks, and how to undo it.",
+    "2": "I am comfortable with daily Git, tests, and command-line tools. I am new to AI programming agents. Explain agent-specific choices and history-changing operations before commands.",
+    "3": "I am experienced with software and AI agents. Be concise on routine work and explain non-obvious trade-offs, failure modes, and hard-to-reverse changes.",
+}
+WIZARD_CAPABILITIES = ("skills", "mcp", "hooks", "handoff-hooks", "ui-design-hook", "memory-startup")
+# One table drives the interactive wizard, `wizard schema` and `install --answers`, so a host
+# product can ask the same questions in its own UI without re-implementing them per release.
+WIZARD_QUESTIONS: tuple[dict[str, Any], ...] = (
+    {"key": "language", "prompt_key": "language", "kind": "choice", "choices": list(WIZARD_LANGUAGES),
+     "default": {"computed": "locale_environment"}},
+    {"key": "project_kind", "prompt_key": "project_kind", "kind": "choice", "choices": ["existing", "new"],
+     "default": {"value": "existing"}},
+    {"key": "target", "prompt_key": "target", "kind": "path", "default": {"computed": "current_directory"}},
+    {"key": "agent", "prompt_key": "agent", "kind": "agent_list", "default": {"computed": "agent_detection"}},
+    {"key": "goal", "prompt_key": "new_goal", "kind": "choice", "choices": list(WIZARD_GOAL_PROFILES),
+     "default": {"value": "1"}, "when": {"project_kind": "new"}},
+    {"key": "profile", "prompt_key": "profile", "kind": "profile",
+     "default": {"value": "recommended", "computed": "profile_recommendation"}, "when": {"project_kind": "existing"}},
+    {"key": "experience", "prompt_key": "experience", "kind": "choice", "choices": list(WIZARD_BIOS),
+     "default": {"value": "2"}},
+    {"key": "safety", "prompt_key": "safety", "kind": "choice", "choices": ["cautious", "trusted"],
+     "default": {"value": "cautious"}},
+    {"key": "advanced", "prompt_key": "advanced", "kind": "choice", "choices": ["y", "n"], "default": {"value": "n"}},
+    {"key": "scope", "prompt_key": "scope", "kind": "choice", "choices": ["project", "user"],
+     "default": {"value": "project"}, "when": {"advanced": "y"}},
+    {"key": "extra_profiles", "prompt_key": "extra_profiles", "kind": "profile_list", "default": {"value": []},
+     "when": {"advanced": "y"}},
+    {"key": "capabilities", "prompt_key": "capabilities", "kind": "capability_list",
+     "choices": list(WIZARD_CAPABILITIES), "default": {"value": []}, "when": {"advanced": "y"}},
+    {"key": "confirm", "prompt_key": "confirm", "kind": "choice", "choices": ["yes", "no"], "default": {"value": "yes"}},
+)
+
+
+def wizard_questions() -> list[dict[str, Any]]:
+    """The question table for this machine: inside a container, safety also offers container mode."""
+    evidence = detect_container()
+    questions = []
+    for question in WIZARD_QUESTIONS:
+        if question["key"] == "safety" and evidence:
+            question = {**question, "prompt_key": "safety_container", "choices": [*question["choices"], "container"],
+                        "default": {"value": "container"}, "evidence": evidence}
+        questions.append(question)
+    return questions
+
+
+def wizard_question(key: str) -> dict[str, Any]:
+    return next(question for question in wizard_questions() if question["key"] == key)
+
+
+def wizard_default_agents() -> str:
+    detected = [name for name in ("claude", "codex") if shutil.which(name)]
+    return ",".join(detected) if detected else "native"
+
+
+def wizard_target(kind: str, raw: str, messages: dict[str, str]) -> Path:
+    target = Path(raw).expanduser().resolve()
+    if kind == "existing" and not target.is_dir():
+        raise CliError(messages["target_missing"].format(target=target))
+    if kind == "new" and target.exists() and (not target.is_dir() or any(target.iterdir())):
+        raise CliError(messages["target_not_empty"].format(target=target))
+    return target
+
+
+def wizard_profile(name: str) -> str:
+    if name not in {item["name"] for item in profile_catalog()}:
+        raise CliError(f"Unknown profile '{name}'. Run 'agentsmith profiles list'.")
+    return name
+
+
+def wizard_capabilities(values: list[str]) -> set[str]:
+    capabilities = set(values)
+    unknown = capabilities - set(WIZARD_CAPABILITIES)
+    if unknown:
+        raise CliError(f"Unknown optional capability: {', '.join(sorted(unknown))}")
+    return capabilities
+
+
+def apply_wizard_capabilities(args: argparse.Namespace, capabilities: set[str] | None) -> None:
+    if capabilities is None:
+        return
+    args.with_skills = "skills" in capabilities
+    args.with_mcp = ["playwright,context7"] if "mcp" in capabilities else None
+    args.with_hooks = "hooks" in capabilities
+    args.with_handoff_hooks = "handoff-hooks" in capabilities
+    args.with_ui_design_hook = "ui-design-hook" in capabilities
+    args.with_memory_startup = "memory-startup" in capabilities
+
+
+def print_wizard_summary(args: argparse.Namespace, messages: dict[str, str], plan: dict[str, Any]) -> None:
+    print(f"\n{messages['summary']}")
+    print(f"  {messages['git_init'] if plan['kind'] == 'new' else messages['existing_use']}: {plan['target']}")
+    print(f"  {messages['scope_user'] if plan['global_mode'] else messages['scope_project']}")
+    print(f"  Agent: {plan['agents']}")
+    print(f"  Profile: {', '.join(plan['profiles'])}")
+    print(f"  Safety: {plan['safety']}")
+    show_capability_effects({name: bool(getattr(args, "with_" + name, False)) for name in CAPABILITY_EFFECTS})
+
+
+def apply_wizard_plan(args: argparse.Namespace, plan: dict[str, Any]) -> dict[str, Any]:
+    """Turn one confirmed wizard plan into install arguments. This function performs no writes."""
+    args.agent = [plan["agents"]]
+    args.profile = [] if plan["global_mode"] else plan["profiles"]
+    args.target = None if plan["global_mode"] else str(plan["target"])
+    args.global_mode = plan["global_mode"]
+    args.profile_only = False
+    args.operator_bio = WIZARD_BIOS[plan["experience"]]
+    args.safety = plan["safety"]
+    args.initialize_git = plan["kind"] == "new" and not plan["global_mode"]
+    args.wizard_language = plan["language"]
+    args.wizard = False
+    return {"confirmed": True, "project_kind": plan["kind"], "target": str(plan["target"]), "language": plan["language"]}
+
+
 def apply_wizard_answers(args: argparse.Namespace, input_fn: Any = input) -> dict[str, Any]:
     """Collect one reviewed installation plan. This function performs no writes."""
     locales = load_wizard_locales()
@@ -7946,27 +8330,23 @@ def apply_wizard_answers(args: argparse.Namespace, input_fn: Any = input) -> dic
     print(messages["welcome"])
     invalid = messages["invalid"]
 
-    kind = wizard_choice(input_fn, messages["project_kind"], {"existing", "new"}, "existing", invalid)
-    default_target = str(Path.cwd())
-    target = Path(input_fn(messages["target"].format(default=default_target)).strip() or default_target).expanduser().resolve()
-    if kind == "existing" and not target.is_dir():
-        raise CliError(messages["target_missing"].format(target=target))
-    if kind == "new" and target.exists() and (not target.is_dir() or any(target.iterdir())):
-        raise CliError(messages["target_not_empty"].format(target=target))
+    def ask(key: str) -> str:
+        question = wizard_question(key)
+        return wizard_choice(input_fn, messages[question["prompt_key"]], set(question["choices"]),
+                             question["default"]["value"], invalid)
 
-    detected_agents = [name for name in ("claude", "codex") if shutil.which(name)]
-    agent_default = ",".join(detected_agents) if detected_agents else "native"
+    kind = ask("project_kind")
+    default_target = str(Path.cwd())
+    target = wizard_target(kind, input_fn(messages["target"].format(default=default_target)).strip() or default_target,
+                           messages)
+
+    agent_default = wizard_default_agents()
     chosen_agents = input_fn(messages["agent"].format(default=agent_default)).strip() or agent_default
     resolve_agents([chosen_agents], None)
 
-    goal_profiles = {
-        "1": "software-dev", "2": "devops-setup", "3": "marketing-outreach",
-        "4": "document-creation", "5": "data-crunching", "6": "general-admin",
-        "7": "deep-research", "8": "creative-design",
-    }
     if kind == "new":
-        goal = wizard_choice(input_fn, messages["new_goal"], set(goal_profiles), "1", invalid)
-        recommended = {"profile": goal_profiles[goal], "evidence": ["stated project goal"]}
+        goal = ask("goal")
+        recommended = {"profile": WIZARD_GOAL_PROFILES[goal], "evidence": ["stated project goal"]}
     else:
         recommended = wizard_profile_recommendation(target)
         print(messages["profile_recommendation"].format(
@@ -7981,61 +8361,203 @@ def apply_wizard_answers(args: argparse.Namespace, input_fn: Any = input) -> dic
             selected = input_fn(messages["profile"]).strip() or "recommended"
         if selected != "recommended":
             recommended["profile"] = selected
-    if recommended["profile"] not in {item["name"] for item in profile_catalog()}:
-        raise CliError(f"Unknown profile '{recommended['profile']}'. Run 'agentsmith profiles list'.")
+    wizard_profile(recommended["profile"])
 
-    experience = wizard_choice(input_fn, messages["experience"], {"1", "2", "3"}, "2", invalid)
-    bios = {
-        "1": "I am new to programming and AI agents. Explain technical terms, why each step is needed, what changes, the main risks, and how to undo it.",
-        "2": "I am comfortable with daily Git, tests, and command-line tools. I am new to AI programming agents. Explain agent-specific choices and history-changing operations before commands.",
-        "3": "I am experienced with software and AI agents. Be concise on routine work and explain non-obvious trade-offs, failure modes, and hard-to-reverse changes.",
-    }
-    safety = wizard_choice(input_fn, messages["safety"], {"cautious", "trusted"}, "cautious", invalid)
+    experience = ask("experience")
+    container = wizard_question("safety").get("evidence")
+    if container:
+        print(messages["container_detected"].format(evidence=", ".join(container)))
+    safety = ask("safety")
 
     global_mode = False
     profiles = [recommended["profile"]]
-    if wizard_choice(input_fn, messages["advanced"], {"y", "n"}, "n", invalid) == "y":
-        scope = wizard_choice(input_fn, messages["scope"], {"project", "user"}, "project", invalid)
-        global_mode = scope == "user"
-        extras = csv([input_fn(messages["extra_profiles"]).strip()])
-        for profile in extras:
-            if profile not in {item["name"] for item in profile_catalog()}:
-                raise CliError(f"Unknown profile '{profile}'. Run 'agentsmith profiles list'.")
-            if profile not in profiles:
+    capabilities: set[str] | None = None
+    if ask("advanced") == "y":
+        global_mode = ask("scope") == "user"
+        for profile in csv([input_fn(messages["extra_profiles"]).strip()]):
+            if wizard_profile(profile) not in profiles:
                 profiles.append(profile)
-        capabilities = set(csv([input_fn(messages["capabilities"]).strip()]))
-        unknown = capabilities - {"skills", "mcp", "hooks", "handoff-hooks", "ui-design-hook", "memory-startup"}
-        if unknown:
-            raise CliError(f"Unknown optional capability: {', '.join(sorted(unknown))}")
-        args.with_skills = "skills" in capabilities
-        args.with_mcp = ["playwright,context7"] if "mcp" in capabilities else None
-        args.with_hooks = "hooks" in capabilities
-        args.with_handoff_hooks = "handoff-hooks" in capabilities
-        args.with_ui_design_hook = "ui-design-hook" in capabilities
-        args.with_memory_startup = "memory-startup" in capabilities
+        capabilities = wizard_capabilities(csv([input_fn(messages["capabilities"]).strip()]))
 
-    print(f"\n{messages['summary']}")
-    print(f"  {messages['git_init'] if kind == 'new' else messages['existing_use']}: {target}")
-    print(f"  {messages['scope_user'] if global_mode else messages['scope_project']}")
-    print(f"  Agent: {chosen_agents}")
-    print(f"  Profile: {', '.join(profiles)}")
-    print(f"  Safety: {safety}")
-    show_capability_effects({name: bool(getattr(args, "with_" + name, False)) for name in CAPABILITY_EFFECTS})
-    confirmed = wizard_choice(input_fn, messages["confirm"], {"yes", "no"}, "yes", invalid) == "yes"
-    if not confirmed:
+    plan = {"kind": kind, "target": target, "agents": chosen_agents, "profiles": profiles, "experience": experience,
+            "safety": safety, "global_mode": global_mode, "capabilities": capabilities, "language": language}
+    apply_wizard_capabilities(args, capabilities)
+    print_wizard_summary(args, messages, plan)
+    if ask("confirm") != "yes":
         raise CliError(messages["cancelled"])
+    return apply_wizard_plan(args, plan)
 
-    args.agent = [chosen_agents]
-    args.profile = [] if global_mode else profiles
-    args.target = None if global_mode else str(target)
-    args.global_mode = global_mode
-    args.profile_only = False
-    args.operator_bio = bios[experience]
-    args.safety = safety
-    args.initialize_git = kind == "new" and not global_mode
-    args.wizard_language = language
-    args.wizard = False
-    return {"confirmed": True, "project_kind": kind, "target": str(target), "language": language}
+
+def tolerate_narrow_stdout() -> None:
+    """Keep printing when stdout cannot encode a wizard language, as in a cp1252 Windows pipe."""
+    encoding = (getattr(sys.stdout, "encoding", None) or "").lower().replace("-", "")
+    if encoding != "utf8" and hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="backslashreplace")
+
+
+def apply_wizard_answers_file(args: argparse.Namespace) -> dict[str, Any]:
+    """Validate a JSON answers file with the wizard's own rules. This function performs no writes."""
+    tolerate_narrow_stdout()
+    path = Path(args.answers).expanduser()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CliError(f"Cannot read wizard answers {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise CliError(f"Wizard answers {path} must contain a JSON object")
+    locales = load_wizard_locales()
+    questions = wizard_questions()
+    problems = [f"{key}: unknown key" for key in sorted(set(data) - {"schema_version", *(q["key"] for q in questions)})]
+    if data.get("schema_version") != 1:
+        problems.append("schema_version: must be 1")
+    dry_run = bool(getattr(args, "dry_run", False))
+    computed = {"language": getattr(args, "lang", None) or default_wizard_language(),
+                "agent": wizard_default_agents().split(","), "target": None}
+    raw: dict[str, Any] = {}
+    for question in questions:
+        key = question["key"]
+        default = question["default"].get("value", computed.get(key))
+        if key == "confirm" and not dry_run:
+            default = None  # Without a person to confirm, the file must say yes itself.
+        raw[key] = data.get(key, default)
+    answers: dict[str, Any] = {}
+    for question in questions:
+        key, kind, value = question["key"], question["kind"], raw[question["key"]]
+        conditions = question.get("when", {})
+        if any(raw.get(name) != expected for name, expected in conditions.items()):
+            if key in data:
+                problems.append(f"{key}: does not apply unless " +
+                                " and ".join(f"{name} is {expected!r}" for name, expected in conditions.items()))
+            continue
+        try:
+            if value is None:
+                raise CliError("is required")
+            if kind == "choice":
+                if not isinstance(value, str):
+                    raise CliError(f"must be one of the strings {'/'.join(question['choices'])}, "
+                                   f"got {type(value).__name__} {value!r}")
+                if value not in question["choices"]:
+                    raise CliError(f"must be one of {'/'.join(question['choices'])}, got {value!r}")
+                answers[key] = value
+            elif kind == "path":
+                if not isinstance(value, str) or not value.strip():
+                    raise CliError("must be a folder path")
+                if answers.get("project_kind") in {"existing", "new"}:
+                    messages = locales[answers.get("language", "en")]
+                    answers[key] = wizard_target(answers["project_kind"], value, messages)
+            elif kind in {"agent_list", "profile_list", "capability_list"}:
+                if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+                    raise CliError("must be a JSON array of names")
+                if kind == "agent_list":
+                    if not value:
+                        raise CliError("must name at least one agent")
+                    resolve_agents([",".join(value)], None)
+                    answers[key] = ",".join(value)
+                elif kind == "profile_list":
+                    answers[key] = [wizard_profile(item) for item in value]
+                else:
+                    answers[key] = wizard_capabilities(value)
+            elif kind == "profile":
+                if not isinstance(value, str):
+                    raise CliError("must be 'recommended' or a profile name")
+                if value != "recommended":
+                    answers[key] = wizard_profile(value)
+                elif isinstance(answers.get("target"), Path):
+                    answers[key] = wizard_profile_recommendation(answers["target"])["profile"]
+        except CliError as exc:
+            problems.append(f"{key}: {exc}")
+    if answers.get("confirm") == "no":
+        problems.append("confirm: is 'no', so nothing was installed")
+    if problems:
+        raise CliError(f"Wizard answers {path} are not valid:\n  " + "\n  ".join(problems))
+
+    kind = answers["project_kind"]
+    profiles = [WIZARD_GOAL_PROFILES[answers["goal"]] if kind == "new" else answers["profile"]]
+    for profile in answers.get("extra_profiles", []):
+        if profile not in profiles:
+            profiles.append(profile)
+    advanced = answers["advanced"] == "y"
+    plan = {"kind": kind, "target": answers["target"], "agents": answers["agent"], "profiles": profiles,
+            "experience": answers["experience"], "safety": answers["safety"],
+            "global_mode": advanced and answers["scope"] == "user",
+            "capabilities": answers.get("capabilities", set()) if advanced else None,
+            "language": answers["language"]}
+    apply_wizard_capabilities(args, plan["capabilities"])
+    print_wizard_summary(args, locales[plan["language"]], plan)
+    return apply_wizard_plan(args, plan)
+
+
+def wizard_schema(args: argparse.Namespace) -> dict[str, Any]:
+    """Describe the wizard for another program; computed defaults are resolved on this machine."""
+    locales = load_wizard_locales()
+    profile_names = [item["name"] for item in profile_catalog()]
+    questions: list[dict[str, Any]] = []
+    for source in wizard_questions():
+        question = json.loads(json.dumps(source))
+        key = question["key"]
+        if key == "language":
+            question["default"]["value"] = getattr(args, "lang", None) or default_wizard_language()
+        elif key == "target":
+            question["default"]["value"] = None
+            question["required_in_answers"] = True
+        elif key == "agent":
+            question["choices"] = [*GROUPS, *AGENT_IDS]
+            question["default"]["value"] = wizard_default_agents().split(",")
+        elif key == "goal":
+            question["profiles"] = dict(WIZARD_GOAL_PROFILES)
+        elif key == "profile":
+            question["choices"] = ["recommended", *profile_names]
+            question["default"]["resolved"] = None
+            question["default"]["evidence"] = []
+            target = getattr(args, "target", None)
+            if target and Path(target).expanduser().is_dir():
+                recommendation = wizard_profile_recommendation(Path(target).expanduser().resolve())
+                question["default"]["resolved"] = recommendation["profile"]
+                question["default"]["evidence"] = recommendation["evidence"]
+        elif key == "extra_profiles":
+            question["choices"] = profile_names
+        questions.append(question)
+    return {
+        "schema_version": 1,
+        "agentsmith_version": VERSION,
+        "answers": {
+            "schema_version": 1,
+            "required": ["schema_version", "target"],
+            "list_keys": ["agent", "extra_profiles", "capabilities"],
+            "confirm": "required as \"yes\" unless --dry-run is given",
+        },
+        "questions": questions,
+        "messages": {language: locales[language] for language in WIZARD_LANGUAGES if language in locales},
+    }
+
+
+def cmd_wizard(args: argparse.Namespace) -> int:
+    schema = wizard_schema(args)
+    if args.json:
+        # Escaped JSON is lossless for any reader and safe on a narrow Windows pipe.
+        print(json.dumps(schema, indent=2, ensure_ascii=True))
+        return 0
+    for question in schema["questions"]:
+        choices = "/".join(question.get("choices") or []) or question["kind"]
+        when = ", ".join(f"{key}={value}" for key, value in question.get("when", {}).items())
+        print(f"{question['key']}: {choices}" + (f" (when {when})" if when else ""))
+    return 0
+
+
+def stdin_is_interactive() -> bool:
+    """True only for a real terminal. Windows reports the NUL device as a tty, so ask the console."""
+    try:
+        if sys.stdin is None or not sys.stdin.isatty():
+            return False
+        if os.name != "nt":
+            return True
+        import ctypes
+        import msvcrt
+        mode = ctypes.c_uint32()
+        handle = msvcrt.get_osfhandle(sys.stdin.fileno())
+        return bool(ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(mode)))
+    except (AttributeError, ImportError, OSError, ValueError):
+        return False
 
 
 def run(argv: list[str] | None = None) -> int:
@@ -8045,15 +8567,31 @@ def run(argv: list[str] | None = None) -> int:
         args.command == "verify" and getattr(args, "verify_action", None) in {"discover", "apply"}
     )
     profile_operation = args.command == "profiles"
-    if args.command not in {"update", "validate-integration", "graph", "status", "demo", "resume"} and not verification_plan_operation and not profile_operation:
+    if args.command not in {"update", "validate-integration", "graph", "status", "demo", "resume", "wizard"} and not verification_plan_operation and not profile_operation:
         maybe_report_automatic_update()
     if args.command == "install":
+        if getattr(args, "answers", None):
+            if args.wizard:
+                raise CliError("--answers and --wizard cannot be combined: --answers already holds the wizard's answers")
+            apply_wizard_answers_file(args)
+            return cmd_install(args)
         if args.wizard:
-            print("Agentsmith interactive wizard is intentionally minimal in non-interactive automation.")
-            print("Which assistant should receive native rules? [claude]")
-            if not sys.stdin.isatty():
-                return 0
-            apply_wizard_answers(args)
+            # Without a terminal nobody can answer, so fail loudly: an automation step that sees
+            # exit 0 here would treat the installation as done.
+            if not stdin_is_interactive():
+                raise CliError(
+                    "install --wizard needs an interactive terminal; nothing was changed. "
+                    "Pass the choices as flags instead, for example: agentsmith install "
+                    "--agent <id> --profile <name> --target <path> (see install --help), "
+                    "or as a file: agentsmith install --answers answers.json "
+                    "(questions: agentsmith wizard schema --json)"
+                )
+            try:
+                apply_wizard_answers(args)
+            except EOFError as exc:
+                # apply_wizard_answers writes nothing, so ending here leaves no partial install.
+                raise CliError("the wizard's input ended before every question was answered; "
+                               "nothing was changed") from exc
         return cmd_install(args)
     if args.command == "update":
         if args.update_command == "check":
@@ -8073,6 +8611,8 @@ def run(argv: list[str] | None = None) -> int:
         return cmd_doctor(args)
     if args.command == "status":
         return cmd_status(args)
+    if args.command == "wizard":
+        return cmd_wizard(args)
     if args.command == "profiles":
         if args.profiles_command == "list":
             return cmd_profiles_list(args)

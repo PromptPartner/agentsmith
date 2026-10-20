@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -34,6 +35,12 @@ class DoctorTests(unittest.TestCase):
                 "PYTHONIOENCODING": "utf-8",
             }
         )
+        # Client settings from the operator's own shell must not redirect or silence fixtures.
+        for name in (
+            "PI_CODING_AGENT_DIR", "XDG_CONFIG_HOME", "OPENCODE_DISABLE_CLAUDE_CODE",
+            "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS",
+        ):
+            self.env.pop(name, None)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -190,6 +197,34 @@ class DoctorTests(unittest.TestCase):
             self.assertEqual(agent["runtime"]["state"], "current")
             self.assertIn("trusted-expanded-surface", self.warning_codes(agent))
 
+    def test_container_safety_drops_only_the_codex_sandbox(self) -> None:
+        # Inside Docker the Codex sandbox cannot start, so container mode keeps approvals but
+        # lets the container be the isolation boundary (#47).
+        project = self.root / "container project"
+        project.mkdir()
+        subprocess.run(["git", "-C", str(project), "init", "-q"], check=True)
+        base = ("install", "--agent", "native", "--profile", "software-dev", "--target", str(project))
+        installed = self.run_core(*base, "--safety", "container")
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        settings_path = Path(self.env["HOME"]) / ".claude" / "settings.json"
+        codex_path = Path(self.env["CODEX_HOME"]) / "config.toml"
+        self.assertEqual(json.loads(settings_path.read_text(encoding="utf-8"))["permissions"]["defaultMode"], "acceptEdits")
+        codex = codex_path.read_text(encoding="utf-8")
+        self.assertIn('approval_policy = "on-request"', codex)
+        self.assertIn('sandbox_mode = "danger-full-access"', codex)
+        state = json.loads((project / ".agentsmith" / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["installation"]["safety"], {"claude": "container", "codex": "container"})
+        if not load_core().detect_container():
+            self.assertIn("no container was detected", installed.stdout + installed.stderr)
+        for agent_id in ("claude", "codex"):
+            result, payload = self.doctor(project, agent_id)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(payload[agent_id]["safety"]["state"], "container", agent_id)
+        rerun = self.run_core(*base)
+        self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+        self.assertIn("from container to cautious", rerun.stdout + rerun.stderr)
+        self.assertIn('sandbox_mode = "workspace-write"', codex_path.read_text(encoding="utf-8"))
+
     def test_unmanaged_nested_sources_and_missing_custom_global_are_reported(self) -> None:
         project = self.root / "nested repo"
         nested = project / "packages" / "apï"
@@ -296,6 +331,161 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(canonical.read_bytes(), canonical_before)
         self.assertEqual(adapter.read_bytes(), canonical.read_bytes())
 
+    def test_global_opencode_install_doctor_and_uninstall(self) -> None:
+        rules = Path(self.env["HOME"]) / ".config" / "opencode" / "AGENTS.md"
+        rules.parent.mkdir(parents=True)
+        rules.write_text("# My own OpenCode rules\n", encoding="utf-8")
+        project = self.root / "unrelated project"
+        project.mkdir()
+
+        installed = self.run_core("install", "--agent", "opencode", "--global", "--profile", "software-dev")
+
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        self.assertIn("installed for opencode", installed.stdout)
+        text = rules.read_text(encoding="utf-8")
+        self.assertIn("<!-- BEGIN AGENTSMITH", text)
+        self.assertIn("<!-- END AGENTSMITH -->", text)
+        self.assertIn("# My own OpenCode rules", text)
+        strict = self.run_core("doctor", "--agent", "opencode", "--target", str(project), "--strict", "--json")
+        self.assertEqual(strict.returncode, 0, strict.stdout + strict.stderr)
+        sources = json.loads(strict.stdout)["opencode"]["instructions"]["sources"]
+        self.assertEqual(Path(sources[0]["path"]), rules.resolve())
+        self.assertEqual((sources[0]["scope"], sources[0]["managed_status"]), ("global", "managed"))
+
+        removed = self.run_core("install", "--agent", "opencode", "--global", "--uninstall")
+
+        self.assertEqual(removed.returncode, 0, removed.stdout + removed.stderr)
+        self.assertEqual(rules.read_text(encoding="utf-8"), "# My own OpenCode rules\n")
+
+    def test_global_install_refuses_two_agents_sharing_one_rules_file(self) -> None:
+        shared = Path(self.env["HOME"]) / ".config" / "opencode"
+        self.env["CODEX_HOME"] = str(shared)
+
+        installed = self.run_core("install", "--agent", "codex,opencode", "--global", "--profile", "software-dev")
+
+        self.assertNotEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        self.assertIn("same instruction file", installed.stderr)
+        self.assertFalse((shared / "AGENTS.md").exists())
+        self.assertFalse((Path(self.env["HOME"]) / ".agentsmith").exists())
+
+    def test_global_opencode_install_reports_an_ignored_xdg_config_home(self) -> None:
+        project = self.root / "xdg project"
+        project.mkdir()
+        self.env["XDG_CONFIG_HOME"] = str(self.root / "xdg config")
+
+        installed = self.run_core("install", "--agent", "opencode", "--global", "--profile", "software-dev")
+
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        self.assertIn("XDG_CONFIG_HOME", installed.stderr)
+        _, payload = self.doctor(project, "opencode")
+        self.assertIn("opencode-xdg-config-ignored", self.warning_codes(payload["opencode"]))
+
+        self.env["XDG_CONFIG_HOME"] = str(Path(self.env["HOME"]) / ".config")
+        matching = self.run_core("install", "--agent", "opencode", "--global", "--profile", "software-dev")
+        self.assertEqual(matching.returncode, 0, matching.stdout + matching.stderr)
+        self.assertNotIn("XDG_CONFIG_HOME", matching.stderr)
+        _, matching_payload = self.doctor(project, "opencode")
+        self.assertNotIn("opencode-xdg-config-ignored", self.warning_codes(matching_payload["opencode"]))
+
+    def test_global_pi_install_honors_pi_coding_agent_dir(self) -> None:
+        home = Path(self.env["HOME"])
+        project = self.root / "pi project"
+        project.mkdir()
+        for configured, folder in (
+            (str(self.root / "pi agent dir ü"), self.root / "pi agent dir ü"),
+            ("~/custom pi ü", home / "custom pi ü"),
+        ):
+            with self.subTest(PI_CODING_AGENT_DIR=configured):
+                self.env["PI_CODING_AGENT_DIR"] = configured
+                rules = folder / "AGENTS.md"
+
+                installed = self.run_core(
+                    "install", "--agent", "pi", "--global", "--profile", "software-dev", "--with-skills",
+                )
+
+                self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+                self.assertIn("installed for pi", installed.stdout)
+                self.assertIn("<!-- BEGIN AGENTSMITH", rules.read_text(encoding="utf-8"))
+                self.assertFalse((home / ".pi").exists())
+                # Pi reads user Agent Skills from HOME, not from its agent folder.
+                self.assertTrue((home / ".agents" / "skills" / "handoff" / "SKILL.md").is_file())
+                self.assertFalse((folder / ".agents").exists())
+                strict = self.run_core("doctor", "--agent", "pi", "--target", str(project), "--strict", "--json")
+                self.assertEqual(strict.returncode, 0, strict.stdout + strict.stderr)
+                source = json.loads(strict.stdout)["pi"]["instructions"]["sources"][0]
+                self.assertEqual(Path(source["path"]), rules.resolve())
+                self.assertEqual((source["scope"], source["managed_status"]), ("global", "managed"))
+
+                removed = self.run_core("install", "--agent", "pi", "--global", "--uninstall")
+
+                self.assertEqual(removed.returncode, 0, removed.stdout + removed.stderr)
+                self.assertFalse(rules.exists())
+
+    def test_global_pi_uninstall_refuses_another_installations_rules(self) -> None:
+        codex_rules = Path(self.env["CODEX_HOME"]) / "AGENTS.md"
+        project = self.root / "project rules"
+        installed = self.install(project, "--agent", "codex", "--profile", "software-dev")
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        self.env["PI_CODING_AGENT_DIR"] = str(self.root / "own pi agent")
+        both = self.run_core("install", "--agent", "codex,pi", "--global", "--profile", "software-dev")
+        self.assertEqual(both.returncode, 0, both.stdout + both.stderr)
+        for label, pi_dir, protected, reason in (
+            ("Codex's folder", Path(self.env["CODEX_HOME"]), codex_rules, "same instruction file"),
+            ("a project installation", project, project / "AGENTS.md", "project installation"),
+        ):
+            with self.subTest(label):
+                before = protected.read_bytes()
+                self.env["PI_CODING_AGENT_DIR"] = str(pi_dir)
+
+                removed = self.run_core("install", "--agent", "pi", "--global", "--uninstall")
+
+                self.assertNotEqual(removed.returncode, 0, removed.stdout + removed.stderr)
+                self.assertIn(reason, removed.stderr)
+                self.assertEqual(protected.read_bytes(), before)
+        self.assertTrue((self.root / "own pi agent" / "AGENTS.md").is_file())
+
+    def test_global_pi_uninstall_leaves_rules_the_global_record_does_not_list(self) -> None:
+        self.env["PI_CODING_AGENT_DIR"] = str(self.root / "unrecorded pi agent")
+        rules = self.root / "unrecorded pi agent" / "AGENTS.md"
+        with_pi = self.run_core("install", "--agent", "pi", "--global", "--profile", "software-dev")
+        self.assertEqual(with_pi.returncode, 0, with_pi.stdout + with_pi.stderr)
+        # Each global install replaces the recorded selection.
+        codex_only = self.run_core("install", "--agent", "codex", "--global", "--profile", "software-dev")
+        self.assertEqual(codex_only.returncode, 0, codex_only.stdout + codex_only.stderr)
+        before = rules.read_bytes()
+
+        removed = self.run_core("install", "--agent", "all", "--global", "--uninstall")
+
+        self.assertEqual(removed.returncode, 0, removed.stdout + removed.stderr)
+        self.assertIn("does not list pi", removed.stderr)
+        self.assertEqual(rules.read_bytes(), before)
+        self.assertFalse((Path(self.env["CODEX_HOME"]) / "AGENTS.md").exists())
+
+    def test_opencode_with_claude_reports_duplicate_skill_discovery(self) -> None:
+        project = self.root / "skill discovery project"
+        project.mkdir()
+        alone = self.run_core("install", "--agent", "opencode", "--global", "--with-skills")
+        self.assertEqual(alone.returncode, 0, alone.stdout + alone.stderr)
+        _, alone_payload = self.doctor(project, "opencode")
+        self.assertNotIn("duplicate-skill-discovery", self.warning_codes(alone_payload["opencode"]))
+
+        both = self.run_core("install", "--agent", "claude,opencode", "--global", "--with-skills")
+        self.assertEqual(both.returncode, 0, both.stdout + both.stderr)
+        strict = self.run_core("doctor", "--agent", "opencode", "--target", str(project), "--strict", "--json")
+        self.assertEqual(strict.returncode, 0, strict.stdout + strict.stderr)
+        warning = next(
+            warning for warning in json.loads(strict.stdout)["opencode"]["warnings"]
+            if warning["code"] == "duplicate-skill-discovery"
+        )
+        self.assertIn("handoff", warning["message"])
+        self.assertIn("OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1", warning["recommendation"])
+        _, claude_payload = self.doctor(project, "claude")
+        self.assertNotIn("duplicate-skill-discovery", self.warning_codes(claude_payload["claude"]))
+
+        self.env["OPENCODE_DISABLE_CLAUDE_CODE_SKILLS"] = "1"
+        _, disabled_payload = self.doctor(project, "opencode")
+        self.assertNotIn("duplicate-skill-discovery", self.warning_codes(disabled_payload["opencode"]))
+
     def test_skill_install_refuses_symlinked_adapter_root_before_external_writes(self) -> None:
         project = self.root / "symlinked adapter project"
         project.mkdir()
@@ -335,6 +525,112 @@ class DoctorTests(unittest.TestCase):
         self.assertNotEqual(strict.returncode, 0, strict.stdout + strict.stderr)
         skills = json.loads(strict.stdout)["claude"]["skills"]
         self.assertEqual(skills["adapter_diverged_names"], ["handoff"])
+
+
+
+def load_core():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("agentsmith_doctor_core", CORE)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class ContainerDetectionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.core = load_core()
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        (self.root / "proc" / "1").mkdir(parents=True)
+        (self.root / "run").mkdir()
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def detect(self, environ: dict[str, str] | None = None, system: str = "Linux") -> list[str]:
+        return self.core.detect_container(root=self.root, environ=environ or {}, system=system)
+
+    def test_plain_linux_host_is_not_a_container(self) -> None:
+        (self.root / "proc" / "1" / "cgroup").write_text("0::/init.scope\n", encoding="utf-8")
+        self.assertEqual(self.detect(), [])
+
+    def test_each_container_signal_is_reported_as_evidence(self) -> None:
+        (self.root / ".dockerenv").write_text("", encoding="utf-8")
+        self.assertEqual(self.detect(), ["/.dockerenv"])
+        (self.root / ".dockerenv").unlink()
+        (self.root / "run" / ".containerenv").write_text("", encoding="utf-8")
+        self.assertEqual(self.detect(), ["/run/.containerenv"])
+        (self.root / "run" / ".containerenv").unlink()
+        self.assertEqual(self.detect({"container": "podman"}), ["container=podman"])
+        self.assertEqual(self.detect({"KUBERNETES_SERVICE_HOST": "10.0.0.1"}), ["KUBERNETES_SERVICE_HOST"])
+        (self.root / "proc" / "1" / "cgroup").write_text("0::/system.slice/docker-1a2b.scope\n", encoding="utf-8")
+        self.assertEqual(self.detect(), ["/proc/1/cgroup: docker"])
+
+    def test_other_systems_never_report_a_container(self) -> None:
+        (self.root / ".dockerenv").write_text("", encoding="utf-8")
+        self.assertEqual(self.detect({"container": "docker"}, system="Darwin"), [])
+        self.assertEqual(self.detect({"container": "docker"}, system="Windows"), [])
+
+
+class SafetyInspectionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.core = load_core()
+        self.temporary = tempfile.TemporaryDirectory()
+        self.home = Path(self.temporary.name)
+        self.environment = unittest.mock.patch.dict(
+            os.environ, {"HOME": str(self.home), "USERPROFILE": str(self.home), "CODEX_HOME": str(self.home / "codex")}
+        )
+        self.environment.start()
+
+    def tearDown(self) -> None:
+        self.environment.stop()
+        self.temporary.cleanup()
+
+    def test_shared_claude_mode_follows_the_recorded_safety(self) -> None:
+        # Claude uses acceptEdits for cautious and container alike; only the record can tell them apart.
+        settings = self.home / ".claude" / "settings.json"
+        settings.parent.mkdir()
+        settings.write_text(json.dumps({"permissions": {"defaultMode": "acceptEdits"}}), encoding="utf-8")
+        self.assertEqual(self.core.inspect_safety("claude")["state"], "cautious")
+        self.assertEqual(self.core.inspect_safety("claude", expected="container")["state"], "container")
+        self.assertEqual(self.core.inspect_safety("claude", expected="trusted")["state"], "cautious")
+
+    def test_codex_container_pair_is_recognized(self) -> None:
+        config = self.home / "codex" / "config.toml"
+        config.parent.mkdir()
+        config.write_text('approval_policy = "on-request"\nsandbox_mode = "danger-full-access"\n', encoding="utf-8")
+        self.assertEqual(self.core.inspect_safety("codex")["state"], "container")
+
+    def test_cautious_codex_in_a_container_gets_an_advisory(self) -> None:
+        advisory = self.core.container_safety_advisory
+        self.assertEqual(advisory("codex", "cautious", ["/.dockerenv"])["code"], "codex-cautious-in-container")
+        self.assertIsNone(advisory("codex", "cautious", []))
+        for agent_id, state in (("codex", "container"), ("codex", "trusted"), ("claude", "cautious")):
+            self.assertIsNone(advisory(agent_id, state, ["/.dockerenv"]), (agent_id, state))
+
+    def test_doctor_runs_without_git(self) -> None:
+        # Slim container images often ship without Git; doctor must still run there, or the advisory never shows.
+        target = self.home / "project"
+        target.mkdir()
+        real_which, real_run = self.core.shutil.which, self.core.subprocess.run
+
+        def run_without_git(command, *rest, **kw):
+            if command and command[0] == "git":
+                raise FileNotFoundError(2, "No such file or directory", "git")
+            return real_run(command, *rest, **kw)
+
+        # A missing Git is both absent from PATH and impossible to start.
+        no_git_on_path = unittest.mock.patch.object(
+            self.core.shutil, "which", side_effect=lambda name, *rest, **kw: None if name == "git" else real_which(name, *rest, **kw)
+        )
+        git_cannot_start = unittest.mock.patch.object(self.core.subprocess, "run", side_effect=run_without_git)
+        args = self.core.parser().parse_args(["doctor", "--agent", "codex", "--target", str(target), "--json"])
+        with no_git_on_path, git_cannot_start, \
+                unittest.mock.patch("sys.stdout", new_callable=lambda: __import__("io").StringIO()) as output:
+            self.core.cmd_doctor(args)
+            self.assertEqual(self.core.doctor_project_root(target), target.resolve())
+        self.assertIn("codex", json.loads(output.getvalue()))
 
 
 if __name__ == "__main__":

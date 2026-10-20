@@ -3,10 +3,38 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [ ] 2026-10-19 — The native Windows work-graph lifecycle failed intermittently in three different
+  tests on trees whose push runs passed. Pull-request run `38178585204` on `23e5889`, attempt 1:
+  graph `start` read a child `state.json` while the child replaced it atomically and got
+  `PermissionError` (Errno 13). Attempt 2: a child verifier's sandbox failed `GetFileSecurityW`
+  with Windows error 5 on `.git/agentsmith-runs/coordination.lock` while the parallel child removed
+  it, and the run escalated. PR #44 changed neither path. Master run `38182506232` on `0901316`:
+  `test_stop_then_resume_preserves_partial_work_and_limits` failed because child `a` refused to
+  resume (`exit=2 in making; exception=error`). Graph evidence kept no refusal text, so the cause
+  is unknown. Fixed now, each with a test that failed first: `_child_state` retries Windows sharing
+  denials within the controller's 5-second bound. The sandbox's DACL snapshot and restore re-check
+  error 5 for the same bound, skip a file that is then gone, and still fail closed on a lasting
+  denial; the 2026-09-21 fix below covered only errors 2 and 3. The sandbox tests replay Windows
+  error codes, so they run on every operating system. A graph failure event now names a known
+  controller refusal with a fixed code, such as `refusal=previous-role-live`,
+  `refusal=dirty-worktree` or `refusal=scope-conflict`, and never copies the refusal text. Still
+  open: the stop-then-resume refusal. Candidates are a role still live after `stop` (Windows ends
+  the controller with `TerminateProcess`, so no handler records the interruption), a scope
+  conflict with the sibling resumed in parallel, and a dirty worktree. The next native failure
+  will report its refusal code. Native Windows confirmation of all three fixes is pending.
+  An independent review of this fix found an older leak in the same function: any
+  identifier-shaped word that started the child's last stderr line, such as
+  `ghp_attackerSecret123: …`, became the `exception=` label in graph evidence. The 2026-09-22
+  crafted-label hardening covered only a test helper. Fixed: the label is now a Python exception
+  name or one of the controller's own prefixes, and anything else is `unknown`.
 - [ ] 2026-10-02 — German, Spanish, French, and Simplified Chinese manual-setup instructions
   describe signed installers, while the English README states macOS and Windows standalone builds
-  are unsigned. This predates the introduction update; align translated setup text with the
-  current release signing status in a separate documentation fix.
+  are unsigned. `INSTALL.md` and `AGENT-INSTALL.md` also promised signed downloads checked against
+  `SHA256SUMS`, but no GitHub release had any assets. On 2026-10-19 the setup text in every
+  language and the standalone update message were corrected: builds are unsigned, and users check
+  `SHA256SUMS` and the build attestation. The standalone workflow now drafts a release with five
+  archives and `SHA256SUMS` for each `v*` tag (`RELEASING.md`). Downloads appear with the next
+  tagged release. macOS and Windows platform code signing remains open.
 
 - [ ] Project-scoped install writes Claude's user-global `permissions.defaultMode` through
   `install_native_config()`; the default `--safety cautious` therefore changes the user's global
@@ -50,6 +78,12 @@ been authorized, so the entries are kept here.
   any of two parallel makers to log a start but then required `repo-a` to exist. Maker `b` can
   start first, so a stop before `a` creates its worktree is valid. The fixture now checks
   retention for every maker that actually logged a start; native confirmation remains pending.
+- [x] 2026-10-19 — Pull-request run `39275474565` (PR #56, attempt 2) failed native Windows
+  `test_parallel_roots_and_dependent_checkpoint` with `1411.665 not less than 1411.569`: the
+  two root children never overlapped. The fake maker slept a default 1 s, shorter than the gap
+  between dispatching the two roots on a loaded Windows runner. A 0.01 s maker reproduced the
+  same assertion on macOS. Fixed: the test gives each maker 4 s, as its sibling tests do. The
+  product dispatch was not at fault.
 - [ ] 2026-09-21 — Final-tree manual run `35623269366` passed Linux and macOS native work-graph
   lifecycle but failed eight of ten Windows dispatch tests. The Windows report binds commit
   `00461bf`, tree `8d0c00f`, and records a clean checkout; its lifecycle phase exited 1.
@@ -638,3 +672,86 @@ second `os.kill` that behaved differently on Windows; the first was the stale-PI
 lifecycle entry above. The harness now uses `signal.raise_signal`, as the other stop tests do.
 A local shim that gives `os.kill` the Windows behaviour reproduced the failure before the change
 and passed after it.
+
+## OpenCode and Pi user-level rules (2026-10-19)
+
+### GLOBAL-RULES: earlier global OpenCode installs recorded OpenCode but wrote nothing (open)
+
+Up to `v0.3.1`, `install --global --agent opencode` recorded OpenCode in the installation manifest
+and printed "installed for opencode", but wrote no rules file. Global destinations were hard-coded
+for Claude and Codex. Install now writes `~/.config/opencode/AGENTS.md`, and doctor, update, and
+uninstall manage it. Existing installations stay without the file until the operator acts. The
+`v0.3.1` updater cannot repair them: on 2026-10-19 its `update apply` against a release with this
+fix stopped with "Release attempted an update outside the managed surface:
+home:.config/opencode/AGENTS.md" before any real file changed. Fix: rerun `agentsmith install
+--global` with the same agents from the newer release.
+
+### GLOBAL-RULES: OpenCode's `XDG_CONFIG_HOME` is not followed (open)
+
+OpenCode reads `$XDG_CONFIG_HOME/opencode/AGENTS.md` when that variable is set. AgentSmith always
+writes `~/.config/opencode/AGENTS.md`, so with a different `XDG_CONFIG_HOME` OpenCode never loads
+the managed rules. Install warns and doctor reports `opencode-xdg-config-ignored`. Following the
+variable would make the update surface depend on an environment value; that needs its own design.
+
+### GLOBAL-RULES: a symlinked `~/.config` makes update refuse (open)
+
+Dotfile managers often make `~/.config` a symbolic link. Install writes through it, but
+`update plan --global` refuses any managed path with a symbolic-link component, so a global
+OpenCode installation with a linked `~/.config` cannot use the staged updater. Rerun
+`install --global` instead. A test pins the refusal.
+
+### GLOBAL-RULES: Gemini CLI declares a global path that nothing writes (open)
+
+The registry lists `~/.gemini/AGENTS.md` as a Gemini CLI global path, but no installer writes it.
+`install --global` now warns for Gemini CLI, as for every agent without a managed user-level
+file, and leaves it out of the "installed for" line. Either an adapter or a registry correction
+is still needed.
+
+### GLOBAL-RULES: OpenCode and Pi certification is pending (open)
+
+Both entries rest on fixture evidence and on the clients' own documentation (OpenCode 1.19.3,
+Pi 1.3.0). No real OpenCode or Pi run has confirmed that either client loads the managed rules or
+skills. OpenCode's duplicate-skill choice is nondeterministic by inference from its source; doctor
+reports it as `duplicate-skill-discovery`.
+
+### GLOBAL-RULES: `--agent local` expanded to a different list than the registry (fixed)
+
+The CLI expanded `local` to five agents while `config/agents.json` lists eight; Codex, Roo Code,
+and Continue were missing. The code now matches the registry, and a registry test compares every
+group.
+
+### GLOBAL-RULES: safety was recorded for agents that have no safety setting (fixed)
+
+Install recorded `native_safety` for every selected agent. A cautious rerun of a global OpenCode
+install after a trusted one then warned that it was migrating Codex's `config.toml`. Only Claude
+and Codex are recorded now, and stale records for other agents are dropped on the next install.
+
+### GLOBAL-RULES: a relative `PI_CODING_AGENT_DIR` corrupted foreign text during updates (fixed)
+
+Found in review on 2026-10-19 and reproduced: the updater translated root paths with the raw
+configured values. With `PI_CODING_AGENT_DIR="."`, an update of a Codex-only global install turned
+`v1.2.3` and `./docs` in the foreign part of `$CODEX_HOME/AGENTS.md` into paths and wrote them to the
+live file. Translation now skips non-absolute roots, the Pi folder is an update root only for a
+global install with Pi, and a global Pi install or update refuses a relative value.
+
+### GLOBAL-RULES: update accepted two agents sharing one rules file (fixed)
+
+Found in review on 2026-10-19 and reproduced: install refused Pi and Codex resolving to one
+`AGENTS.md`, but `update plan` accepted it because each root has its own shadow folder. One
+destination check now serves install, update plan, plan validation, and apply.
+
+### GLOBAL-RULES: global Pi uninstall removed other installations' rules (fixed)
+
+Found in review on 2026-10-19 and reproduced: with `PI_CODING_AGENT_DIR` set to `CODEX_HOME` or to a
+project root, `install --global --agent pi --uninstall` removed Codex's managed rules or the
+project's managed block, because ownership was inferred from markers alone. Install, update, and
+uninstall now refuse a destination that is another agent's rules file or that lies in a project
+installation's root. Uninstall leaves Pi's file in place when the global record does not list Pi.
+
+### GLOBAL-RULES: each global install replaces the recorded agent list (open)
+
+`record_installation_manifest()` stores only the agents of the latest global install. After
+`install --global --agent pi` and then `install --global --agent codex`, the record lists only
+Codex, so a later global uninstall leaves Pi's file in place and update no longer manages it. The
+record cannot prove ownership of Claude, Codex, or OpenCode files for the same reason. Merging
+global selections needs its own design because update replays the record.

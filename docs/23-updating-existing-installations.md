@@ -53,6 +53,12 @@ Use `v0.4.0` for the complete legacy global update chain: foreign skill contents
 ignored, canonical customizations are retained and mirrored to Claude, and symlinks escaping an
 owned inventory root remain rejected.
 
+**Global OpenCode installations from `v0.3.1` or earlier.** Those releases recorded OpenCode in a
+global installation but wrote no OpenCode rules file. Their updater also refuses a later release
+that writes `~/.config/opencode/AGENTS.md`, because that file was outside its managed surface; the
+refusal happens before any real file changes. Rerun `agentsmith install --global` with your agents
+from the newer release instead. Later updates then manage the OpenCode file.
+
 ## Before updating
 
 Make the installation's current state recoverable. For a project installation, commit or otherwise

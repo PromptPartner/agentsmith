@@ -39,8 +39,11 @@ language. Your `--operator-bio` tells it where you want more or less detail.
   and trust them once with `/hooks`.
 - **Safety mode: {{SAFETY}}.** In *cautious* mode the assistant auto-applies file edits but
   keeps work inside the workspace and asks for higher-risk actions. In *trusted* mode it runs
-  almost everything without asking. Re-run setup with `--safety cautious|trusted` to change it;
-  see README → "Permissions and trusted mode" for the native JSON/TOML settings.
+  almost everything without asking. In *container* mode it asks like cautious, but Codex runs
+  without its sandbox, for Docker where that sandbox cannot start. Re-run setup with
+  `--safety cautious|trusted|container` to change it; see "Safety modes" in
+  https://github.com/PromptPartner/agentsmith/blob/master/docs/15-safety-model.md#safety-modes
+  for the native JSON/TOML settings.
 - **Profile(s): {{PROFILES}}.** These tailor the rules to your kind of work. Re-run setup to
   change them.
 - **Undo the managed install:** `./setup.sh --platform {{PLATFORM}} --uninstall --target .`
