@@ -43,7 +43,7 @@ Wähle einen von zwei Wegen. Beide verwenden dieselbe geführte Einrichtung und 
 
 ### 1. Manuell einrichten
 
-1. Lade das signierte Installationsprogramm für macOS, Windows oder Linux aus der [neuesten Version](https://github.com/PromptPartner/agentsmith/releases/latest) herunter.
+1. Lade die eigenständige Anwendung für macOS, Windows oder Linux aus der [neuesten Version](https://github.com/PromptPartner/agentsmith/releases/latest) herunter. Die Builds für macOS und Windows sind derzeit nicht signiert. Dein Betriebssystem fragt daher möglicherweise nach einer Bestätigung, bevor du sie ausführst.
 2. Öffne ein Terminal und führe `agentsmith` aus.
 3. Beantworte die geführten Fragen. AgentSmith zeigt dir den genauen Plan, bevor es etwas schreibt.
 

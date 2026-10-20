@@ -4,13 +4,29 @@ There are two supported entry points. Both end in the same reviewed installation
 
 ## Option 1: manual guided setup
 
-Download the signed installer for your operating system from the [latest release](https://github.com/PromptPartner/agentsmith/releases/latest):
+Download the standalone build for your operating system from the [latest release](https://github.com/PromptPartner/agentsmith/releases/latest):
 
-- macOS: Apple silicon (`arm64`) or Intel (`x86_64`)
-- Windows: 64-bit (`x86_64`)
-- Linux: 64-bit (`x86_64`)
+- macOS: Apple silicon (`agentsmith-macos-arm64.tar.gz`) or Intel (`agentsmith-macos-x86_64.tar.gz`)
+- Windows: 64-bit (`agentsmith-windows-x86_64.zip`)
+- Linux: 64-bit x86 (`agentsmith-linux-x86_64.tar.gz`) or 64-bit Arm (`agentsmith-linux-arm64.tar.gz`)
 
-Install it, open a terminal, and run:
+The builds are currently unsigned, so macOS and Windows may warn and ask you to confirm before the first run.
+Before you run a download, check it against the release's `SHA256SUMS` file:
+
+```console
+shasum -a 256 -c SHA256SUMS --ignore-missing   # macOS
+sha256sum -c --ignore-missing SHA256SUMS       # Linux
+```
+
+On Windows, run `Get-FileHash agentsmith-windows-x86_64.zip` in PowerShell and compare the hash with that
+file's line in `SHA256SUMS` (letter case does not matter). With the GitHub CLI you can also confirm that
+this repository's release workflow built the file from the release tag:
+`gh attestation verify <file> --repo PromptPartner/agentsmith --signer-workflow PromptPartner/agentsmith/.github/workflows/standalone.yml --source-ref refs/tags/<version>`, where `<version>` is the release tag, for example `v0.4.0`. Do not run a file that fails either check.
+
+If the latest release has no downloads yet, use the [source installation](#source-installation-for-contributors)
+described below.
+
+Extract the archive, put `agentsmith` (`agentsmith.exe` on Windows) on your `PATH`, open a terminal, and run:
 
 ```console
 agentsmith
@@ -44,7 +60,7 @@ Inspect the project first, explain your profile recommendation in plain language
 show me the exact installation plan, and ask once before applying it.
 ```
 
-The agent follows the same decisions as the manual wizard. It verifies the official release checksum, inspects without executing project code, previews managed destinations, waits for one approval, applies the setup, and runs `agentsmith doctor`.
+The agent follows the same decisions as the manual wizard. It checks the release download against `SHA256SUMS`, inspects without executing project code, previews managed destinations, waits for one approval, applies the setup, and runs `agentsmith doctor`.
 
 ## Existing and new projects
 
@@ -136,12 +152,12 @@ cd agentsmith
 python3 agentsmith.py
 ```
 
-On Windows, use `py -3 agentsmith.py`. The shell and PowerShell launchers are compatibility wrappers around the same Python program. End users should prefer the signed standalone release.
+On Windows, use `py -3 agentsmith.py`. The shell and PowerShell launchers are compatibility wrappers around the same Python program. End users should prefer the standalone release.
 
 ### Updates and rollback
 
-Standalone users update the central CLI with the next signed operating-system installer, then run
-`agentsmith status --target /path/to/project`. Project rules and state remain in place.
+Standalone users update the central CLI by downloading and checking the next release build as in Option 1,
+then run `agentsmith status --target /path/to/project`. Project rules and state remain in place.
 
 Source-based installations use staged, authenticated update plans:
 

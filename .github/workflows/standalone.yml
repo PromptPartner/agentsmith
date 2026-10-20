@@ -13,6 +13,7 @@ on:
       - .github/workflows/standalone.yml
   push:
     branches: [master]
+    tags: ['v*']
   workflow_dispatch:
 
 permissions:
@@ -29,6 +30,9 @@ jobs:
         include:
           - os: ubuntu-24.04
             asset: agentsmith-linux-x86_64
+            executable: dist/agentsmith
+          - os: ubuntu-24.04-arm
+            asset: agentsmith-linux-arm64
             executable: dist/agentsmith
           - os: windows-2025
             asset: agentsmith-windows-x86_64
@@ -88,3 +92,90 @@ jobs:
         uses: actions/attest@v4
         with:
           subject-path: ${{ matrix.asset }}.zip
+
+  checksums:
+    name: SHA256SUMS
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Download tested builds
+        uses: actions/download-artifact@v8
+        with:
+          pattern: agentsmith-*
+          path: release-assets
+          merge-multiple: true
+      - name: Write SHA256SUMS
+        shell: bash
+        working-directory: release-assets
+        run: |
+          shopt -s nullglob
+          archives=(agentsmith-*.tar.gz agentsmith-*.zip)
+          # One archive per build target; a missing one must not ship as a partial release.
+          test "${#archives[@]}" -eq 5
+          sha256sum "${archives[@]}" | LC_ALL=C sort -k 2 > SHA256SUMS
+          cat SHA256SUMS
+      - name: Upload SHA256SUMS
+        uses: actions/upload-artifact@v7
+        with:
+          name: SHA256SUMS
+          path: release-assets/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+      - name: Attest SHA256SUMS provenance
+        if: github.event_name != 'pull_request'
+        uses: actions/attest@v4
+        with:
+          subject-path: release-assets/SHA256SUMS
+
+  release:
+    name: draft release
+    needs: checksums
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Require the tag to match the CLI version
+        id: version
+        shell: bash
+        run: |
+          version="$(sed -n 's/^VERSION = "\([^"]*\)"$/\1/p' agentsmith.py)"
+          if [ "$GITHUB_REF_NAME" != "v${version}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match VERSION = \"${version}\" in agentsmith.py"
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+      - name: Download tested builds
+        uses: actions/download-artifact@v8
+        with:
+          pattern: agentsmith-*
+          path: release-assets
+          merge-multiple: true
+      - name: Download SHA256SUMS
+        uses: actions/download-artifact@v8
+        with:
+          name: SHA256SUMS
+          path: release-assets
+      - name: Create draft release
+        shell: bash
+        working-directory: release-assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          sha256sum -c SHA256SUMS
+          # A rerun must not add a second draft or touch a published release.
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            echo "::error::A release for ${GITHUB_REF_NAME} already exists; delete that draft before rerunning"
+            exit 1
+          fi
+          # Draft only: the maintainer reviews the assets and notes, then publishes.
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
+            --title "AgentSmith ${VERSION}" --generate-notes \
+            SHA256SUMS agentsmith-*.tar.gz agentsmith-*.zip

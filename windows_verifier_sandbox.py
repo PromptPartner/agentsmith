@@ -16,6 +16,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import time
 import uuid
 
 
@@ -82,28 +83,46 @@ def _acl(path: Path, sid: str, rights: str, *, remove: bool = False) -> None:
                            f"{(result.stderr or result.stdout).strip()[:300]}")
 
 
+# A file a peer has deleted stays delete-pending until its last handle closes, and Windows
+# answers ERROR_ACCESS_DENIED (5) for it, not 2 or 3. Re-check for the same 5 s bound the
+# controller uses for sharing races: a removed file then reports 2 or 3, and a denial that
+# persists on an existing file still fails closed.
+def _delete_pending(error: int, attempt: int) -> bool:
+    if error != 5 or attempt == 499:
+        return False
+    time.sleep(0.01)
+    return True
+
+
 def _original_dacl(path: Path, advapi: ctypes.WinDLL) -> bytes | None:
-    needed = wintypes.DWORD()
-    advapi.GetFileSecurityW(str(path), 4, None, 0, ctypes.byref(needed))
-    if not needed.value:
-        if ctypes.get_last_error() in {2, 3}:  # File removed during snapshot.
+    for attempt in range(500):
+        needed = wintypes.DWORD()
+        advapi.GetFileSecurityW(str(path), 4, None, 0, ctypes.byref(needed))
+        label = f"GetFileSecurityW size for {path}"
+        if needed.value:
+            descriptor = ctypes.create_string_buffer(needed.value)
+            if advapi.GetFileSecurityW(str(path), 4, descriptor, needed.value,
+                                       ctypes.byref(needed)):
+                return descriptor.raw
+            label = f"GetFileSecurityW for {path}"
+        error = ctypes.get_last_error()
+        if error in {2, 3}:  # File removed during snapshot.
             return None
-        raise _win32_error(f"GetFileSecurityW size for {path}")
-    descriptor = ctypes.create_string_buffer(needed.value)
-    if not advapi.GetFileSecurityW(str(path), 4, descriptor, needed.value,
-                                  ctypes.byref(needed)):
-        if ctypes.get_last_error() in {2, 3}:
-            return None
-        raise _win32_error(f"GetFileSecurityW for {path}")
-    return descriptor.raw
+        if not _delete_pending(error, attempt):
+            raise SandboxError(f"{label}: Windows error {error}")
+    raise AssertionError("unreachable")
 
 
 def _restore_dacl(path: Path, descriptor: bytes, advapi: ctypes.WinDLL) -> None:
     # SetFileSecurity does not propagate the restored DACL to existing children.
-    if not advapi.SetFileSecurityW(str(path), 4, ctypes.create_string_buffer(descriptor)):
-        if ctypes.get_last_error() in {2, 3}:  # Transient Git lock already removed.
+    for attempt in range(500):
+        if advapi.SetFileSecurityW(str(path), 4, ctypes.create_string_buffer(descriptor)):
             return
-        raise _win32_error(f"SetFileSecurityW for {path}")
+        error = ctypes.get_last_error()
+        if error in {2, 3}:  # Transient Git lock already removed.
+            return
+        if not _delete_pending(error, attempt):
+            raise SandboxError(f"SetFileSecurityW for {path}: Windows error {error}")
 
 
 def run_verifier(command: str, cwd: Path, common: Path, timeout: int,
