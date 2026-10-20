@@ -29,8 +29,12 @@ been authorized, so the entries are kept here.
   name or one of the controller's own prefixes, and anything else is `unknown`.
 - [ ] 2026-10-02 — German, Spanish, French, and Simplified Chinese manual-setup instructions
   describe signed installers, while the English README states macOS and Windows standalone builds
-  are unsigned. This predates the introduction update; align translated setup text with the
-  current release signing status in a separate documentation fix.
+  are unsigned. `INSTALL.md` and `AGENT-INSTALL.md` also promised signed downloads checked against
+  `SHA256SUMS`, but no GitHub release had any assets. On 2026-10-19 the setup text in every
+  language and the standalone update message were corrected: builds are unsigned, and users check
+  `SHA256SUMS` and the build attestation. The standalone workflow now drafts a release with five
+  archives and `SHA256SUMS` for each `v*` tag (`RELEASING.md`). Downloads appear with the next
+  tagged release. macOS and Windows platform code signing remains open.
 
 - [ ] Project-scoped install writes Claude's user-global `permissions.defaultMode` through
   `install_native_config()`; the default `--safety cautious` therefore changes the user's global

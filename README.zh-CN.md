@@ -36,7 +36,7 @@
 
 ### 1. 手动设置
 
-1. 从[最新版本](https://github.com/PromptPartner/agentsmith/releases/latest)下载适用于 macOS、Windows 或 Linux 的已签名安装程序。
+1. 从[最新版本](https://github.com/PromptPartner/agentsmith/releases/latest)下载适用于 macOS、Windows 或 Linux 的独立应用。macOS 和 Windows 版本目前未签名，因此您的操作系统可能会在运行前要求您确认。
 2. 打开终端并运行 `agentsmith`。
 3. 回答向导中的问题。AgentSmith 会在写入任何内容之前显示完整计划。
 
