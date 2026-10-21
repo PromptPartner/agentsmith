@@ -1,9 +1,9 @@
 # Feedback — the harness's self-improvement log
 
-This directory is the **durable feedback record** that [`core/60-evolving-the-harness.md`](../../core/60-evolving-the-harness.md)
-is built around. It's how the harness *compounds*: every time a session stumbles, the lesson is
-captured here as a small, traceable change to the **system** — not just a one-off fix to the bug
-in front of you.
+This is the format guide for the **durable feedback record** described in
+[`core/60-evolving-the-harness.md`](../../core/60-evolving-the-harness.md). In an installed project,
+each lesson is captured as a small, traceable change to the system. AgentSmith's own numbered
+working records are kept in its private development archive.
 
 > **The agent is the model plus the harness.** The model is the ~10% you don't control; the
 > harness is the ~90% you do. A failure is almost never "the model is dumb" — it's a missing

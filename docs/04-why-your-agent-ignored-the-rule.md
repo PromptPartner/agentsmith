@@ -25,7 +25,7 @@ a hard number in this harness: the assembled `CLAUDE.md` is budgeted at **600 li
 tokens**. For where you actually stand, run the measurement rather than trusting a figure written
 down here — `scripts/lint-leanness.sh <file>` or `setup.sh --doctor`; `scripts/test-assemble.sh`
 gates it per profile on every CI run. (This paragraph used to quote a spend figure. It drifted, and
-a stale number is worse than none — a doc that caches a cheap lookup rots. See `docs/feedback/0007`.)
+a stale number is worse than none — a doc that caches a cheap lookup rots.)
 The budget runs close to full by design: every line earned its place, and stacking two large
 profiles will exceed it. The discipline is what keeps it working.
 

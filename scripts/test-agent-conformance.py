@@ -110,7 +110,7 @@ def validate_fixtures(results: Results, contract: dict[str, Any]) -> None:
     ids = [agent.get("id") for agent in agents]
     results.fixture(contract.get("schema_version") == 1, "contract schema is pinned")
     results.fixture(contract.get("canonical_project_instructions") == "AGENTS.md", "AGENTS.md is canonical")
-    results.fixture(len(ids) == 16 and len(set(ids)) == 16, "exactly 16 unique certification targets")
+    results.fixture(len(ids) == 17 and len(set(ids)) == 17, "exactly 17 unique certification targets")
     results.fixture(
         {agent["id"] for agent in agents if agent.get("tier") == "native"} == {"claude", "codex"},
         "only Claude and Codex are native",
@@ -179,7 +179,7 @@ def validate_registry(results: Results, contract: dict[str, Any]) -> list[dict[s
     agents = as_agent_list(registry)
     expected = {agent["id"]: agent for agent in contract["agents"]}
     actual = {agent.get("id"): agent for agent in agents}
-    results.check(set(actual) == set(expected), "registry contains the exact 16 targets")
+    results.check(set(actual) == set(expected), "registry contains the exact 17 targets")
     results.check(
         all(field(actual.get(agent_id, {}), "target_tier", "tier") == spec["tier"] for agent_id, spec in expected.items()),
         "registry tiers match the certification contract",
@@ -326,7 +326,7 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
     list_run = run_core("agents", "list")
     expected_ids = [agent["id"] for agent in contract["agents"]]
     results.check(list_run.returncode == 0, "agentsmith agents list succeeds", list_run.stdout[-300:])
-    results.check(output_has_all(list_run.stdout, expected_ids), "agents list exposes all 16 targets")
+    results.check(output_has_all(list_run.stdout, expected_ids), "agents list exposes all 17 targets")
 
     compatibility = run_core("compatibility")
     results.check(compatibility.returncode == 0, "agentsmith compatibility succeeds", compatibility.stdout[-300:])
@@ -643,8 +643,9 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
                     "import importlib.util,json;"
                     f"s=importlib.util.spec_from_file_location('agentsmith_core',{str(CORE_PATH)!r});"
                     "m=importlib.util.module_from_spec(s);s.loader.exec_module(m);"
+                    "m.detect_container=lambda *a,**k:[];"
                     "a=m.parser().parse_args(['install','--wizard']);"
-                    "answers=iter(['claude','general-admin','invalid','']);prompts=[];"
+                    "answers=iter(['','','','claude','general-admin','2','invalid','','','yes']);prompts=[];"
                     "m.apply_wizard_answers(a,lambda p:(prompts.append(p),next(answers))[1]);"
                     "print(json.dumps({'agent':a.agent,'profile':a.profile,'safety':a.safety,'prompts':prompts}))"
                 ),
@@ -655,7 +656,7 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
             check=False,
         )
         try:
-            wizard_data = json.loads(wizard_probe.stdout)
+            wizard_data = json.loads(wizard_probe.stdout.splitlines()[-1])
         except json.JSONDecodeError:
             wizard_data = {}
         results.check(
@@ -663,7 +664,7 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
             and wizard_data.get("safety") == "cautious"
             and wizard_data.get("agent") == ["claude"]
             and wizard_data.get("profile") == ["general-admin"]
-            and sum("Safety [cautious/trusted] [cautious]:" in prompt for prompt in wizard_data.get("prompts", [])) == 2,
+            and sum("Agent permissions [cautious/trusted] [cautious]:" in prompt for prompt in wizard_data.get("prompts", [])) == 2,
             "wizard defaults safety to cautious and reprompts malformed choices",
             (wizard_probe.stdout + wizard_probe.stderr)[-700:],
         )
@@ -1057,6 +1058,24 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
             and "**Grace Hopper** is the lead. Role: **Chief Engineer**" in changed_text
             and "The team's record is **Jira**" in changed_text,
             "explicit identity fields override recovered values without resetting siblings",
+        )
+
+        no_global_root = sandbox / "global without destination"
+        no_global_env = env.copy()
+        no_global_env.update({
+            "HOME": str(no_global_root / "home"),
+            "USERPROFILE": str(no_global_root / "home"),
+            "CODEX_HOME": str(no_global_root / "codex"),
+        })
+        no_global = run_core("install", "--agent", "codex,cursor", "--global", "--assemble-only", env=no_global_env)
+        installed_line = next((line for line in no_global.stdout.splitlines() if "installed for" in line), "")
+        results.check(
+            no_global.returncode == 0
+            and "cursor has no user-level instruction file" in no_global.stdout
+            and "codex" in installed_line
+            and "cursor" not in installed_line,
+            "global install warns for an agent without a user-level instruction file and does not claim it",
+            no_global.stdout[-500:],
         )
 
     skill_files = sorted((ROOT / "skills").glob("*/SKILL.md"))

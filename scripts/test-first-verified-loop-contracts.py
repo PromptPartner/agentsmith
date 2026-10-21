@@ -36,6 +36,20 @@ SCHEMAS = FIXTURES / "schemas"
 REPOSITORIES = FIXTURES / "repositories"
 DEMO_SOURCE = ROOT / "templates" / "first-loop"
 PUBLIC_PROOF = ROOT / "docs" / "demos" / "first-verified-loop"
+
+
+def _contains_digest_window(text: str, digest: str, length: int) -> bool:
+    """Find a private identifier without storing its literal value in public source."""
+    if length <= 0:
+        raise ValueError("length must be positive")
+    expected = bytes.fromhex(digest)
+    normalized = text.lower()
+    return any(
+        hashlib.sha256(normalized[start : start + length].encode("utf-8")).digest() == expected
+        for start in range(len(normalized) - length + 1)
+    )
+
+
 def load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -1600,6 +1614,12 @@ class FirstVerifiedLoopCommandContracts(unittest.TestCase):
 
 
 class FVL07DocumentationContracts(unittest.TestCase):
+    def test_identity_digest_guard_detects_a_name_without_rejecting_generic_terms(self) -> None:
+        private_label = "private-id"
+        digest = hashlib.sha256(private_label.encode("utf-8")).hexdigest()
+        self.assertFalse(_contains_digest_window("ordinary operator text", digest, len(private_label)))
+        self.assertTrue(_contains_digest_window("prefix PrIvAtE-Id suffix", digest, len(private_label)))
+
     def test_public_proof_sanitizer_canonicalizes_windows_paths_and_output_hashes(self) -> None:
         generator = ROOT / "scripts" / "generate-first-loop-proof.py"
         module_spec = importlib.util.spec_from_file_location("agentsmith_fvl_proof", generator)
@@ -1684,7 +1704,10 @@ class FVL07DocumentationContracts(unittest.TestCase):
         self.assertNotRegex(combined, r"(?i)(?:/Users/|/home/|[A-Z]:\\\\Users\\\\|/private/var/|/var/folders/)")
         self.assertNotIn("/private$", combined)
         self.assertNotRegex(combined, r"\$(?:SOURCE|DEMO|WORKSPACE|HOME)\\")
-        self.assertNotIn("operator", combined.lower())
+        self.assertFalse(
+            _contains_digest_window(combined, "30a9d8c8fb0983a6f54daa1c7c6dfee7cb62696538d8e010b08c513e8accaa87", 11),
+            "public proof contains a historical private identifier",
+        )
         self.assertIn("fixture evidence", (PUBLIC_PROOF / "CLAIM-MAP.md").read_text(encoding="utf-8"))
         self.assertIn("does not prove", (PUBLIC_PROOF / "LIMITATIONS.md").read_text(encoding="utf-8"))
 
@@ -1844,10 +1867,11 @@ class FVL07DocumentationContracts(unittest.TestCase):
         self.assertIn("<pre><code", rendered)
         self.assertNotIn("```", rendered)
 
-    def test_readme_has_guided_and_experienced_paths_with_public_proof_cta(self) -> None:
+    def test_readme_has_manual_and_agent_guided_paths_with_public_proof_cta(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn("## Guided path", readme)
-        self.assertIn("## Experienced path", readme)
+        self.assertIn("### 1. Manual setup", readme)
+        self.assertIn("### 2. Ask your agent", readme)
+        self.assertIn("AGENT-INSTALL.md", readme)
         self.assertIn("docs/demos/first-verified-loop/README.md", readme)
         self.assertIn("Proof before done.", readme)
 

@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="980" viewBox="0 0 1400 980" role="img" aria-labelledby="title desc">
+  <title id="title">AgentSmith — le cadre open source pour les agents de programmation</title>
+  <desc id="desc">Claude Code ou Codex travaille avec les règles du projet et des vérifications configurées. Définir la tâche, délimiter le changement, tester les vérifications et le parcours réel, conserver les preuves, transmettre le travail et valider les améliorations issues des échecs observés. Essayez la démo de la Première boucle vérifiée dans un environnement jetable. Les instructions guident le comportement ; les vérifications configurées imposent des limites précises.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0 L10 5 L0 10" fill="none" stroke="#ffa600" stroke-width="1.5"/></marker>
+    <style>
+      text{font-family:Arial,Helvetica,sans-serif;fill:#f8fafc}
+      .muted{fill:#bdc7d9}.gold{fill:#ffa600}.card{fill:#172238;stroke:#455575;stroke-width:2}
+      .edge{fill:none;stroke:#ffa600;stroke-width:2.5;marker-end:url(#arrow)}
+      .heading{font-size:25px;font-weight:700}.body{font-size:21px}.small{font-size:19px}
+    </style>
+  </defs>
+  <rect width="1400" height="980" fill="#090e1a"/>
+  <text x="700" y="65" text-anchor="middle" font-size="48" font-weight="700">AgentSmith</text>
+  <text x="700" y="108" text-anchor="middle" font-size="25" class="muted">Le cadre open source pour les agents de programmation</text>
+  <text x="700" y="154" text-anchor="middle" font-size="29" font-weight="700" class="gold">La preuve avant de déclarer le travail terminé.</text>
+  <text x="700" y="180" text-anchor="middle" font-size="18" class="muted">Du vibe coding à l’ingénierie agentique</text>
+  <rect x="50" y="202" width="270" height="92" rx="18" class="card"/>
+  <text x="185" y="240" text-anchor="middle" class="heading">Votre tâche</text>
+  <text x="185" y="272" text-anchor="middle" class="small muted" style="font-size:15px">Périmètre + définition de « terminé »</text>
+  <rect x="425" y="190" width="550" height="115" rx="20" fill="#ffa600"/>
+  <text x="700" y="236" text-anchor="middle" font-size="27" font-weight="700" style="fill:#090e1a">Claude Code ou Codex + AgentSmith</text>
+  <text x="700" y="275" text-anchor="middle" font-size="21" style="fill:#090e1a">Règles · contrôles configurés · transmissions</text>
+  <rect x="1080" y="202" width="270" height="92" rx="18" class="card"/>
+  <text x="1215" y="240" text-anchor="middle" class="heading">Examiner le résultat</text>
+  <text x="1215" y="272" text-anchor="middle" class="small muted" style="font-size:14px">Changements + preuves conservées</text>
+  <path d="M325 248 H405" class="edge"/><path d="M982 248 H1060" class="edge"/>
+  <rect x="50" y="357" width="410" height="287" rx="22" class="card"/>
+  <text x="80" y="402" class="heading gold">1  Comprendre et délimiter</text>
+  <text x="80" y="451" class="body" style="font-size:19px">Lire le code existant et ses appelants.</text>
+  <text x="80" y="491" class="body" style="font-size:19px">Définir le périmètre et les contrôles de fin.</text>
+  <text x="80" y="531" class="body" style="font-size:19px">Faire de petits changements vérifiables.</text>
+  <text x="80" y="580" class="small muted">Choisir les autorisations natives.</text>
+  <text x="80" y="611" class="small muted" style="font-size:18px">Hooks de secrets facultatifs.</text>
+  <rect x="495" y="357" width="410" height="287" rx="22" class="card"/>
+  <text x="525" y="402" class="heading gold" style="font-size:22px">2  Vérifier et garder les preuves</text>
+  <text x="525" y="451" class="body" style="font-size:19px">Reproduire l’échec avant de le corriger.</text>
+  <text x="525" y="491" class="body" style="font-size:19px">Exécuter tous les contrôles configurés.</text>
+  <text x="525" y="531" class="body" style="font-size:19px">Tester le parcours visible par l’utilisateur.</text>
+  <text x="525" y="580" class="small muted">Consigner les résultats dans un reçu.</text>
+  <text x="525" y="611" class="small muted">Examiner ce que les preuves couvrent.</text>
+  <rect x="940" y="357" width="410" height="287" rx="22" class="card"/>
+  <text x="970" y="402" class="heading gold">3  Continuer et améliorer</text>
+  <text x="970" y="451" class="body" style="font-size:19px">Sauver décisions et transmission claire.</text>
+  <text x="970" y="491" class="body" style="font-size:19px">Reprendre à partir des traces du projet.</text>
+  <text x="970" y="531" class="body">Consigner les échecs observés.</text>
+  <text x="970" y="580" class="small muted">Proposer une règle, un hook ou un test.</text>
+  <text x="970" y="611" class="small muted">Valider le changement avant adoption.</text>
+  <text x="700" y="693" text-anchor="middle" class="small muted">Les instructions guident le comportement. Les vérifications configurées imposent des limites précises.</text>
+  <path d="M50 723 H1350" stroke="#455575" stroke-width="2"/>
+  <text x="700" y="770" text-anchor="middle" class="heading">Découvrez la différence sur une tâche</text>
+  <text x="700" y="809" text-anchor="middle" class="body muted">Démo jetable : échec → correction délimitée → contrôles + parcours réel → reçu → transmission / reprise</text>
+  <text x="700" y="914" text-anchor="middle" class="small muted">Puis explorez les exécutions finies maker/checker, avec un périmètre approuvé et des limites explicites.</text>
+  <text x="700" y="948" text-anchor="middle" font-size="17" class="muted">Diagramme en français · 2026-10-02 · introduction approuvée</text>
+</svg>

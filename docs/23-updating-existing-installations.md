@@ -6,7 +6,17 @@ the existing installation, and keep planning separate from applying.
 
 ## Current release and legacy blockers
 
-The current stable release is `v0.3.1`.
+The current stable release is `v0.4.0`.
+
+`v0.4.0` adds `install --answers` and `agentsmith wizard schema --json` for setup from another
+program, a `container` safety mode for Docker-style containers, user-level rules for OpenCode and
+the new Pi agent, and checksummed, attested release downloads that include Linux arm64. It also
+fixes intermittent native-Windows work-graph failures, and `doctor` no longer crashes where Git is not
+installed (common in slim container images). One behaviour change: without an
+interactive terminal, `install --wizard` (and a bare `agentsmith`) now exits with code 2 instead
+of 0, because it changed nothing. Earlier global OpenCode installs recorded OpenCode but wrote no
+rules file; run `agentsmith install --global --agent opencode` once with `v0.4.0`, because the
+`v0.3.1` updater refuses the new file.
 
 `v0.3.1` adds a conditional MCP/integration validation checkpoint, a static non-launching
 configuration validator, explicit verification-tree provenance, and durable pre-gate recovery
@@ -23,14 +33,11 @@ manifests without resource keys remain valid.
 changes, and report success. The post-update skill check is then skipped because it trusts the same
 false capability value.
 
-The silent capability-loss defect was fixed in `v0.2.2` and is recorded in
-[`feedback/0020-legacy-claude-reconstruction-skipped-skills-and-mcp.md`](feedback/0020-legacy-claude-reconstruction-skipped-skills-and-mcp.md).
+The silent capability-loss defect was fixed in `v0.2.2`.
 However, **do not use `v0.2.2` for a global update when a selected agent has any user-scope MCP
 server.** Any server in `~/.claude.json` or
 the Codex user configuration blocks `update plan --global`. AgentSmith cannot own global MCP
-servers, so those entries are foreign configuration. The regression is fixed in `v0.2.3` and
-recorded in
-[`feedback/0022-global-update-blocked-by-foreign-mcp.md`](feedback/0022-global-update-blocked-by-foreign-mcp.md).
+servers, so those entries are foreign configuration. The regression is fixed in `v0.2.3`.
 The fixed updater does not parse global MCP to infer capability ownership and never treats a global
 server as AgentSmith-managed. Valid foreign client configuration remains preserved. Do not remove
 foreign MCP configuration or edit an authenticated plan as a workaround for either older release.
@@ -38,15 +45,19 @@ foreign MCP configuration or edit an authenticated plan as a workaround for eith
 `v0.2.3` still inventories every directory under a detected skill root. On a legacy global Claude
 installation, a foreign skill containing a normal Python virtual-environment link such as
 `.venv/lib64 -> lib` can therefore block planning, and unrelated foreign files can enter the
-installation fingerprints. This ownership defect is fixed in `v0.2.4` and recorded in
-[`feedback/0023-update-inventoried-foreign-skill-trees.md`](feedback/0023-update-inventoried-foreign-skill-trees.md).
+installation fingerprints. This ownership defect is fixed in `v0.2.4`.
 `v0.2.4` can still preserve a stale AgentSmith-owned `.claude/skills` adapter when its canonical
 `.agents/skills` source changes. Claude discovers the stale adapter, while strict Doctor can report
-it as healthy. This ownership defect is fixed in `v0.2.5` and recorded in
-[`feedback/0024-claude-skill-adapter-drift-treated-as-customization.md`](feedback/0024-claude-skill-adapter-drift-treated-as-customization.md).
-Use `v0.3.1` for the complete legacy global update chain: foreign skill contents are preserved and
+it as healthy. This ownership defect is fixed in `v0.2.5`.
+Use `v0.4.0` for the complete legacy global update chain: foreign skill contents are preserved and
 ignored, canonical customizations are retained and mirrored to Claude, and symlinks escaping an
 owned inventory root remain rejected.
+
+**Global OpenCode installations from `v0.3.1` or earlier.** Those releases recorded OpenCode in a
+global installation but wrote no OpenCode rules file. Their updater also refuses a later release
+that writes `~/.config/opencode/AGENTS.md`, because that file was outside its managed surface; the
+refusal happens before any real file changes. Rerun `agentsmith install --global` with your agents
+from the newer release instead. Later updates then manage the OpenCode file.
 
 ## Before updating
 
@@ -72,7 +83,7 @@ installation that does not have one yet.
 ```bash
 AGENTSMITH_BOOTSTRAP_DIR="$(mktemp -d)"
 
-git clone --depth 1 --branch v0.3.1 \
+git clone --depth 1 --branch v0.4.0 \
   https://github.com/PromptPartner/agentsmith.git \
   "$AGENTSMITH_BOOTSTRAP_DIR"
 
@@ -80,7 +91,7 @@ git -C "$AGENTSMITH_BOOTSTRAP_DIR" rev-parse HEAD
 git -C "$AGENTSMITH_BOOTSTRAP_DIR" describe --tags --exact-match
 ```
 
-The final command must print `v0.3.1`. This proves the bootstrap is the immutable release tag rather
+The final command must print `v0.4.0`. This proves the bootstrap is the immutable release tag rather
 than an unreviewed branch checkout.
 
 ## Update one project installation
@@ -90,13 +101,13 @@ but does not modify the target.
 
 ```bash
 AGENTSMITH_TARGET="/absolute/path/to/project"
-AGENTSMITH_PLAN="/tmp/agentsmith-project-name-v0.3.1-plan.json"
+AGENTSMITH_PLAN="/tmp/agentsmith-project-name-v0.4.0-plan.json"
 
 git -C "$AGENTSMITH_TARGET" status --short
 
 python3 "$AGENTSMITH_BOOTSTRAP_DIR/agentsmith.py" update plan \
   --target "$AGENTSMITH_TARGET" \
-  --version v0.3.1 \
+  --version v0.4.0 \
   --save "$AGENTSMITH_PLAN"
 
 python3 -m json.tool "$AGENTSMITH_PLAN" | less
@@ -130,11 +141,11 @@ python3 "$AGENTSMITH_TARGET/.agentsmith/agentsmith.py" doctor \
 Global scope is separate from every project scope. Create and inspect its own plan:
 
 ```bash
-AGENTSMITH_PLAN="/tmp/agentsmith-global-v0.3.1-plan.json"
+AGENTSMITH_PLAN="/tmp/agentsmith-global-v0.4.0-plan.json"
 
 python3 "$AGENTSMITH_BOOTSTRAP_DIR/agentsmith.py" update plan \
   --global \
-  --version v0.3.1 \
+  --version v0.4.0 \
   --save "$AGENTSMITH_PLAN"
 
 python3 -m json.tool "$AGENTSMITH_PLAN" | less
@@ -166,3 +177,7 @@ python3 "$AGENTSMITH_BOOTSTRAP_DIR/agentsmith.py" update rollback \
 Plans and receipts are authenticated with the local account's
 `~/.agentsmith/update-integrity.key`. Do not edit a plan or receipt, and do not copy one between
 machines. Repeat plan, inspection, and apply separately for every installation.
+
+Update plans retain selected capability effect records. Expanded effects require an explicit reviewed install selection; unchanged effects remain durable. Review [capability disclosures](local-capabilities.md) before selecting optional integrations.
+
+Startup recall is separately selected with `install --with-memory-startup` (preview with `--dry-run`). Legacy installs remain disabled. Updates and rollback preserve the decision; `--without-memory-startup` removes its owned scoped registration. See [project memory](project-memory.md).

@@ -1,287 +1,122 @@
-# AgentSmith — proof before done
+<div align="center">
+  <img src="site/assets/promptpartner-mark-amber.svg" width="72" height="72" alt="PromptPartner mark">
+  <p>
+    <a href="https://github.com/PromptPartner/agentsmith/actions/workflows/verify.yml"><img alt="Verification" src="https://github.com/PromptPartner/agentsmith/actions/workflows/verify.yml/badge.svg?branch=master"></a>
+    <a href="https://github.com/PromptPartner/agentsmith/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/PromptPartner/agentsmith"></a>
+    <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-14213D.svg"></a>
+  </p>
+  <p>
+    <strong>English</strong> · <a href="README.de.md">Deutsch</a> · <a href="README.es.md">Español</a> · <a href="README.fr.md">Français</a> · <a href="README.zh-CN.md">简体中文</a>
+  </p>
+</div>
 
-**Your AI agent is capable. Prove the result.**
+# AgentSmith — the open-source harness for coding agents
 
 **Proof before done.**
 
-AgentSmith gives coding agents project-owned rules, work-specific quality gates, and one visible
-evidence loop: understand the setup, choose the right profile, configure real checks, make a bounded
-change, exercise the real path, retain the proof, and hand off cleanly.
+Move from vibe coding to agentic engineering. Give Claude Code or Codex your project rules,
+a definition of done, and checks that produce evidence. Understand the task, make a bounded
+change, verify the result, and carry decisions into the next session.
 
-[Inspect the complete public proof](docs/demos/first-verified-loop/README.md), including the named
-red test, green verification, real-path output, receipt, handoff/resume, reversible installation
-fixtures, claim boundaries, and current limitations.
+Project rules and configured guardrails help address scope drift, repeated repair loops,
+and “done” claims without evidence.
 
-Support is reported separately for three things: whether an agent reads the rules, whether optional
-skills and external tool connections work, and whether AgentSmith can configure the agent directly.
-Support in one area does not imply support in the others. See the detailed
-[compatibility contract](docs/22-compatibility-contract.md) and the machine-readable list of
-[supported agents](config/agents.json).
+- **Start with the right problem.** Read existing code and define completion checks before editing.
+- **Keep changes reviewable.** Make small changes, choose native permissions, and enable optional secret-scanning hooks.
+- **Prove the result.** Run all configured checks, exercise the actual feature, and retain the evidence.
+- **Carry progress forward.** Save decisions and a clear handoff in your project.
+- **Improve from experience.** Capture a failure, propose a rule, hook, or test, and validate the change.
 
-## Targets
+![AgentSmith: project rules and configured checks around Claude Code or Codex; understand and bound the task, verify and keep proof, then continue and improve.](docs/assets/agentsmith-explainer.svg)
 
-Claude Code and Codex are the two **native integrations**, which means AgentSmith can configure
-their local applications directly. The compatibility table also tracks
-GitHub Copilot, Cursor, Gemini CLI, Windsurf/Devin, Cline, Roo Code, Aider, Continue, OpenHands,
-Goose, OpenCode, JetBrains Junie, Zed, and Jules.
+**Try the difference on one task.** [Run the disposable demo](docs/02-your-first-hour.md):
+reproduce a failure, make a bounded fix, and inspect the proof. Or
+[inspect the existing evidence bundle](docs/demos/first-verified-loop/README.md), including
+the failing test, verification, real-path output, receipt, and handoff/resume.
 
-Those 14 clients are certification targets, not blanket claims. Each registry record says what is
-supported, unsupported, or not yet verified. Tabby and LM Studio provide models rather than coding
-agent applications, so they need a separate test for each agent and model provider.
+Once your checks are trustworthy, explore [finite maker/checker runs](docs/21-autonomous-runs.md)
+with approved scope and explicit limits.
 
-## Requirements
+## Set up AgentSmith
 
-- Python 3.11 or newer
-- no third-party Python packages
-- `setup.sh` on macOS/Linux or `setup.ps1` on Windows
+Choose one route. Both use the same guided setup and produce the same project files.
 
-The launchers only locate Python and delegate identical arguments to `agentsmith.py`. Native
-Windows setup, helpers, and managed hooks require neither Git Bash nor WSL.
+### 1. Manual setup
 
-## Guided path
+1. Download the standalone build for macOS, Windows, or Linux from the [latest release](https://github.com/PromptPartner/agentsmith/releases/latest). The macOS and Windows builds are currently unsigned, so your operating system may ask you to confirm before running them.
+2. Open a terminal and run `agentsmith`.
+3. Answer the guided questions. AgentSmith shows the exact plan before it writes anything.
 
-Learn the complete loop in a disposable, dependency-free project before touching a valuable
-repository:
+The wizard can configure an existing project or create an empty folder and initialize Git for a new one. The standalone app includes its runtime; Python is not required.
 
-```bash
-git clone https://github.com/PromptPartner/agentsmith.git ~/tools/agentsmith
-cd ~/tools/agentsmith
-python3 agentsmith.py demo first-loop --target /tmp/agentsmith-first-loop
+### 2. Ask your agent
+
+Paste this into Claude Code, Codex, or another coding agent:
+
+```text
+Install AgentSmith for this project. Follow the official agent guide at
+https://github.com/PromptPartner/agentsmith/blob/master/AGENT-INSTALL.md
+Inspect the project first, explain your profile recommendation in plain language,
+show me the exact installation plan, and ask once before applying it.
 ```
 
-The command refuses a non-empty or symbolic-link target and prints the next three steps plus the
-exact delete boundary. The baseline is intentionally wrong: one passing check hides one failed
-check. Follow [`docs/02-your-first-hour.md`](docs/02-your-first-hour.md), or compare your run with
-the [reproducible evidence bundle](docs/demos/first-verified-loop/README.md).
+The agent inspects the repository without running project code, recommends a profile from evidence, previews the managed files, installs AgentSmith, and runs the doctor check.
 
-## Experienced path
+> Building AgentSmith from source is for contributors and advanced automation. See the [installation reference](INSTALL.md).
 
-Install directly into a project when you already know which work profile and client targets apply:
+## New project or existing project?
 
-```bash
-git clone https://github.com/PromptPartner/agentsmith.git ~/tools/agentsmith
-cd ~/tools/agentsmith
+| Starting point | What AgentSmith does | What it does not do |
+|---|---|---|
+| Existing project | Inspects the files, recommends a profile, preserves foreign content, and adds managed rules and verification scaffolding. | It does not execute the project during inspection or replace existing project configuration. |
+| New project | Creates or validates an empty folder, initializes Git, and adds AgentSmith. | It does not choose or generate an application framework. Your agent can build the application after setup. |
 
-./setup.sh --agent codex --profile software-dev --target /path/to/project
-./setup.sh --agent all --profile software-dev --with-skills --target /path/to/project
-```
+Project setup is the default because the rules travel with the repository and can be reviewed by collaborators. A user-wide core for every project is available under **Advanced options**. A layered setup combines that user-wide core with a small project-specific profile. See [project, user-wide, and layered setups](INSTALL.md#where-the-rules-live).
 
-```powershell
-pwsh ./setup.ps1 --agent all --profile software-dev --with-skills --target C:\path\to\project
-```
+## Work profiles
 
-`--agent` is repeatable and accepts comma-separated IDs or the groups `native`, `standard`,
-`local`, and `all`. The old `--platform claude|codex|both` selector remains an alias during
-migration. Mixing `--agent` and `--platform` is rejected.
+A profile tells the agent what “done” means for the work at hand. The wizard recommends one profile and shows the file evidence behind its choice. You can accept it or view the full list.
 
-```bash
-./setup.sh --agent claude --agent codex --profile general-admin --target .
-./setup.sh --agent gemini-cli,aider,continue,goose --profile document-creation --target .
-./setup.sh --platform both --profile software-dev --target .
-```
+| Profile | Use it for | Main proof |
+|---|---|---|
+| `software-dev` | Features, fixes, refactors, apps, libraries, and product UI | Build, checks, tests, security pass, real invocation |
+| `devops-setup` | Installers, CI, containers, configuration, and deployments | Dry run, idempotence, rollback, real deployment path |
+| `marketing-outreach` | Campaigns, email, newsletters, landing copy, and CRM work | Audience and factual review, links, rendering, send approval |
+| `document-creation` | Reports, proposals, specifications, manuals, and wikis | Source accuracy, structure, links, rendered file review |
+| `data-crunching` | Data cleaning, analysis, SQL, metrics, and ETL | Reproducibility, totals, edge cases, output inspection |
+| `general-admin` | Triage, scheduling, organization, summaries, and routine operations | Completeness, faithful output, destination and approval checks |
+| `deep-research` | Due diligence, market research, and cited investigations | Source quality, claim coverage, citations, synthesis review |
+| `creative-design` | Diagrams, decks, brand assets, images, and video | Brief, visual and export review, accessibility, brand consistency |
+| `security-audit` | Threat models, security reviews, penetration tests, and IAM audits | Reproduction, severity evidence, remediation, retest |
 
-Every project run writes one managed `AGENTS.md`. Claude's `CLAUDE.md` contains the same generated
-text. AgentSmith creates no file links, proprietary Markdown imports, or second copy of the
-universal rules that users must edit separately.
+`autonomous-loops` is an advanced modifier for scheduled or unattended work. Combine it with the main work profile; do not use it by itself. The [profile guide](docs/07-how-to-pick-a-profile.md) explains close calls, switching, and stacking.
 
-With the universal rules installed, agents use plain international English by default. They explain
-technical terms in common words and describe the effect and risk before commands. Use
-`--operator-bio` to state what you already know and where you want more detail. An explicit request
-to answer in another language always wins. See the copy-ready bios in [INSTALL.md](INSTALL.md#3-set-responsibility-background-and-external-write-consent).
+## What gets installed
 
-The experienced path uses the same contract as the guided demo: checks are inspectable, gaps remain
-visible, and evidence precedes a completion claim. Use `agentsmith status --target .` immediately
-after installation to see the effective setup and the single safest next action.
+- `AGENTS.md` is the canonical project agreement. Claude Code also receives a generated `CLAUDE.md`.
+- `.harness/verify.conf` defines the real checks for this project.
+- `.agentsmith/state.json` records only AgentSmith-owned settings so updates and removal preserve foreign content.
+- Optional skills, MCP servers, and hooks are available in the collapsed advanced step.
 
-When Codex or Claude Code helps with setup, it can optionally check current official model guidance
-and local availability, then offer dated quality-versus-usage advice. The installer itself remains
-offline-capable and never changes a reviewed run's model or budget; see
-[parallel work graphs](docs/24-parallel-work-graphs.md#model-advice-at-agent-assisted-setup).
+The cautious permission mode is the default. AgentSmith never treats a connected external service as permission to write to it.
 
-## Permissions and trusted mode
+## See the proof
 
-Omitting `--safety` is the cautious path for fresh installs and ordinary updates. The wizard asks
-`Safety [cautious/trusted] [cautious]:`; pressing Enter chooses cautious.
+The [First Verified Loop](docs/demos/first-verified-loop/README.md) records a failing test before the fix, passing verification afterward, a real command invocation, a receipt, and a resumable handoff. The [support registry](config/agents.json) separates instruction support from tested native behavior.
 
-| Mode | Claude Code | Codex | Use when |
-|---|---|---|---|
-| `cautious` (default) | `permissions.defaultMode = acceptEdits` | `approval_policy = "on-request"`, `sandbox_mode = "workspace-write"` | Normal development, shared/client machines, or any environment still earning trust |
-| `trusted` (explicit opt-in) | `permissions.defaultMode = bypassPermissions` | `approval_policy = "never"`, `sandbox_mode = "danger-full-access"` | A machine and repository you fully own, after you accept the wider range of possible changes |
+## Documentation and community
 
-Choose trusted only by passing `--safety trusted`. To move back, rerun with `--safety cautious` or
-omit the flag. When an older AgentSmith-managed trusted configuration is encountered, `--dry-run`
-shows the trusted-to-cautious migration; the real run warns and backs up the existing JSON/TOML
-before changing only AgentSmith's safety keys. Unrelated Claude JSON and Codex TOML content stays
-in place.
+- [Installation reference](INSTALL.md)
+- [Documentation map](docs/README.md)
+- [How verification becomes evidence](docs/03-verify-means-evidence.md)
+- [Agent compatibility](docs/22-compatibility-contract.md)
+- [Contributing](CONTRIBUTING.md) and [support](SUPPORT.md)
+- [Security policy](SECURITY.md) and [code of conduct](CODE_OF_CONDUCT.md)
 
-## Inspect and maintain an install
+MIT licensed. Built by [PromptPartner](https://promptpartner.ai/).
 
-```bash
-python3 agentsmith.py agents list
-python3 agentsmith.py compatibility
-python3 agentsmith.py doctor --agent all --target /path/to/project
-python3 agentsmith.py status --target /path/to/project
-python3 agentsmith.py profiles list
-python3 agentsmith.py profiles recommend --target /path/to/project
-python3 agentsmith.py profiles switch --target /path/to/project --profile software-dev --dry-run
-python3 agentsmith.py evaluate --agent native --dry-run --claude-max-usd 10 --codex-max-tokens 100000
+Optional integrations disclose their effects before installation. See [capability selection](docs/local-capabilities.md).
 
-agentsmith update check --json
-agentsmith update plan --target /path/to/project --save /tmp/agentsmith-update.json
-agentsmith update apply --plan /tmp/agentsmith-update.json
+Recall local notes with `agentsmith memory search "topic"` or `agentsmith memory read docs/research/note.md`. Optional `--with-memory-startup` adds reference-only startup suggestions; see [project memory](docs/project-memory.md). Orca delivery requires host observation.
 
-./setup.sh --agent all --profile auto --dry-run --target /path/to/project
-./setup.sh --agent all --uninstall --target /path/to/project
-```
-
-When installed as a command, omit `python3 agentsmith.py`. `status` is the short, read-only mental
-model: it reports topology, active profiles, the instruction chain, managed capabilities,
-verification coverage, and exactly one reasoned next action. `profiles recommend` is also read-only
-and uses repository evidence without calling a model. `profiles switch --dry-run` previews every
-managed instruction and manifest change; the actual switch preserves `.harness/verify.conf`
-byte-for-byte, creates instruction backups, and reports profile gates that remain unrepresented.
-
-`doctor` remains the detailed diagnostic surface. It resolves the selected client's effective
-global, project, and nested instruction chain, including fingerprints, generator metadata, and
-combined/duplicate token estimates. It separately inspects actual safety, skills, MCP, hooks,
-scanner commands, and installed runtime ownership. Duplicate full cores are warnings, not automatic
-rewrites; use the reported `--profile-only` recommendation only when a self-contained project copy
-is not required. Fixture evidence is never presented as a live-client claim.
-
-Updates select stable semantic-version tags from the official repository by default. `check` and
-`plan` do not change the installation. Planning stages the release in temporary directories and
-records the exact managed create/replace paths, hashes, and file modes. It uses the current trusted
-installer logic and treats candidate release files as data; candidate code does not run during
-planning. `apply --plan` is the approval boundary: it rechecks every planned fingerprint, runs the
-candidate installer in temporary directories, requires the exact staged set, writes
-managed changes atomically, runs strict health checks, and prints the path to a local rollback receipt. Use
-`agentsmith update rollback --receipt FILE` to restore the exact pre-update bytes. Pass `--global`
-instead of `--target` for the separate global scope. An explicit `--from` may select a fork or local
-test remote; a moving development branch is never selected implicitly. The first plan creates a
-machine-local authentication key at `~/.agentsmith/update-integrity.key`. Plans and receipts are
-bound to that key, so an edited or copied document cannot silently authorize different changes.
-Staged updates retain an installation's `--assemble-only` choice, so they do not introduce native
-permission settings or status-line helpers that the original install intentionally omitted.
-Selected project MCP configuration is fingerprinted and updated with the same approval and rollback
-boundary; MCP servers and settings that AgentSmith does not own remain intact.
-
-`agentsmith update configure --auto-check weekly` opts into short, opportunistic checks at command
-startup. They report availability only and never block the requested command when offline.
-Automatic installation is not supported; use `--auto-check off` to disable the checks. The old
-`install --self-update` flag remains temporarily for clean Git checkouts only. It fast-forwards the
-current checkout and cannot provide release selection, installation fingerprints, or rollback.
-
-`agentsmith evaluate` runs nine behavioral scenarios for installed Claude Code and Codex clients.
-The default is a write-free dry run that resolves clients, commands, isolation, scenarios, and
-budgets. Real execution requires `--live` plus a positive budget for each selected client; every
-trial uses a fresh temporary Git repository with native tool networking disabled. Raw logs stay
-under `~/.agentsmith/evaluations/raw/`; only reviewed, normalized schema-v2 records belong in
-`compatibility/evaluations/`.
-
-Codex trials additionally use a temporary `CODEX_HOME` with a single-file bridge to validated
-ChatGPT subscription authentication. User instructions, settings, hooks, plugins, apps, and MCP
-servers do not enter the trial, OAuth refreshes remain consistent with the source login, and
-API-key-authenticated Codex sessions fail closed.
-
-## Skills, MCP, and hooks
-
-`--with-skills` installs the canonical pack under `.agents/skills`. Claude additionally gets the
-`.claude/skills` adapter its runtime requires. Skills declare compatibility in frontmatter and do
-not infer runtime identity from their installation path.
-An existing same-name skill remains foreign and is neither overwritten nor added to AgentSmith's
-managed inventory; only an explicit `--force` replacement transfers ownership.
-
-`--with-mcp playwright,context7` manages project MCP only for clients with a supported native adapter.
-Foreign JSON/TOML content is preserved; manually owned Codex MCP names win over a managed copy.
-
-`--with-handoff-hooks`, `--with-ui-design-hook`, and `--with-hooks` install Python commands rather
-than shell helpers. Hooks are enabled only for documented native surfaces.
-
-Claude-only `--org-policy` manages the OS policy directory with backup/restore ownership. Use
-`HARNESS_ORG_DIR` when building or testing a fleet image without writing the default system path.
-
-## Cross-platform helpers
-
-```bash
-agentsmith verify discover --target . --save .harness/verification-plan.json
-agentsmith verify apply --target . --plan .harness/verification-plan.json --dry-run
-agentsmith verify apply --target . --plan .harness/verification-plan.json
-agentsmith verify --list
-agentsmith verify
-agentsmith verify --record .harness/receipts/my-check --tree-class operator-worktree
-agentsmith validate-integration --checkpoint .planning/integration-checkpoint.json
-agentsmith handoff ITEM-123
-agentsmith resume --target .
-agentsmith resume .harness/handoffs/handoff-YYYYMMDD-HHMM.md --target . --json
-agentsmith new-research "topic"
-agentsmith new-feedback "observed failure"
-agentsmith secret-scan
-agentsmith secret-scan --all
-agentsmith secret-scan FILE...
-printf '%s\n' "text to inspect" | agentsmith secret-scan -
-```
-
-An installed project carries the Python runtime and command shims under `.agentsmith/`, so hooks
-and skills resolve the same CLI on macOS, Linux, and Windows. Verification phases are
-project-owned and run with the native OS shell. `--record` plus an explicit `--tree-class` adds a
-local, durable `receipt.json` and redacted stdout/stderr sidecars; `clean-clone` refuses dirty Git
-state, and every mode refuses an existing destination. `validate-integration` reads the structured
-checkpoint described by `.harness/templates/integration-checkpoint.md`; it never installs or starts
-the configured package.
-
-`resume` selects the newest handoff unless a file is named. It validates required sections and
-unfilled scaffold fields, compares recorded Git facts with current read-only observations, and
-prints a validated recovery command plus a paste-ready kickoff. The command is limited to
-`agentsmith status`; stored kickoff prose is never echoed, and the CLI synthesizes a bounded prompt
-from the validated handoff path and command. Resume disables optional Git locks and never checks
-out, resets, stashes, commits, or edits the note.
-
-The default secret scan examines only added lines in the staged Git diff, which is the pre-commit
-contract. `--all` scans the tracked working tree; file arguments and `-` select explicit files or
-stdin. The scanner reports path, line, and pattern name with the matched value redacted. Put one
-Python regular expression per line in `.harness/secret-scan.allow` only for inert fixtures that
-cannot be reshaped; never use it to waive a live credential.
-
-## Profiles and operating model
-
-The universal core lives in `core/`; work-type quality gates live in `profiles/` for software,
-DevOps, marketing, documents, data, research, design, administration, security, and autonomous
-loops. The working loop is understand → plan → implement → verify with evidence → finalize →
-handoff.
-
-The software-development assembly remains roughly 8k–9k estimated tokens. AgentSmith does not
-silently substitute a weaker “local model” ruleset.
-
-## Development verification
-
-```bash
-python3 scripts/test-agent-conformance.py --strict
-python3 compatibility/test_registry.py
-python3 scripts/test-first-verified-loop-contracts.py --fvl07
-python3 scripts/test-first-verified-loop-contracts.py --fvl08
-python3 -m py_compile agentsmith.py
-```
-
-Strict conformance covers all 16 registry entries, selector groups, Unicode paths, CRLF foreign
-configuration, idempotent reruns, owned uninstall, canonical instruction selection, skill
-metadata, and Bash-free hook commands. CI runs it natively on Ubuntu, macOS, and Windows.
-FVL-08 records a machine-readable report on each native runner and accepts release evidence only
-when Linux, macOS, and Windows bind to the same clean Git commit and tree.
-
-## Documentation
-
-- [First Verified Loop public proof](docs/demos/first-verified-loop/README.md)
-- [Guided first hour](docs/02-your-first-hour.md)
-- [First loop and unattended-loop progression](docs/06-your-first-loop.md)
-- [Installation and migration](INSTALL.md)
-- [Compatibility contract](docs/22-compatibility-contract.md)
-- [Harness philosophy](docs/01-harness-philosophy.md)
-- [Why verification means evidence](docs/03-verify-means-evidence.md)
-- [Platforms and capabilities](docs/13-platforms-and-tools.md)
-- [Safety model](docs/15-safety-model.md)
-- [Troubleshooting](docs/17-troubleshooting.md)
-
-## License and credit
-
-MIT — see [LICENSE](LICENSE). Built and maintained by PromptPartner / PromptPartner. Public work
-that influenced the harness is credited in [docs/18-influences.md](docs/18-influences.md).
+`agentsmith audit-config` provides a read-only advisory report for selected project configuration. `--include-user` adds native user settings; `--fail-on high` adds a CI gate. See [configuration audit](docs/27-config-audit.md) for scope and limits.

@@ -77,7 +77,7 @@ Separate flag, deliberate choice:
 | Work start/finish | tells you in the session | comments on the item |
 | Good for | shared/client workspaces; trying the harness out; anything with an audience | your own workspace, where you want the paper trail written for you |
 
-The wizard asks this right after it asks *where* you track work. Both installers default to `ask`
+The wizard does not ask about trackers; set both with the flags above. Both installers default to `ask`
 — including on upgrade: a `CLAUDE.md` written before this split had its writes *inferred*, never
 granted, so re-running setup **fails closed** to `ask` and tells you how to opt back in.
 

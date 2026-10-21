@@ -1,0 +1,48 @@
+name: Feature request
+description: Propose a focused improvement to AgentSmith.
+title: "feature: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Explain the problem first. A concrete workflow is more useful than a proposed tool or implementation alone.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for the same request.
+          required: true
+        - label: I can describe a user problem that the current setup does not solve.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Who encounters the problem, and what are they trying to complete?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe observable behavior and what successful use looks like.
+    validations:
+      required: true
+  - type: textarea
+    id: current
+    attributes:
+      label: Current workaround
+      description: How do you handle this today?
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and trade-offs
+      description: Note affected platforms, agent clients, profiles, compatibility, or maintenance cost.
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Examples or evidence
+      description: Add sanitized examples, links, or screenshots that clarify the need.

@@ -1,11 +1,2 @@
-# leak-gate allow-list — one extended-regex per line; a finding matching any line is dropped.
-# Mechanism: see scripts/leak-gate.sh ("Tune with an optional .harness/leak-gate.allow file").
-# WARNING: every line here must be NON-BLANK. A blank line is an empty regex that matches EVERY
-#   finding and would silently disable the whole gate. Comment lines (#...) match no finding.
-# Intentional operator credit in README and immutable acceptance provenance in the Wave 2 spec.
-# All other tracked files and all other lines of the spec remain scanned normally.
-# The regex below uses a character class (L[u]kas) exactly like the gate's own TERMS list, so
-#   this file never trips the identity check on itself. The paths and spec line numbers below
-#   are tested by scripts/test-leak-gate.sh; names elsewhere remain blocked.
-^README\.md:[0-9]+:.*(L[u]kas|H[e]rtig)
-^docs/specs/parallel-development-and-integration-wave\.md:(4|437): (L[u]kas|H[e]rtig)( |$)
+# No exceptions are needed for the public source tree. A blank line here would match every
+# finding, so keep this file comment-only unless a narrowly tested false positive appears.

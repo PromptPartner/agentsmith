@@ -59,8 +59,9 @@ checkpoint, and passes that exact checkpoint OID to the child. A merge conflict 
 checkpoint worktree and all source branches; it never guesses a base or rewrites a source. Failed
 or rejected children block descendants, while unrelated ready nodes may finish.
 If a child exits unexpectedly before writing a terminal reason, its graph failure event records
-the exit code, last child phase, exception class, and controller source line. It does not copy
-raw child output into graph audit state.
+the exit code, last child phase, exception class, a fixed code for a known controller refusal
+(such as `refusal=previous-role-live`, or `refusal=unknown`), and controller source line. It does
+not copy raw child output into graph audit state.
 
 To interrupt, use `agentsmith graph stop --graph .harness/work-graph.json`; repeated requests are
 safe. It asks active child controllers to stop and retains state, logs, receipts, branches, and
@@ -197,3 +198,9 @@ work-graph evidence job is manual-only. The macOS fixture uses
 `sandbox-exec`; Linux needs `bubblewrap` and permission to create its
 namespaces. A missing sandbox is a failing report, never a skipped test or a portability claim.
 See [the security review](24-parallel-work-graphs-security.md) for the named threat checks.
+
+A child that exits before saving run state is recorded as a terminal launch failure in the graph's
+own dispatch record. `status` retains its bounded exit signature, marks that node failed and blocks
+dependent nodes. Independent peers can finish; the graph releases its lifecycle lock instead of
+waiting on an already dispatched node. Failed launches require operator reconciliation rather than
+an automatic retry with new limits.

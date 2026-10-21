@@ -18,7 +18,9 @@ helpers and managed hooks native on macOS, Linux, and Windows without Git Bash o
 - `AGENTS.md` is the canonical project instruction artifact.
 - Claude gets a generated `CLAUDE.md` copy.
 - Gemini CLI, Aider, Continue, and Goose get managed pointers to `AGENTS.md`.
-- Ten other certification targets use the direct `AGENTS.md` adapter.
+- Eleven other certification targets use the direct `AGENTS.md` adapter.
+- `--global` writes user-level rules for Claude, Codex, OpenCode, and Pi, and warns for any other
+  selected agent; see [user-level rules](13-platforms-and-tools.md#user-level-rules---global).
 - Foreign configuration is backed up and preserved; uninstall removes only owned content.
 - Claude receives a default model/directory/context status line only when no explicit choice exists;
   Codex's native default remains active without redundant managed TOML.
@@ -35,7 +37,9 @@ helpers and managed hooks native on macOS, Linux, and Windows without Git Bash o
   be overwritten.
 - Omitted `--safety` maps native clients to cautious approval/workspace settings;
   `--safety trusted` is an explicit opt-in. Managed trusted updates warn and back up before the
-  cautious migration.
+  cautious migration. `--safety container` keeps approvals but turns off the Codex sandbox for
+  Docker-style containers; `--assemble-only` leaves native settings untouched
+  ([Safety modes](15-safety-model.md#safety-modes)).
 
 Capabilities without a documented stable client interface stay disabled. AgentSmith does not
 emulate hooks or MCP to make matrix cells green.
@@ -46,6 +50,8 @@ emulate hooks or MCP to make matrix cells green.
 |---|---|
 | `agentsmith demo first-loop --target <new-path>` | Copy the deterministic dependency-free launch-readiness exercise into a new or empty explicit target; refuse broad, non-empty, or symbolic targets. |
 | `agentsmith status [--target <path>] [--json]` | Explain effective topology, profiles, instruction sources, managed capabilities, verification coverage, and one reasoned next action without changing state. |
+| `agentsmith wizard schema --json [--target <path>] [--lang <code>]` | Print the install wizard's questions, choices, conditions, computed defaults and translations, so another program can ask them. |
+| `agentsmith install --answers <file> [--dry-run]` | Apply wizard answers from a JSON file without a terminal, checked with the wizard's own rules; every problem is reported at once. |
 | `agentsmith profiles list [--json]` | List the shipped work profiles from their source files and name each verification preset. |
 | `agentsmith profiles recommend [--target <path>] [--json]` | Rank deterministic profile choices from repository evidence without calling a model or changing files. |
 | `agentsmith profiles switch --target <path> --profile <name[,name...]> [--dry-run]` | Preview or update only managed instructions and the existing profile selection; preserve foreign instruction bytes and custom verification. |
@@ -85,7 +91,7 @@ and optional manifest resource keys under a repository coordination lock before 
 
 ## Verification and CI
 
-The repository's strict conformance suite validates the 16-agent contract, registry schema,
+The repository's strict conformance suite validates the 17-agent contract, registry schema,
 selector groups, Python-only launchers and hooks, canonical instructions, Unicode paths, CRLF
 foreign config, idempotence, and uninstall ownership:
 

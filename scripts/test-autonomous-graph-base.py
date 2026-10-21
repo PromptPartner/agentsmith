@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -44,7 +46,101 @@ class GraphBaseTests(unittest.TestCase):
         self.assertNotIn("read_sensitive_value", reason)
         self.assertNotIn("D:\\a", reason)
 
+    def test_controller_refusal_reports_fixed_code_without_refusal_text(self) -> None:
+        for message, code in (
+                ("previous role is still live; stop it before recovery", "previous-role-live"),
+                ("cannot resume a dirty worktree", "dirty-worktree"),
+                ("run a conflicts with live run b: overlapping path scope 'src/**'", "scope-conflict"),
+                ("repository coordination is still held by live process 4242", "coordination-held")):
+            with self.subTest(code=code):
+                reason = GRAPH.child_failure_reason({"status": "making", "reason": None}, 2,
+                                                    f"error: {message} /private/hidden-secret\n")
+                self.assertEqual(reason, "child process exit=2 in making; exception=error; "
+                                         f"refusal={code}; location=unknown")
+        crafted = GRAPH.child_failure_reason({"status": "making", "reason": None}, 2,
+                                             "error: ghp_secret previous role is still live\n")
+        self.assertEqual(crafted, "child process exit=2 in making; exception=error; "
+                                  "refusal=unknown; location=unknown")
+
+    def test_exception_label_is_a_known_name_not_free_stderr_text(self) -> None:
+        # Any identifier-shaped word at the start of a stderr line used to become the label.
+        for stderr, label in (
+                ("ghp_attackerSecret123: free text\n", "unknown"),
+                ("hidden_customer_name\n", "unknown"),
+                ("Traceback (most recent call last):\nPermissionError: [Errno 13] denied\n", "PermissionError"),
+                ("json.decoder.JSONDecodeError: Expecting value\n", "json.decoder.JSONDecodeError"),
+                ("error: cannot resume a dirty worktree\n", "error"),
+                ("RunError: boom\n", "RunError")):
+            with self.subTest(label=label, stderr=stderr[:20]):
+                reason = GRAPH.child_failure_reason({"status": "making", "reason": None}, 1, stderr)
+                self.assertIn(f"exception={label};", reason)
+                self.assertNotIn("ghp_", reason)
+                self.assertNotIn("customer", reason)
+
+    def test_refusal_codes_name_real_controller_refusals(self) -> None:
+        source = (ROOT / "scripts" / "autonomous-run.py").read_text(encoding="utf-8")
+        messages = [re.sub(r"\{[^{}]*\}", "a", match.group(2))
+                    for match in re.finditer(r"RunError\(\s*f?(['\"])(.*?)\1", source)]
+        codes = [code for code, _ in GRAPH.CHILD_REFUSALS]
+        self.assertEqual(len(codes), len(set(codes)))
+        for code, pattern in GRAPH.CHILD_REFUSALS:
+            with self.subTest(code=code):
+                self.assertRegex(code, r"\A[a-z]+(-[a-z]+)*\Z")
+                self.assertTrue(any(pattern.match(message) for message in messages),
+                                f"{code} matches no RunError raised by the controller")
+
+    def test_child_state_read_retries_transient_windows_sharing_denial(self) -> None:
+        common = self.repo / ".git"
+        state_file = common / "agentsmith-runs" / "a" / "state.json"
+        state_file.parent.mkdir(parents=True)
+        state_file.write_text(json.dumps({
+            "run_id": "a", "manifest_sha256": self.graph["nodes"][0]["manifest_sha256"],
+            "repo": str(self.repo), "status": "making"}), encoding="utf-8")
+        contract = {"repo": self.repo, "nodes": {"a": self.graph["nodes"][0]}}
+        read_bytes = Path.read_bytes
+        attempts = 0
+
+        def transient_read(path: Path) -> bytes:
+            nonlocal attempts
+            if path == state_file:
+                attempts += 1
+                if attempts <= 3:
+                    error = PermissionError(errno.EACCES, "child is replacing its state")
+                    error.winerror = 32
+                    raise error
+            return read_bytes(path)
+
+        # Patching os.name makes Path() build Windows paths, so the Git lookup is stubbed.
+        with (mock.patch.object(GRAPH, "common_directory", return_value=common),
+              mock.patch.object(GRAPH.os, "name", "nt"),
+              mock.patch.object(Path, "read_bytes", transient_read),
+              mock.patch.object(GRAPH.time, "sleep") as pause):
+            self.assertEqual(GRAPH._child_state(contract, "a")["status"], "making")
+        self.assertEqual(attempts, 4)
+        self.assertEqual(pause.call_count, 3)
+        refused = PermissionError(errno.EPERM, "not a sharing race")
+        with (mock.patch.object(GRAPH, "common_directory", return_value=common),
+              mock.patch.object(GRAPH.os, "name", "nt"),
+              mock.patch.object(Path, "read_bytes", side_effect=refused) as read):
+            with self.assertRaises(PermissionError):
+                GRAPH._child_state(contract, "a")
+        self.assertEqual(read.call_count, 1)
+        persistent = PermissionError(errno.EACCES, "persistent sharing denial")
+        persistent.winerror = 32
+        with (mock.patch.object(GRAPH, "common_directory", return_value=common),
+              mock.patch.object(GRAPH.os, "name", "nt"),
+              mock.patch.object(Path, "read_bytes", side_effect=persistent) as read,
+              mock.patch.object(GRAPH.time, "sleep") as pause):
+            with self.assertRaises(PermissionError):
+                GRAPH._child_state(contract, "a")
+        self.assertEqual((read.call_count, pause.call_count), (500, 499))
+
     def setUp(self) -> None:
+        # These fixtures exercise graph contracts with run_controller stubbed; no
+        # native role is launched, so supported-host policy is a separate gate.
+        native_guard = mock.patch.object(CONTROLLER, "require_native_role_sandbox", return_value=None)
+        native_guard.start()
+        self.addCleanup(native_guard.stop)
         self.temporary = tempfile.TemporaryDirectory(prefix="agentsmith graph base ")
         self.addCleanup(self.temporary.cleanup)
         self.repo = Path(self.temporary.name).resolve() / "repo"
@@ -59,6 +155,8 @@ class GraphBaseTests(unittest.TestCase):
         nodes = []
         for run_id, dependencies in (("a", []), ("b", ["a"])):
             manifest = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
+            for role in manifest["roles"].values():
+                role["model"] = "fixture-model"
             manifest.update(run_id=run_id, spec_path="docs/specs/accepted.md",
                             implementation_ticket=f"IMP-{run_id}")
             manifest["scope"]["allowed_paths"] = [f"src/{run_id}/**"]
@@ -201,6 +299,7 @@ class GraphBaseTests(unittest.TestCase):
         with self.assertRaises(CONTROLLER.RunError):
             self._start("--graph", self.graph_path, "--effective-base", checkpoint)
 
+    @mock.patch.object(CONTROLLER.sys, "platform", "win32")
     def test_resume_revalidates_checkpoint_without_resetting_child_limits(self) -> None:
         checkpoint = self.accepted_predecessor()
         self.assertEqual(self._start("--graph", self.graph_path, "--effective-base", checkpoint), 0)

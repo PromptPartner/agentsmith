@@ -11,11 +11,11 @@
 #   5. The assembly quietly outgrows its budget. Static context is paid every turn; past the
 #      budget, rules stop competing for attention and start drowning each other (docs/04).
 #      Gated per-profile (core + one profile) because that is the supported common case.
-#      Stacked assemblies are measured and reported below, not gated — see docs/feedback/0007.
+#      Stacked assemblies are measured and reported below, not gated; incident record is private.
 #
 # Runs OFFLINE and touches nothing global. Never uses --global: under --global, --assemble-only
 # does NOT stop the write and --target is ignored, so a --global run here would overwrite the
-# real ~/.claude/CLAUDE.md — the operator's actual rules (see docs/feedback/0003).
+# real ~/.claude/CLAUDE.md — the operator's actual rules (incident record is private).
 #
 # Usage: bash scripts/test-assemble.sh    # exit 0 = all pass, 1 = a test failed
 set -uo pipefail   # deliberately NOT -e: run every test, then report

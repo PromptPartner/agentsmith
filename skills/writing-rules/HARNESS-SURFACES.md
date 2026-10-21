@@ -55,7 +55,7 @@ was doing work.
 
 `SKILL.md` gives no line count for sprawl and no break-even for disclosure, deliberately. A written
 threshold is a **cache** of a lookup, and this repo has already been misled by one: `docs/04` quoted
-a budget figure that drifted out of date and was believed (`docs/feedback/0007`). One number is
+a budget figure that drifted out of date and was believed (incident record in the private archive). One number is
 worth keeping, and it lives where a command can compute it — `scripts/lint-leanness.sh`. Everywhere
 else the test is a question, not a figure: does every branch need this, and does deleting it change
 behaviour?

@@ -9,7 +9,7 @@ working. Find the symptom, understand the cause, apply the fix.
 **cautious** safety mode (the omitted-flag and wizard default). Claude uses `acceptEdits`; Codex uses
 `approval_policy = "on-request"` with `sandbox_mode = "workspace-write"`. If that's more
 friction than you want *on a machine you own*, switch to trusted; if it's a shared or client box,
-keep it. How to change it: README → "Permissions and trusted mode", or [`15-safety-model.md`](15-safety-model.md).
+keep it. How to change it: [`15-safety-model.md` → Safety modes](15-safety-model.md#safety-modes).
 
 **"It ran a command I didn't want it to."** The inverse — you're in **trusted**
 (`bypassPermissions` in Claude; `approval_policy = "never"` and
@@ -18,6 +18,18 @@ back to cautious the same way. If this happened on a shared/prod machine, that's
 it from above with
 `--org-policy` for Claude ([`15-safety-model.md`](15-safety-model.md)). Codex organization policy
 is out of scope; the installer rejects platform `codex` or `both` with `--org-policy`.
+
+**"`agentsmith` exits with code 2: the wizard needs an interactive terminal."** Its input is
+not a terminal: a pipe, a CI job, or `docker exec` without `-t`. Nobody can answer the questions,
+so it stops before changing anything. Run it in a terminal (`docker exec -it …`), or pass the
+choices as flags: `agentsmith install --agent <id> --profile <name> --target <path>`.
+
+**"Every Codex command fails inside Docker: `bwrap: No permissions to create a new namespace`."**
+Cautious mode runs Codex in its workspace sandbox (bubblewrap), which needs unprivileged user
+namespaces. A default Docker container blocks them, so nothing can run. Reinstall with
+`--safety container`: approvals stay on and the container becomes the isolation boundary. If your
+image already configures Codex, use `--assemble-only` instead and AgentSmith leaves its settings
+alone. `agentsmith doctor` reports this case as `codex-cautious-in-container`.
 
 **"An update says trusted safety will migrate to cautious."** The prior AgentSmith-managed config
 used bypass/no-approval settings and the current command did not explicitly opt back into them.
@@ -118,8 +130,7 @@ or `malformed`, then remove the explicit disable or re-run install as appropriat
 **"The context-% handoff nudge didn't fire."** On Codex, expected: it is intentionally not
 installed because it depends on Claude's status line, and this release has no `PreCompact` hook.
 On Claude, it is best-effort by design. No hook can reliably read live context usage (a documented
-Claude Code gap; details in
-[`research/claude-code-hooks-and-managed-policy.md`](research/claude-code-hooks-and-managed-policy.md)),
+Claude Code gap; see the [hooks guide](https://code.claude.com/docs/en/hooks)),
 so the % nudge is fragile. It is also disabled until `HANDOFF_PCT_THRESHOLD` is set: no single
 percentage predicts quality across models and tasks. Use the reliable path: treat the `ctx:NN%`
 gauge as load information, hand off at a natural phase boundary or when quality signals appear,

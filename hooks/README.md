@@ -64,9 +64,7 @@ continue to work without that variable.
 > second freshness window.
 > The dependable signals remain the **"handoff" keyword** above and the **human-watched
 > `ctx:NN%` gauge** in the status line. Treat this as a backstop, not a guarantee. Full
-> feasibility write-up: `docs/research/claude-code-hooks-and-managed-policy.md`. The separate
-> automatic-rollover decision is recorded in
-> `docs/research/handoff-rollover-orchestration.md`.
+> feasibility and automatic-rollover decisions are retained in the private project archive.
 
 ## Manual wiring
 
@@ -120,10 +118,10 @@ Claude `Edit`/`Write`/`MultiEdit` file paths and every affected path in a Codex 
 `additionalContext`: it never blocks or auto-approves the edit. Unknown or malformed patch input
 is a silent no-op.
 
-Install it at setup, when you tell the wizard the project has a UI:
+Install it at setup with `--with-ui-design-hook` (the wizard lists it under advanced capabilities):
 
 ```bash
-./setup.sh --profile software-dev --design-system stub      # scaffolds DESIGN.md, then offers the hook
+./setup.sh --profile software-dev --design-system stub --with-ui-design-hook   # DESIGN.md + the hook
 ```
 
 Or wire it by hand (global `~/.claude/settings.json`):
@@ -186,3 +184,7 @@ branch-naming, and tests-green are not part of the current Python install contra
 
 Every guardrail is bypassable for a single commit/push with `--no-verify` (use sparingly), and each
 fails safe. They're plain scripts — test one directly, e.g. `hooks/git/conventional-commit.sh msg.txt`.
+
+Installation previews disclose hook effects and persist the selected effect versions. See [capability selection](../docs/local-capabilities.md).
+
+`memory-startup` is separately selected. Its scoped `SessionStart` registration matches startup/resume only; it supplies local references through `hookSpecificOutput.additionalContext`, with a two-second watchdog. See [memory limits and selection](../docs/project-memory.md).

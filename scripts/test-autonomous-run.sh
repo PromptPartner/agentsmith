@@ -37,26 +37,38 @@ make_fake() {
     '  if [ -n "$receipt" ]; then printf "%s\n" "$payload" > "$receipt"' \
     '  else printf "{\"type\":\"result\",\"total_cost_usd\":0.25,\"structured_output\":%s}\n" "$payload"; fi' \
     '}' \
+    'listed_paths() { git "$@" HEAD~1 HEAD | python3 -c "import json, sys; print(json.dumps(sys.stdin.buffer.read().decode().splitlines()))"; }' \
     'if [ "$mode" = malformed ]; then emit "{}"; exit 0; fi' \
     'if [[ "$prompt" == *"independent checker"* ]]; then' \
+    '  if [ -n "$receipt" ]; then for ((i=0; i<${#args[@]}; i++)); do if [ "${args[$i]}" = --sandbox ] && [ "${args[$((i+1))]}" != read-only ]; then exit 42; fi; done; fi' \
     '  if [ "$mode" = mutate-checker ]; then printf bad > src/checker.txt; fi' \
     '  if [ "$mode" = checker-ref ]; then git branch checker-escape; fi' \
+    '  if [ "$mode" = checker-slow ]; then printf "{\"type\":\"result\",\"total_cost_usd\":0.125}\n"; sleep 60 & printf "%s" "$!" > "$fake_root/child-pid"; wait; fi' \
     '  count_file="$fake_root/counter"' \
     '  count=0; [ -f "$count_file" ] && count="$(<"$count_file")"' \
     '  count=$((count+1)); printf "%s" "$count" > "$count_file"' \
     '  status=accepted' \
     '  if [ "$mode" = reject-once ] && [ "$count" -eq 1 ]; then status=rejected; fi' \
     '  if [ "$mode" = always-reject ]; then status=rejected; fi' \
-    '  emit "{\"status\":\"$status\",\"summary\":\"checker $status\",\"commit\":\"$(git rev-parse HEAD)\",\"changed_paths\":[\"src/change.txt\"],\"evidence\":[\"fake check\"],\"unresolved\":[],\"next_state\":\"$status\"}"' \
+    '  paths_json="[\"src/change.txt\"]"; if [ -f "$fake_root/paths_json" ]; then paths_json="$(<"$fake_root/paths_json")"; fi' \
+    '  emit "{\"status\":\"$status\",\"summary\":\"checker $status\",\"commit\":\"$(git rev-parse HEAD)\",\"changed_paths\":$paths_json,\"evidence\":[\"fake check\"],\"unresolved\":[],\"next_state\":\"$status\"}"' \
     'else' \
     '  if [ "$mode" = slow ]; then sleep 20; fi' \
     '  if [ "$mode" = collision-slow ]; then sleep 60; fi' \
+    '  if [ "$mode" = forge-state ]; then common="$(git rev-parse --git-common-dir)"; for target in "$common"/agentsmith-runs/*/state.json; do printf forged > "$(dirname "$target")/forged.json"; done; fi' \
     '  mkdir -p src' \
     '  n=0; [ -f src/change.txt ] && n="$(<src/change.txt)"' \
     '  printf "%s\n" "$((n+1))" > src/change.txt' \
     '  changed="src/change.txt"' \
+    '  if [ "$mode" = weaken-verifier ]; then printf "bypass :: true\n" > .harness/verify.conf; git add .harness/verify.conf; changed=".harness/verify.conf\",\"src/change.txt"; fi' \
     '  if [ "$mode" = out-of-scope ]; then printf x > forbidden.txt; changed="forbidden.txt"; fi' \
     '  if [ "$mode" = ignored-outside ]; then printf x > ignored.tmp; fi' \
+    '  if [ "$mode" = ignored-control ]; then printf x > "$(printf "clear\033[2J.cache")"; fi' \
+    '  if [[ "$mode" == move-protected* ]]; then git mv tests/test_baseline.py src/moved_checks.py; fi' \
+    '  if [ "$mode" = move-in-scope ]; then git mv src/keep.txt src/kept.txt; fi' \
+    '  if [ "$mode" = quoted-denied ]; then printf "edited\n" > "privé/notes.md"; git add "privé/notes.md"; fi' \
+    '  if [ "$mode" = control-name ]; then crafted="$(printf "clear\033[2J.txt")"; printf x > "$crafted"; git add -- "$crafted"; fi' \
+    '  if [ "$mode" = plain-accented ]; then printf "edited\n" > "src/résumé.txt"; git add "src/résumé.txt"; fi' \
     '  git add src/change.txt forbidden.txt 2>/dev/null || git add src/change.txt' \
     '  if [ "$mode" = amend-history ]; then git commit --amend --no-edit >/dev/null' \
     '  else git commit -m "test(run): fake maker checkpoint" >/dev/null; fi' \
@@ -66,7 +78,13 @@ make_fake() {
     '  if [ "$mode" = object-mutation ]; then object="$(git rev-parse HEAD^)"; object_path="$(git rev-parse --git-common-dir)/objects/${object:0:2}/${object:2}"; chmod u+w "$object_path"; printf bad > "$object_path"; fi' \
     '  if [ "$mode" = object-admin ]; then mkdir -p "$(git rev-parse --git-common-dir)/objects/info"; printf /tmp/escape > "$(git rev-parse --git-common-dir)/objects/info/alternates"; fi' \
     '  if [ "$mode" = other-index ]; then printf bad >> "$(git rev-parse --git-common-dir)/index"; fi' \
-    '  emit "{\"status\":\"completed\",\"summary\":\"fake maker\",\"commit\":\"$(git rev-parse HEAD)\",\"changed_paths\":[\"$changed\"],\"evidence\":[\"fake maker evidence\"],\"unresolved\":[],\"next_state\":\"checking\"}"' \
+    '  paths_json="[\"$changed\"]"' \
+    '  if [ "$mode" = move-protected ]; then paths_json="$(listed_paths diff --name-only --find-renames)"; fi' \
+    '  if [ "$mode" = move-protected-listed ] || [ "$mode" = move-in-scope ]; then paths_json="$(listed_paths diff --name-only --no-renames)"; fi' \
+    '  if [ "$mode" = quoted-denied ]; then paths_json="$(listed_paths diff --name-only --no-renames)"; fi' \
+    '  if [ "$mode" = plain-accented ]; then paths_json="$(listed_paths -c core.quotepath=off diff --name-only --no-renames)"; fi' \
+    '  if [ "$paths_json" != "[\"$changed\"]" ]; then printf "%s" "$paths_json" > "$fake_root/paths_json"; fi' \
+    '  emit "{\"status\":\"completed\",\"summary\":\"fake maker\",\"commit\":\"$(git rev-parse HEAD)\",\"changed_paths\":$paths_json,\"evidence\":[\"fake maker evidence\"],\"unresolved\":[],\"next_state\":\"checking\"}"' \
     'fi' \
     'if [ -n "$receipt" ]; then printf "%s\n" "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":7,\"output_tokens\":3}}"; fi' > "$path/bin/fake-agent"
   chmod +x "$path/bin/fake-agent"
@@ -104,6 +122,8 @@ import json, pathlib, sys
 repo, run_id, template = pathlib.Path(sys.argv[1]), sys.argv[2], pathlib.Path(sys.argv[3])
 value = json.loads(template.read_text())
 value.update(run_id=run_id, spec_path='docs/specs/test.md', implementation_ticket='IMP-1')
+for role in value['roles'].values():
+    role['model'] = 'fixture-model'
 value['scope']['allowed_paths'] = ['src/**']
 value['verify']['command'] = 'git rev-parse HEAD >/dev/null && test -f src/change.txt'
 value['limits'].update(max_attempts=3, wall_minutes=2)
@@ -271,6 +291,35 @@ s = json.load(open(sys.argv[1]))
 assert s['codex_tokens_used'] == 10
 assert s['claude_cost_usd'] == 0.25
 PY
+
+assert 'verification receipt binds the accepted candidate and raw evidence' python3 - "$repo/.git/agentsmith-runs/success/state.json" <<'PYTEST'
+import hashlib, json, pathlib, sys
+state = json.load(open(sys.argv[1]))
+proof = json.load(open(state['verification_receipt']))
+assert proof['candidate_commit'] == state['accepted_commit']
+assert proof['spec_sha256'] == state['spec_sha256']
+assert proof['manifest_sha256'] == state['manifest_sha256']
+assert proof['exit_code'] == 0
+root = pathlib.Path(sys.argv[1]).parent
+assert proof['output_sha256'] == hashlib.sha256((root / 'attempt-1-verify.txt').read_bytes()).hexdigest()
+assert proof['checker_receipt_sha256'] == hashlib.sha256((root / 'attempt-1-checker-receipt.json').read_bytes()).hexdigest()
+assert proof['checker_status'] == 'accepted'
+assert json.load(open(root / 'attempt-1-maker-exit.json'))['exit_code'] == 0
+assert json.load(open(root / 'attempt-1-checker-exit.json'))['exit_code'] == 0
+PYTEST
+
+repo="$(new_repo codex-checker)"; make_fake "$repo/../fake"; manifest "$repo" codex-checker
+python3 - "$repo/.harness/runs/codex-checker.json" <<'PYTEST'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); v = json.loads(p.read_text())
+v['roles']['maker']['runtime'] = 'claude'
+v['roles']['checker']['runtime'] = 'codex'
+p.write_text(json.dumps(v) + '\n')
+PYTEST
+git -C "$repo" add . && git -C "$repo" commit -qm 'test: inverse role adapters'
+if (cd "$repo" && invoke "$repo" accept start .harness/runs/codex-checker.json >../out 2>../err); then
+  ok 'Claude maker and Codex checker complete with read-only checker argv'
+else bad 'inverse role adapters failed'; fi
 
 echo 'autonomous-run — rejection and bounded retry'
 repo="$(new_repo retry)"; make_fake "$repo/../fake"; manifest "$repo" retry
@@ -546,6 +595,7 @@ import json, sys
 events = [json.loads(line) for line in open(sys.argv[1])]
 raise SystemExit(0 if sum(event['event'] == 'run_interrupted' for event in events) == 1 else 1)
 PY
+assert 'stopped controller ends without a traceback' bash -c "! grep -q '^Traceback' '$repo/../err'"
 deadline_before="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["deadline_epoch"])' "$repo/.git/agentsmith-runs/stopped/state.json")"
 printf 'dirty\n' > "$repo-stopped/dirty.tmp"
 if (cd "$repo" && invoke "$repo" accept resume stopped >../dirty-out 2>../dirty-err); then
@@ -623,24 +673,62 @@ echo 'autonomous-run — repeated start/stop race'
 race_fail=0
 for iteration in 1 2 3 4 5; do
   repo="$(new_repo "race-$iteration")"; make_fake "$repo/../fake"; manifest "$repo" "race-$iteration"
+  if [ "$iteration" -eq 1 ]; then
+    # Exercise startup beyond the old 2.5-second window in this copied fixture.
+    python3 - "$repo/../fake/controller.py" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+source = path.read_text()
+entry = 'if __name__ == "__main__":\n    raise SystemExit(main())'
+assert entry in source
+path.write_text(source.replace(entry, 'if __name__ == "__main__":\n'
+    '    if len(sys.argv) > 1 and sys.argv[1] == "start": time.sleep(4)\n'
+    '    raise SystemExit(main())'))
+PY
+  fi
   (
     cd "$repo" || exit 1
     invoke "$repo" slow start ".harness/runs/race-$iteration.json" >../out 2>../err
   ) & runner=$!
   state_file="$repo/.git/agentsmith-runs/race-$iteration/state.json"
-  for _ in {1..50}; do
-    sleep 0.05
-    if [ -f "$state_file" ] && python3 -c 'import json,sys; raise SystemExit(0 if json.load(open(sys.argv[1])).get("active_pid") else 1)' "$state_file"; then break; fi
-  done
-  (cd "$repo" && python3 "$repo/../fake/controller.py" stop "race-$iteration" >/dev/null 2>&1) || race_fail=1
+  if ! python3 - "$state_file" <<'PY'
+import json, pathlib, sys, time
+path = pathlib.Path(sys.argv[1])
+deadline = time.monotonic() + 10
+while time.monotonic() < deadline:
+    try:
+        if json.loads(path.read_text()).get('active_pid'):
+            raise SystemExit(0)
+    except (OSError, ValueError):
+        pass
+    time.sleep(0.05)
+print('maker readiness barrier timed out: ' + str(path), file=sys.stderr)
+raise SystemExit(1)
+PY
+  then
+    race_fail=1
+    cat "$repo/../err" >&2
+    if [ -f "$state_file" ]; then cat "$state_file" >&2; fi
+    stop_started_run "$repo" "race-$iteration"
+    wait "$runner" 2>/dev/null || true
+    break
+  fi
+  if ! (cd "$repo" && python3 "$repo/../fake/controller.py" stop "race-$iteration" >../stop-out 2>../stop-err); then
+    race_fail=1
+    cat "$repo/../stop-out" "$repo/../stop-err" "$repo/../err" >&2
+  fi
   wait "$runner" 2>/dev/null || true
-  python3 - "$state_file" "$repo/.git/agentsmith-runs/race-$iteration/events.jsonl" <<'PY' || race_fail=1
+  if ! python3 - "$state_file" "$repo/.git/agentsmith-runs/race-$iteration/events.jsonl" <<'PY'
 import json, sys
 state = json.load(open(sys.argv[1]))
 events = [json.loads(line) for line in open(sys.argv[2])]
-assert state['status'] == 'interrupted'
-assert sum(event['event'] == 'run_interrupted' for event in events) == 1
+assert state['status'] == 'interrupted', json.dumps(state, sort_keys=True)
+assert sum(event['event'] == 'run_interrupted' for event in events) == 1, events
 PY
+  then
+    race_fail=1
+    cat "$repo/../stop-out" "$repo/../stop-err" "$repo/../err" >&2
+  fi
 done
 if [ "$race_fail" -eq 0 ]; then ok 'repeated stop collisions stay parseable with one interruption each'
 else bad 'repeated stop collision invariant failed'; fi
@@ -654,6 +742,198 @@ git -C "$repo" add . && git -C "$repo" commit -qm 'test: invalid ticket seam'
 if (cd "$repo" && invoke "$repo" accept start .harness/runs/same-ticket.json >../out 2>../err); then
   bad 'decision ticket was reused for implementation'
 else ok 'decision and implementation tickets must differ'; fi
+
+repo="$(new_repo weaken-verifier)"; make_fake "$repo/../fake"; manifest "$repo" weaken-verifier
+mkdir -p "$repo/.harness"
+printf 'required :: exit 1\n' > "$repo/.harness/verify.conf"
+python3 - "$repo/.harness/runs/weaken-verifier.json" <<'PYTEST'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); v = json.loads(p.read_text())
+v['scope']['allowed_paths'] = ['**']
+p.write_text(json.dumps(v) + '\n')
+PYTEST
+git -C "$repo" add . && git -C "$repo" commit -qm 'test: failing approved verification policy'
+if (cd "$repo" && invoke "$repo" weaken-verifier start .harness/runs/weaken-verifier.json >../out 2>../err); then
+  bad 'maker weakened the approved verifier'
+else ok 'maker cannot weaken verification even with broad scope'; fi
+assert 'verifier weakening explains separate operator review' grep -q 'protected verification inputs' "$repo/../err"
+assert 'policy rejection retains committed candidate' test -f "$repo/../repo-weaken-verifier/src/change.txt"
+
+# A move deletes the old path and adds the new one. Git's default listing shows the new path only,
+# so each case below fails if the controller reads that listing again.
+repo="$(new_repo move-scope)"; make_fake "$repo/../fake"; manifest "$repo" move-scope
+mkdir -p "$repo/tests"; printf 'approved baseline check\n' > "$repo/tests/test_baseline.py"
+git -C "$repo" add . && git -C "$repo" commit -qm 'test: approved baseline check'
+if (cd "$repo" && invoke "$repo" move-protected start .harness/runs/move-scope.json >../out 2>../err); then
+  bad 'maker moved a baseline check into scope and was accepted'
+else ok 'moving a baseline check into scope escalates'; fi
+assert 'scope escalation names the old path of a move' grep -q 'outside scope: tests/test_baseline.py' "$repo/../err"
+
+repo="$(new_repo move-broad)"; make_fake "$repo/../fake"; manifest "$repo" move-broad
+mkdir -p "$repo/tests"; printf 'approved baseline check\n' > "$repo/tests/test_baseline.py"
+set_manifest_scope "$repo" move-broad '**' '[]'
+if (cd "$repo" && invoke "$repo" move-protected start .harness/runs/move-broad.json >../out 2>../err); then
+  bad 'broad scope accepted a moved baseline check that the receipt left out'
+else ok 'a receipt that leaves out the old path of a move escalates'; fi
+assert 'short receipt is rejected as a Git state mismatch' grep -q 'maker receipt does not match' "$repo/../err"
+
+repo="$(new_repo move-listed)"; make_fake "$repo/../fake"; manifest "$repo" move-listed
+mkdir -p "$repo/tests"; printf 'approved baseline check\n' > "$repo/tests/test_baseline.py"
+set_manifest_scope "$repo" move-listed '**' '[]'
+if (cd "$repo" && invoke "$repo" move-protected-listed start .harness/runs/move-listed.json >../out 2>../err); then
+  bad 'broad scope accepted a moved baseline check'
+else ok 'moving a baseline check escalates even with broad scope'; fi
+assert 'moved baseline check needs separate operator review' \
+  grep -q 'protected verification inputs.*tests/test_baseline.py' "$repo/../err"
+
+repo="$(new_repo move-allowed)"; make_fake "$repo/../fake"; manifest "$repo" move-allowed
+mkdir -p "$repo/src"; printf 'keep\n' > "$repo/src/keep.txt"
+git -C "$repo" add . && git -C "$repo" commit -qm 'test: file the maker may move'
+if (cd "$repo" && invoke "$repo" move-in-scope start .harness/runs/move-allowed.json >../out 2>../err); then
+  ok 'a move inside scope is accepted when both receipts list old and new path'
+else
+  bad 'a move inside scope was rejected'
+  sed -n '1,40p' "$repo/../err" 2>/dev/null || true
+fi
+
+# Git's display listing quotes and escapes a non-ASCII name. A scope rule is written with the real
+# name, so the controller must compare real names: the first maker repeats the quoted listing.
+repo="$(new_repo quoted-denied)"; make_fake "$repo/../fake"; manifest "$repo" quoted-denied
+mkdir -p "$repo/privé"; printf 'private\n' > "$repo/privé/notes.md"
+python3 - "$repo/.harness/runs/quoted-denied.json" <<'PYTEST'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); v = json.loads(p.read_text(encoding='utf-8'))
+v['scope']['allowed_paths'] = ['**']
+v['scope']['denied_paths'].append('priv\u00e9/**')
+p.write_text(json.dumps(v) + '\n', encoding='utf-8')
+PYTEST
+git -C "$repo" add . && git -C "$repo" commit -qm 'test: denied directory with a non-ASCII name'
+if (cd "$repo" && invoke "$repo" quoted-denied start .harness/runs/quoted-denied.json >../out 2>../err); then
+  bad 'edit under a denied non-ASCII path was accepted'
+else ok 'edit under a denied non-ASCII path escalates'; fi
+assert 'scope escalation names the denied non-ASCII path' grep -q 'outside scope: priv' "$repo/../err"
+
+repo="$(new_repo control-name)"; make_fake "$repo/../fake"; manifest "$repo" control-name
+if (cd "$repo" && invoke "$repo" control-name start .harness/runs/control-name.json >../out 2>../err); then
+  bad 'out-of-scope file with a crafted name was accepted'
+else ok 'out-of-scope file with a crafted name escalates'; fi
+assert 'crafted name is shown with its control character escaped' grep -q -F 'outside scope: clear\x1b[2J.txt' "$repo/../err"
+assert 'crafted name writes no control character to the terminal' bash -c "! grep -q \$'\\033' '$repo/../err'"
+
+repo="$(new_repo ignored-control)"; make_fake "$repo/../fake"; manifest "$repo" ignored-control
+printf '*.cache\n' >> "$repo/.gitignore"
+git -C "$repo" add . && git -C "$repo" commit -qm 'test: ignore cache files'
+if (cd "$repo" && invoke "$repo" ignored-control start .harness/runs/ignored-control.json >../out 2>../err); then
+  bad 'ignored out-of-scope file with a crafted name was accepted'
+else ok 'ignored out-of-scope file with a crafted name escalates'; fi
+assert 'crafted ignored name is shown with its control character escaped' \
+  grep -q -F 'ignored paths outside scope: clear\x1b[2J.cache' "$repo/../err"
+assert 'crafted ignored name writes no control character to the terminal' bash -c "! grep -q \$'\\033' '$repo/../err'"
+
+repo="$(new_repo plain-accented)"; make_fake "$repo/../fake"; manifest "$repo" plain-accented
+mkdir -p "$repo/src"; printf 'base\n' > "$repo/src/résumé.txt"
+git -C "$repo" add . && git -C "$repo" commit -qm 'test: allowed file with a non-ASCII name'
+if (cd "$repo" && invoke "$repo" plain-accented start .harness/runs/plain-accented.json >../out 2>../err); then
+  ok 'edit to an allowed non-ASCII path is accepted when receipts use the plain name'
+else
+  bad 'edit to an allowed non-ASCII path was rejected'
+  sed -n '1,40p' "$repo/../err" 2>/dev/null || true
+fi
+
+echo 'autonomous-run — trusted state and stage recovery'
+repo="$(new_repo stage-recovery)"; make_fake "$repo/../fake"; manifest "$repo" stage-recovery
+(cd "$repo" && invoke "$repo" checker-slow start .harness/runs/stage-recovery.json >../out 2>../err) & runner=$!
+for _ in {1..100}; do
+  if [ -f "$repo/../fake/child-pid" ]; then break; fi
+  sleep 0.05
+done
+assert 'checker stage was exercised before interruption' test -f "$repo/../fake/child-pid"
+(cd "$repo" && python3 "$repo/../fake/controller.py" stop stage-recovery >../stop-out 2>../stop-err)
+wait "$runner" 2>/dev/null || true
+assert 'interruption retains checking stage and emitted spend' python3 - "$repo/.git/agentsmith-runs/stage-recovery/state.json" <<'PYTEST'
+import json, sys
+v=json.load(open(sys.argv[1]))
+assert v['stage']=='checking' and v['status']=='interrupted'
+assert v['attempt']==1 and v['claude_cost_usd']==0.125
+PYTEST
+assert 'stop terminates checker descendants' python3 - "$repo/../fake/child-pid" <<'PYTEST'
+import os, pathlib, sys, time
+pid=int(pathlib.Path(sys.argv[1]).read_text())
+for _ in range(100):
+    try: os.kill(pid,0)
+    except ProcessLookupError: break
+    time.sleep(0.02)
+else: raise AssertionError('checker child remains live')
+PYTEST
+if (cd "$repo" && invoke "$repo" accept resume stage-recovery >../resume-out 2>../resume-err); then
+  ok 'checking stage resumes to acceptance'
+else bad 'checking stage recovery failed'; cat "$repo/../resume-err"; fi
+assert 'recovery checks the same candidate without another maker' python3 - "$repo/.git/agentsmith-runs/stage-recovery/state.json" "$repo-stage-recovery/src/change.txt" <<'PYTEST'
+import json, pathlib, sys
+v=json.load(open(sys.argv[1]))
+assert v['attempt']==1 and v['status']=='accepted'
+assert v['candidate_commit']==v['accepted_commit']
+assert pathlib.Path(sys.argv[2]).read_text().strip()=='1'
+assert v['claude_cost_usd']==0.375
+PYTEST
+assert 'recovery archives interrupted checker logs' python3 - "$repo/.git/agentsmith-runs/stage-recovery" <<'PYTEST'
+import pathlib,sys
+root=pathlib.Path(sys.argv[1])
+logs=list((root/'archive').glob('*/attempt-1-checker.stdout'))
+assert len(logs)==1 and '0.125' in logs[0].read_text()
+assert (root/'attempt-1-checker-exit.json').exists()
+PYTEST
+
+
+echo 'autonomous-run — hard crash during checking'
+repo="$(new_repo checker-crash)"; make_fake "$repo/../fake"; manifest "$repo" checker-crash
+(cd "$repo" && invoke "$repo" checker-slow start .harness/runs/checker-crash.json >../out 2>../err) & runner=$!
+for _ in {1..100}; do
+  if [ -f "$repo/../fake/child-pid" ]; then break; fi
+  sleep 0.05
+done
+assert 'checker emitted durable output before controller crash' test -f "$repo/../fake/child-pid"
+controller_pid="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["controller_pid"])' "$repo/.git/agentsmith-runs/checker-crash/state.json")"
+kill -KILL "$controller_pid"
+wait "$runner" 2>/dev/null || true
+(cd "$repo" && python3 "$repo/../fake/controller.py" stop checker-crash >../stop-out 2>../stop-err)
+if (cd "$repo" && invoke "$repo" accept resume checker-crash >../resume-out 2>../resume-err); then
+  ok 'hard crash recovers the checkpoint and abandoned checker worktree'
+else bad 'hard crash did not recover'; cat "$repo/../resume-err"; fi
+assert 'crash recovery replays reported usage exactly once and retains attempt' python3 - "$repo/.git/agentsmith-runs/checker-crash/state.json" <<'PYTEST'
+import json,sys
+v=json.load(open(sys.argv[1]))
+assert v['status']=='accepted' and v['attempt']==1
+assert v['claude_cost_usd']==0.375
+assert v['accepted_commit']==v['candidate_commit']
+assert 'usage_pending' not in v
+PYTEST
+assert 'hard crash retains prior stdout in the archive' python3 - "$repo/.git/agentsmith-runs/checker-crash" <<'PYTEST'
+import pathlib,sys
+root=pathlib.Path(sys.argv[1])
+assert any('0.125' in p.read_text() for p in (root/'archive').glob('*/attempt-1-checker.stdout'))
+PYTEST
+
+echo 'autonomous-run — checker removal stopped after its folder was deleted'
+repo="$(new_repo checker-half-removed)"; make_fake "$repo/../fake"; manifest "$repo" checker-half-removed
+(cd "$repo" && invoke "$repo" checker-slow start .harness/runs/checker-half-removed.json >../out 2>../err) & runner=$!
+for _ in {1..100}; do
+  if [ -f "$repo/../fake/child-pid" ]; then break; fi
+  sleep 0.05
+done
+assert 'checker was running before the removal stopped' test -f "$repo/../fake/child-pid"
+controller_pid="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["controller_pid"])' "$repo/.git/agentsmith-runs/checker-half-removed/state.json")"
+kill -KILL "$controller_pid"
+wait "$runner" 2>/dev/null || true
+(cd "$repo" && python3 "$repo/../fake/controller.py" stop checker-half-removed >../stop-out 2>../stop-err)
+# `git worktree remove` deletes the folder before the entry under .git/worktrees.
+checker_entry="$repo/.git/worktrees/$(basename "$repo")-checker-half-removed-check-1"
+rm -rf "$repo-checker-half-removed-check-1"
+assert 'stopped removal leaves the checker entry without its folder' test -d "$checker_entry"
+if (cd "$repo" && invoke "$repo" accept resume checker-half-removed >../resume-out 2>../resume-err); then
+  ok 'resume finishes a checker removal stopped after its folder was deleted'
+else bad 'resume escalated over a half-removed checker'; cat "$repo/../resume-err"; fi
+assert 'resume removes the leftover checker entry' test ! -e "$checker_entry"
 
 echo
 printf 'autonomous-run: %d passed, %d failed\n' "$pass" "$fail"

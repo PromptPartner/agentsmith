@@ -181,9 +181,11 @@ def parse_structured_output(receipt_path: Path | None, stdout: str, required: It
     raise ValueError("native client emitted no schema-shaped structured output")
 
 
-def claude_sandbox_settings(cwd: Path, extra_write_dirs: Iterable[Path] = (), *, read_only: bool = False) -> dict[str, Any]:
+def claude_sandbox_settings(cwd: Path, extra_write_dirs: Iterable[Path] = (), *, read_only: bool = False,
+                            protected_write_paths: Iterable[Path] = ()) -> dict[str, Any]:
     writes = [] if read_only else [str(path) for path in extra_write_dirs]
     reads = [str(cwd), *[str(path) for path in extra_write_dirs]]
+    protected = [str(path.resolve()) for path in protected_write_paths]
     return {
         "sandbox": {
             "enabled": True,
@@ -192,6 +194,7 @@ def claude_sandbox_settings(cwd: Path, extra_write_dirs: Iterable[Path] = (), *,
             "allowUnsandboxedCommands": False,
             "filesystem": {
                 "allowWrite": writes,
+                "denyWrite": [*([str(cwd)] if read_only else []), *protected],
                 "denyRead": [str(Path.home())],
                 "allowRead": reads,
             },
@@ -200,9 +203,32 @@ def claude_sandbox_settings(cwd: Path, extra_write_dirs: Iterable[Path] = (), *,
         "permissions": {
             "deny": ["WebFetch", "WebSearch", "mcp__*"]
             + (["Edit", "Write", "NotebookEdit"] if read_only else [])
+            + [f"Edit(/{path})" for path in protected]
+            + [f"Edit(/{path}/**)" for path in protected]
         },
         "enableAllProjectMcpServers": False,
+        "disableAllHooks": True,
     }
+
+
+def codex_permissions(cwd: Path, extra_write_dirs: Iterable[Path] = (), *, read_only: bool = False,
+                      protected_write_paths: Iterable[Path] = ()) -> dict[str, Any]:
+    temporary_access = 'read' if read_only else 'write'
+    filesystem = {':root': 'read', ':tmpdir': temporary_access, ':slash_tmp': temporary_access}
+    if not read_only:
+        for path in (cwd, *extra_write_dirs):
+            filesystem[str(path.resolve())] = 'write'
+    for path in protected_write_paths:
+        filesystem[str(path.resolve())] = 'read'
+    return {'filesystem': filesystem, 'network': {'enabled': False}}
+
+
+def toml_inline(value: Any) -> str:
+    if isinstance(value, dict):
+        return '{' + ','.join(json.dumps(key) + '=' + toml_inline(item) for key, item in value.items()) + '}'
+    if isinstance(value, bool):
+        return str(value).lower()
+    return json.dumps(value)
 
 
 def build_native_command(
@@ -218,18 +244,29 @@ def build_native_command(
     model: str = "",
     effort: str = "",
     claude_max_usd: float = 0.0,
+    protected_write_paths: Iterable[Path] = (),
 ) -> list[str]:
     if agent == "codex":
-        command = [*native_command_prefix(agent), "exec", "--json", "--sandbox", "workspace-write"]
-        for directory in extra_write_dirs:
+        protected = list(protected_write_paths)
+        command = [*native_command_prefix(agent), "exec", "--json"]
+        if protected:
+            permissions = codex_permissions(cwd, extra_write_dirs, read_only=read_only,
+                                           protected_write_paths=protected)
+            command += ['--strict-config', '-c', 'default_permissions="agentsmith"',
+                        '-c', 'permissions=' + toml_inline({'agentsmith': permissions})]
+        else:
+            command += ['--sandbox', 'read-only' if read_only else 'workspace-write']
+        for directory in (() if read_only else extra_write_dirs):
             command += ["--add-dir", str(directory)]
         command += [
             "--disable", "hooks", "--disable", "plugins", "--disable", "remote_plugin",
             "--disable", "apps", "--disable", "skill_mcp_dependency_install",
             "-c", "mcp_servers={}",
-            "-c", "sandbox_workspace_write.network_access=false", "-c", "approval_policy=never",
+            "-c", "approval_policy=never",
             "--output-schema", str(schema_path), "-o", str(receipt_path),
         ]
+        if not protected:
+            command += ['-c', 'sandbox_workspace_write.network_access=false']
         if model:
             command += ["--model", model]
         if effort:

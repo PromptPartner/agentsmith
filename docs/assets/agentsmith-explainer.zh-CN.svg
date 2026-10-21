@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="980" viewBox="0 0 1400 980" role="img" aria-labelledby="title desc">
+  <title id="title">AgentSmith — 面向编程智能体的开源工作框架</title>
+  <desc id="desc">Claude Code 或 Codex 使用项目规则和已配置的检查。定义任务，做出范围明确的修改，验证检查与真实流程，保留证据，交接工作，并根据观察到的失败验证改进。体验可丢弃的“第一个已验证循环”演示。指令引导行为；已配置的检查执行具体边界。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0 L10 5 L0 10" fill="none" stroke="#ffa600" stroke-width="1.5"/></marker>
+    <style>
+      text{font-family:Arial,Helvetica,sans-serif;fill:#f8fafc}
+      .muted{fill:#bdc7d9}.gold{fill:#ffa600}.card{fill:#172238;stroke:#455575;stroke-width:2}
+      .edge{fill:none;stroke:#ffa600;stroke-width:2.5;marker-end:url(#arrow)}
+      .heading{font-size:25px;font-weight:700}.body{font-size:21px}.small{font-size:19px}
+    </style>
+  </defs>
+  <rect width="1400" height="980" fill="#090e1a"/>
+  <text x="700" y="65" text-anchor="middle" font-size="48" font-weight="700">AgentSmith</text>
+  <text x="700" y="108" text-anchor="middle" font-size="25" class="muted">面向编程智能体的开源工作框架</text>
+  <text x="700" y="154" text-anchor="middle" font-size="29" font-weight="700" class="gold">先有证据，再说完成。</text>
+  <text x="700" y="180" text-anchor="middle" font-size="18" class="muted">从 vibe coding 走向智能体工程</text>
+  <rect x="50" y="202" width="270" height="92" rx="18" class="card"/>
+  <text x="185" y="240" text-anchor="middle" class="heading">你的任务</text>
+  <text x="185" y="272" text-anchor="middle" class="small muted">范围 + 完成标准</text>
+  <rect x="425" y="190" width="550" height="115" rx="20" fill="#ffa600"/>
+  <text x="700" y="236" text-anchor="middle" font-size="27" font-weight="700" style="fill:#090e1a">Claude Code 或 Codex + AgentSmith</text>
+  <text x="700" y="275" text-anchor="middle" font-size="23" style="fill:#090e1a">项目规则 · 已配置的检查 · 交接</text>
+  <rect x="1080" y="202" width="270" height="92" rx="18" class="card"/>
+  <text x="1215" y="240" text-anchor="middle" class="heading">检查结果</text>
+  <text x="1215" y="272" text-anchor="middle" class="small muted">修改 + 保留的证据</text>
+  <path d="M325 248 H405" class="edge"/><path d="M982 248 H1060" class="edge"/>
+  <rect x="50" y="357" width="410" height="287" rx="22" class="card"/>
+  <text x="80" y="402" class="heading gold">1  理解并限定范围</text>
+  <text x="80" y="451" class="body">阅读现有代码与调用方。</text>
+  <text x="80" y="491" class="body">定义范围与完成检查。</text>
+  <text x="80" y="531" class="body">做出小规模、易于审查的修改。</text>
+  <text x="80" y="580" class="small muted">明确选择原生权限。</text>
+  <text x="80" y="611" class="small muted">启用可选的秘密扫描钩子。</text>
+  <rect x="495" y="357" width="410" height="287" rx="22" class="card"/>
+  <text x="525" y="402" class="heading gold">2  验证并保留证据</text>
+  <text x="525" y="451" class="body">修复前先复现失败。</text>
+  <text x="525" y="491" class="body">运行项目中所有已配置的检查。</text>
+  <text x="525" y="531" class="body">实际运行用户可见的流程。</text>
+  <text x="525" y="580" class="small muted">在结果凭证中记录检查结果。</text>
+  <text x="525" y="611" class="small muted">检查证据覆盖的范围。</text>
+  <rect x="940" y="357" width="410" height="287" rx="22" class="card"/>
+  <text x="970" y="402" class="heading gold">3  延续工作并改进</text>
+  <text x="970" y="451" class="body">保存决策与清晰的交接记录。</text>
+  <text x="970" y="491" class="body">从项目记录中恢复工作。</text>
+  <text x="970" y="531" class="body">记录观察到的失败。</text>
+  <text x="970" y="580" class="small muted">提出规则、钩子或测试。</text>
+  <text x="970" y="611" class="small muted">采用修改前先验证。</text>
+  <text x="700" y="693" text-anchor="middle" class="small muted">指令引导行为。已配置的检查执行具体边界。</text>
+  <path d="M50 723 H1350" stroke="#455575" stroke-width="2"/>
+  <text x="700" y="770" text-anchor="middle" class="heading">用一项任务体验区别</text>
+  <text x="700" y="809" text-anchor="middle" class="body muted">可丢弃的演示：检查失败 → 范围明确的修复 → 检查 + 真实流程 → 结果凭证 → 交接／恢复</text>
+  <text x="700" y="914" text-anchor="middle" class="small muted">随后探索有限轮次的创建者／检查者运行，采用已批准的范围与明确限制。</text>
+  <text x="700" y="948" text-anchor="middle" font-size="17" class="muted">简体中文图表 · 2026-10-02 · 简介已批准</text>
+</svg>

@@ -175,71 +175,34 @@ else
   bad "rejects unexpected arguments with exit 2 — a typo'd flag would look like a pass"
 fi
 
-echo "test-leak-gate — narrow provenance exceptions (.harness/leak-gate.allow)"
+echo "test-leak-gate — no public identity exceptions"
 
-# WHY: the maintainer chose to be named in the README author section. The immutable Wave 2
-# accepted-spec record also names the decision maker. These cases prove the exceptions are real
-# yet tightly scoped: other files and neighboring spec lines still fail, and without the allow
-# file even README is caught. This is opt-in config, not a hole in the gate's code.
-# The name is spliced at runtime ('Luk''as Hert''ig') so no literal ever lives in this tracked file.
-ALLOW_SRC="$ROOT_DIR/.harness/leak-gate.allow"
+# The public source has no identity exceptions, including README and retired specs.
 NAME='**Luk''as Hert''ig** leads the project.'
-
-if [ ! -f "$ALLOW_SRC" ]; then
-  bad "the allow file $ALLOW_SRC is missing — the README credit exception has no config to test"
+if scratch_file "README.md" "$NAME"; then
+  bad "operator name in README.md slipped through"
 else
-  mkdir -p "$TMP/.harness"
-  cp "$ALLOW_SRC" "$TMP/.harness/leak-gate.allow"
-
-  # 1. name in README.md — clean WITH the allow file present
-  if scratch_file "README.md" "$NAME"; then
-    ok "operator name in README.md — allowed by .harness/leak-gate.allow"
-  else
-    bad "operator name in README.md — should be allowed by .harness/leak-gate.allow"
-  fi
-  rm -f "$TMP/README.md"
-
-  # 2. same name OUTSIDE README — still flagged even with the allow file present
-  if scratch_file "setup.sh" "echo '$NAME'"; then
-    bad "operator name in setup.sh slipped through — the allow scope is too wide"
-  else
-    ok "operator name outside README — still flagged with the allow file present"
-  fi
-  rm -f "$TMP/setup.sh"
-
-  # 3. acceptance provenance is allowed only on its exact spec line, not a neighboring line
-  spec_path="$TMP/docs/specs/parallel-development-and-integration-wave.md"
-  mkdir -p "$(dirname "$spec_path")"
-  printf 'placeholder\nplaceholder\nplaceholder\naccepted_by: Luk''as Hert''ig\n' > "$spec_path"
-  git -C "$TMP" add -A >/dev/null 2>&1
-  if ( cd "$TMP" && bash scripts/leak-gate.sh >/dev/null 2>&1 ); then
-    ok "accepted-spec provenance line is allowed"
-  else
-    bad "accepted-spec provenance line should be allowed"
-  fi
-  printf 'Luk''as Hert''ig in unrelated text\n' >> "$spec_path"
-  git -C "$TMP" add -A >/dev/null 2>&1
-  if ( cd "$TMP" && bash scripts/leak-gate.sh >/dev/null 2>&1 ); then
-    bad "neighboring spec line slipped through the provenance exception"
-  else
-    ok "neighboring spec line is still flagged"
-  fi
-  rm -f "$spec_path"
-  git -C "$TMP" add -A >/dev/null 2>&1
-
-  # 4. remove the allow file — even README is caught again (the exception is opt-in, not baked in)
-  rm -f "$TMP/.harness/leak-gate.allow"
-  if scratch_file "README.md" "$NAME"; then
-    bad "README name passed with NO allow file — the gate has a built-in exemption it must not have"
-  else
-    ok "operator name in README.md — flagged when the allow file is absent"
-  fi
-  rm -f "$TMP/README.md"
-  rmdir "$TMP/.harness" 2>/dev/null || true
-  git -C "$TMP" add -A >/dev/null 2>&1
+  ok "operator name in README.md is flagged"
 fi
+rm -f "$TMP/README.md"
+git -C "$TMP" add -A >/dev/null 2>&1
 
 echo "test-leak-gate — the real repo"
+
+# Internal records must not publish simply because their text lacks an obvious identity marker.
+for private_path in ".planning/notes.md" "brainstorms/idea.md" "docs/marketing/positioning.md" \
+                    "docs/research/notes.md" "docs/feedback/0099-incident.md" "docs/specs/current-project.md"; do
+  mkdir -p "$TMP/$(dirname "$private_path")"
+  printf 'neutral working note\n' > "$TMP/$private_path"
+  git -C "$TMP" add -A >/dev/null 2>&1
+  if ( cd "$TMP" && bash scripts/leak-gate.sh >/dev/null 2>&1 ); then
+    bad "tracked private path slipped through: $private_path"
+  else
+    ok "tracked private path is blocked: $private_path"
+  fi
+  rm -f "$TMP/$private_path"
+  git -C "$TMP" add -A >/dev/null 2>&1
+done
 
 # The property the whole gate exists to protect, asserted against the actual shipped surface.
 if ( cd "$ROOT_DIR" && bash "$GATE" >/dev/null 2>&1 ); then

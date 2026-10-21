@@ -115,7 +115,7 @@ Map to the loop — pull these in, don't reinvent them:
   /`receiving-code-review`, and the **codex two-AI adversarial gate** for a second
   independent pass on risky diffs — use it not just as a second *reader* but as a second
   *tester*: point Codex at the diff to independently write/run tests or reproduce the bug.
-  A checker that *measures* beats one that only reads ([`03-verify-means-evidence.md`](../docs/03-verify-means-evidence.md)).
+  A checker that *measures* beats one that only reads (see `docs/03-verify-means-evidence.md`).
 - **Isolation:** `superpowers:using-git-worktrees` for parallel/long-running work.
 - **Memory:** claude-mem `mem-search` ("did we solve this before?") and
   `learn-codebase` when entering unfamiliar code.

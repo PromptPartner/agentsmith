@@ -30,7 +30,9 @@ from typing import Any
 try:
     from native_launcher import (
         build_native_command,
+        codex_permissions,
         claude_sandbox_settings,
+        toml_inline,
         minimal_environment,
         native_environment,
         usage_metrics as shared_usage_metrics,
@@ -39,7 +41,9 @@ except ModuleNotFoundError:  # source-tree execution from scripts/
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from native_launcher import (
         build_native_command,
+        codex_permissions,
         claude_sandbox_settings,
+        toml_inline,
         minimal_environment,
         native_environment,
         usage_metrics as shared_usage_metrics,
@@ -67,8 +71,19 @@ class RunError(RuntimeError):
     pass
 
 
-class RunInterrupted(RunError):
-    pass
+class RunInterrupted(RuntimeError):
+    """Operator cancellation must bypass handlers for invalid run or peer state."""
+
+
+# Set by the controller's stop handler, which never raises: an exception from a signal handler
+# can land anywhere, and one landed inside `subprocess` while it held its private wait lock, so
+# the controller waited for hours. The controller raises RunInterrupted at safe points instead.
+_stop_signal_received = False
+
+
+def raise_if_stopped(run_dir: Path) -> None:
+    if _stop_signal_received or (run_dir / "STOP").exists():
+        raise RunInterrupted("stopped by operator")
 
 
 def now() -> str:
@@ -77,7 +92,8 @@ def now() -> str:
 
 def run(cmd: list[str] | str, cwd: Path, *, timeout: int | None = None,
         env: dict[str, str] | None = None, shell: bool = False) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, cwd=cwd, text=True, capture_output=True, timeout=timeout,
+    return subprocess.run(cmd, cwd=cwd, text=True, encoding="utf-8", errors="replace",
+                          capture_output=True, timeout=timeout,
                           env=env, shell=shell, check=False)
 
 
@@ -86,6 +102,21 @@ def git(repo: Path, *args: str, check: bool = True) -> str:
     if check and result.returncode:
         raise RunError(result.stderr.strip() or result.stdout.strip() or f"git {' '.join(args)} failed")
     return result.stdout.strip()
+
+
+def git_paths(repo: Path, command: str, *args: str) -> list[str]:
+    """Names exactly as Git stores them. Line output quotes and escapes unusual names, and
+    trimming drops leading whitespace; scope and protection rules need the real name."""
+    result = run(["git", command, "-z", *args], repo)
+    if result.returncode:
+        raise RunError(result.stderr.strip() or f"git {command} failed")
+    return [path for path in result.stdout.split("\0") if path]
+
+
+def shown_paths(paths: list[str]) -> str:
+    """A runtime chooses these names and the operator's terminal prints them."""
+    return ", ".join("".join(char if char.isprintable() else char.encode("unicode_escape").decode("ascii")
+                             for char in path) for path in paths)
 
 
 def repo_root(path: Path) -> Path:
@@ -300,7 +331,9 @@ def read_coordination_lock(root: Path) -> dict[str, Any] | None:
 
 
 @contextlib.contextmanager
-def coordination_lock(root: Path):
+def coordination_lock(root: Path, *, interruptible: bool = True):
+    """A stop ends a wait to acquire, never a release path: raising there would leave a lease
+    behind and could turn a recorded escalation into an interruption."""
     root.mkdir(parents=True, exist_ok=True)
     path = coordination_lock_path(root)
     token = uuid.uuid4().hex
@@ -319,6 +352,8 @@ def coordination_lock(root: Path):
             )
             if not transient or time.monotonic() >= deadline:
                 raise RunError(f"cannot acquire repository coordination lock {path}: {exc}") from exc
+            if interruptible and _stop_signal_received:
+                raise RunInterrupted("stopped by operator") from exc
             time.sleep(0.02)
             continue
         except FileExistsError:
@@ -330,6 +365,8 @@ def coordination_lock(root: Path):
                     raise RunError(
                         f"repository coordination is still held by live process {existing['pid']}"
                     )
+                if interruptible and _stop_signal_received:
+                    raise RunInterrupted("stopped by operator")
                 time.sleep(0.02)
                 continue
             try:
@@ -397,11 +434,13 @@ def git_phase(repo: Path, phase: str, *, timeout_seconds: float = 60):
         if time.monotonic() >= deadline:
             raise RunError(f"git phase {phase} is still held by live {conflict['phase']} process "
                            f"{conflict['pid']}")
+        if _stop_signal_received:
+            raise RunInterrupted("stopped by operator")
         time.sleep(0.02)
     try:
         yield
     finally:
-        with coordination_lock(root):
+        with coordination_lock(root, interruptible=False):
             if lease.exists():
                 record = load_json(lease)
                 if record.get("token") == token and record.get("pid") == os.getpid():
@@ -617,6 +656,13 @@ def validate_manifest(manifest: dict[str, Any], repo: Path) -> tuple[Path, str]:
         config = manifest["roles"].get(role, {})
         if config.get("runtime") not in {"claude", "codex"}:
             raise RunError(f"roles.{role}.runtime must be claude or codex")
+        for key in ("model", "effort"):
+            value = config.get(key)
+            if not isinstance(value, str) or not value.strip() or value.strip().startswith("<"):
+                raise RunError(f"roles.{role}.{key} must be explicit before execution; draft manifest is non-executable")
+    verify_config = manifest["verify"]
+    if not isinstance(verify_config, dict) or not isinstance(verify_config.get("command"), str) or not verify_config["command"].strip():
+        raise RunError("verify.command must name a required verification command")
     limits = manifest["limits"]
     if not 1 <= int(limits.get("max_attempts", 0)) <= 3:
         raise RunError("limits.max_attempts must be between 1 and 3")
@@ -639,6 +685,16 @@ def validate_manifest(manifest: dict[str, Any], repo: Path) -> tuple[Path, str]:
         raise RunError("implementation_ticket must be separate from decision_ticket")
     digest = hashlib.sha256(shown.encode()).hexdigest()
     return spec_rel, digest
+
+
+def validate_original_spec(repo: Path, spec_rel: Path, base_ref: str) -> None:
+    """Resume only while the original file still represents the frozen contract."""
+    original = repo / spec_rel
+    expected = git(repo, "rev-parse", f"{base_ref}:{spec_rel.as_posix()}", check=False)
+    actual = (git(repo, "hash-object", "--path", spec_rel.as_posix(), str(original), check=False)
+              if original.is_file() and not original.is_symlink() else "")
+    if not expected or actual != expected:
+        raise RunError("original spec changed since start; create a new run for a changed contract")
 
 
 def graph_validator_source() -> Path:
@@ -722,7 +778,7 @@ def prepare(args: argparse.Namespace) -> int:
         raise RunError(f"refusing to overwrite {output}; pass --force deliberately")
     write_json(output, manifest)
     print(f"prepared {output.relative_to(repo) if output.is_relative_to(repo) else output}")
-    print("review and commit the manifest, then invoke 'start' explicitly to authorize execution")
+    print("draft is non-executable until both role models and efforts are explicit; review and commit it before start")
     return 0
 
 
@@ -742,8 +798,66 @@ def remaining_seconds(state: dict[str, Any], manifest: dict[str, Any]) -> int:
 
 
 def changed_paths(worktree: Path, base: str, head: str = "HEAD") -> list[str]:
-    output = git(worktree, "diff", "--name-only", f"{base}..{head}")
-    return [line for line in output.splitlines() if line]
+    # A move must list its old path too: rename detection would hide the path that scope
+    # and protection rules are written against.
+    return git_paths(worktree, "diff", "--name-only", "--no-renames", f"{base}..{head}")
+
+
+# These are controller policy, even when the maker scope is broad. Additional project
+# acceptance inputs belong in verify.protected_paths in the operator-approved manifest.
+VERIFICATION_POLICY_PATHS = (
+    ".agentsmith/**", ".harness/**", ".github/workflows/**",
+    "scripts/verify*", "scripts/autonomous-run.py", "native_launcher.py",
+    "agentsmith.py", "windows_verifier_sandbox.py",
+)
+BASELINE_TEST_PATHS = ("test_*.py", "*_test.py", "tests/**", "test/**",
+                       "**/tests/**", "**/test/**", "**/test_*.py", "**/*_test.py",
+                       "*.test.*", "*.spec.*", "*_test.go", "*_spec.rb", "scripts/test-*")
+
+
+def validate_verification_changes(worktree: Path, base: str, head: str,
+                                  manifest: dict[str, Any]) -> None:
+    """Reject policy edits and edits/deletions of the approved baseline checks."""
+    extra = manifest.get("verify", {}).get("protected_paths", [])
+    if not isinstance(extra, list) or any(not isinstance(path, str) or not path for path in extra):
+        raise RunError("verify.protected_paths must be an array of nonempty path globs")
+    baseline = set(git_paths(worktree, "ls-tree", "-r", "--name-only", base))
+    protected = []
+    for path in git_paths(worktree, "diff", "--name-only", "--no-renames", base, head):
+        patterns = (*VERIFICATION_POLICY_PATHS, *extra)
+        if path in baseline:
+            patterns += BASELINE_TEST_PATHS
+        if path == manifest.get("spec_path") or any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns):
+            protected.append(path)
+    if protected:
+        raise RunError("maker changed protected verification inputs; separate operator review required: "
+                       + shown_paths(protected))
+
+
+def verification_binding(state: dict[str, Any], manifest: dict[str, Any], head: str) -> dict[str, Any]:
+    """Controller-authored evidence identifies the exact policy and candidate checked."""
+    worktree = Path(state["worktree"])
+    config = subprocess.run(["git", "show", f"{head}:.harness/verify.conf"],
+                            cwd=worktree, capture_output=True, check=False)
+    return {
+        "candidate_commit": head,
+        "base_commit": state["base_head"],
+        "spec_sha256": state["spec_sha256"],
+        "manifest_sha256": state["manifest_sha256"],
+        "verification_policy_sha256": hashlib.sha256(
+            json.dumps(manifest["verify"], sort_keys=True).encode()).hexdigest(),
+        "verify_configuration_sha256": hashlib.sha256(config.stdout).hexdigest() if config.returncode == 0 else None,
+        "runtime_sha256": {
+            "controller": file_digest(Path(__file__)),
+            "launcher": file_digest(Path(build_native_command.__code__.co_filename)),
+        },
+    }
+
+
+def acceptance_ready(verify_exit: int, checker: dict[str, Any]) -> bool:
+    return (verify_exit == 0 and checker["status"] == "accepted"
+            and any(item.strip() for item in checker["evidence"])
+            and not checker["unresolved"])
 
 
 def file_digest(path: Path) -> str:
@@ -982,8 +1096,7 @@ def git_metadata(repo: Path, *, known_peers: dict[str, Any] | None = None) -> di
 
 
 def ignored_paths(worktree: Path) -> set[str]:
-    output = git(worktree, "ls-files", "--others", "--ignored", "--exclude-standard", "-z")
-    return {path for path in output.split("\0") if path}
+    return set(git_paths(worktree, "ls-files", "--others", "--ignored", "--exclude-standard"))
 
 
 def validate_git_transition(worktree: Path, before: dict[str, Any], after: dict[str, Any],
@@ -1031,7 +1144,8 @@ def validate_git_unchanged(before: dict[str, Any], after: dict[str, Any], actor:
             raise RunError(f"{actor} changed protected Git metadata: {key}")
 
 
-def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str],
+                     *, state: dict[str, Any] | None = None) -> subprocess.CompletedProcess[str]:
     """Run the human-approved verifier with no network and no writes outside its worktree."""
     common = resolved_git_path(cwd, "--git-common-dir")
     if sys.platform == "win32":
@@ -1041,6 +1155,9 @@ def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str])
         escaped = str(cwd).replace('"', '\\"')
         escaped_common = str(common).replace('"', '\\"')
         home = str(Path.home()).replace('"', '\\"')
+        protected = [common, *(trusted_paths(state) if state is not None else [])]
+        protected_ancestors = {parent for path in protected for parent in path.resolve().parents
+                               if parent != Path('/')}
         profile = "\n".join([
             "(version 1)",
             "(allow default)",
@@ -1051,9 +1168,13 @@ def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str])
             f'(allow file-write* (subpath "{escaped}"))',
             '(allow file-write* (subpath "/tmp") (subpath "/private/tmp"))',
             '(allow file-write* (literal "/dev/null") (literal "/dev/dtracehelper"))',
+            *[f'(deny file-write* (subpath {json.dumps(str(path.resolve()), ensure_ascii=False)}))'
+              for path in protected],
+            *[f'(deny file-write-unlink (literal {json.dumps(str(parent), ensure_ascii=False)}))'
+              for parent in sorted(protected_ancestors)],
         ])
-        return run(["/usr/bin/sandbox-exec", "-p", profile, "/bin/bash", "-c", command],
-                   cwd, timeout=timeout, env=env)
+        args = ["/usr/bin/sandbox-exec", "-p", profile, "/bin/bash", "-c", command]
+        return verifier_process(args, cwd, timeout, env, state)
     if sys.platform.startswith("linux") and shutil.which("bwrap"):
         home = Path.home().resolve()
         temporary = Path("/tmp")
@@ -1077,8 +1198,7 @@ def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str])
         args += ["--bind", str(cwd), str(cwd), "--ro-bind", str(common), str(common),
                  "--dev", "/dev", "--proc", "/proc",
                  "--chdir", str(cwd), "/bin/bash", "-c", command]
-        return run(args,
-                   cwd, timeout=timeout, env=env)
+        return verifier_process(args, cwd, timeout, env, state)
     return subprocess.CompletedProcess([], 126, "", "no supported fail-closed verifier sandbox")
 
 
@@ -1191,29 +1311,169 @@ def usage_metrics(stdout: str) -> tuple[float, int]:
     return shared_usage_metrics(stdout)
 
 
+def require_native_role_sandbox() -> None:
+    if sys.platform == 'darwin' and Path('/usr/bin/sandbox-exec').exists():
+        return
+    if sys.platform.startswith('linux') and shutil.which('bwrap'):
+        return
+    raise RunError('no supported fail-closed trusted-state sandbox; use macOS or Linux with bubblewrap')
+
+
+def trusted_paths(state: dict[str, Any]) -> list[Path]:
+    repo = Path(state['repo'])
+    runtime = Path(claude_sandbox_settings.__code__.co_filename).resolve()
+    return [state_root(repo), Path(state['manifest_path']), repo / state['spec_path'],
+            Path(__file__).resolve().parent, runtime.parent]
+
+
+def process_group_is_live(pid: int) -> bool:
+    if os.name == 'nt':
+        return process_is_live(pid)
+    members = subprocess.run(['ps', '-axo', 'pgid=,stat='], text=True,
+                             capture_output=True, check=False)
+    if members.returncode:
+        raise RunError('cannot inspect previous role process group')
+    return any(len(parts := line.split()) == 2 and parts[0] == str(pid) and not parts[1].startswith('Z')
+               for line in members.stdout.splitlines())
+
+
+def terminate_process_tree(pid: int) -> None:
+    """Roles own a process group; terminate descendants as well as the client."""
+    if os.name == 'nt':
+        subprocess.run(['taskkill', '/PID', str(pid), '/T', '/F'], capture_output=True, check=False)
+        return
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except PermissionError:
+        # macOS reports EPERM for a group containing only unreaped zombies; the stop handler
+        # may already have ended the group before this cleanup runs.
+        if process_group_is_live(pid):
+            raise
+        return
+    # Kill surviving descendants even if the group leader already exited.
+    time.sleep(0.1)
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        # macOS reports EPERM for a group containing only unreaped zombies.
+        if process_group_is_live(pid):
+            raise
+
+
+def archive_artifacts(directory: Path, prefix: str) -> None:
+    artifacts = list(directory.glob(prefix + '*'))
+    if artifacts:
+        archive = directory / 'archive' / str(uuid.uuid4())
+        archive.mkdir(parents=True)
+        for artifact in artifacts:
+            artifact.rename(archive / artifact.name)
+
+
+def supervised_process(command: list[str], cwd: Path, timeout: int, env: dict[str, str],
+                       state: dict[str, Any], prefix: str) -> tuple[subprocess.CompletedProcess[str], BaseException | None]:
+    directory = Path(state['state_path']).parent
+    stdout_path = directory / (prefix + '.stdout')
+    stderr_path = directory / (prefix + '.stderr')
+    error: BaseException | None = None
+    with stdout_path.open('w') as output, stderr_path.open('w') as errors:
+        process = subprocess.Popen(command, cwd=cwd, env=env, text=True,
+                                   stdout=output, stderr=errors, start_new_session=os.name != 'nt')
+        try:
+            write_json(directory / (prefix + '-launch.json'),
+                       {'pid': process.pid, 'process_group': process.pid if os.name != 'nt' else None,
+                        'stage': state.get('stage'), 'started_at': now()})
+            state['active_pid'] = process.pid
+            save_state(state)
+            # A stop that arrived before the handler could see this pid is caught here; one that
+            # arrives later ends this process group through the handler.
+            raise_if_stopped(directory)
+            # Wait in short slices: a pending stop must also end a process that ignores the
+            # handler's SIGTERM, and the cleanup below then kills its whole group.
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    process.wait(timeout=max(0.0, min(0.5, deadline - time.monotonic())))
+                    break
+                except subprocess.TimeoutExpired:
+                    raise_if_stopped(directory)
+                    if time.monotonic() >= deadline:
+                        raise subprocess.TimeoutExpired(command, timeout) from None
+        except BaseException as exc:
+            error = exc
+        finally:
+            terminate_process_tree(process.pid)
+            process.wait(timeout=10)
+            write_json(directory / (prefix + '-exit.json'), {'exit_code': process.returncode})
+            state['active_pid'] = None
+            save_state(state)
+    return subprocess.CompletedProcess(command, process.returncode,
+                                       stdout_path.read_text(), stderr_path.read_text()), error
+
+
+def verifier_process(command: list[str], cwd: Path, timeout: int, env: dict[str, str],
+                     state: dict[str, Any] | None) -> subprocess.CompletedProcess[str]:
+    with contextlib.ExitStack() as stack:
+        if state is None:
+            temporary = stack.enter_context(tempfile.TemporaryDirectory(prefix='agentsmith-verifier-'))
+            state = {'state_path': str(Path(temporary) / 'state.json'), 'attempt': 0}
+        result, error = supervised_process(command, cwd, timeout, env, state,
+                                           f"attempt-{state['attempt']}-verify")
+        if error is not None:
+            raise error
+        if result.returncode:
+            # A verifier that `stop` ended was interrupted; it did not fail verification.
+            raise_if_stopped(Path(state['state_path']).parent)
+        return result
+
+
+def record_role_usage(state: dict[str, Any], runtime: str, role: str, stdout: str) -> None:
+    cost, tokens = usage_metrics(stdout)
+    if runtime == 'claude':
+        state['claude_cost_usd'] = float(state.get('claude_cost_usd', 0.0)) + cost
+        tokens = 0
+    else:
+        state['codex_tokens_used'] = int(state.get('codex_tokens_used', 0)) + tokens
+        cost = 0.0
+    state.pop('usage_pending', None)
+    save_state(state, 'usage_recorded', role=role, runtime=runtime, cost_usd=cost, tokens=tokens)
+
+
 def launch_role(state: dict[str, Any], manifest: dict[str, Any], role: str, prompt: str,
                 *, role_worktree: Path | None = None) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory(prefix='agentsmith-role-output-') as temporary:
+        return launch_role_output(state, manifest, role, prompt, Path(temporary),
+                                  role_worktree=role_worktree)
+
+
+def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: str, prompt: str,
+                       exchange: Path, *, role_worktree: Path | None = None) -> dict[str, Any]:
     worktree = role_worktree or Path(state["worktree"])
     role_cfg = manifest["roles"][role]
     runtime = role_cfg["runtime"]
     run_dir = Path(state["state_path"]).parent
-    stop_file = run_dir / "STOP"
-    if stop_file.exists():
-        raise RunInterrupted("stopped by operator")
-    receipt_path = run_dir / f"attempt-{state['attempt']}-{role}-receipt.json"
+    raise_if_stopped(run_dir)
+    archive_artifacts(run_dir, f"attempt-{state['attempt']}-{role}")
+    receipt_path = exchange / 'receipt.json'
     schema_path = run_dir / "receipt-schema.json"
     write_json(schema_path, RECEIPT_SCHEMA)
     timeout = remaining_seconds(state, manifest)
     if timeout <= 0:
         raise RunError("wall-clock budget exhausted")
     common_git = state_root(Path(state["repo"])).parent
+    maker_write_dirs = [common_git, resolved_git_path(worktree, '--git-dir')] if role == 'maker' else []
+    protected = trusted_paths(state)
     if runtime == "codex":
         token_budget = int(manifest["limits"].get("codex_goal_tokens", 0))
         if token_budget and int(state.get("codex_tokens_used", 0)) >= token_budget:
             raise RunError("Codex run-wide token budget exhausted")
         cmd = build_native_command(
             "codex", prompt, worktree, schema_path, receipt_path,
-            extra_write_dirs=[common_git] if role == "maker" else [],
+            extra_write_dirs=maker_write_dirs, read_only=role == "checker",
+            protected_write_paths=protected,
             model=str(role_cfg.get("model", "")), effort=str(role_cfg.get("effort", "")),
         )
     else:
@@ -1221,7 +1481,8 @@ def launch_role(state: dict[str, Any], manifest: dict[str, Any], role: str, prom
         write_json(
             settings_path,
             claude_sandbox_settings(
-                worktree, [common_git] if role == "maker" else [], read_only=role == "checker",
+                worktree, maker_write_dirs, read_only=role == "checker",
+                protected_write_paths=protected,
             ),
         )
         budget = float(manifest["limits"].get("claude_max_usd", 0))
@@ -1230,60 +1491,38 @@ def launch_role(state: dict[str, Any], manifest: dict[str, Any], role: str, prom
             raise RunError("Claude run-wide USD budget exhausted")
         cmd = build_native_command(
             "claude", prompt, worktree, schema_path, receipt_path, settings_path=settings_path,
-            extra_write_dirs=[common_git] if role == "maker" else [], read_only=role == "checker",
+            extra_write_dirs=maker_write_dirs, read_only=role == "checker",
             model=str(role_cfg.get("model", "")), effort=str(role_cfg.get("effort", "")),
             claude_max_usd=max(0.0, remaining_budget),
         )
     event(state, "role_started", role=role, runtime=runtime, attempt=state["attempt"])
+    prefix = f"attempt-{state['attempt']}-{role}"
+    state['usage_pending'] = {'role': role, 'runtime': runtime, 'prefix': prefix}
+    save_state(state)
     with native_role_environment(runtime, worktree) as environment:
-        process = subprocess.Popen(cmd, cwd=worktree, text=True, stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE, env=environment)
-        if stop_file.exists():
-            process.terminate()
-            process.wait(timeout=10)
-            raise RunInterrupted("stopped by operator")
-        state["active_pid"] = process.pid
-        save_state(state)
-        try:
-            stdout, stderr = process.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            process.terminate()
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill()
-            raise RunError(f"{role} exceeded wall-clock budget")
-        finally:
-            if process.poll() is None and stop_file.exists():
-                process.terminate()
-                try:
-                    process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-            state["active_pid"] = None
-            save_state(state)
-    (run_dir / f"attempt-{state['attempt']}-{role}.stdout").write_text(stdout)
-    (run_dir / f"attempt-{state['attempt']}-{role}.stderr").write_text(stderr)
-    cost, tokens = usage_metrics(stdout)
-    if runtime == "claude":
-        state["claude_cost_usd"] = float(state.get("claude_cost_usd", 0.0)) + cost
-        tokens = 0
-    else:
-        state["codex_tokens_used"] = int(state.get("codex_tokens_used", 0)) + tokens
-        cost = 0.0
-    save_state(state, "usage_recorded", role=role, runtime=runtime, cost_usd=cost, tokens=tokens)
+        result, error = supervised_process(cmd, worktree, timeout, environment, state, prefix)
+    stdout, stderr = result.stdout, result.stderr
+    write_json(run_dir / (prefix + '-exit.json'),
+               {'role': role, 'runtime': runtime, 'exit_code': result.returncode,
+                'model': role_cfg['model'], 'effort': role_cfg['effort']})
+    record_role_usage(state, runtime, role, stdout)
+    if error is not None:
+        if isinstance(error, subprocess.TimeoutExpired):
+            raise RunError(f'{role} exceeded wall-clock budget') from error
+        raise error
     max_cost = float(manifest["limits"].get("claude_max_usd", 0))
     if max_cost and state["claude_cost_usd"] > max_cost:
         raise RunError("Claude run-wide USD budget exceeded")
     max_tokens = int(manifest["limits"].get("codex_goal_tokens", 0))
     if max_tokens and state["codex_tokens_used"] > max_tokens:
         raise RunError("Codex run-wide token budget exceeded")
-    if process.returncode:
-        if state.get("status") == "interrupted" or stop_file.exists():
+    if result.returncode:
+        if state.get("status") == "interrupted":
             raise RunInterrupted("stopped by operator")
-        raise RunError(f"{runtime} {role} exited {process.returncode}: {stderr[-500:].strip()}")
+        raise_if_stopped(run_dir)
+        raise RunError(f"{runtime} {role} exited {result.returncode}: {stderr[-500:].strip()}")
     receipt = parse_receipt(receipt_path, stdout)
-    write_json(receipt_path, receipt)
+    write_json(run_dir / f"attempt-{state['attempt']}-{role}-receipt.json", receipt)
     event(state, "role_completed", role=role, status=receipt["status"], attempt=state["attempt"])
     return receipt
 
@@ -1298,6 +1537,9 @@ Read the accepted terminal spec at {spec}. This ticket is separate from its deci
 Allowed paths: {json.dumps(scope['allowed_paths'])}. Denied paths: {json.dumps(scope['denied_paths'])}.
 No network, connectors, tracker writes, push, PR, merge, deployment, production action, or history rewrite.
 Return only the requested JSON receipt. Never claim evidence you did not produce.
+In changed_paths list every path printed by
+`git -c core.quotepath=off diff --name-only --no-renames {base} HEAD`, as plain names without quotes.
+A moved file counts twice: list the old path and the new path.
 """
     if role == "maker":
         feedback = f"\nThe prior checker rejected the attempt:\n{json.dumps(prior, indent=2)}\n" if prior else ""
@@ -1309,8 +1551,8 @@ Return only the requested JSON receipt. Never claim evidence you did not produce
 and make atomic local commits only. Leave the worktree clean. HEAD must advance beyond {base}.
 Use status completed or blocked; do not mark your own work accepted.{feedback}"""
     return common + f"""You are the independent checker and default to REJECT. Do not edit files or commit.
-Inspect the committed diff from {base} to HEAD, rerun the real verification command yourself
-({manifest['verify']['command']}), and try to falsify the acceptance criteria. Controller verification output:
+Inspect the committed diff from {base} to HEAD and the controller verification evidence.
+Try to falsify the acceptance criteria using read-only commands. Controller verification output:
 {verify_output[-6000:]}
 Use status accepted, rejected, or blocked."""
 
@@ -1343,38 +1585,78 @@ def checker_worktree_session(state: dict[str, Any], manifest: dict[str, Any],
             save_state(state)
 
 
+def pending_candidate(state: dict[str, Any]) -> bool:
+    return state.get('stage') in {'validating', 'verifying', 'checking'} and isinstance(state.get('maker_receipt'), dict)
+
+
+def checkpoint_stage(state: dict[str, Any], stage: str) -> None:
+    state['stage'] = stage
+    save_state(state, 'stage_started', stage=stage, attempt=state['attempt'])
+    # Act on a stop only once this checkpoint is durable, so resume keeps a finished role's
+    # result. Not at `making`: resume would compare HEAD with the previous attempt's start.
+    if stage != 'making':
+        raise_if_stopped(Path(state['state_path']).parent)
+
+
 def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
     worktree = Path(state["worktree"])
     max_attempts = int(manifest["limits"]["max_attempts"])
     prior = state.get("last_checker_receipt")
-    while state["attempt"] < max_attempts:
-        if (Path(state["state_path"]).parent / "STOP").exists():
-            raise RunInterrupted("stopped by operator")
+    while state["attempt"] < max_attempts or pending_candidate(state):
+        raise_if_stopped(Path(state["state_path"]).parent)
         if remaining_seconds(state, manifest) <= 0:
             raise RunError("wall-clock budget exhausted")
-        state["attempt"] += 1
-        state["status"] = "making"
-        save_state(state, "attempt_started", attempt=state["attempt"])
-        with git_phase(worktree, "maker", timeout_seconds=remaining_seconds(state, manifest)):
-            before_head = git(worktree, "rev-parse", "HEAD")
-            # Start holds this same short lock while creating a branch/worktree
-            # and publishing its state, so a snapshot cannot see half a peer.
-            with coordination_lock(state_root(worktree)):
-                before_meta = git_metadata(worktree)
-            before_ignored = ignored_paths(worktree)
-            maker_error: Exception | None = None
-            maker: dict[str, Any] | None = None
-            try:
-                maker = launch_role(state, manifest, "maker", role_prompt(state, manifest, "maker", prior))
-            except Exception as exc:
-                maker_error = exc
-            after_head = git(worktree, "rev-parse", "HEAD")
-            with coordination_lock(state_root(worktree)):
-                after_meta = git_metadata(worktree, known_peers=before_meta["registered_peers"])
-            validate_git_transition(worktree, before_meta, after_meta, state["branch"],
-                                    before_head, after_head)
-        if maker_error:
-            raise maker_error
+        if not pending_candidate(state):
+            state["attempt"] += 1
+            state["status"] = "making"
+            # Resume rejects a `making` checkpoint whose start differs from HEAD. Save this
+            # attempt's start with it, so a stop while the attempt waits for its Git phase
+            # leaves a run that resumes. Only this run's maker moves its branch.
+            state['maker_before_head'] = git(worktree, "rev-parse", "HEAD")
+            checkpoint_stage(state, "making")
+            with git_phase(worktree, "maker", timeout_seconds=remaining_seconds(state, manifest)):
+                before_head = git(worktree, "rev-parse", "HEAD")
+                # Start holds this same short lock while creating a branch/worktree
+                # and publishing its state, so a snapshot cannot see half a peer.
+                with coordination_lock(state_root(worktree)):
+                    before_meta = git_metadata(worktree)
+                before_ignored = ignored_paths(worktree)
+                state['maker_before_head'] = before_head
+                state['maker_before_meta'] = before_meta
+                state['maker_before_ignored'] = sorted(before_ignored)
+                state.pop('maker_receipt', None)
+                state.pop('candidate_commit', None)
+                save_state(state)
+                maker_error: Exception | None = None
+                maker: dict[str, Any] | None = None
+                try:
+                    maker = launch_role(state, manifest, "maker", role_prompt(state, manifest, "maker", prior))
+                except Exception as exc:
+                    maker_error = exc
+                after_head = git(worktree, "rev-parse", "HEAD")
+                with coordination_lock(state_root(worktree)):
+                    after_meta = git_metadata(worktree, known_peers=before_meta["registered_peers"])
+                validate_git_transition(worktree, before_meta, after_meta, state["branch"],
+                                        before_head, after_head)
+            if maker_error:
+                raise maker_error
+            state['maker_receipt'] = maker
+            state['candidate_commit'] = after_head
+            checkpoint_stage(state, 'validating')
+        else:
+            maker = state['maker_receipt']
+            before_head = state['maker_before_head']
+            before_meta = state['maker_before_meta']
+            before_ignored = set(state['maker_before_ignored'])
+            after_head = git(worktree, 'rev-parse', 'HEAD')
+            if after_head != state['candidate_commit']:
+                raise RunError('candidate changed since stage checkpoint; operator review required')
+            with git_phase(worktree, 'maker', timeout_seconds=remaining_seconds(state, manifest)):
+                with coordination_lock(state_root(worktree)):
+                    after_meta = git_metadata(worktree, known_peers=before_meta['registered_peers'])
+                before_meta = json.loads(json.dumps(before_meta))
+                after_meta = json.loads(json.dumps(after_meta))
+                validate_git_transition(worktree, before_meta, after_meta, state['branch'], before_head, after_head)
         assert maker is not None
         if maker["status"] == "blocked":
             raise RunError(f"maker blocked: {maker['summary']}")
@@ -1385,23 +1667,32 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
         paths = changed_paths(worktree, state["base_head"])
         bad = [path for path in paths if not path_allowed(path, manifest)]
         if bad:
-            raise RunError(f"maker changed paths outside scope: {', '.join(bad)}")
+            raise RunError(f"maker changed paths outside scope: {shown_paths(bad)}")
         ignored_added = sorted(ignored_paths(worktree) - before_ignored)
         ignored_bad = [path for path in ignored_added if not path_allowed(path, manifest)]
         if ignored_bad:
-            raise RunError(f"maker created ignored paths outside scope: {', '.join(ignored_bad)}")
+            raise RunError(f"maker created ignored paths outside scope: {shown_paths(ignored_bad)}")
         if maker["commit"] != after_head or sorted(maker["changed_paths"]) != sorted(paths):
             raise RunError("maker receipt does not match the committed Git state")
+        validate_verification_changes(worktree, state["base_head"], after_head, manifest)
         state["status"] = "checking"
-        save_state(state)
+        checkpoint_stage(state, 'verifying')
         checker_head = git(worktree, "rev-parse", "HEAD")
         checker_worktree = worktree.with_name(f"{worktree.name}-check-{state['attempt']}")
         with checker_worktree_session(state, manifest, worktree, checker_head, checker_worktree):
+            archive_artifacts(Path(state['state_path']).parent, f"attempt-{state['attempt']}-verify")
             verify = sandboxed_verify(manifest["verify"]["command"], checker_worktree,
-                                      remaining_seconds(state, manifest), verifier_env())
+                                      remaining_seconds(state, manifest), verifier_env(), state=state)
             verify_output = f"exit={verify.returncode}\nSTDOUT:\n{verify.stdout}\nSTDERR:\n{verify.stderr}"
             verify_path = Path(state["state_path"]).parent / f"attempt-{state['attempt']}-verify.txt"
             verify_path.write_text(verify_output)
+            proof = verification_binding(state, manifest, checker_head)
+            proof.update(exit_code=verify.returncode, output_sha256=file_digest(verify_path))
+            proof_path = verify_path.with_suffix(".json")
+            write_json(proof_path, proof)
+            state["verification_receipt"] = str(proof_path)
+            save_state(state)
+            checkpoint_stage(state, 'checking')
             checker_status = git(checker_worktree, "status", "--porcelain")
             if checker_status:
                 raise RunError("verifier modified tracked state")
@@ -1429,8 +1720,15 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             assert checker is not None
             if checker["commit"] != checker_head or sorted(checker["changed_paths"]) != sorted(paths):
                 raise RunError("checker receipt does not match the committed Git state")
-        if verify.returncode == 0 and checker["status"] == "accepted":
+            proof["checker_receipt_sha256"] = file_digest(
+                Path(state["state_path"]).parent / f"attempt-{state['attempt']}-checker-receipt.json")
+            proof["checker_status"] = checker["status"]
+            write_json(proof_path, proof)
+        if acceptance_ready(verify.returncode, checker):
+            # A stop that arrived before the acceptance record still interrupts the run.
+            raise_if_stopped(Path(state["state_path"]).parent)
             state["status"] = "accepted"
+            state['stage'] = 'accepted'
             state["accepted_commit"] = checker_head
             state["last_checker_receipt"] = checker
             save_state(state, "run_accepted", commit=checker_head)
@@ -1441,7 +1739,10 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
         prior = checker
         state["last_checker_receipt"] = checker
         state["status"] = "retrying"
+        state['stage'] = 'retrying'
         save_state(state, "attempt_rejected", attempt=state["attempt"], verify_exit=verify.returncode)
+    # As with acceptance, a stop that arrived before this record still interrupts the run.
+    raise_if_stopped(Path(state["state_path"]).parent)
     state["status"] = "escalated"
     state["reason"] = f"attempt cap reached ({max_attempts})"
     save_state(state, "run_escalated", reason=state["reason"])
@@ -1459,10 +1760,24 @@ def persist_interrupted(state: dict[str, Any]) -> None:
 
 
 def run_controller(state: dict[str, Any], manifest: dict[str, Any]) -> int:
+    global _stop_signal_received
     previous = signal.getsignal(signal.SIGTERM)
+    _stop_signal_received = False
 
     def interrupted(_signum: int, _frame: Any) -> None:
-        raise RunInterrupted("stopped by operator")
+        # Record the stop and end the active role; the controller raises RunInterrupted at its
+        # next safe point. Never raise here (see `_stop_signal_received`). A run that has
+        # already recorded its result keeps it; a late stop changes nothing.
+        global _stop_signal_received
+        if state.get("status") in {"accepted", "escalated", "interrupted"}:
+            return
+        _stop_signal_received = True
+        active_pid = state.get("active_pid")
+        if active_pid and os.name != "nt":
+            try:
+                os.killpg(int(active_pid), signal.SIGTERM)
+            except (OSError, ValueError):
+                pass
 
     signal.signal(signal.SIGTERM, interrupted)
     try:
@@ -1483,7 +1798,11 @@ def run_controller(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             if re.fullmatch(r"[0-9a-f]{40,64}", terminal_head):
                 state["terminal_head"] = terminal_head
                 save_state(state)
-        signal.signal(signal.SIGTERM, previous)
+            # The caller still releases the lifecycle lock. Keep the handler, which now ignores
+            # a late stop, rather than restore a default action that would end the process.
+        else:
+            signal.signal(signal.SIGTERM, previous)
+        _stop_signal_received = False
 
 
 def start(args: argparse.Namespace) -> int:
@@ -1500,6 +1819,7 @@ def start(args: argparse.Namespace) -> int:
     tracked = run(["git", "ls-files", "--error-unmatch", str(manifest_rel)], repo)
     if tracked.returncode:
         raise RunError("run manifest must be committed before start")
+    require_native_role_sandbox()
     name = str(manifest["run_id"])
     path = state_path(repo, name)
     if path.exists():
@@ -1569,9 +1889,9 @@ def start(args: argparse.Namespace) -> int:
 def status_cmd(args: argparse.Namespace) -> int:
     repo = repo_root(Path.cwd())
     state = load_run(repo, args.run_id)
-    keys = ["run_id", "status", "attempt", "active_pid", "branch", "worktree", "base_head",
+    keys = ["run_id", "status", "stage", "attempt", "active_pid", "branch", "worktree", "base_head",
             "accepted_commit", "deadline_epoch", "claude_cost_usd", "codex_tokens_used",
-            "reason", "updated_at"]
+            "usage_accounting_incomplete", "reason", "updated_at"]
     print(json.dumps({key: state.get(key) for key in keys if state.get(key) is not None}, indent=2))
     return 0
 
@@ -1584,7 +1904,7 @@ def stop(args: argparse.Namespace) -> int:
     active_pid = state.get("active_pid")
     if active_pid:
         try:
-            os.kill(int(active_pid), signal.SIGTERM)
+            terminate_process_tree(int(active_pid))
         except ProcessLookupError:
             pass
     owner = read_lock(run_dir)
@@ -1606,11 +1926,59 @@ def stop(args: argparse.Namespace) -> int:
     current = load_run(repo, args.run_id)
     if current.get("status") == "interrupted":
         print(f"stopped {args.run_id}; local worktree retained")
+    elif current.get("status") in {"accepted", "escalated"}:
+        print(f"{args.run_id} already finished as {current['status']}; the stop changed nothing")
     elif not controller_pid or not process_is_live(controller_pid):
         print(f"stop requested for {args.run_id}; controller is gone and resume will reconcile it")
     else:
         print(f"stop requested for {args.run_id}; controller did not persist interruption within five seconds")
     return 0
+
+
+def clear_abandoned_checker_entry(repo: Path, checker: Path) -> None:
+    """Finish a checker removal that was stopped after its folder was deleted.
+
+    `git worktree remove` deletes the folder before its entry under .git/worktrees. Remove only
+    that entry, by the rule `git worktree prune` applies: not locked, and its gitdir file is
+    missing or names the missing folder. An entry another worktree owns stays untouched.
+    """
+    entry = resolved_git_path(repo, '--git-common-dir') / 'worktrees' / checker.name
+    if entry.is_symlink() or not entry.is_dir() or (entry / 'locked').exists():
+        return
+    gitdir = entry / 'gitdir'
+    if gitdir.exists():
+        try:
+            target = Path(gitdir.read_text(encoding='utf-8').strip())
+        except (OSError, UnicodeError):
+            return
+        if target.resolve() != (checker / '.git').resolve():
+            return
+    shutil.rmtree(entry)
+
+
+def recover_checker_worktree(state: dict[str, Any], manifest: dict[str, Any]) -> None:
+    if not state.get('checker_worktree'):
+        return
+    repo = Path(state['repo'])
+    worktree = Path(state['worktree'])
+    with git_phase(repo, 'writer', timeout_seconds=remaining_seconds(state, manifest)):
+        abandoned = state.get('checker_worktree')
+        if abandoned:
+            expected = worktree.with_name(f"{worktree.name}-check-{state['attempt']}")
+            if Path(abandoned) != expected:
+                raise RunError('unrecognized checker recovery path')
+            if expected.exists():
+                if resolved_git_path(expected, '--git-common-dir') != resolved_git_path(repo, '--git-common-dir'):
+                    raise RunError('checker recovery worktree belongs to another repository')
+                if git(expected, 'rev-parse', 'HEAD') != state.get('candidate_commit'):
+                    raise RunError('checker recovery candidate changed; operator review required')
+                removed = run(['git', 'worktree', 'remove', '--force', str(expected)], repo)
+                if removed.returncode:
+                    raise RunError('cannot clean up interrupted checker worktree')
+            else:
+                clear_abandoned_checker_entry(repo, expected)
+            state.pop('checker_worktree', None)
+        save_state(state, 'checker_worktree_recovered')
 
 
 def resume(args: argparse.Namespace) -> int:
@@ -1633,6 +2001,7 @@ def resume(args: argparse.Namespace) -> int:
                 raise RunError("manifest run_id no longer matches the durable run state")
             if spec_rel.as_posix() != state["spec_path"] or spec_hash != state["spec_sha256"]:
                 raise RunError("spec changed since start; create a new run for a changed contract")
+            validate_original_spec(repo, spec_rel, str(manifest["base_ref"]))
             if state.get("graph_id") is not None:
                 graph_path = state.get("graph_path")
                 effective_base = state.get("effective_base_oid")
@@ -1653,6 +2022,25 @@ def resume(args: argparse.Namespace) -> int:
                 raise RunError("run worktree is no longer on its recorded branch")
             if not clean(worktree):
                 raise RunError("cannot resume a dirty worktree")
+            if state.get('active_pid') and (process_is_live(state['active_pid']) or
+                                          process_group_is_live(int(state['active_pid']))):
+                raise RunError('previous role is still live; stop it before recovery')
+            require_native_role_sandbox()
+            pending_usage = state.get('usage_pending')
+            if pending_usage:
+                role = pending_usage.get('role')
+                runtime = pending_usage.get('runtime')
+                prefix = f"attempt-{state['attempt']}-{role}"
+                if role not in {'maker', 'checker'} or runtime != manifest['roles'][role]['runtime'] or pending_usage.get('prefix') != prefix:
+                    raise RunError('invalid unfinished usage checkpoint')
+                output_path = run_dir / (prefix + '.stdout')
+                record_role_usage(state, runtime, role, output_path.read_text() if output_path.exists() else '')
+                state['usage_accounting_incomplete'] = True
+                save_state(state, 'usage_recovered', accounting='reported output only; unreported spend unknown')
+            if state.get('stage') == 'making' and state.get('maker_before_head') != git(worktree, 'rev-parse', 'HEAD'):
+                raise RunError('unfinished maker advanced HEAD without a validated receipt; operator review required')
+            if state.get('status') == 'checking' and not pending_candidate(state):
+                raise RunError('checking stage has no candidate checkpoint; operator review required')
             assert_no_live_scope_conflicts(repo, args.run_id, manifest["scope"])
             stop_file = run_dir / "STOP"
             if stop_file.exists():
@@ -1665,6 +2053,7 @@ def resume(args: argparse.Namespace) -> int:
             state["controller_pid"] = os.getpid()
             state["controller_token"] = token
             save_state(state, "run_resumed")
+        recover_checker_worktree(state, manifest)
         return run_controller(state, manifest)
     finally:
         if token is not None:

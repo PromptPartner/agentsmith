@@ -1,0 +1,116 @@
+<div align="center">
+  <img src="site/assets/promptpartner-mark-amber.svg" width="72" height="72" alt="PromptPartner mark">
+  <p>
+    <a href="https://github.com/PromptPartner/agentsmith/actions/workflows/verify.yml"><img alt="Verification" src="https://github.com/PromptPartner/agentsmith/actions/workflows/verify.yml/badge.svg?branch=master"></a>
+    <a href="https://github.com/PromptPartner/agentsmith/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/PromptPartner/agentsmith"></a>
+    <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-14213D.svg"></a>
+  </p>
+  <p>
+    <a href="README.md">English</a> · <strong>Deutsch</strong> · <a href="README.es.md">Español</a> · <a href="README.fr.md">Français</a> · <a href="README.zh-CN.md">简体中文</a>
+  </p>
+</div>
+
+# AgentSmith — das Open-Source-Harness für Coding-Agenten
+
+**Erst der Beleg, dann „fertig“.**
+
+Vom Vibe Coding zum Agentic Engineering. Gib Claude Code oder Codex deine Projektregeln,
+eine Definition von „fertig“ und Prüfungen, die Belege liefern. Verstehe die Aufgabe, nimm eine
+klar begrenzte Änderung vor, prüfe das Ergebnis und übertrage Entscheidungen in die nächste Sitzung.
+
+Projektregeln und konfigurierte Schutzmechanismen helfen gegen schleichende Ausweitung des Umfangs,
+wiederholte Reparaturschleifen und „fertig“-Aussagen ohne Belege.
+
+- **Beginne mit dem richtigen Problem.** Lies den bestehenden Code und definiere Abschlussprüfungen, bevor du etwas änderst.
+- **Halte Änderungen überprüfbar.** Nimm kleine Änderungen vor, wähle native Berechtigungen und aktiviere optionale Hooks zur Suche nach Geheimnissen.
+- **Belege das Ergebnis.** Führe alle konfigurierten Prüfungen aus, teste die tatsächliche Funktion und bewahre die Belege auf.
+- **Trage Fortschritte weiter.** Speichere Entscheidungen und eine klare Übergabe in deinem Projekt.
+- **Lerne aus Erfahrung.** Halte einen Fehler fest, schlage eine Regel, einen Hook oder einen Test vor und validiere die Änderung.
+
+**Erlebe den Unterschied an einer Aufgabe.** [Führe die Demo in einer Wegwerfumgebung aus](docs/02-your-first-hour.md):
+Reproduziere einen Fehler, nimm eine klar begrenzte Korrektur vor und prüfe die Belege. Oder
+[sieh dir das vorhandene Belegpaket an](docs/demos/first-verified-loop/README.md), einschließlich
+fehlschlagendem Test, Verifikation, Ausgabe des tatsächlichen Ablaufs, Prüfprotokoll sowie Übergabe und Fortsetzung.
+
+Wenn deine Prüfungen verlässlich sind, erkunde [endliche Maker/Checker-Durchläufe](docs/21-autonomous-runs.md)
+mit freigegebenem Umfang und ausdrücklichen Grenzen.
+
+![AgentSmith: Claude Code oder Codex arbeitet mit Projektregeln und konfigurierten Prüfungen. Aufgabe verstehen und begrenzen, Ergebnis prüfen und Belege bewahren, Entscheidungen übergeben und Verbesserungen validieren. Eine Demo zeigt den Ablauf vom fehlschlagenden Test bis zur Fortsetzung.](docs/assets/agentsmith-explainer.de.svg)
+
+## AgentSmith einrichten
+
+Wähle einen von zwei Wegen. Beide verwenden dieselbe geführte Einrichtung und erzeugen dieselben Projektdateien.
+
+### 1. Manuell einrichten
+
+1. Lade die eigenständige Anwendung für macOS, Windows oder Linux aus der [neuesten Version](https://github.com/PromptPartner/agentsmith/releases/latest) herunter. Die Builds für macOS und Windows sind derzeit nicht signiert. Dein Betriebssystem fragt daher möglicherweise nach einer Bestätigung, bevor du sie ausführst.
+2. Öffne ein Terminal und führe `agentsmith` aus.
+3. Beantworte die geführten Fragen. AgentSmith zeigt dir den genauen Plan, bevor es etwas schreibt.
+
+Der Assistent kann ein bestehendes Projekt konfigurieren oder für ein neues Projekt einen leeren Ordner anlegen und Git initialisieren. Die eigenständige Anwendung enthält ihre Laufzeitumgebung; Python ist nicht erforderlich.
+
+### 2. Deinen Agenten beauftragen
+
+Füge diesen Text in Claude Code, Codex oder einen anderen Programmieragenten ein:
+
+```text
+Install AgentSmith for this project. Follow the official agent guide at
+https://github.com/PromptPartner/agentsmith/blob/master/AGENT-INSTALL.md
+Inspect the project first, explain your profile recommendation in plain language,
+show me the exact installation plan, and ask once before applying it.
+```
+
+Der Agent untersucht das Repository, ohne Projektcode auszuführen, empfiehlt anhand der gefundenen Hinweise ein Profil, zeigt eine Vorschau der verwalteten Dateien, installiert AgentSmith und führt die Diagnoseprüfung aus.
+
+> AgentSmith aus dem Quellcode zu erstellen ist für Mitwirkende und fortgeschrittene Automatisierung gedacht. Siehe die [Installationsreferenz](INSTALL.md).
+
+## Neues oder bestehendes Projekt?
+
+| Ausgangspunkt | Was AgentSmith macht | Was AgentSmith nicht macht |
+|---|---|---|
+| Bestehendes Projekt | Untersucht die Dateien, empfiehlt ein Profil, bewahrt fremde Inhalte und ergänzt verwaltete Regeln sowie ein Prüfgerüst. | Es führt bei der Untersuchung keinen Projektcode aus und ersetzt keine bestehende Projektkonfiguration. |
+| Neues Projekt | Erstellt oder prüft einen leeren Ordner, initialisiert Git und fügt AgentSmith hinzu. | Es wählt oder erzeugt kein Anwendungsframework. Dein Agent kann die Anwendung nach der Einrichtung erstellen. |
+
+Die Projekteinrichtung ist die Voreinstellung, weil die Regeln mit dem Repository weitergegeben und von Mitwirkenden geprüft werden können. Ein benutzerweit geltender Kern für alle Projekte ist unter **Erweiterte Optionen** verfügbar. Eine mehrschichtige Einrichtung kombiniert diesen benutzerweiten Kern mit einem kleinen projektspezifischen Profil. Siehe [projektbezogene, benutzerweite und mehrschichtige Einrichtungen](INSTALL.md#where-the-rules-live).
+
+## Arbeitsprofile
+
+Ein Profil sagt dem Agenten, was für die jeweilige Arbeit „fertig“ bedeutet. Der Assistent empfiehlt ein Profil und zeigt, auf welche Dateien er seine Wahl stützt. Du kannst es annehmen oder die vollständige Liste anzeigen.
+
+| Profil | Geeignet für | Wichtigster Nachweis |
+|---|---|---|
+| `software-dev` | Funktionen, Fehlerbehebungen, Refactorings, Anwendungen, Bibliotheken und Produktoberflächen | Build, Prüfungen, Tests, Sicherheitsprüfung, echter Aufruf |
+| `devops-setup` | Installationsprogramme, CI, Container, Konfiguration und Bereitstellungen | Probelauf, Idempotenz, Rücknahme, echter Bereitstellungsablauf |
+| `marketing-outreach` | Kampagnen, E-Mail, Newsletter, Landingpage-Texte und CRM-Arbeit | Zielgruppen- und Faktenprüfung, Links, Darstellung, Sendefreigabe |
+| `document-creation` | Berichte, Angebote, Spezifikationen, Handbücher und Wikis | Quellengenauigkeit, Struktur, Links, Prüfung der gerenderten Datei |
+| `data-crunching` | Datenbereinigung, Analyse, SQL, Kennzahlen und ETL | Reproduzierbarkeit, Summen, Grenzfälle, Prüfung der Ausgabe |
+| `general-admin` | Triage, Terminplanung, Organisation, Zusammenfassungen und Routineaufgaben | Vollständigkeit, originalgetreue Ausgabe, Ziel- und Freigabeprüfungen |
+| `deep-research` | Due Diligence, Marktforschung und Untersuchungen mit Quellenangaben | Quellenqualität, Abdeckung der Aussagen, Quellenangaben, Prüfung der Synthese |
+| `creative-design` | Diagramme, Präsentationen, Markenmaterial, Bilder und Videos | Briefing, Sicht- und Exportprüfung, Barrierefreiheit, Markenkonsistenz |
+| `security-audit` | Bedrohungsmodelle, Sicherheitsprüfungen, Penetrationstests und IAM-Audits | Reproduktion, Schweregradbelege, Behebung, erneuter Test |
+
+`autonomous-loops` ist eine erweiterte Ergänzung für geplante oder unbeaufsichtigte Arbeit. Kombiniere sie mit dem wichtigsten Arbeitsprofil; verwende sie nicht allein. Der [Profil-Leitfaden](docs/07-how-to-pick-a-profile.md) erklärt Grenzfälle, Wechsel und Kombinationen.
+
+## Was installiert wird
+
+- `AGENTS.md` ist die maßgebliche Projektvereinbarung. Claude Code erhält außerdem eine erzeugte `CLAUDE.md`.
+- `.harness/verify.conf` definiert die tatsächlichen Prüfungen für dieses Projekt.
+- `.agentsmith/state.json` speichert nur Einstellungen, die AgentSmith gehören, damit Aktualisierungen und das Entfernen fremde Inhalte bewahren.
+- Optionale Skills, MCP-Server und Hooks sind im eingeklappten erweiterten Schritt verfügbar.
+
+Der vorsichtige Berechtigungsmodus ist die Voreinstellung. AgentSmith betrachtet einen verbundenen externen Dienst niemals als Erlaubnis, darauf zu schreiben.
+
+## Die Nachweise ansehen
+
+Die [erste verifizierte Schleife](docs/demos/first-verified-loop/README.md) dokumentiert einen fehlschlagenden Test vor der Korrektur, eine danach erfolgreiche Prüfung, einen echten Befehlsaufruf, einen Nachweis und eine fortsetzbare Übergabe. Das [Support-Verzeichnis](config/agents.json) trennt die Unterstützung für Anweisungen von getestetem nativem Verhalten.
+
+## Dokumentation und Community
+
+- [Installationsreferenz](INSTALL.md)
+- [Dokumentationsübersicht](docs/README.md)
+- [Wie Prüfungen zu Belegen werden](docs/03-verify-means-evidence.md)
+- [Agentenkompatibilität](docs/22-compatibility-contract.md)
+- [Mitwirken](CONTRIBUTING.md) und [Support](SUPPORT.md)
+- [Sicherheitsrichtlinie](SECURITY.md) und [Verhaltenskodex](CODE_OF_CONDUCT.md)
+
+MIT-lizenziert. Erstellt von [PromptPartner](https://promptpartner.ai/).

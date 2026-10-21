@@ -60,7 +60,7 @@ Do it at install and setup scaffolds the file for you:
 ./setup.sh --profile software-dev --design-system generate        # print the ui-ux-pro-max steps
 ```
 
-The wizard (bare `./setup.sh`) asks "Does this project have a UI?" and offers the same three paths.
+The wizard does not ask whether the project has a UI; pass one of the `--design-system` flags above.
 An unfilled `DESIGN.md` is surfaced at setup end as a `DESIGN_SYSTEM` TODO, so it doesn't ship blank.
 Full flag reference: [`12-whats-built-in.md`](12-whats-built-in.md).
 

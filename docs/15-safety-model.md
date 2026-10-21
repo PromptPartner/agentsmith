@@ -30,8 +30,8 @@ this one; neither substitutes for the other.
 How much the agent does without asking is a single setting, and it's the control you'll actually
 use. **Cautious** (the wizard, fresh-install, and ordinary-update default) auto-applies file edits
 but prompts before shell commands and network calls. **Trusted** (`bypassPermissions`) runs most tool calls without asking. The full
-table, the exact JSON keys, and how to change it later are in the README's **"Permissions and
-trusted mode"** section — read it before you change anything.
+table, the exact settings, and how to change them are in [Safety modes](#safety-modes) below —
+read it before you change anything.
 
 The honest risk statement: trusted mode means a wrong or manipulated step can delete files,
 exfiltrate data (a stray `curl`), or push to a remote **without a prompt**. It's acceptable only
@@ -43,7 +43,32 @@ prompt even in trusted mode.)
 AgentSmith-managed configuration is trusted, `--dry-run` names the migration and the real run warns,
 backs up the config, and changes it to cautious. Retaining trusted requires `--safety trusted` on
 that update; it is never silently preserved as an ambient default. Foreign JSON/TOML content is
-preserved either way.
+preserved either way. Container mode follows the same rule: a rerun without `--safety container`
+warns, backs up, and moves it to cautious.
+
+## Safety modes
+
+| Mode | Claude `defaultMode` | Codex `approval_policy` / `sandbox_mode` | Use it when |
+|---|---|---|---|
+| `cautious` (default) | `acceptEdits` | `on-request` / `workspace-write` | A normal machine. Edits apply; shell and network ask first; Codex writes only inside the workspace. |
+| `trusted` | `bypassPermissions` | `never` / `danger-full-access` | A machine you fully own, where prompts cost more than they protect. |
+| `container` | `acceptEdits` | `on-request` / `danger-full-access` | Inside Docker or a similar container. The Codex sandbox (bubblewrap) usually cannot create user namespaces there, so cautious Codex fails every command. The container is the isolation boundary, and approvals stay on. |
+
+Use `container` only with repositories you trust. Without the Codex sandbox, project code and
+commands can read everything inside the container, including the agent's own credentials; the
+container limits the damage to itself, not to what it holds. This matches OpenAI's guidance for
+running Codex in a container: let the container provide the isolation, and run it only on trusted
+code.
+
+Choose with `--safety cautious|trusted|container`. The wizard offers `container`, and makes it
+the default, only when it detects a container. `agentsmith doctor` reports the active mode and
+warns when cautious Codex runs inside a container.
+
+The settings live in `~/.claude/settings.json` (`permissions.defaultMode`) and
+`$CODEX_HOME/config.toml` (default `~/.codex`). To leave them exactly as they are — for example
+when a container image already sets them on purpose — install with `--assemble-only`: AgentSmith
+then writes instructions only and does not touch Claude or Codex permissions, Codex
+`config.toml`, or statuslines.
 
 ## Behavioral safety evaluation
 
@@ -115,8 +140,8 @@ the pause-list and the loop denylist exist — they bound what a manipulated ste
 On a box you don't fully control, you want the safety floor enforced from above, where no project
 can re-enable the dangerous mode. `sudo setup.sh --org-policy` installs a managed `CLAUDE.md` at
 the OS policy path plus a stricter, no-bypass settings profile; the managed-settings keys that
-disable bypass mode (`disableBypassPermissionsMode`) and their exact per-OS paths are documented in
-[`research/claude-code-hooks-and-managed-policy.md`](research/claude-code-hooks-and-managed-policy.md).
+disable bypass mode (`disableBypassPermissionsMode`) and their exact per-OS paths are described in
+[Claude Code's managed settings documentation](https://code.claude.com/docs/en/settings#managed-settings).
 Managed settings are highest-precedence and can't be overridden by a user or project.
 
 ## Everything is reversible

@@ -1,0 +1,181 @@
+name: standalone builds
+
+on:
+  pull_request:
+    paths:
+      - agentsmith.py
+      - agentsmith.spec
+      - core/**
+      - profiles/**
+      - config/**
+      - templates/**
+      - skills/**
+      - .github/workflows/standalone.yml
+  push:
+    branches: [master]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+jobs:
+  build:
+    name: ${{ matrix.asset }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            asset: agentsmith-linux-x86_64
+            executable: dist/agentsmith
+          - os: ubuntu-24.04-arm
+            asset: agentsmith-linux-arm64
+            executable: dist/agentsmith
+          - os: windows-2025
+            asset: agentsmith-windows-x86_64
+            executable: dist/agentsmith.exe
+          - os: macos-15
+            asset: agentsmith-macos-arm64
+            executable: dist/agentsmith
+          - os: macos-15-intel
+            asset: agentsmith-macos-x86_64
+            executable: dist/agentsmith
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Build standalone executable
+        run: |
+          python -m pip install --disable-pip-version-check pyinstaller==6.22.3
+          pyinstaller --clean --noconfirm agentsmith.spec
+      - name: Exercise the standalone command
+        shell: bash
+        run: |
+          "${{ matrix.executable }}" --version
+          "${{ matrix.executable }}" profiles list --json > profile-catalog.json
+          python -c "import json; p=json.load(open('profile-catalog.json', encoding='utf-8')); assert len(p['profiles']) == 10"
+          smoke_target="${RUNNER_TEMP}/agentsmith-standalone-smoke"
+          mkdir -p "$smoke_target"
+          "${{ matrix.executable }}" install --agent github-copilot --profile software-dev --target "$smoke_target"
+          "${{ matrix.executable }}" status --target "$smoke_target"
+          test ! -e "$smoke_target/.agentsmith/agentsmith.py"
+      - name: Package Unix executable
+        if: runner.os != 'Windows'
+        shell: bash
+        run: tar -czf "${{ matrix.asset }}.tar.gz" -C dist agentsmith
+      - name: Package Windows executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/agentsmith.exe -DestinationPath "${{ matrix.asset }}.zip"
+      - name: Upload tested build
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            ${{ matrix.asset }}.tar.gz
+            ${{ matrix.asset }}.zip
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Attest Unix build provenance
+        if: github.event_name != 'pull_request' && runner.os != 'Windows'
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ matrix.asset }}.tar.gz
+      - name: Attest Windows build provenance
+        if: github.event_name != 'pull_request' && runner.os == 'Windows'
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ matrix.asset }}.zip
+
+  checksums:
+    name: SHA256SUMS
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Download tested builds
+        uses: actions/download-artifact@v8
+        with:
+          pattern: agentsmith-*
+          path: release-assets
+          merge-multiple: true
+      - name: Write SHA256SUMS
+        shell: bash
+        working-directory: release-assets
+        run: |
+          shopt -s nullglob
+          archives=(agentsmith-*.tar.gz agentsmith-*.zip)
+          # One archive per build target; a missing one must not ship as a partial release.
+          test "${#archives[@]}" -eq 5
+          sha256sum "${archives[@]}" | LC_ALL=C sort -k 2 > SHA256SUMS
+          cat SHA256SUMS
+      - name: Upload SHA256SUMS
+        uses: actions/upload-artifact@v7
+        with:
+          name: SHA256SUMS
+          path: release-assets/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+      - name: Attest SHA256SUMS provenance
+        if: github.event_name != 'pull_request'
+        uses: actions/attest@v4
+        with:
+          subject-path: release-assets/SHA256SUMS
+
+  release:
+    name: draft release
+    needs: checksums
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Require the tag to match the CLI version
+        id: version
+        shell: bash
+        run: |
+          version="$(sed -n 's/^VERSION = "\([^"]*\)"$/\1/p' agentsmith.py)"
+          if [ "$GITHUB_REF_NAME" != "v${version}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match VERSION = \"${version}\" in agentsmith.py"
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+      - name: Download tested builds
+        uses: actions/download-artifact@v8
+        with:
+          pattern: agentsmith-*
+          path: release-assets
+          merge-multiple: true
+      - name: Download SHA256SUMS
+        uses: actions/download-artifact@v8
+        with:
+          name: SHA256SUMS
+          path: release-assets
+      - name: Create draft release
+        shell: bash
+        working-directory: release-assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          sha256sum -c SHA256SUMS
+          # A rerun must not add a second draft or touch a published release.
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            echo "::error::A release for ${GITHUB_REF_NAME} already exists; delete that draft before rerunning"
+            exit 1
+          fi
+          # Draft only: the maintainer reviews the assets and notes, then publishes.
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
+            --title "AgentSmith ${VERSION}" --generate-notes \
+            SHA256SUMS agentsmith-*.tar.gz agentsmith-*.zip

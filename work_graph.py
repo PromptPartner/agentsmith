@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import builtins
 import hashlib
 import contextlib
+import errno
 import importlib.util
 import json
 import math
@@ -227,13 +229,29 @@ def load_contract(target: str | Path, graph_path: str) -> dict[str, Any]:
     }
 
 
+def _read_bytes(path: Path) -> bytes:
+    """Read a file while tolerating bounded Windows sharing races, as the controller does."""
+    for attempt in range(500):
+        try:
+            return path.read_bytes()
+        except PermissionError as exc:
+            # A child replaces its state atomically; Windows denies opens during the replace.
+            transient_windows_error = os.name == "nt" and (
+                getattr(exc, "winerror", None) in {5, 32} or exc.errno == errno.EACCES
+            )
+            if not transient_windows_error or attempt == 499:
+                raise
+            time.sleep(0.01)
+    raise AssertionError("unreachable")
+
+
 def _child_state(contract: dict[str, Any], run_id: str) -> dict[str, Any] | None:
     path = common_directory(contract["repo"]) / "agentsmith-runs" / run_id / "state.json"
     if not path.exists():
         return None
     if path.is_symlink() or not path.is_file():
         raise GraphError(f"child state for {run_id} is not a regular file")
-    state = _json_object(path.read_bytes(), label=f"child state for {run_id}")
+    state = _json_object(_read_bytes(path), label=f"child state for {run_id}")
     if state.get("run_id") != run_id or state.get("manifest_sha256") != contract["nodes"][run_id]["manifest_sha256"]:
         raise GraphError(f"child state lineage mismatch for {run_id}")
     if state.get("repo") != str(contract["repo"]):
@@ -346,6 +364,18 @@ def _checkpoint_commit(contract: dict[str, Any], run_id: str) -> str | None:
 
 def status(contract: dict[str, Any]) -> dict[str, Any]:
     controller = contract["controller"]
+    saved = _load_graph_state(contract) if _graph_directory(contract).exists() else None
+    failed_launches: dict[str, str] = {}
+    if saved is not None:
+        for dispatch in saved["dispatches"]:
+            if isinstance(dispatch, dict) and dispatch.get("launch_failed") is True:
+                run_id = dispatch.get("run_id")
+                reason = dispatch.get("failure_reason")
+                if (not isinstance(run_id, str) or run_id not in contract["nodes"]
+                        or type(dispatch.get("exit_code")) is not int
+                        or not isinstance(reason, str) or not reason or len(reason) > 500):
+                    raise GraphError("durable graph launch failure is malformed")
+                failed_launches[run_id] = reason
     nodes: list[dict[str, Any]] = []
     by_id: dict[str, dict[str, Any]] = {}
     reserved: list[str] = []
@@ -365,7 +395,9 @@ def status(contract: dict[str, Any]) -> dict[str, Any]:
         state = _child_state(contract, run_id)
         checkpoint = _checkpoint_commit(contract, run_id) if node["depends_on"] else contract["contract_commit"]
         result: dict[str, Any] = {"run_id": run_id, "effective_base_oid": checkpoint}
-        if state is not None:
+        if run_id in failed_launches:
+            result.update(status="failed", reason=failed_launches[run_id])
+        elif state is not None:
             child_status = state.get("status")
             if checkpoint is None or state.get("base_head") != checkpoint:
                 raise GraphError(f"child base lineage mismatch for {run_id}")
@@ -432,8 +464,7 @@ def status(contract: dict[str, Any]) -> dict[str, Any]:
         graph_status, action = "running", "status"
     else:
         graph_status, action = "prepared", "start" if ready_set else "status"
-    if _graph_directory(contract).exists():
-        saved = _load_graph_state(contract)
+    if saved is not None:
         if saved["status"] == "stopped":
             graph_status, action, ready_set = "stopped", "resume", []
     if graph_status == "completed" and (_graph_directory(contract) / "integration-candidate.json").is_file():
@@ -645,6 +676,54 @@ def start_graph(contract: dict[str, Any]) -> dict[str, Any]:
         return _run_graph(contract, state, directory)
 
 
+# Known controller refusals, which main() prints as `error: <RunError>`. Only the fixed code
+# enters graph evidence; the refusal text can carry paths or tool output and never does.
+CHILD_REFUSALS = tuple((code, re.compile(pattern)) for code, pattern in (
+    ("accepted-run", r"accepted runs do not resume"),
+    ("no-run-state", r"no run state for "),
+    ("unreadable-json", r"cannot read JSON "),
+    ("coordination-held", r"repository coordination is still held by live process"),
+    ("coordination-lock", r"cannot (acquire|verify|remove) repository coordination lock"),
+    ("controller-live", r"run [A-Za-z0-9_-]{1,64} already has a live controller"),
+    ("lifecycle-lock", r"(could not acquire|cannot verify) lifecycle lock"),
+    ("manifest-changed", r"manifest (changed since start|run_id no longer matches)"),
+    ("spec-changed", r"(original )?spec changed since start"),
+    ("graph-changed", r"(graph contract or |graph context is incomplete|"
+                      r"child base does not match its graph|effective base )"),
+    ("base-changed", r"base_ref changed since start"),
+    ("worktree-changed", r"run worktree is (missing|no longer on its recorded branch)"),
+    ("dirty-worktree", r"cannot resume a dirty worktree"),
+    ("previous-role-live", r"previous role is still live"),
+    ("unsupported-host", r"no supported fail-closed trusted-state sandbox"),
+    ("usage-checkpoint", r"invalid unfinished usage checkpoint"),
+    ("maker-advanced", r"unfinished maker advanced HEAD"),
+    ("no-candidate", r"checking stage has no candidate checkpoint"),
+    ("scope-conflict", r"run [A-Za-z0-9_-]{1,64} conflicts with live run "),
+    ("scope-unverified", r"cannot verify scope for live run "),
+    ("git-phase-held", r"git phase [a-z]+ is still held by live "),
+    ("checker-recovery", r"(unrecognized checker recovery path|checker recovery |"
+                         r"cannot clean up interrupted checker worktree)"),
+    ("dirty-base", r"base worktree must be clean"),
+    ("run-exists", r"run [A-Za-z0-9_-]{1,64} already exists"),
+    ("worktree-exists", r"refusing to overwrite existing branch/worktree"),
+))
+
+
+# Labels a child's last stderr line may contribute: the controller's own prefixes and exception
+# classes, and Python's. Anything else could be tool output or a secret, so it becomes "unknown".
+CHILD_EXCEPTION_LABELS = frozenset({
+    "error", "escalated", "interrupted", "RunError", "RunInterrupted", "GraphError",
+    "subprocess.CalledProcessError", "subprocess.TimeoutExpired", "json.decoder.JSONDecodeError",
+})
+
+
+def _child_exception_label(name: str) -> str:
+    builtin = getattr(builtins, name, None)
+    if name in CHILD_EXCEPTION_LABELS or (isinstance(builtin, type) and issubclass(builtin, BaseException)):
+        return name
+    return "unknown"
+
+
 def child_failure_reason(child: dict[str, Any] | None, returncode: int, stderr: str) -> str:
     """Keep a useful child crash signature without copying process output into graph evidence."""
     known = child.get("reason") if child else None
@@ -657,7 +736,13 @@ def child_failure_reason(child: dict[str, Any] | None, returncode: int, stderr: 
     for line in reversed(stderr.splitlines()):
         match = re.match(r"^([A-Za-z_][A-Za-z0-9_.]{0,63})(?::|$)", line)
         if match:
-            exception = match.group(1)
+            exception = _child_exception_label(match.group(1))
+            break
+    refusal = "unknown"
+    for line in reversed(stderr.splitlines()):
+        if line.startswith("error: "):
+            refusal = next((code for code, pattern in CHILD_REFUSALS
+                            if pattern.match(line[len("error: "):])), "unknown")
             break
     location = "unknown"
     frames = re.findall(r'File "([^"\r\n]+)", line ([0-9]{1,6}), in [A-Za-z_][A-Za-z0-9_]*', stderr)
@@ -665,7 +750,8 @@ def child_failure_reason(child: dict[str, Any] | None, returncode: int, stderr: 
         if re.split(r"[\\/]", path)[-1] == "autonomous-run.py":
             location = f"autonomous-run.py:{line}"
             break
-    return f"child process exit={returncode} in {status}; exception={exception}; location={location}"
+    return (f"child process exit={returncode} in {status}; exception={exception}; "
+            f"refusal={refusal}; location={location}")
 
 
 def _run_graph(contract: dict[str, Any], state: dict[str, Any], directory: Path,
@@ -756,9 +842,17 @@ def _run_graph(contract: dict[str, Any], state: dict[str, Any], directory: Path,
                                        "child checker accepted"))
             else:
                 reason = child_failure_reason(child, process.returncode, stderr)
+                if child is None:
+                    dispatch = next(item for item in reversed(state["dispatches"])
+                                    if item["run_id"] == run_id)
+                    dispatch.update(launch_failed=True, exit_code=process.returncode,
+                                    failure_reason=reason[:500])
                 pending_events.append(("run_failed", run_id, None,
                                        reason[:500] or "child process exited without accepted evidence"))
         if not active and pending_events:
+            # Graph state is protected during peer roles; persist launch failures
+            # only once their metadata snapshots have finished.
+            _save_graph_state(directory, state)
             for kind, run_id, commit, reason in pending_events:
                 _graph_event(directory, contract["graph_id"], kind, run_id=run_id,
                              commit=commit, reason=reason)

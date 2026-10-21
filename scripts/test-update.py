@@ -73,13 +73,14 @@ class UpdateCheckTests(unittest.TestCase):
         broken_runtime_health: bool = False,
         candidate_execution_probe: Path | None = None,
         statusline_probe: str | None = None,
+        extra_global_rules: str | None = None,
     ) -> None:
         for directory in ("config", "core", "profiles", "scripts", "skills", "templates"):
             destination = self.seed / directory
             if not destination.exists():
                 shutil.copytree(ROOT / directory, destination)
         for helper in ("native_launcher.py", "evaluate.py", "work_graph.py",
-                       "windows_verifier_sandbox.py"):
+                       "windows_verifier_sandbox.py", "project_memory.py", "config_audit.py"):
             shutil.copy2(ROOT / helper, self.seed / helper)
         (self.seed / "VERSION").write_text(version + "\n", encoding="utf-8")
         runtime = CORE.read_text(encoding="utf-8")
@@ -105,6 +106,19 @@ class UpdateCheckTests(unittest.TestCase):
                 'if __name__ == "__main__":',
                 1,
             )
+        if extra_global_rules is not None:
+            # A hostile or buggy candidate that writes one more user-level rules file.
+            runtime = runtime.replace(
+                '\nif __name__ == "__main__":',
+                '\n_release_instruction_paths = instruction_paths\n\n'
+                'def instruction_paths(target, agents, global_mode):\n'
+                '    canonical, native = _release_instruction_paths(target, agents, global_mode)\n'
+                '    if global_mode:\n'
+                f'        native.append(home_dir() / {json.dumps(extra_global_rules)})\n'
+                '    return canonical, native\n\n'
+                'if __name__ == "__main__":',
+                1,
+            )
         (self.seed / "agentsmith.py").write_text(runtime, encoding="utf-8")
         if statusline_probe is not None:
             statusline = self.seed / "config" / "statusline.py"
@@ -122,14 +136,41 @@ class UpdateCheckTests(unittest.TestCase):
         self.git("commit", "-qm", f"release {version}")
         self.git("tag", f"v{version}")
 
-    def run_core(self, *arguments: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    def run_core(
+        self, *arguments: str, env: dict[str, str] | None = None, cwd: Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, str(CORE), *arguments],
             text=True,
             capture_output=True,
             check=False,
             env=env,
+            cwd=cwd,
         )
+
+    def publish_remote(self) -> None:
+        cloned = subprocess.run(
+            ["git", "clone", "-q", "--no-local", "--bare", str(self.seed), str(self.remote)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(cloned.returncode, 0, cloned.stdout + cloned.stderr)
+
+    @staticmethod
+    def receipt_from(applied: subprocess.CompletedProcess[str]) -> Path:
+        receipt_line = next(line for line in applied.stdout.splitlines() if "rollback receipt:" in line)
+        return Path(receipt_line.split("rollback receipt:", 1)[1].strip())
+
+    @staticmethod
+    def isolated_environment(home: Path, codex_home: Path, **extra: str) -> dict[str, str]:
+        # The operator's own client locations must never leak into a fixture install.
+        environment = {
+            name: value for name, value in os.environ.items()
+            if name not in {"PI_CODING_AGENT_DIR", "XDG_CONFIG_HOME"}
+        }
+        environment.update({"HOME": str(home), "USERPROFILE": str(home), "CODEX_HOME": str(codex_home), **extra})
+        return environment
 
     def test_check_selects_highest_stable_semver_and_excludes_prereleases(self) -> None:
         latest_version = f"{CURRENT_PARTS[0]}.{CURRENT_PARTS[1]}.{CURRENT_PARTS[2] + 7}"
@@ -321,6 +362,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertEqual(cloned.returncode, 0, cloned.stdout + cloned.stderr)
         target = self.root / "rollback project"
         target.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "memory-test", str(target)], check=True)
         environment = {
             **os.environ,
             "HOME": str(self.root / "home"),
@@ -328,7 +370,7 @@ class UpdateCheckTests(unittest.TestCase):
         }
         installed = self.run_core(
             "install", "--agent", "codex", "--profile", "software-dev",
-            "--target", str(target), "--operator-name", "Rollback Test",
+            "--target", str(target), "--operator-name", "Rollback Test", "--with-memory-startup",
             env=environment,
         )
         self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
@@ -337,6 +379,8 @@ class UpdateCheckTests(unittest.TestCase):
         research = target / "docs" / "research" / "source.md"
         research.parent.mkdir(parents=True, exist_ok=True)
         research.write_bytes(b"costly source material\n")
+        note = target / ".harness/handoffs/startup.md"
+        note.write_text('# Recovery reference\n<!-- agentsmith-memory: {"version":1,"branch":"memory-test"} -->\nBODY SENTINEL\n', encoding="utf-8")
         plan_path = self.root / "apply-plan.json"
         planned = self.run_core(
             "update", "plan", "--target", str(target), "--version", NEXT_TAG,
@@ -352,6 +396,17 @@ class UpdateCheckTests(unittest.TestCase):
         applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
 
         self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        state = json.loads((target / ".agentsmith/state.json").read_text())
+        self.assertTrue(state["installation"]["capabilities"]["memory_startup"])
+        self.assertIn("memory_startup", state["installation"]["effects"])
+        command = json.loads((target / ".codex/hooks.json").read_text())["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        if os.name != "nt":
+            observed = subprocess.run(command, shell=True, env=environment, cwd=target, text=True, capture_output=True,
+                input=json.dumps({"hook_event_name":"SessionStart","source":"startup","cwd":str(target.resolve())}))
+            self.assertEqual(observed.returncode, 0, observed.stderr)
+            context = json.loads(observed.stdout)["hookSpecificOutput"]["additionalContext"]
+            self.assertIn("startup.md", context)
+            self.assertNotIn("BODY SENTINEL", context)
         updated_agents = agents_path.read_text(encoding="utf-8")
         self.assertIn("# Foreign heading", updated_agents)
         self.assertIn(NEXT_RELEASE_PROBE, updated_agents)
@@ -1131,6 +1186,35 @@ class UpdateCheckTests(unittest.TestCase):
                 updated = json.loads(state_path.read_text(encoding="utf-8"))["installation"]
                 self.assertTrue(updated["assemble_only"])
                 self.assertEqual(updated["safety"], {})
+
+    def test_container_safety_survives_update_health(self) -> None:
+        # Claude reports acceptEdits for container too; the health check must not call that cautious.
+        self.commit_and_tag(NEXT_VERSION)
+        cloned = subprocess.run(
+            ["git", "clone", "-q", "--no-local", "--bare", str(self.seed), str(self.remote)],
+            text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(cloned.returncode, 0, cloned.stdout + cloned.stderr)
+        target = self.root / "container-project"
+        target.mkdir()
+        home = self.root / "container-home"
+        environment = {**os.environ, "HOME": str(home), "USERPROFILE": str(home),
+                       "CODEX_HOME": str(self.root / "container-codex")}
+        installed = self.run_core(
+            "install", "--agent", "claude,codex", "--profile", "software-dev", "--safety", "container",
+            "--target", str(target), env=environment,
+        )
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        plan_path = self.root / "container-plan.json"
+        planned = self.run_core(
+            "update", "plan", "--target", str(target), "--version", NEXT_TAG,
+            "--from", str(self.remote), "--save", str(plan_path), env=environment,
+        )
+        self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        state = json.loads((target / ".agentsmith" / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["installation"]["safety"], {"claude": "container", "codex": "container"})
 
     def test_assemble_only_migration_requires_unambiguous_native_ownership(self) -> None:
         self.commit_and_tag(NEXT_VERSION)
@@ -2012,6 +2096,313 @@ class UpdateCheckTests(unittest.TestCase):
             state["installation"]["capabilities"],
             {"handoff_hooks": True, "hooks": False, "mcp": ["context7"], "skills": True, "ui_design_hook": False},
         )
+
+    def test_global_opencode_update_applies_and_rolls_back(self) -> None:
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
+        self.publish_remote()
+        home = self.root / "opencode-home"
+        environment = self.isolated_environment(home, self.root / "opencode-codex")
+        installed = self.run_core(
+            "install", "--agent", "opencode", "--global", "--profile", "software-dev", env=environment,
+        )
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        rules = home / ".config" / "opencode" / "AGENTS.md"
+        managed_paths = [home / ".agentsmith" / "state.json", rules]
+        before = {path: path.read_bytes() for path in managed_paths}
+        plan_path = self.root / "opencode-plan.json"
+        planned = self.run_core(
+            "update", "plan", "--global", "--version", NEXT_TAG, "--from", str(self.remote),
+            "--save", str(plan_path), env=environment,
+        )
+        self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        self.assertIn(
+            {"root": "home", "path": ".config/opencode/AGENTS.md"},
+            [{"root": item["root"], "path": item["path"]} for item in plan["proposed_changes"]],
+        )
+
+        applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
+
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        self.assertIn(NEXT_RELEASE_PROBE, rules.read_text(encoding="utf-8"))
+        rolled_back = self.run_core("update", "rollback", "--receipt", str(self.receipt_from(applied)), env=environment)
+        self.assertEqual(rolled_back.returncode, 0, rolled_back.stdout + rolled_back.stderr)
+        self.assertEqual({path: path.read_bytes() for path in managed_paths}, before)
+
+    def test_update_plan_rejects_symlinked_opencode_config(self) -> None:
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
+        self.publish_remote()
+        home = self.root / "linked-config-home"
+        environment = self.isolated_environment(home, self.root / "linked-config-codex")
+        installed = self.run_core("install", "--agent", "opencode", "--global", env=environment)
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        moved_config = self.root / "dotfiles config"
+        shutil.move(str(home / ".config"), moved_config)
+        try:
+            (home / ".config").symlink_to(moved_config, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symbolic links are unavailable: {exc}")
+        rules_before = (moved_config / "opencode" / "AGENTS.md").read_bytes()
+
+        planned = self.run_core(
+            "update", "plan", "--global", "--version", NEXT_TAG, "--from", str(self.remote), env=environment,
+        )
+
+        self.assertNotEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        self.assertIn("symbolic link", planned.stderr)
+        self.assertEqual((moved_config / "opencode" / "AGENTS.md").read_bytes(), rules_before)
+
+    def test_candidate_cannot_write_opencode_rules_for_unselected_agent(self) -> None:
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION, extra_global_rules=".config/opencode/AGENTS.md")
+        self.publish_remote()
+        home = self.root / "unselected-home"
+        codex_home = self.root / "unselected-codex"
+        environment = self.isolated_environment(home, codex_home)
+        installed = self.run_core("install", "--agent", "codex", "--global", env=environment)
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        plan_path = self.root / "unselected-plan.json"
+        planned = self.run_core(
+            "update", "plan", "--global", "--version", NEXT_TAG, "--from", str(self.remote),
+            "--save", str(plan_path), env=environment,
+        )
+        self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        before = {path: path.read_bytes() for path in (home / ".agentsmith" / "state.json", codex_home / "AGENTS.md")}
+
+        applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
+
+        self.assertNotEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        self.assertIn("outside the managed surface: home:.config/opencode/AGENTS.md", applied.stderr)
+        self.assertFalse((home / ".config").exists())
+        self.assertEqual({path: path.read_bytes() for path in before}, before)
+
+    def test_global_pi_update_uses_pi_home_root_and_rolls_back(self) -> None:
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
+        self.publish_remote()
+        home = self.root / "pi-update-home"
+        pi_home = self.root / "pi agent ü"
+        environment = self.isolated_environment(home, self.root / "pi-update-codex", PI_CODING_AGENT_DIR=str(pi_home))
+        installed = self.run_core("install", "--agent", "pi", "--global", "--profile", "software-dev", env=environment)
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        rules = pi_home / "AGENTS.md"
+        managed_paths = [home / ".agentsmith" / "state.json", rules]
+        before = {path: path.read_bytes() for path in managed_paths}
+        plan_path = self.root / "pi-plan.json"
+        planned = self.run_core(
+            "update", "plan", "--global", "--version", NEXT_TAG, "--from", str(self.remote),
+            "--save", str(plan_path), env=environment,
+        )
+        self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        self.assertEqual(plan["roots"]["pi_home"], str(pi_home.resolve()))
+        self.assertIn(
+            {"root": "pi_home", "path": "AGENTS.md"},
+            [{"root": item["root"], "path": item["path"]} for item in plan["proposed_changes"]],
+        )
+
+        applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
+
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        self.assertIn(NEXT_RELEASE_PROBE, rules.read_text(encoding="utf-8"))
+        self.assertFalse((home / ".pi").exists())
+        rolled_back = self.run_core("update", "rollback", "--receipt", str(self.receipt_from(applied)), env=environment)
+        self.assertEqual(rolled_back.returncode, 0, rolled_back.stdout + rolled_back.stderr)
+        self.assertEqual({path: path.read_bytes() for path in managed_paths}, before)
+
+    def test_global_pi_plan_never_writes_the_live_pi_dir(self) -> None:
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
+        self.publish_remote()
+        home = self.root / "pi-live-home"
+        # An explicit agent folder outside HOME is the case a missing shadow override would hit.
+        pi_home = self.root / "live pi agent"
+        environment = self.isolated_environment(home, self.root / "pi-live-codex", PI_CODING_AGENT_DIR=str(pi_home))
+        installed = self.run_core("install", "--agent", "pi", "--global", "--with-skills", env=environment)
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        (pi_home / "settings.json").write_text('{"user": "owned"}\n', encoding="utf-8")
+
+        def snapshot() -> dict[Path, tuple[bytes, int]]:
+            return {
+                path: (path.read_bytes(), path.stat().st_mode & 0o777)
+                for root in (home, pi_home)
+                for path in root.rglob("*")
+                if path.is_file() and path.name != "update-integrity.key"
+            }
+
+        before = snapshot()
+
+        planned = self.run_core(
+            "update", "plan", "--global", "--version", NEXT_TAG, "--from", str(self.remote),
+            "--save", str(self.root / "pi-live-plan.json"), env=environment,
+        )
+
+        self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        self.assertEqual(snapshot(), before)
+
+    def test_relative_pi_dir_leaves_foreign_text_intact_in_a_non_pi_update(self) -> None:
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
+        self.publish_remote()
+        home = self.root / "relative-pi-home"
+        codex_home = self.root / "relative-pi-codex"
+        # Pi is not installed, so its folder setting must not affect this update at all.
+        environment = self.isolated_environment(home, codex_home, PI_CODING_AGENT_DIR=".")
+        installed = self.run_core("install", "--agent", "codex", "--global", env=environment, cwd=self.root)
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        rules = codex_home / "AGENTS.md"
+        foreign = "\nMy notes live in keep.me and release v1.2.3 (see ./docs).\n"
+        rules.write_text(rules.read_text(encoding="utf-8") + foreign, encoding="utf-8")
+        plan_path = self.root / "relative-pi-plan.json"
+        planned = self.run_core(
+            "update", "plan", "--global", "--version", NEXT_TAG, "--from", str(self.remote),
+            "--save", str(plan_path), env=environment, cwd=self.root,
+        )
+        self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        self.assertNotIn("pi_home", json.loads(plan_path.read_text(encoding="utf-8"))["roots"])
+
+        applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment, cwd=self.root)
+
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        text = rules.read_text(encoding="utf-8")
+        self.assertIn(NEXT_RELEASE_PROBE, text)
+        self.assertTrue(text.endswith(foreign), text[-300:])
+
+    def test_update_plan_refuses_pi_and_codex_sharing_one_rules_file(self) -> None:
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
+        self.publish_remote()
+        home = self.root / "shared-rules-home"
+        codex_home = self.root / "shared-rules-codex"
+        environment = self.isolated_environment(home, codex_home, PI_CODING_AGENT_DIR=str(self.root / "own pi agent"))
+        installed = self.run_core("install", "--agent", "codex,pi", "--global", env=environment)
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        shared = {**environment, "PI_CODING_AGENT_DIR": str(codex_home)}
+        before = (codex_home / "AGENTS.md").read_bytes()
+
+        planned = self.run_core(
+            "update", "plan", "--global", "--version", NEXT_TAG, "--from", str(self.remote), env=shared,
+        )
+
+        self.assertNotEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        self.assertIn("same instruction file", planned.stderr)
+        self.assertEqual((codex_home / "AGENTS.md").read_bytes(), before)
+
+    def test_global_pi_refuses_a_relative_agent_dir(self) -> None:
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
+        self.publish_remote()
+        home = self.root / "relative-agent-home"
+        environment = self.isolated_environment(
+            home, self.root / "relative-agent-codex", PI_CODING_AGENT_DIR="relative pi agent",
+        )
+
+        refused = self.run_core("install", "--agent", "pi", "--global", env=environment, cwd=self.root)
+
+        self.assertNotEqual(refused.returncode, 0, refused.stdout + refused.stderr)
+        self.assertIn("PI_CODING_AGENT_DIR", refused.stderr)
+        self.assertFalse((self.root / "relative pi agent").exists())
+        self.assertFalse((home / ".agentsmith").exists())
+
+        absolute = {**environment, "PI_CODING_AGENT_DIR": str(self.root / "absolute pi agent")}
+        installed = self.run_core("install", "--agent", "pi", "--global", env=absolute, cwd=self.root)
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        planned = self.run_core(
+            "update", "plan", "--global", "--version", NEXT_TAG, "--from", str(self.remote),
+            env=environment, cwd=self.root,
+        )
+        self.assertNotEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        self.assertIn("PI_CODING_AGENT_DIR", planned.stderr)
+
+    def test_rollback_rejects_receipt_with_changed_pi_home(self) -> None:
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
+        self.publish_remote()
+        home = self.root / "pi-receipt-home"
+        pi_home = self.root / "pi receipt agent"
+        environment = self.isolated_environment(home, self.root / "pi-receipt-codex", PI_CODING_AGENT_DIR=str(pi_home))
+        installed = self.run_core("install", "--agent", "pi", "--global", env=environment)
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        plan_path = self.root / "pi-receipt-plan.json"
+        planned = self.run_core(
+            "update", "plan", "--global", "--version", NEXT_TAG, "--from", str(self.remote),
+            "--save", str(plan_path), env=environment,
+        )
+        self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        updated = (pi_home / "AGENTS.md").read_bytes()
+        moved = {**environment, "PI_CODING_AGENT_DIR": str(self.root / "another pi agent")}
+
+        refused = self.run_core("update", "rollback", "--receipt", str(self.receipt_from(applied)), env=moved)
+
+        self.assertNotEqual(refused.returncode, 0, refused.stdout + refused.stderr)
+        self.assertIn("PI_CODING_AGENT_DIR", refused.stderr)
+        self.assertEqual((pi_home / "AGENTS.md").read_bytes(), updated)
+
+    def test_rollback_accepts_receipt_recorded_before_pi_home(self) -> None:
+        self.commit_and_tag(CURRENT_VERSION)
+        self.commit_and_tag(NEXT_VERSION)
+        self.publish_remote()
+        home = self.root / "old-receipt-home"
+        codex_home = self.root / "old-receipt-codex"
+        environment = self.isolated_environment(home, codex_home)
+        installed = self.run_core("install", "--agent", "codex", "--global", env=environment)
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        before = (codex_home / "AGENTS.md").read_bytes()
+        plan_path = self.root / "old-receipt-plan.json"
+        planned = self.run_core(
+            "update", "plan", "--global", "--version", NEXT_TAG, "--from", str(self.remote),
+            "--save", str(plan_path), env=environment,
+        )
+        self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        receipt_path = self.receipt_from(applied)
+        # Without Pi the receipt keeps the earlier shape: no pi_home root at all.
+        self.assertEqual(
+            set(json.loads(receipt_path.read_text(encoding="utf-8"))["roots"]), {"target", "home", "codex_home"},
+        )
+
+        rolled_back = self.run_core("update", "rollback", "--receipt", str(receipt_path), env=environment)
+
+        self.assertEqual(rolled_back.returncode, 0, rolled_back.stdout + rolled_back.stderr)
+        self.assertEqual((codex_home / "AGENTS.md").read_bytes(), before)
+
+    def test_pre_manifest_reconstruction_ignores_new_global_rule_files(self) -> None:
+        # No release before the manifest wrote these files, so they never prove an installation.
+        home = self.root / "pre-manifest-new-rules"
+        environment = self.isolated_environment(home, self.root / "pre-manifest-new-codex")
+        installed = self.run_core("install", "--agent", "opencode,pi", "--global", "--profile", "software-dev", env=environment)
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        (home / ".agentsmith" / "state.json").unlink()
+
+        with mock.patch.dict(os.environ, environment, clear=False), self.assertRaisesRegex(
+            runtime.CliError, "no managed instruction markers"
+        ):
+            runtime.reconstruct_pre_manifest_installation(home.resolve(), "global", {})
+
+    def test_global_non_native_install_records_no_native_safety(self) -> None:
+        home = self.root / "non-native-home"
+        environment = self.isolated_environment(home, self.root / "non-native-codex")
+        installed = self.run_core("install", "--agent", "opencode", "--global", "--safety", "trusted", env=environment)
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        state_path = home / ".agentsmith" / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertNotIn("opencode", state.get("native_safety", {}))
+
+        # An earlier release recorded safety for every agent; that record must not
+        # make a cautious rerun announce a migration of Codex's configuration.
+        state["native_safety"] = {"opencode": "trusted"}
+        state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+        rerun = self.run_core("install", "--agent", "opencode", "--global", env=environment)
+
+        self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
+        self.assertNotIn("config.toml", rerun.stdout + rerun.stderr)
+        self.assertNotIn("migrating", rerun.stdout + rerun.stderr)
+        self.assertNotIn("opencode", json.loads(state_path.read_text(encoding="utf-8")).get("native_safety", {}))
 
     def test_cautious_rerun_cannot_make_the_next_update_restore_trusted_safety(self) -> None:
         self.commit_and_tag(CURRENT_VERSION)
