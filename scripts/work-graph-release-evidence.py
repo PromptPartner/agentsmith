@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import builtins
 import datetime as dt
 import hashlib
 import json
@@ -112,6 +113,29 @@ def failure_labels(stderr: str) -> list[str]:
     return sorted(set(FAILED_TEST.findall(stderr)))[:8]
 
 
+def failure_diagnostics(stage: str, stderr: str) -> list[dict[str, Any]]:
+    """Extract only trusted unittest coordinates; discard traceback paths and messages."""
+    if stage not in {label for label, _, _ in PHASES}:
+        raise EvidenceError("unknown native phase")
+    script = next(path for label, path, _ in PHASES if label == stage).split("/")[-1]
+    headers = list(FAILED_TEST.finditer(stderr))
+    failures: list[dict[str, Any]] = []
+    for index, header in enumerate(headers[:8]):
+        name = header.group(1)
+        block = stderr[header.end():headers[index + 1].start() if index + 1 < len(headers) else len(stderr)]
+        line = None
+        for frame in re.finditer(r'(?m)^\s*File "([^"\r\n]+)", line ([1-9][0-9]{0,5}), in (test_[A-Za-z0-9_]{1,128})\r?$', block):
+            if re.split(r"[\\/]", frame.group(1))[-1] == script and frame.group(3) == name:
+                line = int(frame.group(2))
+        exception = "unknown"
+        for candidate in re.findall(r"(?m)^([A-Za-z_][A-Za-z0-9_]{0,63})(?::|$)", block):
+            value = getattr(builtins, candidate, None)
+            if isinstance(value, type) and issubclass(value, BaseException):
+                exception = candidate
+        failures.append({"test": name, "stage": stage, "line": line, "exception": exception})
+    return failures
+
+
 def native_platform() -> str:
     system = platform.system().lower()
     value = {"darwin": "macos", "linux": "linux", "windows": "windows"}.get(system)
@@ -139,10 +163,12 @@ def record(output: Path, output_root: Path, expected_commit: str) -> None:
         phase_results.append({"label": label, "command": ["python", script],
                               "exit_code": completed.returncode, "tests_run": count,
                               "stdout_sha256": hashlib.sha256(completed.stdout).hexdigest(),
-                              "stderr_sha256": hashlib.sha256(completed.stderr).hexdigest()})
+                              "stderr_sha256": hashlib.sha256(completed.stderr).hexdigest(),
+                              "failures": failure_diagnostics(label, stderr)})
         if completed.returncode or count < minimum or not re.search(r"(?m)^OK(?:\s|$)", stderr) or "skipped=" in stderr:
-            for name in failure_labels(stderr):
-                print(f"native phase {label} failed test: {name}", file=sys.stderr)
+            for failure in phase_results[-1]["failures"]:
+                print(f"native phase {failure['stage']} failed test: {failure['test']} "
+                      f"line={failure['line']} exception={failure['exception']}", file=sys.stderr)
             if "skipped=" in stderr:
                 print(f"native phase {label} contains skipped tests", file=sys.stderr)
             status = "failed"
@@ -164,7 +190,7 @@ def record(output: Path, output_root: Path, expected_commit: str) -> None:
 REPORT_KEYS = {"schema_version", "evidence_kind", "status", "platform", "git_commit", "git_tree",
                "dirty_before", "dirty_after", "python_version", "recorded_at", "phases",
                "external_write_used"}
-PHASE_KEYS = {"label", "command", "exit_code", "tests_run", "stdout_sha256", "stderr_sha256"}
+PHASE_KEYS = {"label", "command", "exit_code", "tests_run", "stdout_sha256", "stderr_sha256", "failures"}
 
 
 def read_report(path: Path) -> tuple[dict[str, Any], str]:
@@ -216,6 +242,8 @@ def validate_report(payload: dict[str, Any], path: Path) -> None:
         if any(not isinstance(phase[key], str) or not HEX64.fullmatch(phase[key])
                for key in ("stdout_sha256", "stderr_sha256")):
             raise EvidenceError(f"invalid phase output hash: {path}")
+        if phase["failures"] != []:
+            raise EvidenceError(f"passing phase contains failure diagnostics: {path}")
 
 
 def aggregate(reports: list[Path], output: Path, output_root: Path, expected_commit: str) -> None:
