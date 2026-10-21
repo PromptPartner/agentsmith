@@ -3,6 +3,15 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [ ] 2026-10-20 — Native Windows `test_deleted_git_lock_does_not_fail_acl_cleanup` failed once
+  with `verifier did not start` in verify run `39429936983`, attempt 1, job
+  `compatibility (windows-latest)`, on master `d56a0d5`. Attempt 2 on the same commit passed, and
+  v0.4.0 was released from that commit. The test waits 30 seconds for the sandboxed verifier's
+  start marker but never reads the verifier's own result, so the log shows no cause. Candidates:
+  the AppContainer setup took longer than the 30-second wait on a loaded runner (the verifier's
+  own timeout is also 30 seconds), or the verifier exited early with an error. The failure message
+  now says which: still running after the wait, or the exit code and stderr (or the exception) of
+  a verifier that ended. The next native failure will name the cause.
 - [ ] 2026-10-19 — The native Windows work-graph lifecycle failed intermittently in three different
   tests on trees whose push runs passed. Pull-request run `38178585204` on `23e5889`, attempt 1:
   graph `start` read a child `state.json` while the child replaced it atomically and got
