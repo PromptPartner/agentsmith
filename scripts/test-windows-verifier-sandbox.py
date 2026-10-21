@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 import contextlib
 import ctypes
 import importlib.util
@@ -56,6 +56,17 @@ class FakeAdvapi:
         return not self.last_error
 
 
+def verifier_outcome(future: Future[subprocess.CompletedProcess[str]]) -> str:
+    """Names why a sandboxed verifier never wrote its start marker."""
+    if not future.done():
+        return "still running after the wait"
+    try:
+        result = future.result()
+    except Exception as error:
+        return f"raised {type(error).__name__}: {error}"
+    return f"exited {result.returncode}; stderr={result.stderr!r}"
+
+
 class DeletePendingLockTests(unittest.TestCase):
     """A peer's removed coordination.lock stays delete-pending and reports error 5 briefly."""
 
@@ -102,6 +113,23 @@ class DeletePendingLockTests(unittest.TestCase):
                                                        "SetFileSecurityW .*Windows error 5"):
             SANDBOX._restore_dacl(self.lock, b"DACL", fake)
         self.assertEqual(fake.calls, 500)
+
+
+class VerifierStartFailureTests(unittest.TestCase):
+    """A verifier that never writes its start marker must say why, not only that it did not."""
+
+    def test_reports_a_verifier_still_running(self) -> None:
+        self.assertEqual(verifier_outcome(Future()), "still running after the wait")
+
+    def test_reports_exit_code_and_stderr_of_an_early_exit(self) -> None:
+        done: Future[subprocess.CompletedProcess[str]] = Future()
+        done.set_result(subprocess.CompletedProcess(["verify"], 126, "", "CreateProcessW failed"))
+        self.assertEqual(verifier_outcome(done), "exited 126; stderr='CreateProcessW failed'")
+
+    def test_reports_an_exception_raised_by_the_launch(self) -> None:
+        raised: Future[subprocess.CompletedProcess[str]] = Future()
+        raised.set_exception(OSError("access denied"))
+        self.assertEqual(verifier_outcome(raised), "raised OSError: access denied")
 
 
 class WindowsVerifierSandboxTests(unittest.TestCase):
@@ -261,7 +289,8 @@ class WindowsVerifierSandboxTests(unittest.TestCase):
                 deadline = time.monotonic() + 30
                 while time.monotonic() < deadline and not (repo / "verifier-started").is_file():
                     time.sleep(0.05)
-                self.assertTrue((repo / "verifier-started").is_file(), "verifier did not start")
+                if not (repo / "verifier-started").is_file():
+                    self.fail(f"verifier did not start: {verifier_outcome(future)}")
                 lock.unlink()
                 result = future.result(timeout=60)
             self.assertEqual(result.returncode, 0, result.stderr)
