@@ -77,6 +77,12 @@ class GraphBaseTests(unittest.TestCase):
                 self.assertNotIn("ghp_", reason)
                 self.assertNotIn("customer", reason)
 
+    def test_dirty_base_refusal_names_the_untracked_paths(self) -> None:
+        (self.repo / ".agentsmith-verifier-probe.request.json").write_text("{}", encoding="utf-8")
+        with self.assertRaisesRegex(GRAPH.GraphError,
+                                    r"not clean: \?\? \.agentsmith-verifier-probe\.request\.json"):
+            GRAPH.load_contract(self.repo, self.graph_path)
+
     def test_autonomy_pause_refuses_graph_resume_before_reading_graph_state(self) -> None:
         marker = self.repo / ".harness/AUTONOMY_PAUSED"
         marker.parent.mkdir(exist_ok=True)

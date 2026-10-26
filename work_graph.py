@@ -150,8 +150,10 @@ def load_contract(target: str | Path, graph_path: str) -> dict[str, Any]:
     repo = repository(target)
     # The operator's kill switch is deliberately untracked; status stays readable while paused.
     # The controller matches the marker name ignoring case, so this exclusion does too.
-    if git(repo, "status", "--porcelain", "--", ".", ":(exclude,icase).harness/AUTONOMY_PAUSED"):
-        raise GraphError("graph validation requires a clean committed repository")
+    dirty = git(repo, "status", "--porcelain", "--", ".", ":(exclude,icase).harness/AUTONOMY_PAUSED")
+    if dirty:
+        shown = "; ".join(line.strip() for line in dirty.splitlines()[:5])
+        raise GraphError(f"graph validation requires a clean committed repository; not clean: {shown}")
     commit = git(repo, "rev-parse", "HEAD^{commit}")
     graph_bytes = committed_bytes(repo, commit, graph_path, label="graph")
     graph = _object(

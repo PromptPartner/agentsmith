@@ -822,3 +822,9 @@ global selections needs its own design because update replays the record.
   case-sensitive one it would not pause at all. The marker name now matches ignoring case on
   every filesystem, graph validation ignores every case of it, and the refusal names the real
   file; graph status exited 2 before and 0 after.
+- [x] 2026-10-26 — PR #63 CI, Windows only: a graph child failed with `refusal=graph-changed`.
+  The new start preflight ran the Windows verifier probe in the shared checkout; that verifier
+  writes its script, request and result files into its working folder, so a parallel sibling's
+  graph validation saw a dirty base (that refusal reports as `graph-changed`). The probe now
+  runs in a throwaway repository; a test with a Windows-like verifier left a file in the
+  repository before the fix and none after. The dirty-base refusal now names the paths.

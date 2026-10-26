@@ -1520,7 +1520,16 @@ def preflight_sandboxes(repo: Path, manifest: dict[str, Any]) -> None:
             detail = (result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}")
             raise RunError(f"{role} ({runtime}) cannot run a command in the operating-system sandbox "
                            f"on this host: {shown_paths([detail.splitlines()[-1][:300]])}")
-    verify = sandboxed_verify("exit 0", repo, 60, verifier_env())
+    # Probe the verifier in a throwaway repository: on Windows it writes its script, request and
+    # result files into its working folder and grants that folder's ACLs, and in the shared
+    # checkout those files made a parallel graph child see a dirty base.
+    with tempfile.TemporaryDirectory(prefix="agentsmith-preflight-") as temporary:
+        probe_repo = Path(temporary).resolve() / "probe"
+        probe_repo.mkdir()
+        initialized = run(["git", "init", "-q", str(probe_repo)], probe_repo)
+        if initialized.returncode:
+            raise RunError(f"cannot prepare the verifier sandbox probe: {initialized.stderr.strip()}")
+        verify = sandboxed_verify("exit 0", probe_repo, 60, verifier_env())
     if verify.returncode:
         detail = verify.stderr.strip() or verify.stdout.strip()
         raise RunError(f"verifier sandbox cannot run a command on this host (exit {verify.returncode})"

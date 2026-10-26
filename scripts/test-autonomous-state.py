@@ -188,13 +188,36 @@ class AutonomousStateTests(unittest.TestCase):
                                         r"verifier sandbox cannot run a command on this host \(exit 126\)"):
                 CONTROLLER.preflight_sandboxes(ROOT, self.preflight_manifest())
 
+    def test_verifier_preflight_never_writes_into_the_repository(self) -> None:
+        # The Windows verifier writes its request, script and result files into its working
+        # folder. Run in the repository, that made a parallel graph child see a dirty base.
+        repo = self.guard_repository()
+        probed: list[Path] = []
+
+        def windows_like_verifier(command, cwd, timeout, env, **_kwargs):
+            probed.append(Path(cwd))
+            (Path(cwd) / ".agentsmith-verifier-probe.request.json").write_text("{}", encoding="utf-8")
+            return subprocess.CompletedProcess([command], 0, "", "")
+
+        with mock.patch.object(CONTROLLER.sys, "platform", "win32"), \
+                mock.patch.object(CONTROLLER, "sandboxed_verify", side_effect=windows_like_verifier):
+            CONTROLLER.preflight_sandboxes(repo, self.preflight_manifest())
+        self.assertEqual(len(probed), 1)
+        self.assertNotEqual(probed[0].resolve(), repo)
+        self.assertFalse(probed[0].resolve().is_relative_to(repo))
+        self.assertFalse(probed[0].exists(), "the probe folder is removed afterwards")
+        status = subprocess.run(["git", "-C", str(repo), "status", "--porcelain"],
+                                capture_output=True, text=True, check=True).stdout
+        self.assertEqual(status, "")
+
     def test_start_preflight_probes_no_native_role_where_roles_are_refused(self) -> None:
         passed = subprocess.CompletedProcess([], 0, "", "")
         with mock.patch.object(CONTROLLER.sys, "platform", "win32"), \
-                mock.patch.object(CONTROLLER, "run") as probe, \
+                mock.patch.object(CONTROLLER, "run", return_value=passed) as probe, \
                 mock.patch.object(CONTROLLER, "sandboxed_verify", return_value=passed) as verify:
             CONTROLLER.preflight_sandboxes(ROOT, self.preflight_manifest())
-        probe.assert_not_called()
+        # Only the throwaway verifier repository is created; no role sandbox is probed.
+        self.assertEqual([call.args[0][:2] for call in probe.call_args_list], [["git", "init"]])
         verify.assert_called_once()
 
     def test_start_and_prepare_refuse_an_accepted_spec_without_pipeline_artifacts(self) -> None:
