@@ -195,6 +195,7 @@ cannot be quoted as the shipped behaviour.
 | `runtime-file-modified` (strict) | An installed runtime file no longer matches the hash install recorded. Hooks, verify receipts and runs come from edited code. | Re-run install or the reviewed update. |
 | `duplicate-managed-core` | One tool loads the full core from two or more files, so it reads every rule twice. | Reinstall the project with `--profile-only`, or remove the extra copy. |
 | `legacy-managed-block` | A tool loads an AgentSmith block outside this project that no current install owns, such as a `~/AGENTS.md` from an old setup.sh install. | Keep the rules through a current install, then delete the block by hand. |
+| `output-rewriting-hook` | A pre-tool hook on the shell tool (today: `rtk hook`) rewrites commands, so the agent reads filtered output. It stays a warning under `--strict`: the update's own post-check runs doctor in your environment. | Quote proof from a raw run (`rtk proxy <command>`) or from the verify receipt. |
 | `hook-unused-30-days` | An installed hook did not fire in 30 days ([firing log](../hooks/README.md#firing-log--track-every-workaround-delete-it-when-it-stops-firing)). | Advisory: consider removing it; a safety gate may rightly never block. |
 
 **"`agentsmith evaluate` refuses to call the client."** Real model calls require all three pieces:

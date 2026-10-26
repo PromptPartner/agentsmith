@@ -257,6 +257,31 @@ class DoctorTests(unittest.TestCase):
         self.assertIn(str((repo / "AGENTS.override.md").resolve()), loaded)
         self.assertNotIn(str((repo / "AGENTS.md").resolve()), loaded)
 
+    def test_output_rewriting_pre_tool_hook_is_reported(self) -> None:
+        project = self.root / "rewritten output"
+        (project / ".claude").mkdir(parents=True)
+        settings = Path(self.env["HOME"]) / ".claude" / "settings.json"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+
+        def hooks(matcher: str, command: str) -> str:
+            return json.dumps({"hooks": {"PreToolUse": [{"matcher": matcher, "hooks": [{"type": "command", "command": command}]}]}})
+
+        settings.write_text(hooks("Write|Edit", "rtk hook claude"), encoding="utf-8")
+        _, quiet = self.doctor(project, "claude")
+        self.assertNotIn("output-rewriting-hook", self.warning_codes(quiet["claude"]), "only shell tools are rewritten")
+        # Claude Code also reads the untracked project-local settings file.
+        (project / ".claude" / "settings.local.json").write_text(hooks("Bash", "rtk hook claude"), encoding="utf-8")
+        _, local = self.doctor(project, "claude")
+        warning = next(w for w in local["claude"]["warnings"] if w["code"] == "output-rewriting-hook")
+        self.assertIn("rtk hook claude", warning["message"])
+        self.assertIn("settings.local.json", warning["message"])
+        self.assertIn("rtk proxy", warning["recommendation"])
+        codex_hooks = Path(self.env["CODEX_HOME"]) / "hooks.json"
+        codex_hooks.parent.mkdir(parents=True, exist_ok=True)
+        codex_hooks.write_text(hooks("*", "/usr/local/bin/rtk hook codex"), encoding="utf-8")
+        _, codex = self.doctor(project, "codex")
+        self.assertIn("output-rewriting-hook", self.warning_codes(codex["codex"]))
+
     def test_trusted_native_install_reports_actual_owned_surfaces(self) -> None:
         project = self.root / "owned project ü"
         project.mkdir()

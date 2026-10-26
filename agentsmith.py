@@ -4824,6 +4824,46 @@ def hook_commands(path: Path) -> tuple[list[str], str]:
     return commands, "parsed"
 
 
+# Pre-tool hooks known to rewrite shell commands so the agent sees filtered output, with the way to
+# get raw output. Unknown hooks are not classified: doctor cannot tell what a foreign command does.
+OUTPUT_REWRITERS = (
+    ("rtk", re.compile(r"(?:^|[\s/\\\"'])rtk(?:\.exe)?[\"']?\s+hook\b"), "prefix the command with `rtk proxy`"),
+)
+
+
+def output_rewriting_hooks(agent_id: str, target: Path) -> list[dict[str, str]]:
+    """Find known output-rewriting PreToolUse hooks on the shell tool in every settings file the client reads."""
+    if agent_id == "claude":
+        paths = [home_dir() / ".claude" / "settings.json", target / ".claude" / "settings.json",
+                 target / ".claude" / "settings.local.json"]
+    elif agent_id == "codex":
+        paths = [codex_home() / "hooks.json", target / ".codex" / "hooks.json"]
+    else:
+        return []
+    found: list[dict[str, str]] = []
+    for path in dict.fromkeys(paths):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+        except (OSError, json.JSONDecodeError):
+            continue
+        groups = data.get("hooks", {}).get("PreToolUse", []) if isinstance(data, dict) and isinstance(data.get("hooks"), dict) else []
+        for group in groups if isinstance(groups, list) else []:
+            if not isinstance(group, dict):
+                continue
+            matcher = group.get("matcher") or "*"
+            try:
+                shell = matcher == "*" or any(re.fullmatch(f"(?:{matcher})", tool) for tool in ("Bash", "shell"))
+            except (re.error, TypeError):
+                shell = False
+            handlers = group.get("hooks", [])
+            for handler in handlers if shell and isinstance(handlers, list) else []:
+                command = handler.get("command") if isinstance(handler, dict) else None
+                for name, pattern, raw in OUTPUT_REWRITERS if isinstance(command, str) else ():
+                    if pattern.search(command):
+                        found.append({"tool": name, "command": command, "path": str(path), "raw": raw})
+    return found
+
+
 def inspect_hooks(agent_id: str, agent: dict[str, Any], target: Path) -> dict[str, Any]:
     config = home_dir() / ".claude" / "settings.json" if agent_id == "claude" else codex_home() / "hooks.json"
     commands, parse_state = hook_commands(config) if agent_id in {"claude", "codex"} else ([], "missing")
@@ -5158,6 +5198,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                         f"Re-run install with the intended {name} option if this project needs it.",
                     )
                 )
+        for rewriter in output_rewriting_hooks(agent_id, target):
+            warnings.append(doctor_warning(
+                "output-rewriting-hook",
+                f"{TOOL_NAMES.get(agent_id, agent_id)} runs `{rewriter['command']}` before shell commands "
+                f"({rewriter['path']}); {rewriter['tool']} rewrites commands, so the agent sees filtered output.",
+                f"Output quoted as proof (tests, verify) must come from a raw run: {rewriter['raw']}, "
+                "or quote the verify receipt.",
+            ))
         if hooks["state"] == "stale":
             warnings.append(
                 doctor_warning(
