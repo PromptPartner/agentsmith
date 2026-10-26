@@ -74,7 +74,8 @@ class DurableCheckpointTests(unittest.TestCase):
                 cwd=ROOT, env=environment, text=True, capture_output=True, check=False,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertEqual((target / "AGENTS.md").read_bytes(), (target / "CLAUDE.md").read_bytes())
+            # Claude's project file imports the one canonical rulebook instead of copying it.
+            self.assertIn("@AGENTS.md", (target / "CLAUDE.md").read_text(encoding="utf-8").splitlines())
             self.assertEqual(
                 (target / ".agents" / "skills" / "new-feedback" / "SKILL.md").read_bytes(),
                 (target / ".claude" / "skills" / "new-feedback" / "SKILL.md").read_bytes(),

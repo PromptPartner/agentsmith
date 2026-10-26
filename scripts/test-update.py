@@ -1215,6 +1215,52 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
         state = json.loads((target / ".agentsmith" / "state.json").read_text(encoding="utf-8"))
         self.assertEqual(state["installation"]["safety"], {"claude": "container", "codex": "container"})
+        # A project install keeps Claude's mode in the project, before and after the update.
+        project_settings = json.loads((target / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        self.assertEqual(project_settings["permissions"]["defaultMode"], "acceptEdits")
+        home_settings = json.loads((home / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        self.assertNotIn("permissions", home_settings)
+
+    def test_project_profile_is_authenticated_by_the_update_plan(self) -> None:
+        self.commit_and_tag(NEXT_VERSION)
+        self.publish_remote()
+        target = self.root / "project-profile"
+        profile = target / ".agentsmith" / "profiles" / "house.md"
+        profile.parent.mkdir(parents=True)
+        reviewed = "# House rules\n\nHOUSE_PROFILE_REVIEWED\n"
+        profile.write_text(reviewed, encoding="utf-8")
+        environment = self.isolated_environment(self.root / "profile-home", self.root / "profile-codex")
+        installed = self.run_core(
+            "install", "--agent", "codex", "--profile", "software-dev,project:house", "--assemble-only",
+            "--target", str(target), env=environment,
+        )
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        plan_path = self.root / "profile-plan.json"
+        planned = self.run_core(
+            "update", "plan", "--target", str(target), "--version", NEXT_TAG,
+            "--from", str(self.remote), "--save", str(plan_path), env=environment,
+        )
+        self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        self.assertIn(
+            ("target", ".agentsmith/profiles/house.md"),
+            {(item["root"], item["path"]) for item in plan["fingerprints"]},
+        )
+        self.assertNotIn(".agentsmith/profiles/house.md", [item["path"] for item in plan["proposed_changes"]])
+
+        profile.write_text("# House rules\n\nTAMPERED_AFTER_REVIEW\n", encoding="utf-8")
+        tampered = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
+        self.assertNotEqual(tampered.returncode, 0, tampered.stdout + tampered.stderr)
+        self.assertIn("changed after planning", tampered.stderr)
+        self.assertNotIn("TAMPERED_AFTER_REVIEW", (target / "AGENTS.md").read_text(encoding="utf-8"))
+
+        profile.write_text(reviewed, encoding="utf-8")
+        applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        agents = (target / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn("HOUSE_PROFILE_REVIEWED", agents)
+        self.assertIn("Profiles: software-dev,project:house.", agents)
+        self.assertEqual(profile.read_text(encoding="utf-8"), reviewed)
 
     def test_assemble_only_migration_requires_unambiguous_native_ownership(self) -> None:
         self.commit_and_tag(NEXT_VERSION)
@@ -2480,6 +2526,34 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertNotEqual(planned.returncode, 0)
         self.assertIn("symbolic link", planned.stderr)
 
+
+class RootTranslationTests(unittest.TestCase):
+    def test_a_path_shared_by_two_roots_translates_the_same_way_every_run(self) -> None:
+        # A global plan's target root is HOME itself. Live text must map to the shadow HOME, and
+        # must not depend on set order: plan and apply translate in different processes. The roots
+        # are real absolute paths for this platform (drive letter and separators on Windows), as
+        # update_roots() produces; a POSIX literal is not absolute on Windows and is never translated.
+        base = Path(tempfile.gettempdir()) / "agentsmith update ü"
+        live, shadow_target, shadow_home = base / "home", base / "shadow target", base / "shadow home"
+        text = json.dumps({"file": str(live / ".claude" / "agentsmith-statusline.py")})
+        expected = json.dumps({"file": str(shadow_home / ".claude" / "agentsmith-statusline.py")})
+        probe = (
+            "import sys\n"
+            f"sys.path.insert(0, {str(ROOT)!r})\n"
+            "import agentsmith\n"
+            f"text, live = {text!r}, {str(live)!r}\n"
+            "print(agentsmith.translate_root_paths(text.encode(), {'target': live, 'home': live},\n"
+            f"    {{'target': {str(shadow_target)!r}, 'home': {str(shadow_home)!r}}}).decode())\n"
+        )
+        outputs = set()
+        for seed in range(12):
+            result = subprocess.run(
+                [sys.executable, "-c", probe], text=True, encoding="utf-8", capture_output=True, check=False,
+                env={**os.environ, "PYTHONHASHSEED": str(seed), "PYTHONIOENCODING": "utf-8"},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            outputs.add(result.stdout.strip())
+        self.assertEqual(outputs, {expected})
 
 if __name__ == "__main__":
     unittest.main()

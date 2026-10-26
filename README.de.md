@@ -93,7 +93,7 @@ Ein Profil sagt dem Agenten, was für die jeweilige Arbeit „fertig“ bedeutet
 
 ## Was installiert wird
 
-- `AGENTS.md` ist die maßgebliche Projektvereinbarung. Claude Code erhält außerdem eine erzeugte `CLAUDE.md`.
+- `AGENTS.md` ist die maßgebliche Projektvereinbarung. Claude Code erhält außerdem eine erzeugte `CLAUDE.md`, die sie importiert, damit es nur ein Regelwerk gibt.
 - `.harness/verify.conf` definiert die tatsächlichen Prüfungen für dieses Projekt.
 - `.agentsmith/state.json` speichert nur Einstellungen, die AgentSmith gehören, damit Aktualisierungen und das Entfernen fremde Inhalte bewahren.
 - Optionale Skills, MCP-Server und Hooks sind im eingeklappten erweiterten Schritt verfügbar.

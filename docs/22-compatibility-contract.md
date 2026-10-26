@@ -35,10 +35,11 @@ client-plus-model scenario.
 ## Canonical instructions and adapters
 
 `AGENTS.md` is the one portable, independently editable instruction artifact. Direct consumers
-read it unchanged. Claude receives a generated `CLAUDE.md` copy. Gemini is configured to select
+read it unchanged. Claude receives a generated `CLAUDE.md` that imports `AGENTS.md` through Claude Code's documented
+`@AGENTS.md` import. Gemini is configured to select
 `AGENTS.md`; Aider, Continue, and Goose receive the smallest managed configuration that points to
-it. Generated or configured surfaces must not introduce symlinks, proprietary imports, or a
-second editable copy of the core.
+it. Generated or configured surfaces must not introduce symlinks, imports of anything except
+canonical `AGENTS.md`, or a second copy of the core.
 
 Registry `global_paths` say where a client reads user-level rules; doctor and status inspect them.
 The files `install --global` writes are a separate, smaller set fixed in code: Claude, Codex,

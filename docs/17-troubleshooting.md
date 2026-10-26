@@ -179,7 +179,7 @@ the resolved global/project/nested source chain separately from safety, skills, 
 runtime ownership. A `duplicate-managed-core` warning means both global and project sources carry
 the universal core; `--profile-only` removes that duplication on a future install, but keep the
 full project copy when collaborators need self-contained rules. Project `AGENTS.md` is canonical;
-Claude gets a generated `CLAUDE.md`, while configured adapters must still point to it. Web surfaces
+Claude gets a generated `CLAUDE.md` that imports `AGENTS.md`, while configured adapters must still point to it. Web surfaces
 do not gain local hooks merely by reading instructions. See
 [`13-platforms-and-tools.md`](13-platforms-and-tools.md).
 

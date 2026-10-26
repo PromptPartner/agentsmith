@@ -93,7 +93,7 @@ Un perfil indica al agente qué significa «terminado» para el trabajo en cuest
 
 ## Qué se instala
 
-- `AGENTS.md` es el acuerdo canónico del proyecto. Claude Code también recibe un archivo `CLAUDE.md` generado.
+- `AGENTS.md` es el acuerdo canónico del proyecto. Claude Code también recibe un archivo `CLAUDE.md` generado que lo importa, así que hay un solo conjunto de reglas.
 - `.harness/verify.conf` define las comprobaciones reales de este proyecto.
 - `.agentsmith/state.json` registra solo los ajustes propiedad de AgentSmith para que las actualizaciones y la eliminación conserven el contenido ajeno.
 - Las skills, los servidores MCP y los hooks opcionales están disponibles en el paso avanzado, que permanece contraído de forma predeterminada.
