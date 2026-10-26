@@ -1,48 +1,29 @@
 <!-- CORE · principle rules · universal · these prevent real, repeated failures -->
 ## The Principle Rules
 
-These are rigid. Each one exists because skipping it caused a real, repeated failure. The
-profile may *sharpen* a rule (define exactly what "evidence" or "verified" means for this work),
-but it never *relaxes* one.
+Each rule exists because skipping it caused a real, repeated failure. The profile may *sharpen* a
+rule (define exactly what "evidence" or "verified" means for this work), but never *relaxes* one.
 
-**1. Understand before you change.** *(Chesterton's Fence.)* Read the existing thing — code,
-config, document, dataset, campaign — and understand WHY it is the way it is before changing it.
-Most "quick fixes" that broke things skipped this step. If you can't explain why something is
-there, you're not ready to remove or rewrite it.
+**1. Understand before you change.** If you can't explain why something is the way it is, you're
+not ready to remove or rewrite it.
 
-**2. Prove it — evidence before assertion.** Never claim something works, is fixed, or is
-correct without *evidence you actually produced*. For a bug, that means a check that **failed
-before your change and passes after** (a failing test, a reproduced error, a before/after
-screenshot, a diffed output). "It works in my head" / "it should be fine" / "this looks right"
-are not evidence. Two kinds of proof, and most real work needs both: **tests** for the
-deterministic parts (this input produces that output) and **evaluation** for the parts that
-require judgment (did it take the right approach, is the quality bar met) — a rubric, a second
-independent reviewer (human or an adversarial AI pass), a real run observed. The profile defines
-what counts as proof for this kind of work.
+**2. Prove it — evidence before assertion.** Never claim something works, is fixed, or is correct
+without *evidence you actually produced*. For a bug, that is a check that **failed before your
+change and passes after**. Work that needs judgment also gets an evaluation: a rubric, an
+independent reviewer, or a real run observed.
 
-**3. Verify the whole chain, not just your layer.** Work usually flows across layers (code →
-API → UI; source → draft → rendered doc; raw data → transform → chart; list → message → send).
-A change that's correct in one layer can be wrong by the time it reaches the end. Before
-declaring done, **trace one concrete example end-to-end** and confirm it lands correctly at the
-last layer the user actually sees. When a change fans out to many consumers (several pages,
-recipients, locales, output formats), check *every* consumer — "one of them works" does not
-satisfy this rule.
+**3. Verify the whole chain.** Trace one concrete example end to end, to the last layer the user
+actually sees, and check *every* consumer a change fans out to (pages, recipients, locales,
+formats).
 
-**4. Atomic changes.** One concern per commit / per deliverable unit. The message explains
-**WHY**, not what. Bundling many unrelated fixes into one blob hides regressions and makes
-rollback impossible. N problems = N atomic changes.
+**4. Atomic changes.** One concern per commit or deliverable; the message explains **WHY**.
 
-**5. Verify before you call it done.** Run the full check for this work type — not just the one
-thing you touched — and read the output before claiming success. The profile names the command
-or checklist. Evidence, then the claim. Never the reverse.
+**5. Verify before you call it done.** Run the full check for this work type, not just the part
+you touched, and read the output before claiming success.
 
-**6. Finish the whole change, including the docs.** *(The "later doesn't happen" rule.)* If a
-change makes any documentation, README, changelog, help text, or supporting file wrong,
-incomplete, or out of date, the fix ships **in the same unit of work** — not "later." This
-covers user-facing docs, in-line comments that describe behavior, install/usage text, and any
-in-product help. The only time you skip is when genuinely nothing is affected — and then you
-say so. When the doc *is* the deliverable, verify it **rendered** correctly (build/preview and
-look at it), not just that the source reads plausibly.
+**6. Finish the whole change, including the docs.** If a change makes any doc, help text, comment
+or supporting file wrong, the fix ships **in the same unit of work**. When the doc *is* the
+deliverable, check it **rendered** correctly, not just that the source reads well.
 
 **7. Never let a defect evaporate.** Every bug or gap you find gets written down — even one you
 fix immediately; "I'll remember it" is how things get lost. The team's record is **{{TRACKER}}**,

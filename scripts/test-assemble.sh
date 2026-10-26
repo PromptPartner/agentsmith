@@ -170,6 +170,26 @@ PY
   fi
 fi
 
+# profiles switch refuses an over-budget stack with constants in agentsmith.py; lint-leanness.sh
+# gates assemblies with its own defaults. One budget, two places: keep them equal.
+if ROOT_DIR="$ROOT_DIR" python3 - <<'PY'
+import os, re, sys
+from pathlib import Path
+root = Path(os.environ["ROOT_DIR"])
+sys.path.insert(0, str(root))
+import agentsmith
+lint = (root / "scripts" / "lint-leanness.sh").read_text(encoding="utf-8")
+lines = int(re.search(r'LEANNESS_MAX_LINES:-(\d+)', lint).group(1))
+tokens = int(re.search(r'LEANNESS_MAX_TOKENS:-(\d+)', lint).group(1))
+print(f"lint={lines}/{tokens} cli={agentsmith.STATIC_CONTEXT_MAX_LINES}/{agentsmith.STATIC_CONTEXT_MAX_TOKENS}")
+sys.exit(0 if (lines, tokens) == (agentsmith.STATIC_CONTEXT_MAX_LINES, agentsmith.STATIC_CONTEXT_MAX_TOKENS) else 1)
+PY
+then
+  ok "profiles switch and lint-leanness use the same static-context budget"
+else
+  bad "STATIC_CONTEXT_MAX_* in agentsmith.py differ from lint-leanness.sh defaults"
+fi
+
 # Installed runtimes have no core/ tree and report a fixed token figure; keep it honest.
 if ROOT_DIR="$ROOT_DIR" python3 - <<'PY'
 import os, sys

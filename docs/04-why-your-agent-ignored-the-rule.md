@@ -21,7 +21,7 @@ This one fact predicts every failure mode below.
 
 Rules live in **static context** — loaded and paid for on *every single turn*. Dynamic context
 (skills, docs, memory) loads only when a task needs it and is free until then. That asymmetry has
-a hard number in this harness: the assembled `CLAUDE.md` is budgeted at **600 lines / ~10,000
+a hard number in this harness: the assembled `CLAUDE.md` is budgeted at **480 lines / ~7,800
 tokens**. For where you actually stand, run the measurement rather than trusting a figure written
 down here — `scripts/lint-leanness.sh <file>` or `setup.sh --doctor`; `scripts/test-assemble.sh`
 gates it per profile on every CI run. (This paragraph used to quote a spend figure. It drifted, and

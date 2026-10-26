@@ -1161,7 +1161,7 @@ class FirstVerifiedLoopCommandContracts(unittest.TestCase):
         before = snapshot(self.project)
         over_budget = self.run_cli(
             "profiles", "switch", "--target", str(self.project),
-            "--profile", "software-dev,security-audit",
+            "--profile", "autonomous-loops,deep-research",
         )
         self.assertEqual(over_budget.returncode, 2)
         self.assertIn("budget", over_budget.stderr.lower())

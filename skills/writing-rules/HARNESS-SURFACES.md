@@ -38,9 +38,8 @@ Adding to `core/` usually means **finding a line to remove**, not finding room.
 
 `SKILL.md` says you are writing for a reader who has already read everything, so explanation is
 waste. For a pure agent-facing document that holds. `core/` files have a second reader: the human
-deciding whether to trust the rule — and `core/00` requires the opposite of them, *explain the WHY
-before the HOW*, because "we do X because last time Y broke" travels where "best practice says X"
-does not.
+deciding whether to trust the rule — and for that reader the WHY matters, because "we do X because
+last time Y broke" travels where "best practice says X" does not.
 
 Both hold, and the resolution isn't a compromise: **the WHY is the rule's completion criterion, not
 decoration.** A rule naming the failure it came from is more tightly bounded than one naming a

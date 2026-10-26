@@ -13,7 +13,7 @@ an expert developer, most of the friction here is words — clear that, and the 
   the same as reliable capacity: results vary by model, task, information position, and history.
   The usage gauge is a load signal, not a universal quality score.
 - **Static context** — what's loaded *every turn* and paid for every turn: canonical `AGENTS.md`
-  (or Claude's generated copy). Rationed hard (600 lines / ~10k tokens here). → [`04-why-your-agent-ignored-the-rule.md`](04-why-your-agent-ignored-the-rule.md)
+  (or Claude's generated copy). Rationed hard (480 lines / ~7.8k tokens here). → [`04-why-your-agent-ignored-the-rule.md`](04-why-your-agent-ignored-the-rule.md)
 - **Dynamic context** — loaded only on demand: skills, docs, memory, tool results. Free until used.
 - **`AGENTS.md` / `CLAUDE.md`** — canonical portable rulebook and Claude's generated adapter copy;
   both are distinct from runtime JSON/TOML config. → [`02-your-first-hour.md`](02-your-first-hour.md)
@@ -140,5 +140,5 @@ an expert developer, most of the friction here is words — clear that, and the 
   rule, a gate, a hook), not just the instance. `core/60`.
 - **Feedback record** — a numbered post-incident file: evidence → mechanism → bounded edit →
   named surface → non-regression. → [`feedback/README.md`](feedback/README.md)
-- **Leanness budget** — the hard cap on static context (600 lines / ~10k tokens), linted by
+- **Leanness budget** — the hard cap on static context (480 lines / ~7.8k tokens), linted by
   `scripts/lint-leanness.sh`. Over budget means move knowledge to dynamic context, not grow the file.

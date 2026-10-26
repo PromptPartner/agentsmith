@@ -105,11 +105,11 @@ rather than being a checklist:
   into it creates a **second exposure, authored by the audit itself**. Rotate first, name the
   resource and its rotation path, never the value.
 
-**Don't stack it with `software-dev`.** These are the two largest profiles and together they
-overrun the [rule budget](01-harness-philosophy.md) (~635 lines against 600) — which is the signal
-that you're asking the agent to carry two full rule sets it won't use at once. Re-assemble for the
-audit and switch back after; it's one command, and it matches the mode you're actually in.
-(`devops-setup,security-audit` stacks fine, if you're hardening infra you also run.)
+**Prefer switching to stacking.** `software-dev,security-audit` fits the
+[rule budget](04-why-your-agent-ignored-the-rule.md) (~440 of 480 lines, ~7,200 of 7,800 tokens),
+but the agent then carries two full rule sets it won't use at once. Re-assemble for the audit and
+switch back after; it's one command, and it matches the mode you're actually in.
+`devops-setup,security-audit` is over the token budget (~8,000), so `profiles switch` refuses it.
 
 ## Depth on demand: the `security` pack
 

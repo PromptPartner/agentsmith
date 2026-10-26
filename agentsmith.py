@@ -4309,9 +4309,14 @@ def cmd_compatibility(args: argparse.Namespace) -> int:
     return 0
 
 
+# Static-context budget for one assembled rulebook. scripts/lint-leanness.sh carries the same
+# defaults; scripts/test-assemble.sh fails if the two disagree.
+STATIC_CONTEXT_MAX_LINES = 480
+STATIC_CONTEXT_MAX_TOKENS = 7800
+
 # Installed helper runtimes intentionally do not duplicate source core/profile trees, so they
 # report this figure. scripts/test-assemble.sh keeps it within 10% of the live source estimate.
-INSTRUCTION_TOKENS_FALLBACK = 8950
+INSTRUCTION_TOKENS_FALLBACK = 5180
 
 
 def estimate_instruction_tokens() -> int:
@@ -5633,7 +5638,7 @@ def cmd_profiles_switch(args: argparse.Namespace) -> int:
     )
     line_count = len(block.splitlines())
     token_estimate = len(block) // 4
-    if line_count > 600 or token_estimate > 10000:
+    if line_count > STATIC_CONTEXT_MAX_LINES or token_estimate > STATIC_CONTEXT_MAX_TOKENS:
         raise CliError(
             f"Profile stack exceeds the static-context budget ({line_count} lines, ~{token_estimate} tokens); "
             "switch between dominant profiles instead of stacking them"
