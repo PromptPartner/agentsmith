@@ -4952,7 +4952,7 @@ def hook_firing_counts(target: Path) -> tuple[dict[str, int], list[str]]:
     counts: dict[str, int] = {}
     paths: list[str] = []
     for root in dict.fromkeys((target.resolve() / ".agentsmith", home_dir().resolve() / ".agentsmith")):
-        path = root / HOOK_LOG_NAME
+        path = root / HOOK_LOG_DIR / HOOK_LOG_NAME
         if path.is_symlink() or not path.is_file():
             continue
         paths.append(str(path))
@@ -7974,6 +7974,7 @@ def cmd_memory_startup_hook(args: argparse.Namespace) -> int:
     return 0
 
 
+HOOK_LOG_DIR = "logs"
 HOOK_LOG_NAME = "hook-events.jsonl"
 HOOK_LOG_MAX_BYTES = 64 * 1024
 HOOK_LOG_WINDOW_DAYS = 30
@@ -7983,9 +7984,10 @@ def record_hook_firing(hook: str, payload: str = "", *, event: str = "", outcome
     """Append one line when a shipped hook acts, so doctor can name hooks that stopped firing.
 
     The line holds only the time, hook, native event and outcome: never prompt text, paths or
-    secrets. Only an installed runtime logs (beside itself, in <root>/.agentsmith/). The log
-    keeps its newest half once it reaches HOOK_LOG_MAX_BYTES. Any failure is swallowed, because
-    a hook must never fail because its log could not be written.
+    secrets. Only an installed runtime logs, beside itself in <root>/.agentsmith/logs/, a folder
+    that ignores itself in Git so a project's runtime folder stays clean. The log keeps its newest
+    half once it reaches HOOK_LOG_MAX_BYTES. Any failure is swallowed, because a hook must never
+    fail because its log could not be written.
     """
     try:
         if ROOT.name != ".agentsmith":
@@ -8001,7 +8003,14 @@ def record_hook_firing(hook: str, payload: str = "", *, event: str = "", outcome
             "ts": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "hook": hook, "event": event, "outcome": outcome,
         }).encode("utf-8") + b"\n"
-        path = ROOT / HOOK_LOG_NAME
+        folder = ROOT / HOOK_LOG_DIR
+        if folder.is_symlink():
+            return
+        folder.mkdir(exist_ok=True)
+        ignore = folder / ".gitignore"
+        if not ignore.exists() and not ignore.is_symlink():
+            ignore.write_text("*\n", encoding="utf-8")
+        path = folder / HOOK_LOG_NAME
         flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
         descriptor = os.open(path, flags, 0o600)
         try:

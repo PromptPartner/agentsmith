@@ -196,10 +196,11 @@ underlying gap closes, the hook keeps costing time and context but no longer act
 visible, every shipped hook appends one JSON line when it actually acts (nudges, blocks or adds
 context). A hook run that does nothing writes nothing.
 
-- **Where:** `<runtime root>/.agentsmith/hook-events.jsonl`, that is, beside the installed
+- **Where:** `<runtime root>/.agentsmith/logs/hook-events.jsonl`, that is, beside the installed
   runtime: the project's `.agentsmith/` for a project install, `~/.agentsmith/` for a global one.
-  The shell guardrails in `hooks/git/` log to `<repo>/.agentsmith/` only when that folder exists.
-  A runtime run from a source checkout does not log.
+  The `logs/` folder carries its own `.gitignore`, so the log never shows up in `git status`.
+  The shell guardrails in `hooks/git/` log to `<repo>/.agentsmith/logs/` only when
+  `<repo>/.agentsmith/` exists. A runtime run from a source checkout does not log.
 - **What:** `{"ts", "hook", "event", "outcome"}` only, for example
   `{"ts":"2026-10-26T09:00:00Z","hook":"handoff-on-keyword","event":"UserPromptSubmit","outcome":"nudged"}`.
   No prompt text, file paths, commit messages or secrets.

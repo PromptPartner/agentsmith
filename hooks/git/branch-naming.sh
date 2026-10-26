@@ -4,13 +4,16 @@
 # Override with BRANCH_PATTERN (an extended regex). Base/protected branches are exempt.
 # Bypass once with: git push --no-verify.
 set -euo pipefail
-# Firing log: one line per block in <repo>/.agentsmith/hook-events.jsonl, so `agentsmith doctor`
-# can name a guardrail that stopped firing. No commit text; a logging failure never blocks.
+# Firing log: one line per block in <repo>/.agentsmith/logs/hook-events.jsonl, so `agentsmith
+# doctor` can name a guardrail that stopped firing. No commit text; a logging failure never blocks.
 log_firing() {
   local dir log
   dir="$(git rev-parse --show-toplevel 2>/dev/null)/.agentsmith" || return 0
-  [ -d "$dir" ] && [ ! -L "$dir/hook-events.jsonl" ] || return 0
-  log="$dir/hook-events.jsonl"
+  [ -d "$dir" ] && [ ! -L "$dir/logs" ] || return 0
+  mkdir -p "$dir/logs" 2>/dev/null || return 0
+  [ -e "$dir/logs/.gitignore" ] || printf '*\n' >"$dir/logs/.gitignore" 2>/dev/null || true
+  log="$dir/logs/hook-events.jsonl"
+  [ ! -L "$log" ] || return 0
   printf '{"ts":"%s","hook":"%s","event":"%s","outcome":"blocked"}\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" >>"$log" 2>/dev/null || return 0
   if [ "$(wc -c <"$log" 2>/dev/null || echo 0)" -gt 65536 ]; then

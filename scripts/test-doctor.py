@@ -549,7 +549,7 @@ class HookFiringLogTests(unittest.TestCase):
         )
         self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
         self.runtime = self.project / ".agentsmith" / "agentsmith.py"
-        self.log = self.project / ".agentsmith" / "hook-events.jsonl"
+        self.log = self.project / ".agentsmith" / "logs" / "hook-events.jsonl"
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -578,9 +578,11 @@ class HookFiringLogTests(unittest.TestCase):
         self.assertEqual((event["hook"], event["event"], event["outcome"]), ("handoff-on-keyword", "UserPromptSubmit", "nudged"))
         self.assertNotIn("wrap up", self.log.read_text(encoding="utf-8"))
         self.assertNotIn("sk-do-not-log", self.log.read_text(encoding="utf-8"))
+        # The log folder ignores itself, so a committed .agentsmith/ runtime stays clean in Git.
+        self.assertEqual((self.log.parent / ".gitignore").read_text(encoding="utf-8"), "*\n")
 
     def test_logging_failure_never_breaks_the_hook(self) -> None:
-        self.log.mkdir()
+        self.log.mkdir(parents=True)
         fired = self.hook("ui-design-reminder", json.dumps({"hook_event_name": "PreToolUse", "file_path": "a.tsx"}))
         self.assertEqual(fired.returncode, 0, fired.stderr)
         self.assertIn("DESIGN.md", fired.stdout)
@@ -588,6 +590,7 @@ class HookFiringLogTests(unittest.TestCase):
 
     def test_log_stays_bounded(self) -> None:
         line = json.dumps({"ts": "2026-01-01T00:00:00Z", "hook": "ui-design-reminder", "event": "PreToolUse", "outcome": "nudged"})
+        self.log.parent.mkdir(parents=True)
         self.log.write_text((line + "\n") * 4000, encoding="utf-8")
         self.hook("ui-design-reminder", json.dumps({"hook_event_name": "PreToolUse", "file_path": "a.css"}))
         core = load_core()
@@ -599,6 +602,7 @@ class HookFiringLogTests(unittest.TestCase):
     def test_doctor_counts_firings_and_names_hooks_unused_for_30_days(self) -> None:
         old = "2026-01-01T00:00:00Z"
         recent = dt_now_iso()
+        self.log.parent.mkdir(parents=True)
         self.log.write_text(
             json.dumps({"ts": old, "hook": "context-budget-nudge", "event": "Stop", "outcome": "blocked"}) + "\n"
             + json.dumps({"ts": recent, "hook": "handoff-on-keyword", "event": "UserPromptSubmit", "outcome": "nudged"}) + "\n",
