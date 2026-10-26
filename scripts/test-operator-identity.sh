@@ -158,7 +158,8 @@ P="$WORK/proj"; mkdir -p "$P"
 bash "$SETUP" --profile software-dev --assemble-only --target "$P" \
      --operator-name "$NAME" --operator-role "$ROLE" >/dev/null 2>&1
 bash "$SETUP" --profile software-dev --assemble-only --target "$P" >/dev/null 2>&1
-if grep -q "\*\*$NAME\*\* is the lead\. Role: \*\*$ROLE\*\*" "$P/CLAUDE.md"; then
+# The project rulebook is AGENTS.md; the project CLAUDE.md only imports it.
+if grep -q "\*\*$NAME\*\* is the lead\. Role: \*\*$ROLE\*\*" "$P/AGENTS.md"; then
   ok "re-running a project assemble keeps the operator identity"
 else
   bad "re-running a project assemble BLANKED the operator identity"

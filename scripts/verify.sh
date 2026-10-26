@@ -10,7 +10,7 @@
 #
 # Usage:
 #   ./scripts/verify.sh                # run every phase in .harness/verify.conf
-#   ./scripts/verify.sh --only <tag>   # run only phases whose label contains <tag>
+#   ./scripts/verify.sh --only <tag>   # run only phases whose label contains <tag>; none = failure
 #   ./scripts/verify.sh --list         # list configured phases, don't run
 #   ./scripts/verify.sh --help
 #
@@ -70,7 +70,10 @@ done < "$CONF"
 
 TOTAL=${#LABELS[@]}
 if [ "$TOTAL" -eq 0 ]; then
-  echo "${YELLOW}No matching phases.${RESET}"; exit 0
+  if [ -n "$ONLY" ]; then empty="No phase label contains --only '$ONLY'."; else empty="verify.conf defines no phases."; fi
+  # A listing asserts nothing; a run that executes no phase proves nothing, so it cannot pass.
+  if $LIST_ONLY; then echo "${YELLOW}${empty}${RESET}"; exit 0; fi
+  echo "${RED}verify.sh: ${empty} Nothing ran, so this is not a pass.${RESET}"; exit 1
 fi
 
 if $LIST_ONLY; then

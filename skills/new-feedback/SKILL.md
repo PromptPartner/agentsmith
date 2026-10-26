@@ -31,8 +31,10 @@ Run `agentsmith new-feedback "short symptom"` — use `.agentsmith/agentsmith` o
    - **Failure mechanism** — WHY the system allowed it (missing rule / vague instruction / absent
      guardrail / unreached tool / noisy context — almost never "the model was dumb").
    - **Bounded edit** — the smallest change that prevents the whole class.
-   - **Named surface** — exactly where it lands (a core rule, a hook, a verify phase, a template);
-     prefer a deterministic surface over prose the model can skip.
+   - **Named surface** — exactly where it lands (a core rule, a verify phase, a lint check, a
+     template, or a hook when the install runs hooks); prefer a deterministic surface over prose
+     the model can skip. Record it on the line
+     `- **Surface:** file: <path> | text: <literal line>` or `- **Surface:** verify: <phase>`.
    - **Non-regression** — the check that stays red on recurrence. Until it's real, Status stays open.
 
 ## Report

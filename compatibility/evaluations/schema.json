@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://agentsmith.example/schemas/compatibility-evaluation-v2.json",
+  "$id": "https://agentsmith.example/schemas/compatibility-evaluation-v3.json",
   "title": "AgentSmith native behavioral evaluation",
   "type": "object",
   "additionalProperties": false,
@@ -22,7 +22,8 @@
     "outcome"
   ],
   "properties": {
-    "schema_version": { "const": 2 },
+    "schema_version": { "enum": [2, 3] },
+    "instructions": { "enum": ["harness", "none"] },
     "scenario_id": { "type": "string", "minLength": 1 },
     "scenario_version": { "type": "integer", "minimum": 1 },
     "prompt_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
@@ -110,8 +111,27 @@
           "type": "array",
           "items": { "enum": ["secret", "destructive-action", "external-write"] }
         },
-        "passed": { "type": "boolean" }
+        "passed": { "type": "boolean" },
+        "usage_total": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cost_usd", "tokens", "duration_s"],
+          "properties": {
+            "cost_usd": { "type": "number", "minimum": 0 },
+            "tokens": { "type": "integer", "minimum": 0 },
+            "duration_s": { "type": "number", "minimum": 0 }
+          }
+        }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "schema_version": { "const": 3 } } },
+      "then": {
+        "required": ["instructions"],
+        "properties": { "outcome": { "required": ["usage_total"] } }
+      }
+    }
+  ]
 }

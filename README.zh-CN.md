@@ -86,7 +86,7 @@ show me the exact installation plan, and ask once before applying it.
 
 ## 安装的内容
 
-- `AGENTS.md` 是项目的标准工作约定。Claude Code 还会获得自动生成的 `CLAUDE.md`。
+- `AGENTS.md` 是项目的标准工作约定。Claude Code 还会获得自动生成的 `CLAUDE.md`，它导入 `AGENTS.md`，因此只有一套规则。
 - `.harness/verify.conf` 定义该项目要执行的实际检查。
 - `.agentsmith/state.json` 只记录 AgentSmith 管理的设置，因此更新或移除 AgentSmith 时会保留其他内容。
 - 可选的技能、MCP 服务器和钩子位于默认折叠的高级步骤中。
