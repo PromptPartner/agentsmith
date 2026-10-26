@@ -708,6 +708,8 @@ def validate_manifest(manifest: dict[str, Any], repo: Path) -> tuple[Path, str]:
         raise RunError("limits.max_attempts must be between 1 and 3")
     if int(limits.get("wall_minutes", 0)) <= 0:
         raise RunError("limits.wall_minutes must be positive")
+    if "budget_rationale" in limits and not isinstance(limits["budget_rationale"], str):
+        raise RunError("limits.budget_rationale must be text: the size class, the usage it rests on, and who set it")
     spec_rel = Path(str(manifest["spec_path"]))
     if spec_rel.is_absolute() or ".." in spec_rel.parts or spec_rel.parts[:2] != ("docs", "specs"):
         raise RunError("spec_path must be a repository-relative path under docs/specs/")
@@ -1919,6 +1921,7 @@ def start(args: argparse.Namespace) -> int:
                 "deadline_epoch": time.time() + int(manifest["limits"]["wall_minutes"]) * 60,
                 "claude_cost_usd": 0.0,
                 "codex_tokens_used": 0,
+                "budget_rationale": manifest["limits"].get("budget_rationale") or None,
                 "active_pid": None,
                 "controller_pid": os.getpid(),
                 "controller_token": token,
@@ -1941,7 +1944,7 @@ def status_cmd(args: argparse.Namespace) -> int:
     state = load_run(repo, args.run_id)
     keys = ["run_id", "status", "stage", "attempt", "active_pid", "branch", "worktree", "base_head",
             "accepted_commit", "deadline_epoch", "claude_cost_usd", "codex_tokens_used",
-            "usage_accounting_incomplete", "reason", "updated_at"]
+            "budget_rationale", "usage_accounting_incomplete", "reason", "updated_at"]
     print(json.dumps({key: state.get(key) for key in keys if state.get(key) is not None}, indent=2))
     return 0
 

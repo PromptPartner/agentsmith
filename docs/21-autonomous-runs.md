@@ -107,6 +107,26 @@ CLI has no controller-enforced hard token switch; its native goal is the in-runt
 controller stops after reported usage crosses the manifest ceiling. Calibrate that limit in an
 attended run before treating it as a precise cost control.
 
+### Sizing the budget
+
+A cap that is too low stops a run that is still making progress, and the controller stops at
+the first report over the cap, even when it is over by 1%. Size each run, do not reuse one
+number:
+
+1. Put the work in a size class by the lines it should change: **S** up to about 350, **M** up
+   to about 800, **L** up to about 2,500. Above that (**XL**), split the work first.
+2. Measure. After an accepted run, `status <id>` shows `codex_tokens_used` and
+   `claude_cost_usd`. Set the cap for a class from the highest usage you have seen for an
+   accepted run of that class.
+3. Keep at least 20% headroom above that number.
+4. Write the reason in `limits.budget_rationale`: the size class, the measurement it rests on,
+   and who set it. `status` prints it, so a later reader knows who authorized the limit.
+
+The template default of 2,500,000 Codex tokens is a starting point for one small change, not a
+measurement; until you have your own numbers, run one attended small run first. Keep
+`max_attempts` at 3: the token and USD caps bound spend, and fewer attempts only turn
+recoverable rejections into escalations.
+
 Claude receives a fail-closed sandbox configuration with no allowed network domains. The verifier
 runs with a credential-free environment, no network, no access to other home-directory file data,
 and no writes outside the disposable worktree. Read-only Git metadata remains visible so Git-based

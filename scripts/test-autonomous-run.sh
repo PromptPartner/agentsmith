@@ -276,6 +276,13 @@ fi
 
 echo 'autonomous-run — contract and successful handoff'
 repo="$(new_repo success)"; make_fake "$repo/../fake"; manifest "$repo" success
+python3 - "$repo/.harness/runs/success.json" <<'PY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); v = json.loads(p.read_text())
+v['limits']['budget_rationale'] = 'size S fixture; set by Test Operator'
+p.write_text(json.dumps(v, indent=2) + '\n')
+PY
+git -C "$repo" add . && git -C "$repo" commit -qm 'test: record budget rationale'
 if (cd "$repo" && invoke "$repo" accept start .harness/runs/success.json >../out 2>../err); then
   ok 'maker → verifier → fresh checker accepts a local branch'
 else
@@ -284,6 +291,7 @@ else
 fi
 assert 'accepted run says no external action occurred' grep -q 'nothing was pushed' "$repo/../out"
 assert 'status reads durable accepted state' bash -c "cd '$repo' && python3 '$repo/../fake/controller.py' status success | grep -q '\"status\": \"accepted\"'"
+assert 'status reports who set the budget and why' bash -c "cd '$repo' && python3 '$repo/../fake/controller.py' status success | grep -q '\"budget_rationale\": \"size S fixture; set by Test Operator\"'"
 assert 'run branch exists only locally' git -C "$repo" show-ref --verify --quiet refs/heads/agentsmith/success
 assert 'runtime usage is accumulated across the run' python3 - "$repo/.git/agentsmith-runs/success/state.json" <<'PY'
 import json, sys

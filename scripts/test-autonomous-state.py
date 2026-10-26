@@ -138,6 +138,21 @@ class AutonomousStateTests(unittest.TestCase):
                 with self.assertRaisesRegex(CONTROLLER.RunError, rf"roles\.checker\.{field} "):
                     CONTROLLER.validate_manifest(role, ROOT)
 
+    def test_budget_rationale_is_optional_text_and_template_budget_fits_real_work(self) -> None:
+        template = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
+        # 200,000 maker tokens stopped real small runs while they were still progressing.
+        self.assertGreaterEqual(template["limits"]["codex_goal_tokens"], 2_000_000)
+        self.assertIn("budget_rationale", template["limits"])
+        manifest = json.loads(json.dumps(template))
+        manifest.update(run_id="budget", spec_path="docs/specs/task.md", implementation_ticket="IMP-1")
+        for role in manifest["roles"].values():
+            role["model"] = "fixture-model"
+        for value in (12, ["S"], None):
+            with self.subTest(value=value):
+                manifest["limits"]["budget_rationale"] = value
+                with self.assertRaisesRegex(CONTROLLER.RunError, "limits.budget_rationale must be text"):
+                    CONTROLLER.validate_manifest(manifest, ROOT)
+
     def test_kill_switch_in_main_checkout_pauses_linked_worktrees(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith pause ") as temporary:
             repo = Path(temporary).resolve() / "main"
