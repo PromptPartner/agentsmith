@@ -814,3 +814,10 @@ global selections needs its own design because update replays the record.
   checks the active roots, and runtime, template and design-system copies replace a linked file
   instead of writing through it. `test-installer-safety.py` (project, runtime-file, dangling,
   contained and global cases) failed before and passes after.
+- [x] 2026-10-26 — `agentsmith verify --only <filter>` that matched no phase printed "all 0
+  verification phases passed" and exited 0 (reproduced on master `3fd1846`); a `verify.conf` with no
+  phases and `--record` did the same, the latter writing a passing receipt for nothing.
+  `scripts/verify.sh` also exited 0 on "No matching phases." Both now exit non-zero and name the
+  filter. `--list` with an empty result still exits 0 with a warning, because a listing asserts
+  nothing. `EmptyVerificationTests` in `test-verify-receipts.py` failed 5 of 5 before and pass
+  after.

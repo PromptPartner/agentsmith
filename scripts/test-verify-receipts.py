@@ -554,5 +554,62 @@ class VerifyHelpTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
 
 
+class EmptyVerificationTests(unittest.TestCase):
+    """A gate that ran nothing must not pass."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory(prefix="agentsmith empty verify ")
+        self.root = Path(self.temporary.name)
+        (self.root / ".harness").mkdir()
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def configure(self, text: str) -> None:
+        (self.root / ".harness" / "verify.conf").write_text(text, encoding="utf-8")
+
+    def verify(self, *arguments: str, runner: list[str] | None = None) -> subprocess.CompletedProcess[str]:
+        command = runner or [sys.executable, str(CORE), "verify", "--target", str(self.root)]
+        return subprocess.run(
+            [*command, *arguments], cwd=self.root, text=True, encoding="utf-8", errors="replace",
+            capture_output=True, check=False,
+        )
+
+    def test_filter_matching_no_phase_fails_and_names_the_filter(self) -> None:
+        self.configure(f"tests :: {shell_command(sys.executable, '-c', 'pass')}\n")
+        result = self.verify("--only", "no-such-phase")
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("no-such-phase", result.stdout + result.stderr)
+        self.assertNotIn("passed", result.stdout)
+
+    def test_config_without_phases_fails(self) -> None:
+        self.configure("# only comments\n\n")
+        result = self.verify()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("no phases", (result.stdout + result.stderr).casefold())
+
+    def test_record_with_no_phases_writes_no_passing_receipt(self) -> None:
+        self.configure(f"tests :: {shell_command(sys.executable, '-c', 'pass')}\n")
+        receipt = self.root / "receipt"
+        result = self.verify("--only", "nothing", "--record", str(receipt), "--tree-class", "disposable-fixture")
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(receipt.exists())
+
+    def test_empty_listing_is_information_not_a_gate(self) -> None:
+        self.configure(f"tests :: {shell_command(sys.executable, '-c', 'pass')}\n")
+        result = self.verify("--only", "nothing", "--list")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("nothing", result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "verify.sh is the POSIX repository runner")
+    def test_repository_runner_fails_when_no_phase_matches(self) -> None:
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts" / "verify.sh"), "--only", "no-such-phase"],
+            text=True, capture_output=True, check=False,
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("no-such-phase", result.stdout + result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

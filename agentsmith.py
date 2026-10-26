@@ -7344,10 +7344,19 @@ def cmd_verify(args: argparse.Namespace) -> int:
         raise CliError("--record requires an explicit tree class (--tree-class)")
     if tree_class and not args.record:
         raise CliError("--tree-class is meaningful only with --record")
+    empty = (
+        f"No verification phase label contains --only {args.only!r} in {conf}" if args.only
+        else f"{conf} defines no phases"
+    )
     if args.list:
+        # A listing asserts nothing, so an empty one is information, not a failed gate.
+        if not phases:
+            warn(empty)
         for index, (label, command) in enumerate(phases, 1):
             print(f"{index}. {label} :: {command}")
         return 0
+    if not phases:
+        raise CliError(f"{empty}; a run that executes no phase proves nothing, so it cannot pass")
     if args.record:
         record_dir = Path(args.record).expanduser()
         if not record_dir.is_absolute():
