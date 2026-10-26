@@ -7952,7 +7952,13 @@ def cmd_scaffold(kind: str, args: argparse.Namespace) -> int:
 
             ## What shipped this session
 
+            ## Verified this session
+
+            ## Carried over, not re-verified
+
             ## What is still pending
+
+            ## Open questions — default if unanswered
 
             ## Deviations from the plan / decisions made (don't re-litigate)
 

@@ -36,7 +36,13 @@ $( [ "$DIRTY" != "0" ] && echo '> ⚠ Tree is dirty — commit or stash BEFORE h
 
 ## What shipped this session
 
+## Verified this session
+
+## Carried over, not re-verified
+
 ## What is still pending
+
+## Open questions — default if unanswered
 
 ## Deviations from the plan / decisions made (don't re-litigate)
 
