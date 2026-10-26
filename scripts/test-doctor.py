@@ -345,6 +345,13 @@ class DoctorTests(unittest.TestCase):
         handoff = next(message for message in messages if "handoff" in message)
         self.assertIn("templates/missing-guide.md", handoff)
         self.assertNotIn(".harness/runs", handoff, "a placeholder path is created at run time")
+        # A marker the user creates on demand (the autonomy kill switch) is normal when absent.
+        skill.write_text(skill.read_text(encoding="utf-8") + "\nTo pause, create `.harness/AUTONOMY_PAUSED`.\n", encoding="utf-8")
+        _, marker = self.doctor(project, "codex")
+        handoff = next(w["message"] for w in marker["codex"]["warnings"]
+                       if w["code"] == "skill-path-missing" and "handoff" in w["message"])
+        self.assertNotIn("AUTONOMY_PAUSED", handoff)
+        self.assertIn("templates/missing-guide.md", handoff, "a real missing path is still reported")
 
     def test_installed_runtime_doctor_also_names_missing_core_sections(self) -> None:
         # The installed runtime has no core/ folder, so it must rely on what install recorded.

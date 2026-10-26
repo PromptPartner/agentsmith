@@ -5498,6 +5498,9 @@ def inspect_skills(agent_id: str, agent: dict[str, Any], target: Path) -> dict[s
     }
 
 
+# Files a skill tells the user to create when needed. No install ships them, and their absence is
+# the normal state: while .harness/AUTONOMY_PAUSED exists, autonomous runs refuse to start.
+SKILL_ON_DEMAND_PATHS = frozenset({".harness/AUTONOMY_PAUSED"})
 SKILL_PATH_REFERENCE = re.compile(r"(?<![\w./-])(?:\.agentsmith|\.harness|scripts|templates)/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*/?")
 
 
@@ -5506,8 +5509,9 @@ def missing_skill_paths(target: Path, names: Iterable[str]) -> dict[str, list[st
 
     Skills often name the installed path and the source-checkout path as alternatives (for
     example `.harness/templates/plan.md` or `templates/plan.md`), so a citation counts as present
-    when any cited path with the same file name exists. Paths with a placeholder (`<id>`, `*`)
-    and folder paths are created at run time and are skipped.
+    when any cited path with the same file name exists. Paths with a placeholder (`<id>`, `*`),
+    folder paths and on-demand markers (SKILL_ON_DEMAND_PATHS) are created at run time and are
+    skipped.
     """
     result: dict[str, list[str]] = {}
     for name in sorted(names):
@@ -5519,7 +5523,8 @@ def missing_skill_paths(target: Path, names: Iterable[str]) -> dict[str, list[st
         cited = []
         for match in SKILL_PATH_REFERENCE.finditer(text):
             path = match.group(0).rstrip(".")
-            if path.endswith("/") or text[match.end():match.end() + 1] in {"<", "*", "{"}:
+            if (path.endswith("/") or path in SKILL_ON_DEMAND_PATHS
+                    or text[match.end():match.end() + 1] in {"<", "*", "{"}):
                 continue
             cited.append(path)
         present = {Path(path).name for path in cited if (target / path).exists()}
