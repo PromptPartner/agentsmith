@@ -16,13 +16,16 @@ separate human action. If Linear writes are not authorized, the ticket remains a
 until the operator posts it; naming Linear never grants the run a connector.
 
 Run `python3 .agentsmith/autonomous-run.py prepare --run-id <id> --spec docs/specs/<name>.md
---ticket <implementation-ticket>` in an installed consumer project. It uses
+--ticket <implementation-ticket> --maker-model <model> --checker-model <model>` in an installed
+consumer project. It uses
 `.harness/templates/autonomous-run.json`; the source checkout uses `scripts/autonomous-run.py`
 and `templates/autonomous-run.json`. The manifest pins
 the spec hash, ticket, base ref, maker/checker runtime and model, path boundary, verifier, attempt
 cap, wall-clock budget, and git/external-write policy. It must be reviewed and committed before
-`start` will accept it. Both roles require explicit model and effort settings; blank or placeholder
-settings keep the prepared draft non-executable. `scope.resources` optionally names local coordination keys such as
+`start` will accept it. Both roles require explicit model and effort settings. `prepare` refuses to write a
+manifest while a model or effort is blank or a placeholder (`<...>`, `REPLACE-WITH...`,
+`TO-FILL`, `TODO`, `TBD`, `CHANGEME`, `PLACEHOLDER`, `FIXME`) and names each field to fill;
+`start` refuses the same values. `scope.resources` optionally names local coordination keys such as
 `port:3000`, `db:local/test`, or `service:redis`; omit it in an older manifest or use an empty list
 when the run reserves none.
 
@@ -52,7 +55,10 @@ Controller verification writes the raw exit code and stdout/stderr to `attempt-N
 an adjacent JSON receipt. That receipt binds the candidate and base commits, spec and manifest
 hashes, verification policy and configuration hashes, controller/launcher hashes, output hash,
 and checker receipt hash. A checker acceptance with empty evidence or unresolved findings does
-not accept a candidate. Role exit codes are retained separately from structured receipts.
+not accept a candidate. Besides trying to falsify the acceptance criteria, the checker is told
+to reject a change that is larger than the stated problem needs, and a red test that failed for
+the wrong reason (a stub, an import error or an earlier gate instead of the bug's own failure
+message). Role exit codes are retained separately from structured receipts.
 
 Trusted state stays in the controller's shared run directory. Each native role receives explicit
 write restrictions for that directory, the original contract, and the controller/launcher source
@@ -97,12 +103,60 @@ worktrees also share writable Git metadata needed for local commits. The control
 peer identity before accounting for peer Git artifacts, but this is collision coordination, not
 adversarial isolation: do not run mutually untrusted makers concurrently in one repository.
 
+**Guard Git metadata writes.** Every linked worktree shares one set of refs and worktree records.
+A `git worktree remove`, `git worktree prune`, branch delete or history rewrite in any checkout
+can break a run that is still live, or one that has stopped but is not finished, and its work is
+then lost or must be redone. `status --all-terminal` is a read-only guard with three exits:
+
+| Exit | Meaning | What to do |
+|---|---|---|
+| `0` | every run and graph in this repository is terminal (or none exists) | go ahead |
+| `1` | a run or graph is live, or stopped without finishing; each is named | wait, `stop`, or `resume` it first |
+| `2` | it cannot prove every run and graph is terminal: a file is unreadable, not where or what the controller writes, or has a status it does not know | stop and inspect; treat as live |
+
+Chain it in front of every Git metadata write, so the write runs only on exit 0:
+
+```text
+python3 .agentsmith/autonomous-run.py status --all-terminal && git worktree remove <path>
+```
+
+Only `accepted`, `escalated` and `interrupted` runs and `completed`, `failed`, `stopped` and
+`blocked` graphs count as terminal, once no controller or role process for them is live. A run
+folder that holds files but no state (for example a lock left by a start that crashed) is
+undetermined: inspect it and remove it by hand before the guard can answer 0.
+
 Codex receives the manifest objective and remaining native goal token budget. Claude receives only
 the remaining run-wide USD allowance. The controller accumulates usage reported by both CLIs and
 its persisted state remains authoritative, so resume cannot reset time or reported spend. Codex's
 CLI has no controller-enforced hard token switch; its native goal is the in-runtime cap, and the
 controller stops after reported usage crosses the manifest ceiling. Calibrate that limit in an
 attended run before treating it as a precise cost control.
+
+### Sizing the budget
+
+A cap that is too low stops a run that is still making progress, and the controller stops at
+the first report over the cap, even when it is over by 1%. Size each run, do not reuse one
+number:
+
+1. Put the work in a size class by the lines it should change: **S** up to about 350, **M** up
+   to about 800, **L** up to about 2,500. Above that (**XL**), split the work first.
+2. Measure. After an accepted run, `status <id>` shows `codex_tokens_used` and
+   `claude_cost_usd`. Set the cap for a class from the highest usage you have seen for an
+   accepted run of that class.
+3. Keep at least 20% headroom above that number.
+4. Write the reason in `limits.budget_rationale`: the size class, the measurement it rests on,
+   and who set it. `status` prints it, so a later reader knows who authorized the limit.
+
+When a maker finishes but its report crosses a cap, the controller first keeps its receipt and
+candidate checkpoint, then escalates. `resume` then verifies and checks that same candidate
+instead of starting a new maker. Each cap stops only the runtime that spends it: a Claude
+checker can still check a candidate whose Codex maker used up the Codex cap, while a Codex
+checker would be refused.
+
+The template default of 2,500,000 Codex tokens is a starting point for one small change, not a
+measurement; until you have your own numbers, run one attended small run first. Keep
+`max_attempts` at 3: the token and USD caps bound spend, and fewer attempts only turn
+recoverable rejections into escalations.
 
 Claude receives a fail-closed sandbox configuration with no allowed network domains. The verifier
 runs with a credential-free environment, no network, no access to other home-directory file data,
@@ -138,6 +192,13 @@ generated settings are offline evidence, not proof of native tool denial.
 
 The controller and manifest template are scaffolded only for `software-dev` projects in v1; the
 Wayfinder spec flow remains available to every work type.
+
+**Kill switch.** While the file `.harness/AUTONOMY_PAUSED` exists, in the checkout you run from
+or in the main checkout, `prepare`, `start` and `resume` refuse, and so do `agentsmith graph
+start` and `graph resume`. The refusal names the file. A run that is already live keeps running;
+use `stop <id>` to end it. Delete the file to allow new work again. The name matches ignoring
+case (`autonomy_paused` also pauses) on every filesystem, so the rule does not depend on the disk. Leave it untracked: graph
+validation ignores exactly this path, so `graph status` still works while autonomy is paused.
 
 `status <id>` reads controller state from the repository's git-common directory. `start` and
 `resume` hold one per-run lifecycle lock, so a second live controller is refused; a dead owner's
@@ -215,6 +276,17 @@ evidence. Fixture completeness and passing native inference results are separate
 The installed controller is refreshed on reinstall; existing project manifest drafts are
 preserved. Installation refuses symbolic links in the controller or manifest-template destination
 paths before copying runtime payloads.
+
+Before `start` creates a branch, worktree or state, it runs one trivial command for each role
+under the operating-system sandbox that role's shell commands use (Seatbelt on macOS,
+bubblewrap on Linux), with the role's write access: the maker may write the checkout, the
+checker may not. It then runs one command through the verifier sandbox, in a throwaway
+repository. `graph start` runs that verifier probe once before it dispatches any child, and its
+children keep only the per-role probes: on Windows the verifier probe is slow and holds a
+machine-wide lock, and one probe per child made parallel roots wait for each other. If any of them cannot
+run, for example because host policy forbids a nested sandbox, `start` refuses and names the
+role and the reason, before any model spend. This proves the sandbox starts on this host; it
+does not prove a native client's own tool policy, which the qualification contract covers.
 
 Native role preflight currently permits macOS with `sandbox-exec` and Linux with `bubblewrap`.
 Windows has a separate AppContainer verifier, but native role trusted-state containment is

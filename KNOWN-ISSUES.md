@@ -186,6 +186,12 @@ been authorized, so the entries are kept here.
   worktree with nothing new to commit. A local graph stop/resume test exposed this under heavy
   concurrent verification. The fixture now holds the maker before commit to test a deterministic
   mid-maker stop; the late-stop reconciliation path still needs a bounded controller fix.
+  Re-checked 2026-10-26: resume no longer replays the maker. It refuses with "unfinished maker
+  advanced HEAD without a validated receipt; operator review required" and keeps the commit;
+  `test-autonomous-run.sh` "stop after the maker committed but before its receipt" pins this.
+  Automatic recovery was not added: the stop ended the maker before it wrote a receipt, so the
+  controller cannot tell finished work from half-done work, and accepting or discarding the
+  commit on its own would not be safe. Open until an operator-facing recovery path is designed.
 ## Resolved during W2-06
 
 - [x] 2026-09-21 — Windows AppContainer ACL grants initially left inherited ACE drift after
@@ -520,10 +526,13 @@ been authorized, so the entries are kept here.
   Windows locale. Preparing a manifest under a `ü` directory looked for a nonexistent `Ã¼`
   template path. A real Git repository with a simulated CP-1252 subprocess decoder reproduced
   the corruption; explicit UTF-8 Git transport preserves the original repository path.
-- [ ] 2026-10-05 — Controller receipt, captured-log and usage-replay file reads still use
+- [x] 2026-10-05 — Controller receipt, captured-log and usage-replay file reads still use
   the locale default. A simulated CP-1252 read corrupts UTF-8 JSON text. These paths need
   explicit encoding and their own receipt/replay regressions; native Windows model-role
   execution remains unsupported, separately from the corrected prepare command.
+  Fixed 2026-10-26: receipt reads, captured logs, usage replay, `events.jsonl` and the verifier
+  log now name UTF-8. A simulated CP-1252 default failed on byte 0x81 before the fix and passes
+  after; a source check fails if any text-mode file call in the controller omits its encoding.
 
 ### LOCAL-CAPABILITIES: shared hook groups lost foreign handlers (fixed)
 
@@ -794,6 +803,69 @@ installation's root. Uninstall leaves Pi's file in place when the global record 
 Codex, so a later global uninstall leaves Pi's file in place and update no longer manages it. The
 record cannot prove ownership of Claude, Codex, or OpenCode files for the same reason. Merging
 global selections needs its own design because update replays the record.
+
+## Run guards and development pipeline (2026-10-26)
+
+- [x] 2026-10-26 — `prepare` wrote a manifest with blank role models and only warned; `start`
+  refused it later, and `REPLACE-WITH...`/`TO-FILL` values passed both. `prepare` now refuses and
+  names each field; a test that saw the draft written before the fix passes after.
+- [x] 2026-10-26 — `start` checked only that a sandbox binary existed. On a host that forbids a
+  nested sandbox it created the branch, worktree and state, then failed later. A per-role and
+  verifier sandbox preflight now refuses first; run inside a nested Seatbelt sandbox, the old
+  controller left all three artifacts and the new one leaves none.
+- [x] 2026-10-26 — A maker that finished but crossed its token cap left no receipt and no
+  candidate checkpoint, so resume stopped for operator review and the work was effectively lost.
+  The candidate is now checkpointed before the escalation and resume accepts it; the fixture
+  saw stage `making` and no receipt before the fix.
+- [x] 2026-10-26 — After a resume, a Claude checker escalated on the Codex cap that only the
+  maker had crossed, after spending checker money. Each cap is now checked after the roles that
+  spend it; found while fixing the entry above, and covered by the same fixture.
+- [x] 2026-10-26 — Independent review: `status --all-terminal` printed a traceback and exited 1
+  when a run state, graph state or lock held invalid UTF-8. It now reports that state as
+  undetermined (exit 2); a test with `\xff` in each of the four files errored before and passes.
+- [x] 2026-10-26 — Independent review: `status --all-terminal` failed open. A dangling
+  `state.json` link, a file where `agentsmith-runs` should be, or a dead lock with no state
+  exited 0 ("terminal"). It now accepts only the shapes and statuses the controller writes and
+  answers 2 for anything else; ten such cases exited 0 or 1 before and exit 2 after.
+- [x] 2026-10-26 — Independent review: an accepted spec with `schema:` and `2` on the next line
+  (valid YAML), a repeated or a blank `schema` key, and no pipeline fields passed `check-specs`
+  as legacy. Indented lines now continue their key, repeated keys are refused, and any `schema`
+  key other than exactly 2 is refused; three such fixtures passed before and fail after.
+- [x] 2026-10-26 — Independent review: an ignored or untracked research note or review verdict
+  satisfied `prepare` and `start`, but the run's worktree lacked it and failed `check-specs`.
+  `start` and `prepare` now require each cited file in the run's base commit and `check-specs`
+  requires it tracked; a test with ignored files passed `start` before and is refused after.
+- [x] 2026-10-26 — Independent review: on a case-insensitive filesystem `.harness/autonomy_paused`
+  paused runs, but graph `validate`/`status` then refused a "dirty" repository; on a
+  case-sensitive one it would not pause at all. The marker name now matches ignoring case on
+  every filesystem, graph validation ignores every case of it, and the refusal names the real
+  file; graph status exited 2 before and 0 after.
+- [x] 2026-10-26 — PR #63 CI, Windows only: a graph child failed with `refusal=graph-changed`.
+  The new start preflight ran the Windows verifier probe in the shared checkout; that verifier
+  writes its script, request and result files into its working folder, so a parallel sibling's
+  graph validation saw a dirty base (that refusal reports as `graph-changed`). The probe now
+  runs in a throwaway repository; a test with a Windows-like verifier left a file in the
+  repository before the fix and none after. The dirty-base refusal now names the paths.
+- [x] 2026-10-26 — PR #63 CI, Windows only: the two graph roots stopped overlapping. Each child's
+  start preflight probed the verifier, which on Windows is slow and holds a machine-wide ACL
+  mutex, so sibling b waited for a. The graph now probes the verifier once before dispatch and
+  children keep only the per-role probes. A fixture with a slow, serialised probe lost the
+  overlap before the fix and keeps it after, with exactly one probe per graph.
+- [ ] 2026-10-26 — PR #63 push run `40334174397`, Windows only, intermittent (the PR run on the
+  same commit passed): `test_changed_graph_contract_cannot_resume_stopped_run` saw no maker
+  start within its 15 s wait, then cleanup failed with `WinError 32` on `coordination.lock`.
+  Strongest hypothesis, not confirmed on Windows: the graph's one verifier probe, which now runs
+  before dispatch, took most of that 15 s; the cleanup error followed because cleanup killed only
+  the graph process and left its children holding the repository. A simulated 16 s probe
+  reproduced the same assertion on macOS. The fixture now starts its 15 s budget after the probe,
+  prints probe timing on failure, and stops the children in cleanup. Open until a native rerun
+  passes with the timing printed. PR run `40339849693` then failed the sibling
+  `test_stop_then_resume_preserves_partial_work_and_limits` ("child maker did not start") the
+  same way, so every wait timed from `graph start` now goes through one helper: in the dispatch
+  tests `wait_after_graph_probe` and `start_graph_in_background` (cleanup stops the children);
+  in `test-work-graph-status.py` the child-exit test's 10 s window starts after the probe. With
+  `AGENTSMITH_TEST_SLOW_PROBE=16`, one dispatch test and one status test failed before and both
+  modules pass after.
 
 ## Doctor signals, hook log, evaluation cost and CLI surface (2026-10-26)
 

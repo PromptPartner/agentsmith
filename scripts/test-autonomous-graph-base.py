@@ -77,6 +77,19 @@ class GraphBaseTests(unittest.TestCase):
                 self.assertNotIn("ghp_", reason)
                 self.assertNotIn("customer", reason)
 
+    def test_dirty_base_refusal_names_the_untracked_paths(self) -> None:
+        (self.repo / ".agentsmith-verifier-probe.request.json").write_text("{}", encoding="utf-8")
+        with self.assertRaisesRegex(GRAPH.GraphError,
+                                    r"not clean: \?\? \.agentsmith-verifier-probe\.request\.json"):
+            GRAPH.load_contract(self.repo, self.graph_path)
+
+    def test_autonomy_pause_refuses_graph_resume_before_reading_graph_state(self) -> None:
+        marker = self.repo / ".harness/AUTONOMY_PAUSED"
+        marker.parent.mkdir(exist_ok=True)
+        marker.touch()
+        with self.assertRaisesRegex(GRAPH.GraphError, "autonomy is paused by "):
+            GRAPH.resume_graph({"repo": self.repo, "graph_id": "unused"})
+
     def test_refusal_codes_name_real_controller_refusals(self) -> None:
         source = (ROOT / "scripts" / "autonomous-run.py").read_text(encoding="utf-8")
         messages = [re.sub(r"\{[^{}]*\}", "a", match.group(2))
@@ -137,10 +150,12 @@ class GraphBaseTests(unittest.TestCase):
 
     def setUp(self) -> None:
         # These fixtures exercise graph contracts with run_controller stubbed; no
-        # native role is launched, so supported-host policy is a separate gate.
-        native_guard = mock.patch.object(CONTROLLER, "require_native_role_sandbox", return_value=None)
-        native_guard.start()
-        self.addCleanup(native_guard.stop)
+        # native role is launched, so supported-host policy and the sandbox preflight
+        # are separate gates.
+        for guard in ("require_native_role_sandbox", "preflight_sandboxes"):
+            native_guard = mock.patch.object(CONTROLLER, guard, return_value=None)
+            native_guard.start()
+            self.addCleanup(native_guard.stop)
         self.temporary = tempfile.TemporaryDirectory(prefix="agentsmith graph base ")
         self.addCleanup(self.temporary.cleanup)
         self.repo = Path(self.temporary.name).resolve() / "repo"
@@ -226,6 +241,14 @@ class GraphBaseTests(unittest.TestCase):
 
     def _repo_root(self, path: Path) -> Path:
         return self.repo if path == Path.cwd() else path.resolve()
+
+    def test_graph_child_keeps_role_probes_and_leaves_the_verifier_probe_to_the_graph(self) -> None:
+        checkpoint = self.accepted_predecessor()
+        with mock.patch.object(CONTROLLER, "preflight_sandboxes") as preflight:
+            self.assertEqual(self._start("--graph", self.graph_path, "--effective-base", checkpoint), 0)
+        preflight.assert_called_once()
+        self.assertEqual(preflight.call_args.kwargs, {"verifier": False})
+        self.created_worktrees.append(self.repo.parent / "repo-b")
 
     def test_dependent_run_inherits_pinned_checkpoint_not_manifest_head(self) -> None:
         checkpoint = self.accepted_predecessor()

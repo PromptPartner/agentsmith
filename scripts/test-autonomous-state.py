@@ -42,7 +42,7 @@ class AutonomousStateTests(unittest.TestCase):
             shutil.copy2(ROOT / "templates/autonomous-run.json", template)
             args = CONTROLLER.parser().parse_args([
                 "prepare", "--run-id", "consumer", "--spec", "docs/specs/task.md",
-                "--ticket", "TASK-1",
+                "--ticket", "TASK-1", "--maker-model", "fixture-model", "--checker-model", "fixture-model",
             ])
             with mock.patch.object(subprocess, "_text_encoding", return_value="cp1252"):
                 self.assertEqual(CONTROLLER.repo_root(repo), repo)
@@ -52,6 +52,399 @@ class AutonomousStateTests(unittest.TestCase):
             manifest = json.loads((repo / ".harness/runs/consumer.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["run_id"], "consumer")
             self.assertEqual(manifest["implementation_ticket"], "TASK-1")
+
+    @contextlib.contextmanager
+    def windows_locale_file_default(self):
+        """Simulate a CP-1252 locale: text file I/O without an explicit encoding uses it."""
+        originals = {name: getattr(Path, name) for name in ("read_text", "write_text", "open")}
+
+        def read_text(path, encoding=None, errors=None, **kwargs):
+            return originals["read_text"](path, encoding=encoding or "cp1252", errors=errors, **kwargs)
+
+        def write_text(path, data, encoding=None, errors=None, **kwargs):
+            return originals["write_text"](path, data, encoding=encoding or "cp1252", errors=errors, **kwargs)
+
+        def open_(path, mode="r", buffering=-1, encoding=None, errors=None, newline=None):
+            if "b" not in mode and encoding is None:
+                encoding = "cp1252"
+            return originals["open"](path, mode, buffering, encoding, errors, newline)
+
+        with mock.patch.object(Path, "read_text", read_text), \
+                mock.patch.object(Path, "write_text", write_text), \
+                mock.patch.object(Path, "open", open_):
+            yield
+
+    def test_receipt_and_captured_output_keep_utf8_under_windows_locale(self) -> None:
+        text = "naïve ✓ Á résumé"
+        with tempfile.TemporaryDirectory(prefix="agentsmith utf8 ") as temporary:
+            directory = Path(temporary)
+            receipt = {"status": "completed", "summary": text, "commit": "a" * 40,
+                       "changed_paths": ["src/résumé.txt"], "evidence": [text],
+                       "unresolved": [], "next_state": "checking"}
+            receipt_path = directory / "receipt.json"
+            receipt_path.write_bytes(json.dumps(receipt, ensure_ascii=False).encode("utf-8"))
+            log = directory / "attempt-1-maker.stdout"
+            log.write_bytes((text + "\n").encode("utf-8"))
+            state = {"state_path": str(directory / "state.json"), "attempt": 1}
+            child = [CONTROLLER.sys.executable, "-c",
+                     "import sys; sys.stdout.buffer.write(%r.encode('utf-8'))" % (text + "\n")]
+            with self.windows_locale_file_default():
+                self.assertEqual(CONTROLLER.parse_receipt(receipt_path, "")["summary"], text)
+                self.assertEqual(CONTROLLER.read_output(log), text + "\n")
+                result, error = CONTROLLER.supervised_process(
+                    child, directory, 30, dict(os.environ), state, "attempt-1-probe")
+            self.assertIsNone(error)
+            self.assertEqual(result.stdout, text + "\n")
+
+    def test_prepare_refuses_blank_or_placeholder_models_and_names_the_fields(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith prepare ") as temporary:
+            repo = Path(temporary).resolve()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            template = repo / "template.json"
+            base = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
+            for maker_model in ("", "REPLACE-WITH-MODEL", "<model>", "to-fill", "TODO"):
+                with self.subTest(maker_model=maker_model):
+                    value = json.loads(json.dumps(base))
+                    value["roles"]["maker"]["model"] = maker_model
+                    value["roles"]["checker"]["model"] = ""
+                    template.write_text(json.dumps(value), encoding="utf-8")
+                    args = CONTROLLER.parser().parse_args([
+                        "prepare", "--run-id", "draft", "--spec", "docs/specs/task.md",
+                        "--ticket", "TASK-1", "--template", str(template)])
+                    with mock.patch.object(CONTROLLER.Path, "cwd", return_value=repo):
+                        with self.assertRaisesRegex(
+                                CONTROLLER.RunError,
+                                r"roles\.maker\.model, roles\.checker\.model .*--maker-model"):
+                            CONTROLLER.prepare(args)
+                    self.assertFalse((repo / ".harness/runs/draft.json").exists())
+            args = CONTROLLER.parser().parse_args([
+                "prepare", "--run-id", "ready", "--spec", "docs/specs/task.md", "--ticket", "TASK-1",
+                "--template", str(template), "--maker-model", "maker-x", "--checker-model", "checker-y"])
+            with mock.patch.object(CONTROLLER.Path, "cwd", return_value=repo):
+                self.assertEqual(CONTROLLER.prepare(args), 0)
+            prepared = json.loads((repo / ".harness/runs/ready.json").read_text(encoding="utf-8"))
+            self.assertEqual(prepared["roles"]["maker"]["model"], "maker-x")
+            self.assertEqual(prepared["roles"]["checker"]["model"], "checker-y")
+
+    def test_start_refuses_placeholder_role_settings(self) -> None:
+        manifest = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
+        manifest.update(run_id="placeholder", spec_path="docs/specs/task.md", implementation_ticket="IMP-1")
+        manifest["roles"]["maker"]["model"] = "maker-x"
+        for field, value in (("model", "TO-FILL"), ("model", "replace-with-checker-model"), ("effort", " ")):
+            with self.subTest(field=field, value=value):
+                role = json.loads(json.dumps(manifest))
+                role["roles"]["checker"]["model"] = "checker-y"
+                role["roles"]["checker"][field] = value
+                with self.assertRaisesRegex(CONTROLLER.RunError, rf"roles\.checker\.{field} "):
+                    CONTROLLER.validate_manifest(role, ROOT)
+
+    def test_budget_rationale_is_optional_text_and_template_budget_fits_real_work(self) -> None:
+        template = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
+        # 200,000 maker tokens stopped real small runs while they were still progressing.
+        self.assertGreaterEqual(template["limits"]["codex_goal_tokens"], 2_000_000)
+        self.assertIn("budget_rationale", template["limits"])
+        manifest = json.loads(json.dumps(template))
+        manifest.update(run_id="budget", spec_path="docs/specs/task.md", implementation_ticket="IMP-1")
+        for role in manifest["roles"].values():
+            role["model"] = "fixture-model"
+        for value in (12, ["S"], None):
+            with self.subTest(value=value):
+                manifest["limits"]["budget_rationale"] = value
+                with self.assertRaisesRegex(CONTROLLER.RunError, "limits.budget_rationale must be text"):
+                    CONTROLLER.validate_manifest(manifest, ROOT)
+
+    def preflight_manifest(self) -> dict[str, Any]:
+        manifest = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
+        manifest["roles"]["maker"].update(runtime="codex", model="maker-x")
+        manifest["roles"]["checker"].update(runtime="claude", model="checker-y")
+        return manifest
+
+    def test_start_preflight_fails_early_when_a_role_sandbox_cannot_run(self) -> None:
+        denied = subprocess.CompletedProcess([], 1, "", "bwrap: setting up uid map: Permission denied\n")
+        passed = subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(CONTROLLER.sys, "platform", "linux"), \
+                mock.patch.object(CONTROLLER, "sandboxed_verify", return_value=passed):
+            with mock.patch.object(CONTROLLER, "run", return_value=denied) as probe:
+                with self.assertRaisesRegex(CONTROLLER.RunError,
+                                            r"maker \(codex\) cannot run a command in the operating-system "
+                                            r"sandbox on this host: bwrap: setting up uid map"):
+                    CONTROLLER.preflight_sandboxes(ROOT, self.preflight_manifest())
+            self.assertEqual(probe.call_args.args[0][0], "bwrap")
+            # The checker is probed as it runs: without write access to the checkout.
+            with mock.patch.object(CONTROLLER, "run", side_effect=[passed, denied]) as probe:
+                with self.assertRaisesRegex(CONTROLLER.RunError, r"checker \(claude\) cannot run"):
+                    CONTROLLER.preflight_sandboxes(ROOT, self.preflight_manifest())
+            maker_argv, checker_argv = (call.args[0] for call in probe.call_args_list)
+            self.assertIn("--bind", maker_argv)
+            self.assertNotIn("--bind", checker_argv)
+
+    def test_start_preflight_fails_early_when_the_verifier_sandbox_cannot_run(self) -> None:
+        passed = subprocess.CompletedProcess([], 0, "", "")
+        broken = subprocess.CompletedProcess([], 126, "", "no supported fail-closed verifier sandbox")
+        with mock.patch.object(CONTROLLER.sys, "platform", "darwin"), \
+                mock.patch.object(CONTROLLER, "run", return_value=passed), \
+                mock.patch.object(CONTROLLER, "sandboxed_verify", return_value=broken):
+            with self.assertRaisesRegex(CONTROLLER.RunError,
+                                        r"verifier sandbox cannot run a command on this host \(exit 126\)"):
+                CONTROLLER.preflight_sandboxes(ROOT, self.preflight_manifest())
+
+    def test_verifier_preflight_never_writes_into_the_repository(self) -> None:
+        # The Windows verifier writes its request, script and result files into its working
+        # folder. Run in the repository, that made a parallel graph child see a dirty base.
+        repo = self.guard_repository()
+        probed: list[Path] = []
+
+        def windows_like_verifier(command, cwd, timeout, env, **_kwargs):
+            probed.append(Path(cwd))
+            (Path(cwd) / ".agentsmith-verifier-probe.request.json").write_text("{}", encoding="utf-8")
+            return subprocess.CompletedProcess([command], 0, "", "")
+
+        with mock.patch.object(CONTROLLER.sys, "platform", "win32"), \
+                mock.patch.object(CONTROLLER, "sandboxed_verify", side_effect=windows_like_verifier):
+            CONTROLLER.preflight_sandboxes(repo, self.preflight_manifest())
+        self.assertEqual(len(probed), 1)
+        self.assertNotEqual(probed[0].resolve(), repo)
+        self.assertFalse(probed[0].resolve().is_relative_to(repo))
+        self.assertFalse(probed[0].exists(), "the probe folder is removed afterwards")
+        status = subprocess.run(["git", "-C", str(repo), "status", "--porcelain"],
+                                capture_output=True, text=True, check=True).stdout
+        self.assertEqual(status, "")
+
+    def test_start_preflight_probes_no_native_role_where_roles_are_refused(self) -> None:
+        passed = subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(CONTROLLER.sys, "platform", "win32"), \
+                mock.patch.object(CONTROLLER, "run", return_value=passed) as probe, \
+                mock.patch.object(CONTROLLER, "sandboxed_verify", return_value=passed) as verify:
+            CONTROLLER.preflight_sandboxes(ROOT, self.preflight_manifest())
+        # Only the throwaway verifier repository is created; no role sandbox is probed.
+        self.assertEqual([call.args[0][:2] for call in probe.call_args_list], [["git", "init"]])
+        verify.assert_called_once()
+
+    def test_start_and_prepare_refuse_an_accepted_spec_without_pipeline_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith pipeline ") as temporary:
+            repo = Path(temporary).resolve()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            spec = repo / "docs/specs/item.md"
+            spec.parent.mkdir(parents=True)
+            spec.write_text("---\nschema: 2\nstatus: accepted\ndecision_ticket: DEC-1\n"
+                            "route: direct — one reproduced bug\naccepted_by: Test Operator\n"
+                            "accepted_at: 2026-10-26\n---\n# Spec\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "-c", "user.name=T", "-c", "user.email=t@example.com",
+                            "commit", "-qm", "spec"], check=True)
+            manifest = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
+            manifest.update(run_id="item", spec_path="docs/specs/item.md", implementation_ticket="IMP-1")
+            for role in manifest["roles"].values():
+                role["model"] = "fixture-model"
+            with self.assertRaisesRegex(CONTROLLER.RunError,
+                                        "accepted spec fails the pipeline check: research is missing; "
+                                        "reviewer_receipt is missing"):
+                CONTROLLER.validate_manifest(manifest, repo)
+            args = CONTROLLER.parser().parse_args([
+                "prepare", "--run-id", "item", "--spec", "docs/specs/item.md", "--ticket", "IMP-1",
+                "--maker-model", "m", "--checker-model", "m",
+                "--template", str(ROOT / "templates/autonomous-run.json")])
+            with mock.patch.object(CONTROLLER.Path, "cwd", return_value=repo):
+                with self.assertRaisesRegex(CONTROLLER.RunError, "research is missing"):
+                    CONTROLLER.prepare(args)
+            self.assertFalse((repo / ".harness/runs/item.json").exists())
+
+    def test_checker_prompt_checks_smallest_change_and_red_failure_reason(self) -> None:
+        manifest = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
+        manifest.update(spec_path="docs/specs/task.md", implementation_ticket="IMP-1")
+        state = {"run_id": "prompt", "base_head": "a" * 40, "codex_tokens_used": 0}
+        checker = CONTROLLER.role_prompt(state, manifest, "checker", verify_output="exit=0")
+        self.assertIn("Is this the smallest change that solves the stated problem?", checker)
+        self.assertIn("Did each new red test fail for the intended reason?", checker)
+        self.assertIn("failure message", checker)
+        maker = CONTROLLER.role_prompt(state, manifest, "maker")
+        self.assertNotIn("smallest change that solves", maker)
+
+    def guard_repository(self) -> Path:
+        temporary = tempfile.TemporaryDirectory(prefix="agentsmith guard ")
+        self.addCleanup(temporary.cleanup)
+        repo = Path(temporary.name).resolve()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        return repo
+
+    def guard_exit(self, repo: Path) -> int:
+        with contextlib.redirect_stdout(io.StringIO()):
+            return CONTROLLER.all_terminal(repo)
+
+    def test_live_run_guard_reports_corrupt_text_as_undetermined(self) -> None:
+        cases = {
+            "run state": (".git/agentsmith-runs/a/state.json", b"\xff"),
+            "graph state": (".git/agentsmith-graphs/g/state.json", b"\xff"),
+            "run lock": (".git/agentsmith-runs/a/controller.lock", b"\xff"),
+            "graph lock": (".git/agentsmith-graphs/g/LOCK", b"\xff"),
+        }
+        for label, (relative, payload) in cases.items():
+            with self.subTest(label=label):
+                repo = self.guard_repository()
+                for kind, name, status in (("runs", "a", "accepted"), ("graphs", "g", "completed")):
+                    directory = repo / f".git/agentsmith-{kind}/{name}"
+                    directory.mkdir(parents=True)
+                    (directory / "state.json").write_text(json.dumps({"status": status}), encoding="utf-8")
+                (repo / relative).write_bytes(payload)
+                self.assertEqual(self.guard_exit(repo), 2)
+
+    def test_live_run_guard_fails_closed_unless_it_can_prove_every_state_terminal(self) -> None:
+        def run_dir(repo: Path, name: str = "a") -> Path:
+            directory = repo / ".git/agentsmith-runs" / name
+            directory.mkdir(parents=True)
+            return directory
+
+        def dangling_state(repo: Path) -> None:
+            (run_dir(repo) / "state.json").symlink_to(repo / "absent.json")
+
+        def runs_root_is_a_file(repo: Path) -> None:
+            (repo / ".git/agentsmith-runs").write_text("not a directory", encoding="utf-8")
+
+        def graphs_root_is_a_file(repo: Path) -> None:
+            (repo / ".git/agentsmith-graphs").write_text("not a directory", encoding="utf-8")
+
+        def dead_lock_without_state(repo: Path) -> None:
+            (run_dir(repo) / "controller.lock").write_text(
+                json.dumps({"pid": 99999999, "run_id": "a", "token": "stale"}), encoding="utf-8")
+
+        def files_without_state(repo: Path) -> None:
+            (run_dir(repo) / "STOP").write_text("requested_at=now\n", encoding="utf-8")
+
+        def run_dir_is_a_symlink(repo: Path) -> None:
+            root = repo / ".git/agentsmith-runs"
+            root.mkdir(parents=True)
+            target = repo / "elsewhere"
+            target.mkdir()
+            (target / "state.json").write_text(json.dumps({"status": "accepted"}), encoding="utf-8")
+            (root / "a").symlink_to(target)
+
+        def unknown_run_status(repo: Path) -> None:
+            (run_dir(repo) / "state.json").write_text(json.dumps({"status": "finished?"}), encoding="utf-8")
+
+        def unknown_graph_status(repo: Path) -> None:
+            directory = repo / ".git/agentsmith-graphs/g"
+            directory.mkdir(parents=True)
+            (directory / "state.json").write_text(json.dumps({"status": "paused"}), encoding="utf-8")
+
+        def state_is_not_an_object(repo: Path) -> None:
+            (run_dir(repo) / "state.json").write_text("[]", encoding="utf-8")
+
+        def unexpected_root_file(repo: Path) -> None:
+            root = repo / ".git/agentsmith-runs"
+            root.mkdir(parents=True)
+            (root / "state.json").write_text(json.dumps({"status": "making"}), encoding="utf-8")
+
+        for case in (dangling_state, runs_root_is_a_file, graphs_root_is_a_file, dead_lock_without_state,
+                     files_without_state, run_dir_is_a_symlink, unknown_run_status, unknown_graph_status,
+                     state_is_not_an_object, unexpected_root_file):
+            with self.subTest(case=case.__name__):
+                repo = self.guard_repository()
+                case(repo)
+                self.assertEqual(self.guard_exit(repo), 2)
+        # Shapes the controller itself leaves behind stay provably terminal.
+        repo = self.guard_repository()
+        root = repo / ".git/agentsmith-runs"
+        (root / "git-phases").mkdir(parents=True)
+        (root / "graph-stop" / "g").mkdir(parents=True)
+        (root / "coordination.lock").write_text("{}", encoding="utf-8")
+        (root / "empty").mkdir()
+        (run_dir(repo, "done") / "state.json").write_text(json.dumps({"status": "escalated"}), encoding="utf-8")
+        self.assertEqual(self.guard_exit(repo), 0)
+
+    def test_start_and_prepare_refuse_cited_artifacts_missing_from_the_base_commit(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith artifacts ") as temporary:
+            repo = Path(temporary).resolve()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            (repo / ".gitignore").write_text("docs/research/\n", encoding="utf-8")
+            (repo / "docs/research").mkdir(parents=True)
+            (repo / "docs/research/r.md").write_text("research\n", encoding="utf-8")
+            (repo / "docs/research/v.md").write_text("ACCEPT\n", encoding="utf-8")
+            spec = repo / "docs/specs/item.md"
+            spec.parent.mkdir(parents=True)
+            spec.write_text("---\nschema: 2\nstatus: accepted\ndecision_ticket: DEC-1\n"
+                            "research: docs/research/r.md\nreviewer_receipt: docs/research/v.md\n"
+                            "route: direct — one reproduced bug\naccepted_by: Test Operator\n"
+                            "accepted_at: 2026-10-26\n---\n# Spec\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "-c", "user.name=T", "-c", "user.email=t@example.com",
+                            "commit", "-qm", "spec"], check=True)
+            manifest = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
+            manifest.update(run_id="item", spec_path="docs/specs/item.md", implementation_ticket="IMP-1")
+            for role in manifest["roles"].values():
+                role["model"] = "fixture-model"
+            message = "research names docs/research/r.md, which is not committed at HEAD"
+            with self.assertRaisesRegex(CONTROLLER.RunError, message):
+                CONTROLLER.validate_manifest(manifest, repo)
+            args = CONTROLLER.parser().parse_args([
+                "prepare", "--run-id", "item", "--spec", "docs/specs/item.md", "--ticket", "IMP-1",
+                "--maker-model", "m", "--checker-model", "m",
+                "--template", str(ROOT / "templates/autonomous-run.json")])
+            with mock.patch.object(CONTROLLER.Path, "cwd", return_value=repo):
+                with self.assertRaisesRegex(CONTROLLER.RunError, message):
+                    CONTROLLER.prepare(args)
+            subprocess.run(["git", "-C", str(repo), "add", "-f", "docs/research"], check=True)
+            subprocess.run(["git", "-C", str(repo), "-c", "user.name=T", "-c", "user.email=t@example.com",
+                            "commit", "-qm", "research"], check=True)
+            CONTROLLER.validate_manifest(manifest, repo)
+
+    def test_kill_switch_marker_name_matches_ignoring_case_on_every_filesystem(self) -> None:
+        for name in ("autonomy_paused", "Autonomy_Paused"):
+            with self.subTest(name=name):
+                repo = self.guard_repository()
+                (repo / ".harness").mkdir()
+                (repo / ".harness" / name).touch()
+                with self.assertRaisesRegex(CONTROLLER.RunError, f"autonomy is paused by .*{name}"):
+                    CONTROLLER.assert_autonomy_not_paused(repo)
+        repo = self.guard_repository()
+        (repo / ".harness").mkdir()
+        (repo / ".harness" / "AUTONOMY_PAUSED.md").touch()
+        CONTROLLER.assert_autonomy_not_paused(repo)
+
+    def test_kill_switch_in_main_checkout_pauses_linked_worktrees(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith pause ") as temporary:
+            repo = Path(temporary).resolve() / "main"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "-c", "user.name=T", "-c", "user.email=t@example.com",
+                            "commit", "-q", "--allow-empty", "-m", "base"], check=True)
+            linked = repo.parent / "linked"
+            subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", "--detach", str(linked)], check=True)
+            CONTROLLER.assert_autonomy_not_paused(linked)
+            marker = repo / ".harness" / "AUTONOMY_PAUSED"
+            marker.parent.mkdir()
+            marker.touch()
+            for checkout in (repo, linked):
+                with self.subTest(checkout=checkout.name):
+                    with self.assertRaisesRegex(CONTROLLER.RunError, "autonomy is paused"):
+                        CONTROLLER.assert_autonomy_not_paused(checkout)
+
+    def test_controller_text_io_names_its_encoding(self) -> None:
+        # A locale-default read or write corrupts UTF-8 receipts, logs and replayed usage on
+        # Windows. Every text-mode file call in the controller names its encoding.
+        import ast
+        tree = ast.parse(CONTROLLER_PATH.read_text(encoding="utf-8"))
+        unnamed = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            # A bare read_text() call is the controller's own UTF-8 helper.
+            name = (node.func.attr if isinstance(node.func, ast.Attribute)
+                    else node.func.id if isinstance(node.func, ast.Name) and node.func.id == "open" else "")
+            if name not in {"read_text", "write_text", "open", "fdopen"}:
+                continue
+            if name in {"open", "fdopen"}:
+                mode_args = [arg for arg in node.args if isinstance(arg, ast.Constant) and isinstance(arg.value, str)]
+                mode_args += [kw.value for kw in node.keywords if kw.arg == "mode" and isinstance(kw.value, ast.Constant)]
+                if isinstance(node.func, ast.Name) or name == "fdopen":
+                    mode_args = [arg for arg in mode_args if arg is not node.args[0]] if node.args else mode_args
+                if any("b" in arg.value for arg in mode_args):
+                    continue
+                if name == "open" and isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name) \
+                        and node.func.value.id == "os":
+                    continue  # os.open returns a descriptor, not a text stream
+            if not any(keyword.arg == "encoding" for keyword in node.keywords):
+                unnamed.append(f"line {node.lineno}: {name}")
+        self.assertEqual(unnamed, [])
 
     def test_verifier_cannot_replace_trusted_contract_in_temporary_repository(self) -> None:
         if CONTROLLER.sys.platform != 'darwin':

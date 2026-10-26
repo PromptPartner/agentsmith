@@ -14,11 +14,16 @@ of who owns each decision.
 
 1. **Chart:** define the destination and non-goals; map sharp decisions and their dependencies;
    leave unshaped, in-scope uncertainty as fog.
-2. **Advance:** resolve one frontier decision per session. Record the detail once in its ticket or
-   durable artifact and keep only its linked gist in the decision index.
+2. **Advance:** resolve one frontier decision per session with the operator. In an unattended
+   batch, an agent may resolve several decisions it can answer, each with its own rationale; a
+   decision that needs the operator's preference goes under "Needs operator" and blocks only its
+   dependents. Record the detail once in its ticket or durable artifact and keep only its linked
+   gist in the decision index.
 3. **Terminal draft:** clear every blocking decision and either resolve or explicitly defer
    non-blocking fog. Split the resulting work into independent implementation-ticket drafts.
-4. **Accept:** the operator explicitly accepts the spec. Only then does its status become
+4. **Accept:** a reviewer who did not draft the spec records a verdict (`reviewer_receipt:`), and
+   the spec names its research and route; `check-specs` verifies all three. Then the operator
+   explicitly accepts the spec. Only then does its status become
    `accepted`, with `accepted_by` and `accepted_at` recorded; the decision ticket can close and
    implementation becomes eligible to start.
 5. **Implement separately:** each build or delivery unit gets its own implementation ticket. The
@@ -36,5 +41,6 @@ the observable end state, its decisions link to their rationale, and each implem
 be executed without inheriting hidden choices from the decision phase. Explicit deferrals are
 allowed only when they do not block the destination and name where the deferred work will live.
 
-Wayfinder is work-type-neutral: a destination can be code, a campaign, a research conclusion, or a
+Wayfinder is one route of the [development pipeline](28-development-pipeline.md), which also
+says when a change needs it at all. Wayfinder is work-type-neutral: a destination can be code, a campaign, a research conclusion, or a
 document. It plans; the active work profile still defines what implementation and verification mean.
