@@ -1370,6 +1370,46 @@ def require_native_role_sandbox() -> None:
     raise RunError('no supported fail-closed trusted-state sandbox; use macOS or Linux with bubblewrap')
 
 
+def role_sandbox_probe(role: str, cwd: Path) -> list[str] | None:
+    """A trivial command under the operating-system sandbox that both native clients use for
+    shell commands (Seatbelt on macOS, bubblewrap on Linux), with the role's write access."""
+    command = ["/bin/sh", "-c", "exit 0"]
+    if sys.platform == "darwin":
+        writes = f"(allow file-write* (subpath {json.dumps(str(cwd))}))" if role == "maker" else ""
+        return ["/usr/bin/sandbox-exec", "-p",
+                f"(version 1)(allow default)(deny network*)(deny file-write*){writes}", *command]
+    if sys.platform.startswith("linux"):
+        return ["bwrap", "--unshare-net", "--die-with-parent", "--ro-bind", "/", "/",
+                "--bind" if role == "maker" else "--ro-bind", str(cwd), str(cwd),
+                "--dev", "/dev", "--proc", "/proc", "--chdir", str(cwd), *command]
+    return None  # native roles are refused on every other host
+
+
+def preflight_sandboxes(repo: Path, manifest: dict[str, Any]) -> None:
+    """Fail before any branch, worktree or model spend when a role or the verifier cannot run
+    one command on this host, for example because host policy forbids a nested sandbox.
+
+    This proves the sandbox starts; it does not prove a client's own tool policy."""
+    for role in ("maker", "checker"):
+        probe = role_sandbox_probe(role, repo)
+        if probe is None:
+            continue
+        runtime = manifest["roles"][role]["runtime"]
+        try:
+            result = run(probe, repo, timeout=30, env=minimal_environment())
+        except subprocess.TimeoutExpired:
+            result = subprocess.CompletedProcess(probe, 124, "", "timed out after 30 seconds")
+        if result.returncode:
+            detail = (result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}")
+            raise RunError(f"{role} ({runtime}) cannot run a command in the operating-system sandbox "
+                           f"on this host: {shown_paths([detail.splitlines()[-1][:300]])}")
+    verify = sandboxed_verify("exit 0", repo, 60, verifier_env())
+    if verify.returncode:
+        detail = verify.stderr.strip() or verify.stdout.strip()
+        raise RunError(f"verifier sandbox cannot run a command on this host (exit {verify.returncode})"
+                       + (f": {shown_paths([detail.splitlines()[-1][:300]])}" if detail else ""))
+
+
 def trusted_paths(state: dict[str, Any]) -> list[Path]:
     repo = Path(state['repo'])
     runtime = Path(claude_sandbox_settings.__code__.co_filename).resolve()
@@ -1872,6 +1912,7 @@ def start(args: argparse.Namespace) -> int:
     if tracked.returncode:
         raise RunError("run manifest must be committed before start")
     require_native_role_sandbox()
+    preflight_sandboxes(repo, manifest)
     name = str(manifest["run_id"])
     path = state_path(repo, name)
     if path.exists():

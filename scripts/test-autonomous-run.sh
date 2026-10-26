@@ -943,6 +943,27 @@ if (cd "$repo" && invoke "$repo" accept resume checker-half-removed >../resume-o
 else bad 'resume escalated over a half-removed checker'; cat "$repo/../resume-err"; fi
 assert 'resume removes the leftover checker entry' test ! -e "$checker_entry"
 
+echo 'autonomous-run — sandbox preflight before any run artifact'
+repo="$(new_repo preflight)"; make_fake "$repo/../fake"; manifest "$repo" preflight
+if [ "$(uname -s)" = Darwin ]; then
+  # A nested Seatbelt sandbox is refused, which is how a host policy blocks role shells.
+  blocked=(/usr/bin/sandbox-exec -p '(version 1)(allow default)')
+else
+  mkdir -p "$repo/../blocked-bin"
+  printf '%s\n' '#!/bin/sh' 'echo "bwrap: setting up uid map: Permission denied" >&2' 'exit 1' > "$repo/../blocked-bin/bwrap"
+  chmod +x "$repo/../blocked-bin/bwrap"
+  blocked=(env "PATH=$repo/../blocked-bin:$PATH")
+fi
+printf '%s\n' accept > "$repo/../fake/mode"
+if (cd "$repo" && AGENTSMITH_CODEX_BIN="$repo/../fake/bin/fake-agent" AGENTSMITH_CLAUDE_BIN="$repo/../fake/bin/fake-agent" \
+    CODEX_HOME="$repo/../fake/codex-home" "${blocked[@]}" python3 "$repo/../fake/controller.py" start .harness/runs/preflight.json >../out 2>../err); then
+  bad 'start ran although no role could run a sandboxed command'
+else ok 'start refuses when a role cannot run a sandboxed command'; fi
+assert 'preflight refusal names the role and the reason' grep -q 'maker (codex) cannot run a command in the operating-system sandbox' "$repo/../err"
+assert 'preflight refusal creates no branch' bash -c "! git -C '$repo' show-ref --verify --quiet refs/heads/agentsmith/preflight"
+assert 'preflight refusal creates no worktree' test ! -e "$repo-preflight"
+assert 'preflight refusal creates no state' test ! -e "$repo/.git/agentsmith-runs/preflight/state.json"
+
 echo 'autonomous-run — repository kill switch'
 repo="$(new_repo paused)"; make_fake "$repo/../fake"; manifest "$repo" paused; manifest "$repo" paused-next
 (cd "$repo" && invoke "$repo" slow start .harness/runs/paused.json >../out 2>../err) & runner=$!

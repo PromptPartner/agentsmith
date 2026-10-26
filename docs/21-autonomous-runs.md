@@ -245,6 +245,14 @@ The installed controller is refreshed on reinstall; existing project manifest dr
 preserved. Installation refuses symbolic links in the controller or manifest-template destination
 paths before copying runtime payloads.
 
+Before `start` creates a branch, worktree or state, it runs one trivial command for each role
+under the operating-system sandbox that role's shell commands use (Seatbelt on macOS,
+bubblewrap on Linux), with the role's write access: the maker may write the checkout, the
+checker may not. It then runs one command through the verifier sandbox. If any of them cannot
+run, for example because host policy forbids a nested sandbox, `start` refuses and names the
+role and the reason, before any model spend. This proves the sandbox starts on this host; it
+does not prove a native client's own tool policy, which the qualification contract covers.
+
 Native role preflight currently permits macOS with `sandbox-exec` and Linux with `bubblewrap`.
 Windows has a separate AppContainer verifier, but native role trusted-state containment is
 unsupported and production role launches are refused. Provider-free Windows graph fixtures

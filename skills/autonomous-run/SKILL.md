@@ -62,7 +62,9 @@ receipt, scope and Git transition, then creates a disposable detached worktree f
 deterministic verifier and a fresh checker. A rejection becomes the next maker's input. Three
 failed attempts, invalid state, denied scope, immutable-deadline or reported-budget exhaustion,
 Git metadata drift, protected verification edits, or checker mutation escalates instead of widening authority. Verification
-fails closed unless macOS `sandbox-exec` or Linux `bubblewrap` is available.
+fails closed unless macOS `sandbox-exec` or Linux `bubblewrap` is available. Before creating
+anything, `start` runs one trivial sandboxed command per role and one through the verifier
+sandbox; if the host cannot run them, it refuses and names the role and reason.
 
 Existing baseline tests, the accepted spec, runtime launchers, and verification policy are protected
 even with broad maker scope, and moving or renaming one of them counts as changing it. A moved

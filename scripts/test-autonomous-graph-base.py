@@ -137,10 +137,12 @@ class GraphBaseTests(unittest.TestCase):
 
     def setUp(self) -> None:
         # These fixtures exercise graph contracts with run_controller stubbed; no
-        # native role is launched, so supported-host policy is a separate gate.
-        native_guard = mock.patch.object(CONTROLLER, "require_native_role_sandbox", return_value=None)
-        native_guard.start()
-        self.addCleanup(native_guard.stop)
+        # native role is launched, so supported-host policy and the sandbox preflight
+        # are separate gates.
+        for guard in ("require_native_role_sandbox", "preflight_sandboxes"):
+            native_guard = mock.patch.object(CONTROLLER, guard, return_value=None)
+            native_guard.start()
+            self.addCleanup(native_guard.stop)
         self.temporary = tempfile.TemporaryDirectory(prefix="agentsmith graph base ")
         self.addCleanup(self.temporary.cleanup)
         self.repo = Path(self.temporary.name).resolve() / "repo"

@@ -153,6 +153,50 @@ class AutonomousStateTests(unittest.TestCase):
                 with self.assertRaisesRegex(CONTROLLER.RunError, "limits.budget_rationale must be text"):
                     CONTROLLER.validate_manifest(manifest, ROOT)
 
+    def preflight_manifest(self) -> dict[str, Any]:
+        manifest = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
+        manifest["roles"]["maker"].update(runtime="codex", model="maker-x")
+        manifest["roles"]["checker"].update(runtime="claude", model="checker-y")
+        return manifest
+
+    def test_start_preflight_fails_early_when_a_role_sandbox_cannot_run(self) -> None:
+        denied = subprocess.CompletedProcess([], 1, "", "bwrap: setting up uid map: Permission denied\n")
+        passed = subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(CONTROLLER.sys, "platform", "linux"), \
+                mock.patch.object(CONTROLLER, "sandboxed_verify", return_value=passed):
+            with mock.patch.object(CONTROLLER, "run", return_value=denied) as probe:
+                with self.assertRaisesRegex(CONTROLLER.RunError,
+                                            r"maker \(codex\) cannot run a command in the operating-system "
+                                            r"sandbox on this host: bwrap: setting up uid map"):
+                    CONTROLLER.preflight_sandboxes(ROOT, self.preflight_manifest())
+            self.assertEqual(probe.call_args.args[0][0], "bwrap")
+            # The checker is probed as it runs: without write access to the checkout.
+            with mock.patch.object(CONTROLLER, "run", side_effect=[passed, denied]) as probe:
+                with self.assertRaisesRegex(CONTROLLER.RunError, r"checker \(claude\) cannot run"):
+                    CONTROLLER.preflight_sandboxes(ROOT, self.preflight_manifest())
+            maker_argv, checker_argv = (call.args[0] for call in probe.call_args_list)
+            self.assertIn("--bind", maker_argv)
+            self.assertNotIn("--bind", checker_argv)
+
+    def test_start_preflight_fails_early_when_the_verifier_sandbox_cannot_run(self) -> None:
+        passed = subprocess.CompletedProcess([], 0, "", "")
+        broken = subprocess.CompletedProcess([], 126, "", "no supported fail-closed verifier sandbox")
+        with mock.patch.object(CONTROLLER.sys, "platform", "darwin"), \
+                mock.patch.object(CONTROLLER, "run", return_value=passed), \
+                mock.patch.object(CONTROLLER, "sandboxed_verify", return_value=broken):
+            with self.assertRaisesRegex(CONTROLLER.RunError,
+                                        r"verifier sandbox cannot run a command on this host \(exit 126\)"):
+                CONTROLLER.preflight_sandboxes(ROOT, self.preflight_manifest())
+
+    def test_start_preflight_probes_no_native_role_where_roles_are_refused(self) -> None:
+        passed = subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(CONTROLLER.sys, "platform", "win32"), \
+                mock.patch.object(CONTROLLER, "run") as probe, \
+                mock.patch.object(CONTROLLER, "sandboxed_verify", return_value=passed) as verify:
+            CONTROLLER.preflight_sandboxes(ROOT, self.preflight_manifest())
+        probe.assert_not_called()
+        verify.assert_called_once()
+
     def test_kill_switch_in_main_checkout_pauses_linked_worktrees(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith pause ") as temporary:
             repo = Path(temporary).resolve() / "main"

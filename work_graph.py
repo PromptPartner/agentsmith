@@ -706,6 +706,8 @@ CHILD_REFUSALS = tuple((code, re.compile(pattern)) for code, pattern in (
     ("dirty-worktree", r"cannot resume a dirty worktree"),
     ("previous-role-live", r"previous role is still live"),
     ("unsupported-host", r"no supported fail-closed trusted-state sandbox"),
+    ("sandbox-preflight", r"([a-z]+ \([a-z]+\) cannot run a command in the operating-system sandbox|"
+                          r"verifier sandbox cannot run a command on this host)"),
     ("usage-checkpoint", r"invalid unfinished usage checkpoint"),
     ("maker-advanced", r"unfinished maker advanced HEAD"),
     ("no-candidate", r"checking stage has no candidate checkpoint"),
