@@ -316,6 +316,28 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
     results.check(help_run.returncode == 0, "agentsmith --help succeeds", help_run.stdout[-300:])
     results.check(output_has_all(help_run.stdout, ("--agent", "--platform")), "help documents new selector and legacy alias")
     results.check("install --help" in help_run.stdout, "root help points to install --help")
+    # Internal commands serve programs and CI. They stay callable but leave the public root help.
+    usage_list = re.search(r"\{([a-z,-]+)\}", help_run.stdout)
+    listed = set(usage_list.group(1).split(",")) if usage_list else set()
+    rows = set(re.findall(r"^    ([a-z][a-z-]*)", help_run.stdout, re.MULTILINE))
+    internal = {"hook", "secret-scan", "graph", "wizard", "evaluate", "compatibility", "agents",
+                "validate-integration", "audit-config"}
+    results.check(
+        bool(listed) and not (listed | rows) & internal,
+        "root help lists only public commands",
+        ", ".join(sorted((listed | rows) & internal)),
+    )
+    results.check({"install", "doctor", "status", "verify", "handoff"} <= listed, "root help keeps the public commands")
+    for name in sorted(internal):
+        internal_help = run_core(name, "--help")
+        results.check(internal_help.returncode == 0, f"internal command {name} still runs", internal_help.stdout[-300:])
+    memory_help = run_core("memory", "--help")
+    results.check(
+        memory_help.returncode == 0 and "startup" not in memory_help.stdout,
+        "memory help hides the internal startup command",
+        memory_help.stdout[-300:],
+    )
+    results.check(run_core("memory", "startup", "--help").returncode == 0, "internal memory startup still runs")
     install_help = run_core("install", "--help")
     results.check(
         install_help.returncode == 0 and output_has_all(install_help.stdout, ("--profile", "--profile-only")),

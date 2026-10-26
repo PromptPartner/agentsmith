@@ -23,6 +23,15 @@ NEXT="$(printf '%04d' "$(( 10#${LAST:-0} + 1 ))")"
 DATE="$(date +%Y-%m-%d 2>/dev/null || echo 'YYYY-MM-DD')"
 FILE="$DIR/$NEXT-$SLUG.md"
 [ -e "$FILE" ] && { echo "Already exists: $FILE"; exit 0; }
+# Advise a surface this install can actually run: a hook only where the install record says hooks.
+STATE="$ROOT_DIR/.agentsmith/state.json"
+if grep -q '"hooks": true' "$STATE" 2>/dev/null; then
+  ADVICE="This install runs hooks, so a hook or a verify phase is the strongest surface."
+elif grep -q '"hooks": false' "$STATE" 2>/dev/null; then
+  ADVICE="This install does not run hooks, so use a verify phase or a lint check, not a hook."
+else
+  ADVICE="Prefer a verify phase or a lint check; use a hook only where the client runs hooks."
+fi
 cat > "$FILE" <<EOF
 # Feedback $NEXT: $TITLE
 
@@ -32,6 +41,7 @@ cat > "$FILE" <<EOF
 
 - **Date:** $DATE
 - **Status:** open   <!-- open | applied | wont-fix -->
+- **Surface:** <!-- file: <path> | text: <literal line it must keep>  or  verify: <phase name> -->
 - **Cost:** <!-- what did it actually cost? rework / a human had to catch it / a near-miss / a re-derived decision -->
 
 ## 1. Evidence / symptom
@@ -54,7 +64,8 @@ cat > "$FILE" <<EOF
      to re-check. One of:
        core/<file>.md (a specific rule)   ·   profiles/<name>.md (a quality gate)
        skills/<name>   ·   hooks/<name>.sh   ·   templates/<name>.md   ·   a verify.conf phase
-     Prefer a DETERMINISTIC surface (hook / verify phase) over prose the model can skip (core/60). -->
+     $ADVICE
+     Record it on the Surface line above so agentsmith doctor can check it stays in place. -->
 
 ## 5. Non-regression validation
 <!-- How you confirmed the fix works AND how it STAYS fixed: the failing case that now passes,

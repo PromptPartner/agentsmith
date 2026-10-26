@@ -176,12 +176,37 @@ claim *after* the last destructive step, not after the one that preserved it) is
 
 **"The rules don't seem to apply in my tool."** Run `agentsmith doctor --agent <id>` and inspect
 the resolved global/project/nested source chain separately from safety, skills, MCP, hooks, and
-runtime ownership. A `duplicate-managed-core` warning means both global and project sources carry
-the universal core; `--profile-only` removes that duplication on a future install, but keep the
+runtime ownership. A `duplicate-managed-core` warning means one tool loads the universal core from
+more than one file. Doctor models each tool's own discovery rule: Claude Code reads `CLAUDE.md`
+files from the folder and every folder above it (and `AGENTS.md` only when no `CLAUDE.md` exists
+anywhere in that chain); Codex reads from the Git root down. `instructions.loaded_files` in
+`doctor --json` lists what each tool loads. `--profile-only` removes that duplication on a future install, but keep the
 full project copy when collaborators need self-contained rules. Project `AGENTS.md` is canonical;
 Claude gets a generated `CLAUDE.md` that imports `AGENTS.md`, while configured adapters must still point to it. Web surfaces
 do not gain local hooks merely by reading instructions. See
 [`13-platforms-and-tools.md`](13-platforms-and-tools.md).
+
+**What a doctor finding means.** Each finding has a stable code. All are warnings; the ones
+marked *strict* also make `agentsmith doctor --strict` exit 1, because they mean a run's evidence
+cannot be quoted as the shipped behaviour.
+
+| Code | Means | What to do |
+|---|---|---|
+| `runtime-file-modified` (strict) | An installed runtime file no longer matches the hash install recorded. Hooks, verify receipts and runs come from edited code. | Re-run install or the reviewed update. |
+| `duplicate-managed-core` | One tool loads the full core from two or more files, so it reads every rule twice. | Reinstall the project with `--profile-only`, or remove the extra copy. |
+| `legacy-managed-block` | A tool loads an AgentSmith block outside this project that no current install owns, such as a `~/AGENTS.md` from an old setup.sh install. | Keep the rules through a current install, then delete the block by hand. |
+| `output-rewriting-hook` | A pre-tool hook on the shell tool (today: `rtk hook`) rewrites commands, so the agent reads filtered output. It stays a warning under `--strict`: the update's own post-check runs doctor in your environment. | Quote proof from a raw run (`rtk proxy <command>`) or from the verify receipt. |
+| `skill-path-missing` | An installed skill tells the agent to use a script, template or `.harness/` file this install does not have. A skill that names the installed path and the source path needs only one. | Install the profile that ships the file, or adjust the skill. |
+| `superpowers-not-enabled` | A rules file Claude Code loads names `superpowers:*` skills, but `enabledPlugins` (user, project or local settings) does not enable the superpowers plugin. | Enable it with `/plugin`, or know that the rule falls back to doing the step by hand. |
+| `managed-block-behind-default-branch` | The default branch has a newer managed block in `AGENTS.md` or `CLAUDE.md` than this branch, and this branch did not change it. Skipped without Git or a default branch. | Merge or rebase onto the default branch, or re-run install. |
+| `feedback-open-too-long` | A `docs/feedback/NNNN-*.md` record has stayed `Status: open` for more than 30 days. | Land its edit and mark it `applied`, or mark it `wont-fix` with a reason. |
+| `feedback-surface-missing` | An `applied` feedback record's `Surface:` line names a file, a literal line or a verify phase that is gone, so the fix it records no longer holds. | Restore the surface, or reopen the record. |
+| `harness-review-overdue` | Ten or more feedback records, or more than 60 days, since the dated `_Last harness review:` line in `docs/feedback/README.md`. A missing file counts as never reviewed; `agentsmith new-feedback` creates it on first use. | Run the harness-review checkpoint and date that line. |
+| `stale-worktrees` | Git still lists worktrees whose folders are gone (`prunable`). | Check nothing unmerged lives only there, then `git worktree prune`. |
+| `many-worktrees` | More than 10 linked worktrees. | Remove worktrees of merged or abandoned work. |
+| `low-disk-space` | Less than 5 GiB free on the target's disk. | Free space before long runs. |
+| `profile-only-core-missing` | The project was installed with `--profile-only`, but the tool loads no file with the named core sections, so the consent, secrets and identity rules are absent. | Install the core at user level (`--global`), or reinstall without `--profile-only`. |
+| `hook-unused-30-days` | An installed hook did not fire in 30 days ([firing log](../hooks/README.md#firing-log--track-every-workaround-delete-it-when-it-stops-firing)). | Advisory: consider removing it; a safety gate may rightly never block. |
 
 **"`agentsmith evaluate` refuses to call the client."** Real model calls require all three pieces:
 `--live`, a positive `--claude-max-usd` when Claude is selected, and a positive

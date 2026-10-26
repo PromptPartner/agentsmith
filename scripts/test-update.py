@@ -431,10 +431,11 @@ class UpdateCheckTests(unittest.TestCase):
         rolled_back = self.run_core("update", "rollback", "--receipt", str(receipt_path), env=environment)
 
         self.assertEqual(rolled_back.returncode, 0, rolled_back.stdout + rolled_back.stderr)
+        # The startup hook above fired, so its firing log exists; update and rollback do not own it.
         after = {
             path.relative_to(target): path.read_bytes()
             for path in target.rglob("*")
-            if path.is_file()
+            if path.is_file() and Path(".agentsmith", "logs") not in path.relative_to(target).parents
         }
         self.assertEqual(after, before)
         later_plan_path = self.root / "plan-after-receipt.json"

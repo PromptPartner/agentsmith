@@ -1308,6 +1308,12 @@ def record_installation_manifest(
                     "sha256": file_sha256(path),
                 }
     managed_files = [managed_files_by_path[path] for path in sorted(managed_files_by_path)]
+    # Doctor hash-checks these, so an edited or replaced runtime is reported, not just a missing one.
+    runtime_files = [
+        {"path": relative, "sha256": file_sha256(managed_root / relative)}
+        for relative in (*RUNTIME_FILES, AUTONOMOUS_PAYLOADS[0])
+        if (managed_root / relative).is_file() and not (managed_root / relative).is_symlink()
+    ]
     state["installation"] = {
         "installed_version": VERSION,
         "source": source,
@@ -1341,6 +1347,9 @@ def record_installation_manifest(
             "ui_design_hook": bool(args.with_ui_design_hook or prior_capabilities.get("ui_design_hook")),
         },
         "managed_files": managed_files,
+        "runtime_files": runtime_files,
+        # The installed runtime ships no core/ folder; doctor checks a profile-only layer against this.
+        "core_sections": core_section_names(),
     }
     if args.with_memory_startup or getattr(args, "without_memory_startup", False) or "memory_startup" in prior_capabilities:
         state["installation"]["capabilities"]["memory_startup"] = bool(args.with_memory_startup and not args.without_memory_startup)
@@ -2470,6 +2479,7 @@ def validate_installation_manifest(state: dict[str, Any]) -> dict[str, Any]:
     allowed_installation = {
         "installed_version", "source", "scope", "agents", "profiles", "include_core",
         "assemble_only", "runtime", "safety", "operator", "tracker", "capabilities", "managed_files", "effects",
+        "runtime_files", "core_sections",
     }
     unknown_installation = sorted(set(installation) - allowed_installation)
     if unknown_installation:
@@ -2481,7 +2491,7 @@ def validate_installation_manifest(state: dict[str, Any]) -> dict[str, Any]:
         )
     if not isinstance(installation["assemble_only"], bool):
         raise CliError("Installation manifest assemble_only field must be true or false; rerun install explicitly")
-    required = allowed_installation - {"runtime", "effects"}
+    required = allowed_installation - {"runtime", "effects", "runtime_files", "core_sections"}
     missing = sorted(required - set(installation))
     if missing:
         raise CliError(f"Installation manifest is missing field(s): {', '.join(missing)}")
@@ -2525,6 +2535,16 @@ def validate_installation_manifest(state: dict[str, Any]) -> dict[str, Any]:
         or not runtime["path"]
     ):
         raise CliError("Installation manifest runtime field is invalid; rerun install explicitly")
+    runtime_files = installation.get("runtime_files", [])
+    if not isinstance(runtime_files, list) or any(
+        not isinstance(item, dict) or set(item) != {"path", "sha256"}
+        or not isinstance(item["path"], str) or not isinstance(item["sha256"], str)
+        for item in runtime_files
+    ):
+        raise CliError("Installation manifest runtime_files field is invalid; rerun install explicitly")
+    core_sections = installation.get("core_sections", [])
+    if not isinstance(core_sections, list) or not all(isinstance(name, str) for name in core_sections):
+        raise CliError("Installation manifest core_sections field is invalid; rerun install explicitly")
     return installation
 
 
@@ -5070,6 +5090,149 @@ def instruction_chain(agent: dict[str, Any], target: Path) -> tuple[list[dict[st
     return sources, project_root
 
 
+TOOL_NAMES = {"claude": "Claude Code", "codex": "Codex"}
+
+
+def loaded_rule_files(agent_id: str, target: Path) -> list[Path] | None:
+    """Return the instruction files a native client really loads from `target`, in load order.
+
+    Each client has its own discovery rule (checked against the vendors' docs, 2026-10-25):
+    - Claude Code reads ~/.claude/CLAUDE.md, then CLAUDE.md, .claude/CLAUDE.md and CLAUDE.local.md
+      from the working directory and every ancestor up to, not including, the filesystem root.
+      It reads AGENTS.md and .claude/AGENTS.md (same walk) only when none of those three exists in
+      the working directory or any ancestor; ~/.claude/CLAUDE.md does not count for that test.
+    - Codex reads $CODEX_HOME/AGENTS.override.md, else $CODEX_HOME/AGENTS.md, then one file per
+      folder from the Git root down to the working directory: AGENTS.override.md, else AGENTS.md.
+      So ~/AGENTS.md is outside its chain for a repository below home.
+    Claude Code also loads every file these import with `@path` (with_claude_imports). This models
+    its default "Project instructions" setting, claude-md-or-agents-md.
+    Other clients return None and keep the registry-declared chain.
+    """
+    resolved = target.resolve()
+    if agent_id == "claude":
+        user = (home_dir() / ".claude" / "CLAUDE.md").resolve()
+        folders = [folder for folder in reversed((resolved, *resolved.parents)) if folder.parent != folder]
+
+        def found(names: tuple[str, ...]) -> list[Path]:
+            files = [(folder / name).resolve() for folder in folders for name in names]
+            return [path for path in dict.fromkeys(files) if path.is_file() and path != user]
+
+        project = found(("CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md"))
+        return with_claude_imports(([user] if user.is_file() else []) + (project or found(("AGENTS.md", ".claude/AGENTS.md"))))
+    if agent_id == "codex":
+        loaded = [path for path in (codex_home() / "AGENTS.override.md", codex_home() / "AGENTS.md") if path.is_file()][:1]
+        root = doctor_project_root(resolved)
+        folders = [resolved] if root not in (resolved, *resolved.parents) else [
+            folder for folder in reversed((resolved, *resolved.parents)) if folder == root or root in folder.parents
+        ]
+        for folder in folders:
+            loaded += [path for path in (folder / "AGENTS.override.md", folder / "AGENTS.md") if path.is_file()][:1]
+        return [path.resolve() for path in loaded]
+    return None
+
+
+CLAUDE_IMPORT_DEPTH = 4
+CLAUDE_IMPORT = re.compile(r"(?:^|(?<=\s))@((?:\\ |[^\s`\"'])+)")
+
+
+def claude_imports(path: Path) -> list[Path]:
+    """The files one instruction file imports with `@path`, per code.claude.com/docs/en/memory.
+
+    Relative paths resolve from the importing file, `~/` from home, absolute paths as given; a
+    backslash escapes a space; quoted paths, Markdown code spans and fenced code blocks are not
+    imports. Only existing files count.
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    found: list[Path] = []
+    fence = ""
+    for line in text.splitlines():
+        marker = re.match(r"\s*(`{3,}|~{3,})", line)
+        if marker:
+            fence = "" if fence and marker.group(1).startswith(fence) else (fence or marker.group(1)[:3])
+            continue
+        if fence:
+            continue
+        for match in CLAUDE_IMPORT.finditer(re.sub(r"(`+).*?\1", "", line)):
+            raw = match.group(1).replace("\\ ", " ")
+            for candidate in dict.fromkeys((raw, raw.rstrip(".,;:!?)"))):
+                if candidate.startswith("~/"):
+                    resolved = home_dir() / candidate[2:]
+                elif Path(candidate).is_absolute():
+                    resolved = Path(candidate)
+                else:
+                    resolved = path.parent / candidate
+                if resolved.is_file():
+                    found.append(resolved.resolve())
+                    break
+    return found
+
+
+def with_claude_imports(files: list[Path]) -> list[Path]:
+    """Add what each file imports, recursively and at most CLAUDE_IMPORT_DEPTH hops, once each."""
+    result: list[Path] = []
+
+    def visit(path: Path, depth: int) -> None:
+        if path in result:
+            return
+        result.append(path)
+        if depth < CLAUDE_IMPORT_DEPTH:
+            for imported in claude_imports(path):
+                visit(imported, depth + 1)
+
+    for path in files:
+        visit(path, 0)
+    return result
+
+
+def claude_plugin_enabled(plugin: str, target: Path) -> bool:
+    """Resolve Claude Code's enabledPlugins ("name@marketplace": bool) for one plugin name.
+
+    Precedence (code.claude.com/docs/en/settings-reference#enabledplugins, 2026-10-26): local
+    .claude/settings.local.json over project .claude/settings.json over ~/.claude/settings.json.
+    """
+    resolved: dict[str, bool] = {}
+    for path in (home_dir() / ".claude" / "settings.json", target / ".claude" / "settings.json",
+                 target / ".claude" / "settings.local.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+        except (OSError, json.JSONDecodeError):
+            continue
+        plugins = data.get("enabledPlugins") if isinstance(data, dict) else None
+        if isinstance(plugins, dict):
+            resolved.update({key: value for key, value in plugins.items() if isinstance(value, bool)})
+    return any(value for key, value in resolved.items() if key.split("@", 1)[0] == plugin)
+
+
+CORE_SECTION_MARKER = re.compile(r"<!-- CORE · ([^·]+?) ·")
+
+
+def core_section_names() -> list[str]:
+    """The core sections this release ships, from each core file's marker; empty in an installed runtime."""
+    names = []
+    for source in sorted((ROOT / "core").glob("*.md")):
+        match = CORE_SECTION_MARKER.search(source.read_text(encoding="utf-8", errors="replace"))
+        if match:
+            names.append(match.group(1).strip())
+    return names
+
+
+def owned_instruction_file(path: Path, project_root: Path) -> bool:
+    """True when the file belongs to this project or to a current install.
+
+    That is a user-level rules file an install writes, any file inside this project (a clone may
+    lack the untracked install record), or the rules of another project-scope install.
+    """
+    resolved = path.resolve()
+    global_files = {candidate.resolve() for candidate in map(global_instruction_path, GLOBAL_INSTRUCTION_TARGETS) if candidate}
+    if resolved in global_files or project_root.resolve() in resolved.parents:
+        return True
+    installation = load_state(resolved.parent).get("installation")
+    return resolved.name in {"AGENTS.md", "CLAUDE.md"} and isinstance(installation, dict) and installation.get("scope") == "project"
+
+
 def inspect_instructions(agent_id: str, agent: dict[str, Any], target: Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
     sources, project_root = instruction_chain(agent, target)
     warnings: list[dict[str, str]] = []
@@ -5083,18 +5246,80 @@ def inspect_instructions(agent_id: str, agent: dict[str, Any], target: Path) -> 
                 "Re-run install for this target after preserving any foreign content.",
             )
         )
-    full_cores = [source for source in existing if source["generated_core"] is True]
+    loaded = loaded_rule_files(agent_id, target)
+    loaded_records = [instruction_source(path, "loaded") for path in loaded] if loaded is not None else existing
+    own_text = {
+        source["path"]: Path(source["path"]).read_text(encoding="utf-8", errors="replace")
+        for source in loaded_records if source["exists"]
+    }
+    # A file carries the core only if its own text holds the core sections: an import-only
+    # CLAUDE.md says core=true, but the AGENTS.md it imports is the copy that loads (and counts).
+    full_cores = [source for source in loaded_records if source["generated_core"] is True
+                  and CORE_SECTION_MARKER.search(own_text.get(source["path"], ""))]
     duplicate_tokens = max(0, sum(source["core_tokens"] for source in full_cores) - max(
         (source["core_tokens"] for source in full_cores), default=0
     ))
+    tool = TOOL_NAMES.get(agent_id, agent_id)
     if len(full_cores) > 1:
         warnings.append(
             doctor_warning(
                 "duplicate-managed-core",
-                "Global and project instruction sources both contain the full managed core.",
+                f"{tool} loads the full managed core from {len(full_cores)} files: "
+                + ", ".join(source["path"] for source in full_cores) + ".",
                 "If collaborators can rely on the global layer, reinstall the project with --profile-only; keep the full project copy when self-containment is intentional.",
             )
         )
+    for source in loaded_records:
+        text = Path(source["path"]).read_text(encoding="utf-8", errors="replace") if source["exists"] else ""
+        old_marker = LEGACY_BEGIN in text or OLDER_BEGIN in text
+        if not (old_marker or (source["managed_status"] != "unmanaged" and source["exists"])):
+            continue
+        if source["managed_status"] == "missing" or (
+            not old_marker and owned_instruction_file(Path(source["path"]), project_root)
+        ):
+            continue
+        why = (" Claude Code reads AGENTS.md here only because no CLAUDE.md exists in this folder or above it."
+               if agent_id == "claude" and Path(source["path"]).name == "AGENTS.md" else "")
+        warnings.append(
+            doctor_warning(
+                "legacy-managed-block",
+                f"{tool} loads {source['path']}, which holds an AgentSmith block outside this project that no "
+                f"current install owns (for example, one left by an earlier setup.sh-era install).{why}",
+                "Keep the rules through a current install instead, then delete the block from that file by hand; "
+                "uninstall does not touch it.",
+            )
+        )
+    project_installation = load_state(target).get("installation")
+    if isinstance(project_installation, dict) and project_installation.get("include_core") is False:
+        present = {
+            name.strip()
+            for source in loaded_records if source["exists"]
+            for name in CORE_SECTION_MARKER.findall(Path(source["path"]).read_text(encoding="utf-8", errors="replace"))
+        }
+        recorded = project_installation.get("core_sections")
+        expected = core_section_names() or (
+            [name for name in recorded if isinstance(name, str)] if isinstance(recorded, list) else []
+        )
+        missing = [name for name in expected if name not in present] if expected else ([] if present else ["all"])
+        if missing:
+            warnings.append(doctor_warning(
+                "profile-only-core-missing",
+                f"This project installed profile-only rules, but {tool} loads no file with these core sections: "
+                + ", ".join(missing) + ". The consent, secrets and identity rules live there.",
+                f"Install the core for {tool} at user level (agentsmith install --global), or reinstall "
+                "the project without --profile-only.",
+            ))
+    if agent_id == "claude" and not claude_plugin_enabled("superpowers", target):
+        for source in loaded_records:
+            text = Path(source["path"]).read_text(encoding="utf-8", errors="replace") if source["exists"] else ""
+            named = sorted(set(re.findall(r"superpowers:[a-z0-9-]+", text)))
+            if named:
+                warnings.append(doctor_warning(
+                    "superpowers-not-enabled",
+                    f"{source['path']} names {', '.join(named[:4])}{' and more' if len(named) > 4 else ''}, "
+                    "but the superpowers plugin is not enabled in Claude Code's settings.",
+                    "Enable it with /plugin, or accept that the rule falls back to doing the step by hand.",
+                ))
     canonical = project_root / "AGENTS.md"
     if agent_id == "claude" and canonical.is_file() and managed_block(canonical.read_text(encoding="utf-8", errors="replace")):
         generated = project_root / "CLAUDE.md"
@@ -5131,8 +5356,9 @@ def inspect_instructions(agent_id: str, agent: dict[str, Any], target: Path) -> 
         "state": state,
         "path": path,
         "sources": sources,
-        "combined_tokens": sum(source["tokens"] for source in existing),
+        "combined_tokens": sum(max(1, len(text) // 4) for text in own_text.values()),
         "duplicate_tokens": duplicate_tokens,
+        "loaded_files": [source["path"] for source in loaded_records if source["exists"]],
     }, warnings
 
 
@@ -5275,6 +5501,42 @@ def inspect_skills(agent_id: str, agent: dict[str, Any], target: Path) -> dict[s
     }
 
 
+# Files a skill tells the user to create when needed. No install ships them, and their absence is
+# the normal state: while .harness/AUTONOMY_PAUSED exists, autonomous runs refuse to start.
+SKILL_ON_DEMAND_PATHS = frozenset({".harness/AUTONOMY_PAUSED"})
+SKILL_PATH_REFERENCE = re.compile(r"(?<![\w./-])(?:\.agentsmith|\.harness|scripts|templates)/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*/?")
+
+
+def missing_skill_paths(target: Path, names: Iterable[str]) -> dict[str, list[str]]:
+    """Paths a managed skill tells the agent to use that this install does not have.
+
+    Skills often name the installed path and the source-checkout path as alternatives (for
+    example `.harness/templates/plan.md` or `templates/plan.md`), so a citation counts as present
+    when any cited path with the same file name exists. Paths with a placeholder (`<id>`, `*`),
+    folder paths and on-demand markers (SKILL_ON_DEMAND_PATHS) are created at run time and are
+    skipped.
+    """
+    result: dict[str, list[str]] = {}
+    for name in sorted(names):
+        skill = target / ".agents" / "skills" / name / "SKILL.md"
+        try:
+            text = skill.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        cited = []
+        for match in SKILL_PATH_REFERENCE.finditer(text):
+            path = match.group(0).rstrip(".")
+            if (path.endswith("/") or path in SKILL_ON_DEMAND_PATHS
+                    or text[match.end():match.end() + 1] in {"<", "*", "{"}):
+                continue
+            cited.append(path)
+        present = {Path(path).name for path in cited if (target / path).exists()}
+        missing = sorted({path for path in cited if Path(path).name not in present})
+        if missing:
+            result[name] = missing
+    return result
+
+
 def opencode_duplicate_skill_names(target: Path) -> list[str]:
     """Return skill names OpenCode discovers in both a Claude and an Agent Skills folder."""
     switches = ("OPENCODE_DISABLE_CLAUDE_CODE", "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS", "OPENCODE_DISABLE_EXTERNAL_SKILLS")
@@ -5348,6 +5610,46 @@ def hook_commands(path: Path) -> tuple[list[str], str]:
                 walk(child)
     walk(data.get("hooks", {}))
     return commands, "parsed"
+
+
+# Pre-tool hooks known to rewrite shell commands so the agent sees filtered output, with the way to
+# get raw output. Unknown hooks are not classified: doctor cannot tell what a foreign command does.
+OUTPUT_REWRITERS = (
+    ("rtk", re.compile(r"(?:^|[\s/\\\"'])rtk(?:\.exe)?[\"']?\s+hook\b"), "prefix the command with `rtk proxy`"),
+)
+
+
+def output_rewriting_hooks(agent_id: str, target: Path) -> list[dict[str, str]]:
+    """Find known output-rewriting PreToolUse hooks on the shell tool in every settings file the client reads."""
+    if agent_id == "claude":
+        paths = [home_dir() / ".claude" / "settings.json", target / ".claude" / "settings.json",
+                 target / ".claude" / "settings.local.json"]
+    elif agent_id == "codex":
+        paths = [codex_home() / "hooks.json", target / ".codex" / "hooks.json"]
+    else:
+        return []
+    found: list[dict[str, str]] = []
+    for path in dict.fromkeys(paths):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+        except (OSError, json.JSONDecodeError):
+            continue
+        groups = data.get("hooks", {}).get("PreToolUse", []) if isinstance(data, dict) and isinstance(data.get("hooks"), dict) else []
+        for group in groups if isinstance(groups, list) else []:
+            if not isinstance(group, dict):
+                continue
+            matcher = group.get("matcher") or "*"
+            try:
+                shell = matcher == "*" or any(re.fullmatch(f"(?:{matcher})", tool) for tool in ("Bash", "shell"))
+            except (re.error, TypeError):
+                shell = False
+            handlers = group.get("hooks", [])
+            for handler in handlers if shell and isinstance(handlers, list) else []:
+                command = handler.get("command") if isinstance(handler, dict) else None
+                for name, pattern, raw in OUTPUT_REWRITERS if isinstance(command, str) else ():
+                    if pattern.search(command):
+                        found.append({"tool": name, "command": command, "path": str(path), "raw": raw})
+    return found
 
 
 def inspect_hooks(agent_id: str, agent: dict[str, Any], target: Path) -> dict[str, Any]:
@@ -5499,6 +5801,15 @@ def inspect_runtime(agent: dict[str, Any], target: Path) -> dict[str, Any]:
             required_payloads.extend(AUTONOMOUS_PAYLOADS)
     missing_payloads = [relative for relative in required_payloads
                         if not (target / relative).is_file() or (target / relative).is_symlink()]
+    modified_files: list[str] = []
+    for root, record in ((target, installation), (home_dir(), load_state(home_dir()).get("installation", {}))):
+        recorded = record.get("runtime_files", []) if isinstance(record, dict) else []
+        for item in recorded if isinstance(recorded, list) else []:
+            if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+                continue
+            path_on_disk = root / item["path"]
+            if path_on_disk.is_file() and not path_on_disk.is_symlink() and file_sha256(path_on_disk) != item.get("sha256"):
+                modified_files.append(item["path"] if root == target else str(path_on_disk))
     # Availability is diagnostic, not permission to launch or an installation failure.
     dependencies = {name: {"available": shutil.which(name) is not None,
                            "path": shutil.which(name) or ""}
@@ -5515,6 +5826,7 @@ def inspect_runtime(agent: dict[str, Any], target: Path) -> dict[str, Any]:
         "autonomous_state": autonomous_state,
         "required_payloads": required_payloads,
         "missing_payloads": missing_payloads,
+        "modified_files": sorted(dict.fromkeys(modified_files)),
         "dependencies": dependencies,
         "ownership_state_path": str(target / ".agentsmith" / "state.json"),
         "ownership_state_present": (target / ".agentsmith" / "state.json").is_file(),
@@ -5577,12 +5889,236 @@ def container_safety_advisory(agent_id: str, state: str, evidence: list[str]) ->
     )
 
 
+def git_text(directory: Path, *arguments: str) -> str | None:
+    """stdout of a read-only Git query, or None when Git is missing or the query fails."""
+    try:
+        result = doctor_git(directory, *arguments)
+    except OSError:
+        return None
+    return result.stdout if result is not None and result.returncode == 0 else None
+
+
+def managed_block_behind_default(target: Path) -> list[dict[str, str]]:
+    """Report a managed block that the default branch has updated while this branch has not."""
+    root_text = git_text(target, "rev-parse", "--show-toplevel")
+    if not root_text:
+        return []
+    root = Path(root_text.strip())
+    default = (git_text(root, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD") or "").strip()
+    if not default:
+        default = next((name for name in ("main", "master")
+                        if git_text(root, "rev-parse", "--verify", "--quiet", f"refs/heads/{name}") is not None), "")
+    base = (git_text(root, "merge-base", "HEAD", default) or "").strip() if default else ""
+    if not base:
+        return []
+
+    def block(text: str | None) -> str:
+        try:
+            return managed_block(text) if text else ""
+        except CliError:
+            return ""
+
+    findings = []
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        path = root / name
+        current = block(path.read_text(encoding="utf-8", errors="replace") if path.is_file() else None)
+        newer = block(git_text(root, "show", f"{default}:{name}"))
+        if current and newer and current != newer and current == block(git_text(root, "show", f"{base}:{name}")):
+            findings.append(doctor_warning(
+                "managed-block-behind-default-branch",
+                f"The managed block in {path} is older than the one on {default}; this branch runs outdated rules.",
+                f"Merge or rebase onto {default}, or re-run install, before relying on these rules.",
+            ))
+    return findings
+
+
+FEEDBACK_OPEN_DAYS = 30
+HARNESS_REVIEW_DAYS = 60
+HARNESS_REVIEW_RECORDS = 10
+
+
+def feedback_surface_problem(root: Path, surface: str) -> str:
+    """Why a feedback record's Surface no longer holds, or "" when it holds or names nothing checkable.
+
+    Grammar: `file: <path> | text: <literal line>` (the text part is optional) or `verify: <phase>`.
+    """
+    value = re.sub(r"<!--.*?-->", "", surface).strip()
+    phase = re.fullmatch(r"verify:\s*(\S+)", value)
+    if phase:
+        config = root / ".harness" / "verify.conf"
+        text = config.read_text(encoding="utf-8", errors="replace") if config.is_file() else ""
+        found = re.search(rf"(?m)^\s*{re.escape(phase.group(1))}\s*::", text)
+        return "" if found else f"verify phase {phase.group(1)} is gone"
+    named = re.fullmatch(r"file:\s*([^|]+?)\s*(?:\|\s*text:\s*(.+))?", value)
+    if not named:
+        return ""
+    path = root / named.group(1)
+    if not path.is_file():
+        return f"{named.group(1)} is gone"
+    if named.group(2) and named.group(2).strip() not in path.read_text(encoding="utf-8", errors="replace"):
+        return f"{named.group(1)} no longer contains the recorded text"
+    return ""
+
+
+def feedback_findings(target: Path) -> list[dict[str, str]]:
+    """Feedback records left open too long, and a harness review that is overdue (docs/feedback/README.md)."""
+    folder = doctor_project_root(target) / "docs" / "feedback"
+    if not folder.is_dir():
+        return []
+    today = dt.date.today()
+
+    def date_in(text: str, pattern: str) -> dt.date | None:
+        match = re.search(pattern, text)
+        try:
+            return dt.date.fromisoformat(match.group(1)) if match else None
+        except ValueError:
+            return None
+
+    records: list[tuple[str, dt.date | None, str]] = []
+    gone: list[str] = []
+    for path in sorted(folder.glob("[0-9][0-9][0-9][0-9]-*.md")):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        status = re.search(r"\*\*Status:\*\*\s*([a-z-]+)", text)
+        records.append((path.name, date_in(text, r"\*\*Date:\*\*\s*(\d{4}-\d{2}-\d{2})"), status.group(1) if status else ""))
+        if status and status.group(1) == "applied":
+            surface = re.search(r"(?m)^- \*\*Surface:\*\*(.*)$", text)
+            problem = feedback_surface_problem(folder.parent.parent, surface.group(1) if surface else "")
+            if problem:
+                gone.append(f"{path.name} ({problem})")
+    findings = []
+    if gone:
+        findings.append(doctor_warning(
+            "feedback-surface-missing",
+            "Applied feedback records whose named surface is gone: " + "; ".join(gone),
+            "Restore the rule, file or verify phase, or reopen the record: the fix it describes no longer holds.",
+        ))
+    stale = [name for name, date, status in records
+             if status == "open" and date and (today - date).days > FEEDBACK_OPEN_DAYS]
+    if stale:
+        findings.append(doctor_warning(
+            "feedback-open-too-long",
+            f"Feedback records open for more than {FEEDBACK_OPEN_DAYS} days: " + ", ".join(stale),
+            "Land each bounded edit and set Status to applied, or mark it wont-fix with one line of why.",
+        ))
+    readme = folder / "README.md"
+    review_text = readme.read_text(encoding="utf-8", errors="replace") if readme.is_file() else ""
+    reviewed = date_in(review_text, r"_Last harness review:\s*(\d{4}-\d{2}-\d{2})")
+    since = [date for _, date, _ in records if date and (reviewed is None or date > reviewed)]
+    if since and (len(since) >= HARNESS_REVIEW_RECORDS
+                  or (today - (reviewed or min(since))).days > HARNESS_REVIEW_DAYS):
+        findings.append(doctor_warning(
+            "harness-review-overdue",
+            f"{len(since)} feedback record(s) since the last harness review "
+            f"({reviewed.isoformat() if reviewed else 'none recorded'}).",
+            f"Run the harness review, then record it as `_Last harness review: YYYY-MM-DD_` in {readme}"
+            + ("." if readme.is_file() else " (a missing file counts as never reviewed; `agentsmith new-feedback` creates it)."),
+        ))
+    return findings
+
+
+WORKTREE_LIMIT = 10
+DISK_FREE_MIN_BYTES = 5 * 1024 ** 3
+
+
+def workspace_findings(target: Path, *, worktree_limit: int = WORKTREE_LIMIT,
+                       free_min: int = DISK_FREE_MIN_BYTES) -> list[dict[str, str]]:
+    """Stale or many Git worktrees, and low free disk: the slow failures of parallel agent work."""
+    findings = []
+    listing = git_text(target, "worktree", "list", "--porcelain")
+    if listing:
+        entries = [block.splitlines() for block in listing.strip().split("\n\n") if block.strip()]
+        paths = [next((line[9:] for line in entry if line.startswith("worktree ")), "") for entry in entries]
+        prunable = [path for path, entry in zip(paths, entries) if any(line.startswith("prunable") for line in entry)]
+        if prunable:
+            findings.append(doctor_warning(
+                "stale-worktrees",
+                "Git still lists worktrees whose folders are gone: " + ", ".join(prunable),
+                "Check that nothing unmerged lives only there, then run `git worktree prune`.",
+            ))
+        if len(entries) - 1 > worktree_limit:
+            findings.append(doctor_warning(
+                "many-worktrees",
+                f"This repository has {len(entries) - 1} linked worktrees (more than {worktree_limit}).",
+                "Remove the worktrees of merged or abandoned work; each one holds disk and stale state.",
+            ))
+    try:
+        free = shutil.disk_usage(target).free
+    except OSError:
+        free = None
+    if free is not None and free < free_min:
+        findings.append(doctor_warning(
+            "low-disk-space",
+            f"Only {free / 1024 ** 3:.1f} GiB is free on the disk that holds {target}.",
+            "Free space before long runs: builds, worktrees and logs fail midway when the disk fills.",
+        ))
+    return findings
+
+
+def hook_firing_counts(target: Path) -> tuple[dict[str, int], list[str]]:
+    """Count hook firings in the last HOOK_LOG_WINDOW_DAYS from the project and user logs."""
+    now = dt.datetime.now(dt.timezone.utc)
+    cutoff = now - dt.timedelta(days=HOOK_LOG_WINDOW_DAYS)
+    # Allow a little clock skew; a later time is a broken clock or a planted line, not a firing.
+    latest = now + dt.timedelta(minutes=5)
+    counts: dict[str, int] = {}
+    paths: list[str] = []
+    for root in dict.fromkeys((target.resolve() / ".agentsmith", home_dir().resolve() / ".agentsmith")):
+        path = root / HOOK_LOG_DIR / HOOK_LOG_NAME
+        if path.is_symlink() or not path.is_file():
+            continue
+        paths.append(str(path))
+        try:
+            lines = path.read_bytes()[-HOOK_LOG_MAX_BYTES:].decode("utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                event = json.loads(line)
+                when = dt.datetime.strptime(event["ts"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+                hook = event["hook"]
+            except (ValueError, KeyError, TypeError):
+                continue
+            if isinstance(hook, str) and re.fullmatch(r"[a-z0-9-]{1,64}", hook) and cutoff <= when <= latest:
+                counts[hook] = counts.get(hook, 0) + 1
+    return dict(sorted(counts.items())), paths
+
+
+def hook_firing_report(target: Path, hooks: dict[str, Any], counts: dict[str, int], logs: list[str]) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    installed = {name for name in (managed_hook_name(command) for command in hooks["managed_commands"]) if name}
+    if hooks["scanner_current"]:
+        installed.add("git-pre-commit")
+    # A hook installed inside the window has not had the chance to fire, so silence proves nothing yet.
+    # Every install rewrites state.json, so its age is the time since the last install.
+    record = state_path(target) if load_state(target).get("installation") else state_path(home_dir())
+    try:
+        age_days = (time.time() - record.stat().st_mtime) / 86400
+    except OSError:
+        age_days = 0.0
+    unused = sorted(installed - set(counts)) if age_days >= HOOK_LOG_WINDOW_DAYS else []
+    warnings = []
+    if unused:
+        warnings.append(doctor_warning(
+            "hook-unused-30-days",
+            f"These installed hooks did not fire in the last {HOOK_LOG_WINDOW_DAYS} days: " + ", ".join(unused),
+            "Advisory: a hook that never acts only costs time; consider removing it. A safety gate "
+            "that never blocks may still be worth keeping.",
+        ))
+    return {"window_days": HOOK_LOG_WINDOW_DAYS, "counts": counts, "installed": sorted(installed),
+            "unused": unused, "logs": logs}, warnings
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     selected = resolve_agents(args.agent, args.platform)
     target = Path(args.target or os.getcwd()).resolve()
     rows = {row["id"]: row for row in compatibility_rows(selected)}
     result: dict[str, Any] = {}
     unhealthy = False
+    firing_counts, firing_logs = hook_firing_counts(target)
+    # Findings about the project, not one agent; every agent's report carries them.
+    project_findings = managed_block_behind_default(target) + feedback_findings(target) + workspace_findings(target)
     for agent_id in selected:
         agent = rows[agent_id]
         instructions, warnings = inspect_instructions(agent_id, agent, target)
@@ -5612,6 +6148,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 "Required installed runtime payloads are missing or unsafe: " + ", ".join(runtime["missing_payloads"]),
                 "Re-run install or the reviewed update to restore the managed runtime.",
             ))
+        if runtime["modified_files"]:
+            warnings.append(doctor_warning(
+                "runtime-file-modified",
+                "Installed runtime files differ from what install recorded: " + ", ".join(runtime["modified_files"]),
+                "Hooks, verify receipts and runs from this runtime are not the shipped code. Re-run install "
+                "or the reviewed update to restore it.",
+            ))
         if AUTONOMOUS_PAYLOADS[0] in runtime["required_payloads"]:
             unavailable = [name for name, dependency in runtime["dependencies"].items() if not dependency["available"]]
             if unavailable:
@@ -5629,6 +6172,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                         f"Re-run install with the intended {name} option if this project needs it.",
                     )
                 )
+        for rewriter in output_rewriting_hooks(agent_id, target):
+            warnings.append(doctor_warning(
+                "output-rewriting-hook",
+                f"{TOOL_NAMES.get(agent_id, agent_id)} runs `{rewriter['command']}` before shell commands "
+                f"({rewriter['path']}); {rewriter['tool']} rewrites commands, so the agent sees filtered output.",
+                f"Output quoted as proof (tests, verify) must come from a raw run: {rewriter['raw']}, "
+                "or quote the verify receipt.",
+            ))
         if hooks["state"] == "stale":
             warnings.append(
                 doctor_warning(
@@ -5655,6 +6206,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     "Re-run install with --with-skills to regenerate owned adapters.",
                 )
             )
+        for skill_name, paths in missing_skill_paths(target, skills["managed_names"]).items():
+            warnings.append(doctor_warning(
+                "skill-path-missing",
+                f"Skill {skill_name} cites {', '.join(paths)}, which this install does not have.",
+                "Re-run install with the profile that ships these files, or tell the skill's user what to use instead.",
+            ))
         duplicate_skills = opencode_duplicate_skill_names(target) if agent_id == "opencode" else []
         if duplicate_skills:
             warnings.append(
@@ -5688,9 +6245,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     "Use cautious safety unless this expanded tool surface is deliberately trusted.",
                 )
             )
+        hook_firings, firing_warnings = hook_firing_report(target, hooks, firing_counts, firing_logs)
+        warnings.extend(firing_warnings)
+        warnings.extend(dict(finding) for finding in project_findings)
         selected_capabilities = {**global_installation.get("capabilities", {}), **installation.get("capabilities", {})}
         effect_records = {"project": installation.get("effects", {}), "user": global_installation.get("effects", {})}
-        result[agent_id] = {**capabilities, "safety": safety, "warnings": warnings,
+        result[agent_id] = {**capabilities, "safety": safety, "warnings": warnings, "hook_firings": hook_firings,
                             "effects": {**effect_records["user"], **effect_records["project"]},
                             "effect_records": effect_records, "selected_capabilities": selected_capabilities,
                             "memory_startup": {"selected": bool(selected_capabilities.get("memory_startup")),
@@ -5698,6 +6258,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         unhealthy |= instructions["state"] in {"missing", "malformed"}
         unhealthy |= bool(skills["adapter_diverged_names"])
         unhealthy |= bool(runtime["missing_payloads"])
+        unhealthy |= bool(runtime["modified_files"])
     if args.json:
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
@@ -5720,6 +6281,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     f"    {source['scope']:<7} {source['managed_status']:<9} core={source['generated_core']} "
                     f"profiles={profiles} tokens={source['tokens']} sha256={fingerprint} path={source['path']}"
                 )
+            firings = capabilities["hook_firings"]
+            shown = ", ".join(f"{name}={count}" for name, count in firings["counts"].items()) or "none"
+            print(f"  hook firings ({firings['window_days']} days): {shown}")
             for warning in capabilities["warnings"]:
                 suffix = f" Fix: {warning['recommendation']}" if warning["recommendation"] else ""
                 print(f"  WARNING [{warning['code']}] {warning['message']}{suffix}")
@@ -8142,6 +8706,13 @@ def cmd_resume(args: argparse.Namespace) -> int:
     return 0
 
 
+FEEDBACK_SURFACE_ADVICE = {
+    True: "This install runs hooks, so a hook or a verify phase is the strongest surface.",
+    False: "This install does not run hooks, so use a verify phase or a lint check, not a hook.",
+    None: "Prefer a verify phase or a lint check; use a hook only where the client runs hooks.",
+}
+
+
 def cmd_scaffold(kind: str, args: argparse.Namespace) -> int:
     root = Path(args.target or os.getcwd()).resolve()
     today = dt.date.today().isoformat()
@@ -8179,7 +8750,13 @@ def cmd_scaffold(kind: str, args: argparse.Namespace) -> int:
 
             ## What shipped this session
 
+            ## Verified this session
+
+            ## Carried over, not re-verified
+
             ## What is still pending
+
+            ## Open questions — default if unanswered
 
             ## Deviations from the plan / decisions made (don't re-litigate)
 
@@ -8199,6 +8776,13 @@ def cmd_scaffold(kind: str, args: argparse.Namespace) -> int:
         existing = [int(m.group(1)) for p in directory.glob("[0-9][0-9][0-9][0-9]-*.md") if (m := re.match(r"(\d{4})-", p.name))]
         number = max(existing, default=0) + 1
         name = f"{number:04d}-{slug(args.name)}.md"
+        # Advise a surface this install can actually run: a hook only where hooks are installed.
+        recorded = [state.get("installation", {}).get("capabilities", {}).get("hooks")
+                    for state in (load_state(root), load_state(home_dir()))
+                    if isinstance(state.get("installation"), dict)
+                    and isinstance(state["installation"].get("capabilities"), dict)]
+        hooks = next((value for value in recorded if isinstance(value, bool)), None)
+        advice = FEEDBACK_SURFACE_ADVICE[hooks]
         source = textwrap.dedent(f"""\
             # Feedback {number:04d}: {args.name}
 
@@ -8207,6 +8791,7 @@ def cmd_scaffold(kind: str, args: argparse.Namespace) -> int:
 
             - **Date:** {today}
             - **Status:** open
+            - **Surface:** <!-- file: <path> | text: <literal line it must keep>  or  verify: <phase name> -->
             - **Cost:**
 
             ## 1. Evidence / symptom
@@ -8217,8 +8802,24 @@ def cmd_scaffold(kind: str, args: argparse.Namespace) -> int:
 
             ## 4. Named surface
 
+            <!-- {advice} Record it on the Surface line so doctor can check it stays in place. -->
+
             ## 5. Non-regression validation
             """)
+        # Doctor reads the review date from this guide, which no install ships; start it on first use.
+        guide = directory / "README.md"
+        if not args.dry_run and not guide.exists() and not guide.is_symlink():
+            directory.mkdir(parents=True, exist_ok=True)
+            guide.write_text(textwrap.dedent("""\
+                # Feedback records
+
+                One record per harness lesson: evidence, failure mechanism, bounded edit, named surface,
+                non-regression check. Review them on a regular cadence: land or close each open record,
+                check that every applied record's Surface still holds, then date the line below
+                (`YYYY-MM-DD`). `agentsmith doctor` reads it.
+
+                _Last harness review: (none yet)_
+                """), encoding="utf-8")
     else:
         directory = root / "docs" / "research"
         name = f"{slug(args.name)}.md"
@@ -8586,9 +9187,68 @@ def cmd_memory_startup_hook(args: argparse.Namespace) -> int:
             raise ValueError("Invalid startup report")
         if context:
             print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context[:2000]}}))
+            record_hook_firing("memory-startup", event="SessionStart", outcome="added-context")
     except Exception:
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "Local memory unavailable or timed out; session can continue with manual recall."}}))
     return 0
+
+
+HOOK_LOG_DIR = "logs"
+HOOK_LOG_NAME = "hook-events.jsonl"
+HOOK_LOG_MAX_BYTES = 64 * 1024
+HOOK_LOG_WINDOW_DAYS = 30
+
+
+def record_hook_firing(hook: str, payload: str = "", *, event: str = "", outcome: str) -> None:
+    """Append one line when a shipped hook acts, so doctor can name hooks that stopped firing.
+
+    The line holds only the time, hook, native event and outcome: never prompt text, paths or
+    secrets. Only an installed runtime logs, beside itself in <root>/.agentsmith/logs/, a folder
+    that ignores itself in Git so a project's runtime folder stays clean. The log keeps its newest
+    half once it reaches HOOK_LOG_MAX_BYTES. Any failure is swallowed, because a hook must never
+    fail because its log could not be written.
+    """
+    try:
+        if ROOT.name != ".agentsmith":
+            return
+        if not event:
+            try:
+                data = json.loads(payload) if payload else {}
+            except ValueError:
+                data = {}
+            name = data.get("hook_event_name") if isinstance(data, dict) else None
+            event = name if isinstance(name, str) and re.fullmatch(r"[A-Za-z]{1,40}", name) else "unknown"
+        line = json.dumps({
+            "ts": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "hook": hook, "event": event, "outcome": outcome,
+        }).encode("utf-8") + b"\n"
+        folder = ROOT / HOOK_LOG_DIR
+        if folder.is_symlink():
+            return
+        folder.mkdir(exist_ok=True)
+        ignore = folder / ".gitignore"
+        if not ignore.exists() and not ignore.is_symlink():
+            ignore.write_text("*\n", encoding="utf-8")
+        path = folder / HOOK_LOG_NAME
+        # Only a regular file (or none yet) is a log: a FIFO or device would block or misdirect the write.
+        with contextlib.suppress(FileNotFoundError):
+            if not stat.S_ISREG(os.lstat(path).st_mode):
+                return
+        flags = (os.O_WRONLY | os.O_CREAT | os.O_APPEND
+                 | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+        descriptor = os.open(path, flags, 0o600)
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                return
+            os.write(descriptor, line)
+            size = os.fstat(descriptor).st_size
+        finally:
+            os.close(descriptor)
+        if size > HOOK_LOG_MAX_BYTES:
+            tail = path.read_bytes()[-(HOOK_LOG_MAX_BYTES // 2):]
+            atomic_write_bytes(path, tail[tail.find(b"\n") + 1:], 0o600)
+    except Exception:
+        return
 
 
 def cmd_hook(args: argparse.Namespace) -> int:
@@ -8596,15 +9256,21 @@ def cmd_hook(args: argparse.Namespace) -> int:
         return cmd_memory_startup_hook(args)
     payload = sys.stdin.read()
     if args.hook_name == "git-pre-commit":
-        return cmd_secret_scan(argparse.Namespace(target=os.getcwd()))
+        result = cmd_secret_scan(argparse.Namespace(target=os.getcwd()))
+        if result:
+            record_hook_firing("git-pre-commit", event="pre-commit", outcome="blocked")
+        return result
     if args.hook_name == "handoff-on-keyword" and re.search(r"(?i)\b(wrap up|handoff|reset context)\b", payload):
         print(json.dumps({"additionalContext": "Before ending, create durable handoff memory with `agentsmith handoff`."}))
+        record_hook_firing(args.hook_name, payload, outcome="nudged")
     elif args.hook_name == "context-budget-nudge":
         cue = context_budget_nudge(payload)
         if cue is not None:
             print(json.dumps(cue))
+            record_hook_firing(args.hook_name, payload, outcome="blocked")
     elif args.hook_name == "ui-design-reminder" and re.search(r"(?i)\.(css|scss|tsx|jsx|vue|svelte|html)", payload):
         print(json.dumps({"additionalContext": "Consult DESIGN.md before changing user-interface files, if it exists."}))
+        record_hook_firing(args.hook_name, payload, outcome="nudged")
     return 0  # hooks fail open by design
 
 
@@ -8677,6 +9343,12 @@ def add_common_install_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--lang", choices=WIZARD_LANGUAGES, help="wizard language")
 
 
+PUBLIC_COMMANDS = (
+    "install", "update", "doctor", "status", "profiles", "verify", "demo", "resume",
+    "handoff", "new-feedback", "new-research", "memory",
+)
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(
         prog="agentsmith",
@@ -8688,7 +9360,10 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     root.add_argument("--version", action="version", version=f"agentsmith {VERSION}")
-    sub = root.add_subparsers(dest="command")
+    # Internal commands (hook, secret-scan, graph, wizard, evaluate, compatibility, agents,
+    # validate-integration, audit-config) serve programs and CI: they keep working but stay out of
+    # the root help, so the public surface stays small. docs/12-whats-built-in.md lists them.
+    sub = root.add_subparsers(dest="command", metavar="{" + ",".join(PUBLIC_COMMANDS) + "}")
     install = sub.add_parser("install", help="install or update managed rules and adapters")
     add_common_install_flags(install)
     update = sub.add_parser("update", help="check and apply staged stable-release updates")
@@ -8709,7 +9384,7 @@ def parser() -> argparse.ArgumentParser:
     update_rollback.add_argument("--receipt", required=True)
     update_configure = update_sub.add_parser("configure", help="opt into or disable report-only update checks")
     update_configure.add_argument("--auto-check", required=True, choices=("weekly", "off"))
-    agents = sub.add_parser("agents", help="inspect the supported agent registry")
+    agents = sub.add_parser("agents", description="inspect the supported agent registry")
     agents_sub = agents.add_subparsers(dest="agents_command", required=True)
     listing = agents_sub.add_parser("list")
     listing.add_argument("--json", action="store_true")
@@ -8734,13 +9409,13 @@ def parser() -> argparse.ArgumentParser:
     profile_switch.add_argument("--target", required=True)
     profile_switch.add_argument("--profile", action="append", required=True)
     profile_switch.add_argument("--dry-run", action="store_true")
-    wizard = sub.add_parser("wizard", help="describe the install wizard for programs that ask its questions")
+    wizard = sub.add_parser("wizard", description="describe the install wizard for programs that ask its questions")
     wizard_sub = wizard.add_subparsers(dest="wizard_command", required=True)
     wizard_schema_parser = wizard_sub.add_parser("schema", help="print the wizard questions, choices and defaults")
     wizard_schema_parser.add_argument("--json", action="store_true")
     wizard_schema_parser.add_argument("--target", help="resolve the profile recommendation for this folder")
     wizard_schema_parser.add_argument("--lang", choices=WIZARD_LANGUAGES, help="language for the computed default")
-    compatibility = sub.add_parser("compatibility", help="print the evidence-backed compatibility matrix")
+    compatibility = sub.add_parser("compatibility", description="print the evidence-backed compatibility matrix")
     compatibility.add_argument("--agent", action="append")
     compatibility.add_argument("--json", action="store_true")
     verify = sub.add_parser(
@@ -8771,11 +9446,11 @@ def parser() -> argparse.ArgumentParser:
     verify_apply.add_argument("--dry-run", action="store_true", help="show the verification-config diff without writing")
     integration = sub.add_parser(
         "validate-integration",
-        help="validate a structured integration checkpoint without installing or launching it",
+        description="validate a structured integration checkpoint without installing or launching it",
     )
     integration.add_argument("--checkpoint", required=True)
     integration.add_argument("--debug", action="store_true", help="print only redacted structural diagnostics")
-    graph = sub.add_parser("graph", help="inspect a committed local work graph")
+    graph = sub.add_parser("graph", description="inspect a committed local work graph")
     graph_sub = graph.add_subparsers(dest="graph_command", required=True)
     for graph_action in ("validate", "status", "start", "stop", "resume", "integrate", "cleanup"):
         item = graph_sub.add_parser(graph_action)
@@ -8796,8 +9471,12 @@ def parser() -> argparse.ArgumentParser:
     resume.add_argument("handoff_file", nargs="?")
     resume.add_argument("--target")
     resume.add_argument("--json", action="store_true")
-    for name in ("handoff", "new-feedback", "new-research"):
-        scaffold = sub.add_parser(name)
+    for name, summary in (
+        ("handoff", "write a session handoff note with a paste-ready kickoff block"),
+        ("new-feedback", "scaffold a harness feedback record under docs/feedback/"),
+        ("new-research", "scaffold a durable research note under docs/research/"),
+    ):
+        scaffold = sub.add_parser(name, help=summary)
         scaffold.add_argument("name", nargs="?")
         scaffold.add_argument("--target")
         scaffold.add_argument("--dry-run", action="store_true")
@@ -8805,15 +9484,18 @@ def parser() -> argparse.ArgumentParser:
     secret.add_argument("--all", action="store_true", help="scan the tracked working tree")
     secret.add_argument("--target", help="Git/project root for staged, tracked-tree, and allow rules")
     secret.add_argument("paths", nargs="*", metavar="FILE", help="files to scan, or '-' for stdin")
-    audit = sub.add_parser("audit-config", help="advisory static audit of selected native configuration")
+    audit = sub.add_parser("audit-config", description="advisory static audit of selected native configuration")
     audit.add_argument("--target")
     audit.add_argument("--include-user", action="store_true", help="also read native user configuration")
     audit.add_argument("--json", action="store_true", help="schema-versioned report")
     audit.add_argument("--fail-on", choices=("low", "medium", "high", "critical"), help="explicit CI severity gate; incomplete inspection always errors")
     memory = sub.add_parser("memory", help="search and read bounded local Markdown memory")
-    memory_commands = memory.add_subparsers(dest="memory_command", required=True)
+    # `memory startup` is the hook's internal entry point, so it stays out of the listed choices.
+    memory_commands = memory.add_subparsers(dest="memory_command", required=True, metavar="{search,read}")
     for name, argument in (("search", "query"), ("read", "relative_path"), ("startup", None)):
-        command = memory_commands.add_parser(name, help="reference-only startup discovery" if name == "startup" else None)
+        command = memory_commands.add_parser(
+            name, description="reference-only startup discovery" if name == "startup" else None
+        )
         if argument:
             command.add_argument(argument)
         command.add_argument("--target")
@@ -8824,11 +9506,13 @@ def parser() -> argparse.ArgumentParser:
     hook = sub.add_parser("hook")
     hook.add_argument("--memory-scope", choices=("project", "global"), default="project", help=argparse.SUPPRESS)
     hook.add_argument("hook_name", choices=("handoff-on-keyword", "context-budget-nudge", "ui-design-reminder", "git-pre-commit", "memory-startup"))
-    evaluate = sub.add_parser("evaluate", help="run isolated native-client behavioral evaluations")
+    evaluate = sub.add_parser("evaluate", description="run isolated native-client behavioral evaluations")
     evaluate.add_argument("--agent", required=True, choices=("claude", "codex", "native"),
                           help="native client to exercise; 'native' runs Claude and Codex")
     evaluate.add_argument("--scenario", action="append", help="scenario ID; repeatable (default: all nine)")
     evaluate.add_argument("--trials", type=int, default=3, help="fresh-repository trials per scenario (default: 3)")
+    evaluate.add_argument("--instructions", choices=("harness", "none"), default="harness",
+                          help="'none' runs the same scenarios without AgentSmith rules, for a head-to-head")
     mode = evaluate.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="resolve the run without calling a model (default)")
     mode.add_argument("--live", action="store_true", help="call native clients; explicit positive budgets required")

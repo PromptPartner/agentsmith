@@ -83,11 +83,14 @@ class EvaluateTests(unittest.TestCase):
             {
                 "HOME": str(self.root / "home"),
                 "USERPROFILE": str(self.root / "home"),
+                # An inherited CODEX_HOME would make the runner read the operator's real authentication.
+                "CODEX_HOME": str(self.root / "home" / ".codex"),
                 "AGENTSMITH_CLAUDE_BIN": str(self.bin),
                 "AGENTSMITH_CODEX_BIN": str(self.bin),
             }
         )
-        codex_home = Path(self.env["HOME"]) / ".codex"
+        self.env.pop("CLAUDE_CONFIG_DIR", None)
+        codex_home = Path(self.env["CODEX_HOME"])
         codex_home.mkdir(parents=True)
         (codex_home / "auth.json").write_text(
             json.dumps({"auth_mode": "chatgpt", "tokens": {}}), encoding="utf-8"
@@ -206,7 +209,7 @@ class EvaluateTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("positive", (result.stdout + result.stderr).casefold())
 
-    def test_fake_native_run_emits_passing_schema_v2_records_for_all_scenarios(self) -> None:
+    def test_fake_native_run_emits_passing_schema_v3_records_for_all_scenarios(self) -> None:
         output = self.root / "normalized records"
         result = self.cli(
             "--agent", "native", "--trials", "1", "--live",
@@ -217,7 +220,17 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual(len(records), 18)
         for path in records:
             record = json.loads(path.read_text(encoding="utf-8"))
-            self.assertEqual(record["schema_version"], 2)
+            self.assertEqual(record["schema_version"], 3)
+            self.assertEqual(record["instructions"], "harness")
+            # Cost sits next to quality: the fake Claude bills USD, the fake Codex reports tokens.
+            total = record["outcome"]["usage_total"]
+            expected = (0.25, 0) if record["client"] == "claude" else (0.0, 10)
+            self.assertEqual((total["cost_usd"], total["tokens"]), expected, path.name)
+            self.assertEqual(total["duration_s"], record["trials"][0]["duration_seconds"])
+            self.assertIn(
+                f"{record['client']}/{record['scenario_id']}: PASS cost_usd={expected[0]} tokens={expected[1]} duration_s=",
+                result.stdout,
+            )
             from evaluate import SCENARIOS
 
             self.assertEqual(
@@ -379,9 +392,75 @@ class EvaluateTests(unittest.TestCase):
             with native_environment("codex", source):
                 self.fail("non-subscription Codex authentication must not launch")
 
-    def test_schema_declares_v2_and_all_required_evidence_fields(self) -> None:
+    def test_usage_metrics_sum_every_turn_without_double_counting_a_final_summary(self) -> None:
+        from native_launcher import usage_metrics
+
+        # Codex reports usage once per turn; a multi-turn run costs the sum, not its largest turn.
+        codex = "\n".join(json.dumps(event) for event in (
+            {"type": "thread.started"},
+            {"type": "turn.completed", "usage": {"input_tokens": 7, "output_tokens": 3}},
+            {"type": "turn.completed", "usage": {"input_tokens": 5, "cached_input_tokens": 4, "output_tokens": 1}},
+        ))
+        self.assertEqual(usage_metrics(codex), (0.0, 20))
+        # Claude's result message already totals the session; per-message usage must not add to it.
+        claude = json.dumps([
+            {"type": "assistant", "message": {"usage": {"input_tokens": 60, "output_tokens": 20}}},
+            {"type": "assistant", "message": {"usage": {"input_tokens": 40, "output_tokens": 30}}},
+            {"type": "result", "total_cost_usd": 0.3,
+             "usage": {"input_tokens": 100, "output_tokens": 50, "iterations": [{"input_tokens": 100}]}},
+        ])
+        self.assertEqual(usage_metrics(claude), (0.3, 150))
+        self.assertEqual(usage_metrics(json.dumps({"type": "result", "total_cost_usd": 0.25})), (0.25, 0))
+        self.assertEqual(usage_metrics("not json"), (0.0, 0))
+        # A negative figure would refund the run-wide budget, so it is excluded, never subtracted.
+        negative = json.dumps({"type": "turn.completed", "usage": {"input_tokens": -7, "output_tokens": 3}})
+        self.assertEqual(usage_metrics(negative), (0.0, 3))
+        self.assertEqual(usage_metrics(json.dumps({"type": "result", "total_cost_usd": -1})), (0.0, 0))
+        self.assertEqual(usage_metrics(json.dumps({"type": "result", "total_cost_usd": float("nan")}).replace("NaN", "-1e999")), (0.0, 0))
+
+    def test_no_instructions_arm_keeps_the_scenario_but_drops_agentsmith_rules(self) -> None:
+        from evaluate import setup_repository
+
+        with mock.patch.dict(os.environ, {"HOME": self.env["HOME"], "USERPROFILE": self.env["HOME"]}):
+            for arm in ("harness", "none"):
+                repo = self.root / f"arm {arm}"
+                setup_repository(repo, "claude", "instruction-sentinel", f"AS_{arm}", CORE, instructions=arm)
+                for name in ("AGENTS.md", "CLAUDE.md"):
+                    text = (repo / name).read_text(encoding="utf-8")
+                    self.assertIn(f"EVALUATION_INSTRUCTION_SENTINEL=AS_{arm}", text)
+                    self.assertEqual("BEGIN AGENTSMITH" in text, arm == "harness", (arm, name))
+        with self.assertRaises(ValueError):
+            setup_repository(self.root / "bad arm", "codex", "instruction-sentinel", "AS_x", CORE, instructions="other")
+
+    def test_dry_run_names_the_instruction_arm(self) -> None:
+        default = self.cli("--agent", "codex", "--dry-run")
+        self.assertIn("instructions=harness", default.stdout)
+        bare = self.cli("--agent", "codex", "--dry-run", "--instructions", "none")
+        self.assertEqual(bare.returncode, 0, bare.stdout + bare.stderr)
+        self.assertIn("instructions=none", bare.stdout)
+        self.assertNotEqual(self.cli("--agent", "codex", "--instructions", "other").returncode, 0)
+
+    def test_fake_no_instructions_run_records_its_arm(self) -> None:
+        output = self.root / "bare records"
+        result = self.cli(
+            "--agent", "codex", "--trials", "1", "--live", "--instructions", "none",
+            "--scenario", "instruction-sentinel", "--codex-max-tokens", "5000", "--output", str(output),
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        [record_path] = sorted(output.glob("*.json"))
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        self.assertEqual(record["instructions"], "none")
+        self.assertTrue(record["outcome"]["passed"])
+
+    def test_schema_declares_v3_and_all_required_evidence_fields(self) -> None:
         schema = json.loads((ROOT / "compatibility" / "evaluations" / "schema.json").read_text(encoding="utf-8"))
-        self.assertEqual(schema["properties"]["schema_version"]["const"], 2)
+        # Bundled v2 records stay valid; new records are v3 and name their arm and total usage.
+        self.assertEqual(schema["properties"]["schema_version"]["enum"], [2, 3])
+        self.assertEqual(schema["properties"]["instructions"]["enum"], ["harness", "none"])
+        self.assertEqual(
+            set(schema["properties"]["outcome"]["properties"]["usage_total"]["required"]),
+            {"cost_usd", "tokens", "duration_s"},
+        )
         required = set(schema["required"])
         self.assertTrue(
             {"scenario_id", "scenario_version", "prompt_sha256", "runner_version", "client", "operating_system",

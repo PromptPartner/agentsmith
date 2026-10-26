@@ -50,7 +50,6 @@ emulate hooks or MCP to make matrix cells green.
 |---|---|
 | `agentsmith demo first-loop --target <new-path>` | Copy the deterministic dependency-free launch-readiness exercise into a new or empty explicit target; refuse broad, non-empty, or symbolic targets. |
 | `agentsmith status [--target <path>] [--json]` | Explain effective topology, profiles, instruction sources, managed capabilities, verification coverage, and one reasoned next action without changing state. |
-| `agentsmith wizard schema --json [--target <path>] [--lang <code>]` | Print the install wizard's questions, choices, conditions, computed defaults and translations, so another program can ask them. |
 | `agentsmith install --answers <file> [--dry-run]` | Apply wizard answers from a JSON file without a terminal, checked with the wizard's own rules; every problem is reported at once. |
 | `agentsmith profiles list [--json]` | List the shipped work profiles from their source files and name each verification preset. |
 | `agentsmith profiles recommend [--target <path>] [--json]` | Rank deterministic profile choices from repository evidence without calling a model or changing files. |
@@ -58,15 +57,30 @@ emulate hooks or MCP to make matrix cells green.
 | `agentsmith verify [--record <directory> --tree-class <class>]` | Run `.harness/verify.conf`; optionally retain a redacted receipt naming the tested tree class. |
 | `agentsmith verify discover [--target <path>] [--json] [--save <plan>]` | Build a read-only, schema-v1 coverage plan from allow-listed detectors; repository commands and hint bodies are never run. |
 | `agentsmith verify apply --plan <plan> [--target <path>] [--dry-run]` | Preview or apply a current target-bound plan, preserving foreign config and backing up changed bytes. |
-| `agentsmith validate-integration --checkpoint <file>` | Validate a structured integration checkpoint without installing or launching packages. |
 | `agentsmith handoff` | Scaffold durable session memory with branch/HEAD/dirty facts. |
 | `agentsmith resume [handoff-file] [--target <path>] [--json]` | Validate the newest or named handoff, allow only a bounded status recovery command, compare Git drift without optional locks, and synthesize a safe kickoff without echoing stored prose or changing state. |
 | `agentsmith new-research` | Create a durable research note that is archived, never silently deleted. |
 | `agentsmith new-feedback` | Create the five-stage post-incident record. |
-| `agentsmith secret-scan [--all|FILE...|-]` | Scan staged additions by default, or the tracked tree/files/stdin, with redacted findings. |
 | `agentsmith doctor` | Inspect effective instruction sources and actual installed safety, skills, MCP, hooks, scanner, and runtime state. |
+
+### For programs and CI
+
+These commands are internal: hooks, skills, CI jobs and other programs call them. They keep
+working and keep their own `--help`, but `agentsmith --help` does not list them, so the public
+surface stays small.
+
+| Command | Purpose |
+|---|---|
+| `agentsmith hook <name>` | Entry point for the managed native and Git hooks. |
+| `agentsmith memory startup` | Reference-only startup discovery that the memory-startup hook calls. |
+| `agentsmith secret-scan [--all|FILE...|-]` | Scan staged additions by default, or the tracked tree/files/stdin, with redacted findings. |
+| `agentsmith graph <action> --graph <file>` | Validate, run, and clean up a committed local work graph ([parallel work graphs](24-parallel-work-graphs.md)). |
+| `agentsmith wizard schema --json [--target <path>] [--lang <code>]` | Print the install wizard's questions, choices, conditions, computed defaults and translations, so another program can ask them. |
+| `agentsmith evaluate --agent claude\|codex\|native [--instructions harness\|none]` | Dry-run or execute the nine isolated, budgeted native-client behavior scenarios; each result reports cost, tokens and duration next to pass or fail. |
 | `agentsmith compatibility` | Render the registry and static-context measurement without overstating evidence. |
-| `agentsmith evaluate --agent claude\|codex\|native` | Dry-run or execute the nine isolated, budgeted native-client behavior scenarios. |
+| `agentsmith agents list [--json]` | Print the supported agent registry. |
+| `agentsmith validate-integration --checkpoint <file>` | Validate a structured integration checkpoint without installing or launching packages. |
+| `agentsmith audit-config` | Advisory static audit of selected native configuration ([config audit](27-config-audit.md)). |
 
 The [First Verified Loop public proof](demos/first-verified-loop/README.md) exercises the portable
 status, verification, receipt, handoff, and resume commands together. Its lifecycle artifacts also

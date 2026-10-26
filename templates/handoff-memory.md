@@ -24,8 +24,17 @@ Complete this before a long external wait or an irreversible external gate; use 
 ## What shipped
 -
 
+## Verified this session
+<checks you ran in THIS session: the command and its result. Only these count as proof.>
+
+## Carried over, not re-verified
+<claims from earlier notes, other agents or memory that you did not re-check this session>
+
 ## What's pending (the open thread)
 -
+
+## Open questions — default if unanswered
+<each open question, and the default the next session takes if nobody answers it>
 
 ## Decisions already made (do NOT re-litigate)
 -
