@@ -83,11 +83,14 @@ class EvaluateTests(unittest.TestCase):
             {
                 "HOME": str(self.root / "home"),
                 "USERPROFILE": str(self.root / "home"),
+                # An inherited CODEX_HOME would make the runner read the operator's real authentication.
+                "CODEX_HOME": str(self.root / "home" / ".codex"),
                 "AGENTSMITH_CLAUDE_BIN": str(self.bin),
                 "AGENTSMITH_CODEX_BIN": str(self.bin),
             }
         )
-        codex_home = Path(self.env["HOME"]) / ".codex"
+        self.env.pop("CLAUDE_CONFIG_DIR", None)
+        codex_home = Path(self.env["CODEX_HOME"])
         codex_home.mkdir(parents=True)
         (codex_home / "auth.json").write_text(
             json.dumps({"auth_mode": "chatgpt", "tokens": {}}), encoding="utf-8"
