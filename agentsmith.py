@@ -4749,6 +4749,37 @@ def inspect_skills(agent_id: str, agent: dict[str, Any], target: Path) -> dict[s
     }
 
 
+SKILL_PATH_REFERENCE = re.compile(r"(?<![\w./-])(?:\.agentsmith|\.harness|scripts|templates)/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*/?")
+
+
+def missing_skill_paths(target: Path, names: Iterable[str]) -> dict[str, list[str]]:
+    """Paths a managed skill tells the agent to use that this install does not have.
+
+    Skills often name the installed path and the source-checkout path as alternatives (for
+    example `.harness/templates/plan.md` or `templates/plan.md`), so a citation counts as present
+    when any cited path with the same file name exists. Paths with a placeholder (`<id>`, `*`)
+    and folder paths are created at run time and are skipped.
+    """
+    result: dict[str, list[str]] = {}
+    for name in sorted(names):
+        skill = target / ".agents" / "skills" / name / "SKILL.md"
+        try:
+            text = skill.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        cited = []
+        for match in SKILL_PATH_REFERENCE.finditer(text):
+            path = match.group(0).rstrip(".")
+            if path.endswith("/") or text[match.end():match.end() + 1] in {"<", "*", "{"}:
+                continue
+            cited.append(path)
+        present = {Path(path).name for path in cited if (target / path).exists()}
+        missing = sorted({path for path in cited if Path(path).name not in present})
+        if missing:
+            result[name] = missing
+    return result
+
+
 def opencode_duplicate_skill_names(target: Path) -> list[str]:
     """Return skill names OpenCode discovers in both a Claude and an Agent Skills folder."""
     switches = ("OPENCODE_DISABLE_CLAUDE_CODE", "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS", "OPENCODE_DISABLE_EXTERNAL_SKILLS")
@@ -5232,6 +5263,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     "Re-run install with --with-skills to regenerate owned adapters.",
                 )
             )
+        for skill_name, paths in missing_skill_paths(target, skills["managed_names"]).items():
+            warnings.append(doctor_warning(
+                "skill-path-missing",
+                f"Skill {skill_name} cites {', '.join(paths)}, which this install does not have.",
+                "Re-run install with the profile that ships these files, or tell the skill's user what to use instead.",
+            ))
         duplicate_skills = opencode_duplicate_skill_names(target) if agent_id == "opencode" else []
         if duplicate_skills:
             warnings.append(

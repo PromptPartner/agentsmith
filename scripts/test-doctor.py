@@ -282,6 +282,25 @@ class DoctorTests(unittest.TestCase):
         _, codex = self.doctor(project, "codex")
         self.assertIn("output-rewriting-hook", self.warning_codes(codex["codex"]))
 
+    def test_skill_that_cites_a_path_the_install_lacks_is_reported(self) -> None:
+        project = self.root / "skill paths"
+        installed = self.install(project, "--agent", "codex", "--profile", "software-dev", "--with-skills")
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        _, clean = self.doctor(project, "codex")
+        cited = {w["message"] for w in clean["codex"]["warnings"] if w["code"] == "skill-path-missing"}
+        # A skill that names the installed path and the source-checkout path needs only one of them.
+        self.assertFalse(any("autonomous-run" in message or "wayfinder" in message for message in cited), cited)
+        (project / ".harness" / "templates" / "plan.md").unlink()
+        skill = project / ".agents" / "skills" / "handoff" / "SKILL.md"
+        skill.write_text(skill.read_text(encoding="utf-8") + "\nSee `templates/missing-guide.md` and `.harness/runs/<id>.json`.\n", encoding="utf-8")
+        _, payload = self.doctor(project, "codex")
+        messages = {w["message"] for w in payload["codex"]["warnings"] if w["code"] == "skill-path-missing"}
+        grill = next(message for message in messages if "grill-with-docs" in message)
+        self.assertIn(".harness/templates/plan.md", grill)
+        handoff = next(message for message in messages if "handoff" in message)
+        self.assertIn("templates/missing-guide.md", handoff)
+        self.assertNotIn(".harness/runs", handoff, "a placeholder path is created at run time")
+
     def test_trusted_native_install_reports_actual_owned_surfaces(self) -> None:
         project = self.root / "owned project ü"
         project.mkdir()
