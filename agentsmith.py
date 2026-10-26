@@ -3384,9 +3384,13 @@ def translate_root_paths(
         text = content.decode("utf-8")
     except UnicodeDecodeError:
         return content
-    replacements: set[tuple[str, str]] = set()
-    for root_name, source_root_value in source_roots.items():
-        source_root = Path(source_root_value)
+    # One destination per source spelling, chosen in a fixed order: a global plan's target root
+    # is HOME itself, and a set of pairs would pick the shadow target or HOME at random, so plan
+    # and apply (separate processes) could disagree. HOME and the client roots win over target.
+    replacements: dict[str, str] = {}
+    order = sorted(source_roots, key=lambda name: name == "target")
+    for root_name in order:
+        source_root = Path(source_roots[root_name])
         if not source_root.is_absolute():
             continue  # "." or "pi" would rewrite ordinary text, not a path
         destination_root = Path(destination_roots[root_name])
@@ -3397,15 +3401,15 @@ def translate_root_paths(
             (source_root.as_posix(), destination_root.as_posix()),
             (resolved_source.as_posix(), destination_root.as_posix()),
         ):
-            replacements.add((old, new))
-            replacements.add((json.dumps(old, ensure_ascii=False)[1:-1], json.dumps(new, ensure_ascii=False)[1:-1]))
+            replacements.setdefault(old, new)
+            replacements.setdefault(json.dumps(old, ensure_ascii=False)[1:-1], json.dumps(new, ensure_ascii=False)[1:-1])
             # JSON written with the default ensure_ascii spells non-ASCII as \uXXXX escapes. Only an
             # old path that actually has escapes gets that pair; otherwise it would compete with
             # the literal pair for the same text.
             escaped = json.dumps(old)[1:-1]
             if escaped != json.dumps(old, ensure_ascii=False)[1:-1]:
-                replacements.add((escaped, json.dumps(new)[1:-1]))
-    for old, new in sorted(replacements, key=lambda item: len(item[0]), reverse=True):
+                replacements.setdefault(escaped, json.dumps(new)[1:-1])
+    for old, new in sorted(replacements.items(), key=lambda item: (-len(item[0]), item[0])):
         text = text.replace(old, new)
     return text.encode("utf-8")
 
@@ -4359,9 +4363,12 @@ def git_hooks_location(target: Path) -> tuple[Path, Path] | None:
     lines = result.stdout.splitlines()
     if result.returncode or len(lines) != 2:
         return None
-    hooks, common = (Path(line.strip()) for line in lines)
-    hooks = hooks if hooks.is_absolute() else target / hooks
-    common = common if common.is_absolute() else target / common
+    # normpath collapses ".." left in Git's answer and turns Git for Windows' forward slashes into
+    # native separators, so the containment comparison sees one spelling per folder.
+    hooks, common = (
+        Path(os.path.normpath(path if path.is_absolute() else target / path))
+        for path in (Path(line.strip()) for line in lines)
+    )
     try:
         hooks.relative_to(target)
         return hooks, target

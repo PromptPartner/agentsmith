@@ -952,3 +952,19 @@ open, which plain shell lacks.
   read waited for a writer). The profile is now opened with `O_NONBLOCK` and refused unless it is a
   regular file; on Windows the path check requires a regular file before opening. The review's
   reproducer timed out before and now exits 2; a new test failed (hung) before and passes after.
+- [x] 2026-10-26 — PR #61 CI run `40317178374` (ubuntu-latest): a legacy global update failed with
+  "staged managed changes do not match the authenticated plan". A global plan's target root is HOME
+  itself, and on Linux both have one spelling, so root translation held two destinations for the
+  same text in a set and picked the shadow target or the shadow HOME at random (the order depends
+  on the per-process hash seed). Plan and apply could then disagree, or the status-line helper
+  could land in the shadow target. Translation now keeps one destination per spelling, HOME before
+  target, in a fixed order. Reproduced in a Linux container before the fix; a new test that runs
+  12 hash seeds failed before and passes after.
+- [ ] 2026-10-26 — PR #61 CI run `40317178374` (windows-latest): `test_git_hook_of_a_linked_worktree_is_allowed`
+  found no `pre-commit` in the main checkout after a successful install into a linked worktree.
+  Not reproducible here (no Windows host). Reading the code did not show a Windows-only branch
+  that skips the hook; Git on macOS and in the Linux container reports normalised absolute paths.
+  Hardened anyway: Git's hooks and common-folder answers are now `normpath`-ed (collapses `..`,
+  native separators), with a unit test that feeds an unresolved, forward-slash answer. The worktree
+  test now prints Git's answer and the installer output when it fails, so the next native run names
+  the cause. Native Windows confirmation is pending.
