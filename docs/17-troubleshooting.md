@@ -182,7 +182,7 @@ files from the folder and every folder above it (and `AGENTS.md` only when no `C
 anywhere in that chain); Codex reads from the Git root down. `instructions.loaded_files` in
 `doctor --json` lists what each tool loads. `--profile-only` removes that duplication on a future install, but keep the
 full project copy when collaborators need self-contained rules. Project `AGENTS.md` is canonical;
-Claude gets a generated `CLAUDE.md`, while configured adapters must still point to it. Web surfaces
+Claude gets a generated `CLAUDE.md` that imports `AGENTS.md`, while configured adapters must still point to it. Web surfaces
 do not gain local hooks merely by reading instructions. See
 [`13-platforms-and-tools.md`](13-platforms-and-tools.md).
 

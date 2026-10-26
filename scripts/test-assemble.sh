@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # test-assemble.sh — every profile must assemble into rules a human can actually follow.
 #
-# The harness's whole output is an assembled CLAUDE.md. If assembly breaks, the agent doesn't
-# crash — it quietly follows *wrong or half-rendered rules*, which is worse. The failures this
+# The harness's whole output is an assembled AGENTS.md (a project CLAUDE.md imports it). If
+# assembly breaks, the agent doesn't crash — it quietly follows *wrong or half-rendered rules*,
+# which is worse. The failures this
 # catches, all of which have happened or nearly happened in this repo:
 #   1. A profile stops assembling at all (renamed/moved file, bad glob).
 #   2. An unrendered {{PLACEHOLDER}} reaches the agent — it improvises around the gap.
@@ -73,10 +74,16 @@ for p in "${profiles[@]}"; do
     bad "$name: assembly failed outright"
     continue
   fi
-  f="$out/CLAUDE.md"
+  # A project's one rulebook is AGENTS.md; CLAUDE.md only imports it for Claude Code.
+  f="$out/AGENTS.md"
   if [ ! -s "$f" ]; then
-    bad "$name: produced no CLAUDE.md"
+    bad "$name: produced no AGENTS.md"
     continue
+  fi
+  if grep -qx '@AGENTS.md' "$out/CLAUDE.md" 2>/dev/null; then
+    ok "$name: CLAUDE.md imports AGENTS.md"
+  else
+    bad "$name: CLAUDE.md does not import AGENTS.md"
   fi
 
   errs=""
@@ -137,13 +144,13 @@ if [ -f "$ROOT_DIR/profiles/software-dev.md" ] && [ -f "$ROOT_DIR/profiles/auton
   out="$WORK/stacked"; mkdir -p "$out"
   if bash "$SETUP" --profile software-dev,autonomous-loops --assemble-only --target "$out" \
         --operator-name "Test" --tracker "Linear" >/dev/null 2>&1 \
-     && [ -s "$out/CLAUDE.md" ] \
-     && ! grep -qE '\{\{[A-Z_]+\}\}' "$out/CLAUDE.md"; then
+     && [ -s "$out/AGENTS.md" ] \
+     && ! grep -qE '\{\{[A-Z_]+\}\}' "$out/AGENTS.md"; then
     ok "stacked profiles (software-dev,autonomous-loops) assemble clean"
     # Measured, not gated: stacking two large profiles already exceeds the budget, so gating here
     # would be red on arrival and train people to ignore this suite. Reported so it stays visible.
     printf '  \033[33m•\033[0m stacked budget (measured, not gated): %s\n' \
-      "$(bash "$ROOT_DIR/scripts/lint-leanness.sh" "$out/CLAUDE.md" 2>&1 | awk '/lines|tokens/{printf "%s ", $0}' | tr -s ' ')"
+      "$(bash "$ROOT_DIR/scripts/lint-leanness.sh" "$out/AGENTS.md" 2>&1 | awk '/lines|tokens/{printf "%s ", $0}' | tr -s ' ')"
   else
     bad "stacked profiles failed to assemble clean"
   fi

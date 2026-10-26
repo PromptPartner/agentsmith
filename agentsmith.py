@@ -31,7 +31,7 @@ import textwrap
 import threading
 import time
 import tomllib
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 import urllib.error
 import urllib.request
 
@@ -89,6 +89,10 @@ NATIVE_SAFETY = {
     "container": {"claude": {"defaultMode": "acceptEdits"},
                   "codex": {"approval_policy": "on-request", "sandbox_mode": "danger-full-access"}},
 }
+# State key recording the Claude default mode AgentSmith wrote and the value it replaced.
+CLAUDE_MODE_RECORD = "claude_permission_mode"
+# State key listing the configuration files AgentSmith created, so uninstall deletes only those.
+CREATED_RECORD = "created_files"
 CODE_PROFILES = {"software-dev", "devops-setup"}
 DEMO_TEMPLATE_FILES = (
     ".harness/verify.conf",
@@ -335,23 +339,165 @@ def resolve_central_runtime(runtime_record: dict[str, Any]) -> Path:
     return Path(command)
 
 
+# Roots an install may write in, as (spelled, resolved) pairs. While set, every low-level writer
+# refuses a destination that leaves its own root: defence in depth behind the install preflight.
+WRITE_ROOTS: tuple[tuple[Path, Path], ...] | None = None
+
+
+@contextlib.contextmanager
+def contained_writes(roots: Iterable[Path]) -> Iterator[None]:
+    global WRITE_ROOTS
+    prior = WRITE_ROOTS
+    pairs = [(root, root.resolve()) for root in roots]
+    # A nested call (the Git hook writer) extends the active roots with its spelled forms.
+    for spelled, resolved in prior or ():
+        pairs.append((spelled, resolved))
+    WRITE_ROOTS = tuple(dict.fromkeys(pairs))
+    try:
+        yield
+    finally:
+        WRITE_ROOTS = prior
+
+
+def write_root(path: Path) -> Path | None:
+    """The resolved root that spells `path` most specifically, or None when no active root does.
+
+    Each write must stay in its own root: a project file that a link turns into a HOME file
+    stays refused, although HOME is also a root of the same install."""
+    best: tuple[int, Path] | None = None
+    for spelled, resolved in WRITE_ROOTS or ():
+        for base in (spelled, resolved):
+            if path == base or path.is_relative_to(base):
+                if best is None or len(base.parts) > best[0]:
+                    best = (len(base.parts), resolved)
+    return best[1] if best else None
+
+
+def guard_write(path: Path) -> Path:
+    """Refuse a write whose destination resolves, through any link, outside its root."""
+    if WRITE_ROOTS is not None:
+        resolved = path.resolve(strict=False)
+        own = write_root(path)
+        allowed = [own] if own is not None else [resolved_root for _, resolved_root in WRITE_ROOTS]
+        if not any(resolved == root or resolved.is_relative_to(root) for root in allowed):
+            raise CliError(
+                f"Refused to write {path}: a symbolic link makes it resolve outside its install root ({resolved})"
+            )
+    return path
+
+
+def contained_directory_descriptor(directory: Path) -> int | None:
+    """Open `directory` (created if absent) through descriptors that never follow a link.
+
+    The walk starts at the directory's resolved install root and opens each resolved component
+    with O_NOFOLLOW, so a component swapped for a link after the check fails instead of being
+    followed. Returns None where the platform lacks directory descriptors (Windows) or no install
+    roots are active; callers then fall back to path-based writes."""
+    no_follow, directory_flag = getattr(os, "O_NOFOLLOW", 0), getattr(os, "O_DIRECTORY", 0)
+    if WRITE_ROOTS is None or not (no_follow and directory_flag and os.open in os.supports_dir_fd):
+        return None
+    resolved = directory.resolve(strict=False)
+    root = write_root(directory)
+    roots = [root] if root is not None else [resolved_root for _, resolved_root in WRITE_ROOTS]
+    root = next((candidate for candidate in roots if resolved == candidate or resolved.is_relative_to(candidate)), None)
+    if root is None:
+        raise CliError(f"Refused to write in {directory}: it resolves outside its install root ({resolved})")
+    flags = os.O_RDONLY | directory_flag | no_follow
+    root.mkdir(parents=True, exist_ok=True)  # a configured root such as CODEX_HOME may not exist yet
+    descriptor = os.open(root, os.O_RDONLY | directory_flag)
+    try:
+        for part in resolved.relative_to(root).parts:
+            try:
+                child = os.open(part, flags, dir_fd=descriptor)
+            except FileNotFoundError:
+                os.mkdir(part, 0o777, dir_fd=descriptor)
+                child = os.open(part, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+    except OSError as exc:
+        os.close(descriptor)
+        raise CliError(
+            f"Refused to write in {directory}: a folder on the way changed into a link or a file ({exc.strerror})"
+        ) from exc
+    return descriptor
+
+
+def contained_link_problem(root: Path, path: Path) -> str | None:
+    """Explain why `path` is unsafe to write under `root`, or return None.
+
+    Unsafe means the path is, sits under, or contains a symbolic link (dangling or not) that
+    resolves outside the root. Links that stay inside the root are allowed: writers replace a
+    linked file instead of writing through it."""
+    resolved_root = root.resolve()
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        try:
+            relative = path.relative_to(resolved_root)
+        except ValueError:
+            return f"{path} is outside its root {root}"
+    if ".." in relative.parts:
+        return f"{path} escapes its root {root}"
+    current = resolved_root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink() and not current.resolve(strict=False).is_relative_to(resolved_root):
+            return f"symbolic link {current} resolves outside {root}"
+    if not path.resolve(strict=False).is_relative_to(resolved_root):
+        return f"{path} resolves outside {root} through a symbolic link"
+    return None
+
+
+def containment_preflight(destinations: Iterable[tuple[Path, Path]]) -> None:
+    """Refuse the whole install before its first write when any destination escapes its root."""
+    problems = list(dict.fromkeys(
+        problem for root, path in destinations
+        if (problem := contained_link_problem(root, path)) is not None
+    ))
+    if problems:
+        raise CliError(
+            "Install refused before writing anything: " + "; ".join(problems)
+            + ". Remove or repoint the link, or choose another target."
+        )
+
+
+def contained_copy(source: Path, destination: Path) -> None:
+    """Copy bytes and permission bits by atomic replacement, so a linked destination is replaced, not followed."""
+    atomic_write_bytes(destination, source.read_bytes(), stat.S_IMODE(source.stat().st_mode))
+
+
+def contained_mkdir(path: Path) -> None:
+    descriptor = contained_directory_descriptor(guard_write(path))
+    if descriptor is None:
+        path.mkdir(parents=True, exist_ok=True)
+    else:
+        os.close(descriptor)
+
+
 def backup(path: Path) -> Path | None:
     if not path.exists() or not path.is_file():
         return None
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     candidate = path.with_name(f"{path.name}.bak.{stamp}")
     counter = 0
-    while candidate.exists():
+    # lexists: a dangling link at the candidate name must not receive the copy.
+    while os.path.lexists(candidate):
         counter += 1
         candidate = path.with_name(f"{path.name}.bak.{stamp}.{counter}")
-    shutil.copy2(path, candidate)
+    if WRITE_ROOTS is None:
+        shutil.copy2(path, candidate)
+    else:
+        atomic_write_bytes(candidate, path.read_bytes(), stat.S_IMODE(path.stat().st_mode))
     return candidate
 
 
 def atomic_write(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    guard_write(path)
     newline = "\r\n" if path.exists() and "\r\n" in path.read_text(encoding="utf-8", errors="replace") else "\n"
     content = content.replace("\r\n", "\n").replace("\n", newline)
+    if WRITE_ROOTS is not None and write_through_descriptor(path, content.encode("utf-8"), None):
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", newline="", dir=path.parent, delete=False) as handle:
         handle.write(content)
         temp = Path(handle.name)
@@ -374,7 +520,40 @@ def replace_with_retry(source: Path, destination: Path) -> None:
             time.sleep(delays[attempt])
 
 
+def write_through_descriptor(path: Path, content: bytes, mode: int | None) -> bool:
+    """Atomically replace `path` inside a link-free verified folder; False where unsupported.
+
+    The temporary file is created with O_EXCL | O_NOFOLLOW and renamed within the same directory
+    descriptor, so neither the folder nor the final name can redirect the write."""
+    descriptor = contained_directory_descriptor(path.parent)
+    if descriptor is None:
+        return False
+    temporary = f".{path.name}.{secrets.token_hex(8)}.tmp"
+    try:
+        handle_descriptor = os.open(
+            temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=descriptor
+        )
+        try:
+            with os.fdopen(handle_descriptor, "wb") as handle:
+                handle.write(content)
+                handle.flush()
+                if mode is not None:
+                    os.fchmod(handle.fileno(), mode)
+                os.fsync(handle.fileno())
+            os.replace(temporary, path.name, src_dir_fd=descriptor, dst_dir_fd=descriptor)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(temporary, dir_fd=descriptor)
+            raise
+    finally:
+        os.close(descriptor)
+    return True
+
+
 def atomic_write_bytes(path: Path, content: bytes, mode: int | None = None) -> None:
+    guard_write(path)
+    if WRITE_ROOTS is not None and write_through_descriptor(path, content, mode):
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("wb", dir=path.parent, delete=False) as handle:
         handle.write(content)
@@ -441,12 +620,23 @@ def remove_managed_markdown(path: Path, *, dry_run: bool) -> None:
         say(f"DRY RUN — would remove managed instructions from {path}")
         return
     backup(path)
-    begin, end = markers
-    remaining = re.sub(re.escape(begin) + r".*?" + re.escape(end), "", text, count=1, flags=re.S).strip()
-    if remaining:
-        atomic_write(path, remaining + "\n")
+    # Work on bytes so the user's text survives exactly, line endings included. Install wrote the
+    # block with one line break before it (when text preceded it) and one after; remove those too.
+    raw = path.read_bytes()
+    newline = b"\r\n" if b"\r\n" in raw else b"\n"
+    begin, end = (marker.encode("utf-8") for marker in markers)
+    start = raw.find(begin)
+    finish = raw.find(end, start) + len(end)
+    before, after = raw[:start], raw[finish:]
+    if after.startswith(newline):
+        after = after[len(newline):]
+    if before.endswith(newline):
+        before = before[:-len(newline)]
+    remaining = before + after
+    if not remaining:
+        path.unlink()  # the file held nothing but the block
     else:
-        path.unlink()
+        atomic_write_bytes(path, remaining, mode=stat.S_IMODE(path.stat().st_mode))
     ok(f"removed managed instructions from {path}")
 
 
@@ -490,7 +680,130 @@ def detect_profile(target: Path) -> str:
     return "general-admin"
 
 
-def build_instructions(args: argparse.Namespace, profiles: list[str], include_core: bool, recovery: dict[str, str]) -> str:
+PROFILE_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+PROJECT_PROFILE_DIRECTORY = (".agentsmith", "profiles")
+PROJECT_PROFILE_MAX_BYTES = 256 * 1024
+
+
+def project_profile_relative(name: str) -> str:
+    return "/".join((*PROJECT_PROFILE_DIRECTORY, f"{name}.md"))
+
+
+def project_profile_paths(installation: dict[str, Any]) -> set[str]:
+    """Target-relative paths of the project profiles an installation records."""
+    return {
+        project_profile_relative(profile.removeprefix("project:"))
+        for profile in installation.get("profiles", [])
+        if isinstance(profile, str) and profile.startswith("project:")
+    }
+
+
+def parse_profile_selector(selector: str) -> tuple[str | None, str]:
+    """Split a --profile value into (kind, name); kind is builtin, project, or None for a bare name."""
+    kind, separator, name = selector.partition(":")
+    if not separator:
+        kind, name = None, selector
+    elif kind not in {"builtin", "project"}:
+        raise CliError(f"Profile selector {selector!r} is not valid; use NAME, builtin:NAME, or project:NAME")
+    if not PROFILE_NAME.fullmatch(name):
+        raise CliError(
+            f"Profile name {name!r} in {selector!r} is not a plain identifier "
+            "(lower-case letters, digits, '-' and '_', starting with a letter or digit)"
+        )
+    return kind, name
+
+
+def read_project_profile(target: Path, name: str) -> str:
+    """Read <target>/.agentsmith/profiles/<name>.md without following any link; regular files only."""
+    relative = project_profile_relative(name)
+    display = f"project:{name} ({relative})"
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    directory_flag = getattr(os, "O_DIRECTORY", 0)
+    descriptor = -1
+    directories: list[int] = []
+    try:
+        if no_follow and directory_flag and os.open in os.supports_dir_fd:
+            flags = os.O_RDONLY | directory_flag | no_follow
+            directories.append(os.open(target, flags))
+            for part in PROJECT_PROFILE_DIRECTORY:
+                directories.append(os.open(part, flags, dir_fd=directories[-1]))
+            # O_NONBLOCK: opening a named pipe for reading would otherwise wait for a writer forever.
+            file_flags = os.O_RDONLY | no_follow | getattr(os, "O_NONBLOCK", 0)
+            descriptor = os.open(f"{name}.md", file_flags, dir_fd=directories[-1])
+        else:
+            # Windows has no directory descriptors: refuse any link or junction on the way, then
+            # pin the opened file by identity so a swap after the check is detected.
+            current = target
+            for part in (*PROJECT_PROFILE_DIRECTORY, f"{name}.md"):
+                current = current / part
+                details = os.lstat(current)
+                if stat.S_ISLNK(details.st_mode) or getattr(details, "st_file_attributes", 0) & 0x400:
+                    raise CliError(f"Project profile {display} refused: {current} is a link")
+            if not stat.S_ISREG(details.st_mode):
+                raise CliError(f"Project profile {display} is not a regular file")
+            descriptor = os.open(current, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+            opened = os.fstat(descriptor)
+            if (opened.st_dev, opened.st_ino) != (details.st_dev, details.st_ino):
+                raise CliError(f"Project profile {display} changed while it was opened")
+        details = os.fstat(descriptor)
+        if not stat.S_ISREG(details.st_mode):
+            raise CliError(f"Project profile {display} is not a regular file")
+        if details.st_size > PROJECT_PROFILE_MAX_BYTES:
+            raise CliError(f"Project profile {display} is larger than {PROJECT_PROFILE_MAX_BYTES} bytes")
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = -1
+            payload = handle.read(PROJECT_PROFILE_MAX_BYTES + 1)
+    except FileNotFoundError as exc:
+        raise CliError(f"No project profile {display}: create {target / relative} or pick a built-in profile") from exc
+    except OSError as exc:
+        # ELOOP / ENOTDIR come from a link where a folder or file was expected.
+        raise CliError(f"Project profile {display} refused: {exc.strerror or exc} (links and non-regular files are not read)") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        for opened_directory in reversed(directories):
+            os.close(opened_directory)
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise CliError(f"Project profile {display} is not UTF-8 text") from exc
+    if any(marker in text for marker in (BEGIN, END, LEGACY_BEGIN, OLDER_BEGIN, OLDER_END, "<!-- BEGIN AGENTSMITH", "<!-- END AGENTSMITH")):
+        raise CliError(f"Project profile {display} contains an AgentSmith managed-block marker; remove it")
+    return text
+
+
+def resolve_profiles(selectors: list[str], target: Path | None) -> list[tuple[str, str]]:
+    """Resolve --profile selectors to (recorded selector, source text).
+
+    A bare name prefers the built-in profile, so existing installs never change meaning; it falls
+    back to the project profile only when no built-in has that name. Built-ins are recorded by bare
+    name and project profiles as project:NAME, so a later built-in cannot silently take over."""
+    resolved: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for selector in selectors:
+        kind, name = parse_profile_selector(selector)
+        builtin = ROOT / "profiles" / f"{name}.md"
+        if kind == "project" or (kind is None and not builtin.is_file() and target is not None
+                                 and os.path.lexists(target.joinpath(*PROJECT_PROFILE_DIRECTORY, f"{name}.md"))):
+            if target is None:
+                raise CliError(f"Profile {selector!r} is project-owned; --global installs accept built-in profiles only")
+            recorded, text = f"project:{name}", read_project_profile(target, name)
+        else:
+            if not builtin.is_file():
+                available = ", ".join(path.stem for path in sorted((ROOT / "profiles").glob("*.md")))
+                raise CliError(f"No such profile '{selector}'. Available: {available}; or add .agentsmith/profiles/{name}.md and use project:{name}")
+            recorded, text = name, builtin.read_text(encoding="utf-8")
+        if recorded in seen:
+            raise CliError(f"Profile {recorded} is selected more than once (from {selector!r})")
+        seen.add(recorded)
+        resolved.append((recorded, text))
+    return resolved
+
+
+def build_instructions(
+    args: argparse.Namespace, profiles: list[str], include_core: bool, recovery: dict[str, str],
+    target: Path | None = None,
+) -> str:
     operator_name = args.operator_name or recovery.get("operator_name") or "the project lead"
     operator_role = args.operator_role or recovery.get("operator_role") or "owner / decision-maker"
     operator_bio = args.operator_bio or recovery.get("operator_bio") or (
@@ -499,18 +812,16 @@ def build_instructions(args: argparse.Namespace, profiles: list[str], include_co
     )
     tracker = args.tracker or recovery.get("tracker") or "your project's tracker (or a KNOWN-ISSUES.md at the repo root)"
     tracker_writes = args.tracker_writes or recovery.get("tracker_writes") or "ask"
+    resolved = resolve_profiles(profiles, target)
+    profiles = [selector for selector, _ in resolved]
     parts = [BEGIN, f"<!-- Generated. Profiles: {','.join(profiles) or 'none'}. core={str(include_core).lower()}. Edit core/ or profiles/, then re-run setup. -->", ""]
     if include_core:
         for source in sorted((ROOT / "core").glob("*.md")):
             parts.extend((source.read_text(encoding="utf-8").rstrip(), "", ""))
     if profiles:
         parts.extend(("---", "", f"# Work-Type Profile(s): {','.join(profiles)}", ""))
-        for profile in profiles:
-            source = ROOT / "profiles" / f"{profile}.md"
-            if not source.exists():
-                available = ", ".join(p.stem for p in sorted((ROOT / "profiles").glob("*.md")))
-                raise CliError(f"No such profile '{profile}'. Available: {available}")
-            parts.extend((source.read_text(encoding="utf-8").rstrip(), "", ""))
+        for _, text in resolved:
+            parts.extend((text.rstrip(), "", ""))
     parts.append(END)
     replacements = {
         "OPERATOR_NAME": operator_name,
@@ -525,10 +836,63 @@ def build_instructions(args: argparse.Namespace, profiles: list[str], include_co
     return re.sub(r"\{\{([A-Z_]+)\}\}", r"[TODO: set \1]", rendered)
 
 
-def merge_json(path: Path, mutation: Any, *, dry_run: bool) -> None:
+CLAUDE_IMPORT_LINE = "@AGENTS.md"
+
+
+def claude_import_block(block: str) -> str:
+    """Claude's project block: the canonical block's metadata plus an import of AGENTS.md.
+
+    Claude Code reads AGENTS.md only when no CLAUDE.md exists in the folder chain, and an existing
+    CLAUDE.md would otherwise need a second full copy of the rules. The documented @AGENTS.md
+    import (code.claude.com/docs/en/memory) keeps AGENTS.md the one rulebook in a project."""
+    metadata = next((line for line in block.splitlines() if line.startswith("<!-- Generated. Profiles: ")), None)
+    if metadata is None:
+        raise CliError("Managed instruction block has no generator metadata")
+    return "\n".join((
+        BEGIN, metadata,
+        "<!-- Claude Code loads the project rules from AGENTS.md through the import below. -->",
+        "", CLAUDE_IMPORT_LINE, END,
+    ))
+
+
+def project_instruction_block(path: Path, target: Path, block: str) -> str:
+    """The block a project instruction file carries: the full rules, or Claude's import."""
+    return claude_import_block(block) if path == target / "CLAUDE.md" else block
+
+
+def note_created(path: Path, state_root: Path, *, dry_run: bool) -> None:
+    """Record, before the first write, whether AgentSmith creates `path`.
+
+    The record always exists after an install, so uninstall can tell a file it created from a
+    file the user had before, even when both end up empty."""
+    if dry_run:
+        return
+    created = load_state(state_root).get(CREATED_RECORD)
+    known = created if isinstance(created, list) else []
+    updated = [*known, str(path)] if not os.path.lexists(path) and str(path) not in known else known
+    if updated is not created:
+        record_state(state_root, CREATED_RECORD, updated, dry_run=False)
+
+
+def remove_emptied_file(path: Path, state_root: Path | None, empty: str) -> None:
+    """Delete a configuration file that uninstall emptied, but only if AgentSmith created it."""
+    created = load_state(state_root).get(CREATED_RECORD) if state_root is not None else None
+    if not isinstance(created, list):
+        path.unlink()  # state written before 0.5.0 has no creation record; keep that behaviour
+        return
+    if str(path) in created:
+        path.unlink()
+        record_state(state_root, CREATED_RECORD, [item for item in created if item != str(path)], dry_run=False)
+    else:
+        atomic_write(path, empty)
+
+
+def merge_json(path: Path, mutation: Any, *, dry_run: bool, state_root: Path | None = None) -> None:
     if dry_run:
         say(f"DRY RUN — would reconcile {path}")
         return
+    if state_root is not None:
+        note_created(path, state_root, dry_run=False)
     original = path.read_text(encoding="utf-8") if path.exists() else ""
     try:
         data = json.loads(original) if original.strip() else {}
@@ -650,7 +1014,7 @@ def install_default_statuslines(
     def activate(current: dict[str, Any]) -> None:
         current["statusLine"] = value
 
-    merge_json(settings_path, activate, dry_run=False)
+    merge_json(settings_path, activate, dry_run=False, state_root=home_dir())
     owners = prior.get("owners", []) if isinstance(prior, dict) else []
     if not isinstance(owners, list):
         owners = []
@@ -711,7 +1075,7 @@ def remove_default_statuslines(
             if data:
                 atomic_write(settings_path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
             else:
-                settings_path.unlink()
+                remove_emptied_file(settings_path, home_dir(), "{}\n")
 
     files = prior.get("files", {})
     if isinstance(files, dict) and (owned_value_active or "statusLine" not in data):
@@ -1420,7 +1784,9 @@ def toml_value(value: Any) -> str:
     raise TypeError(type(value).__name__)
 
 
-def reconcile_codex_toml(path: Path, safety: str | None, mcp: dict[str, Any], *, dry_run: bool) -> None:
+def reconcile_codex_toml(
+    path: Path, safety: str | None, mcp: dict[str, Any], *, dry_run: bool, state_root: Path | None = None
+) -> None:
     old = path.read_text(encoding="utf-8") if path.exists() else ""
     managed_pattern = re.compile(rf"(?ms)^\s*{re.escape(TEXT_BEGIN)}\n.*?^{re.escape(TEXT_END)}\s*\n?")
     old_match = managed_pattern.search(old)
@@ -1467,6 +1833,8 @@ def reconcile_codex_toml(path: Path, safety: str | None, mcp: dict[str, Any], *,
         tomllib.loads(rendered)
     except Exception as exc:
         raise CliError(f"Refusing to write invalid generated TOML {path}: {exc}") from exc
+    if state_root is not None:
+        note_created(path, state_root, dry_run=False)
     if old:
         backup(path)
     atomic_write(path, rendered)
@@ -1502,6 +1870,7 @@ def install_skills(target: Path, agents: list[str], *, force: bool, dry_run: boo
         }
 
     def replace_directory(source: Path, destination: Path) -> None:
+        guard_write(destination.parent)
         if destination.is_symlink():
             destination.unlink()
         elif destination.is_dir():
@@ -1518,7 +1887,7 @@ def install_skills(target: Path, agents: list[str], *, force: bool, dry_run: boo
     if dry_run:
         say(f"DRY RUN — would reconcile canonical skills in {canonical}")
     else:
-        canonical.mkdir(parents=True, exist_ok=True)
+        contained_mkdir(canonical)
         for source in sources:
             destination = canonical / source.name
             recorded = recorded_skill(source.name)
@@ -1550,7 +1919,7 @@ def install_skills(target: Path, agents: list[str], *, force: bool, dry_run: boo
         if dry_run:
             say(f"DRY RUN — would regenerate owned Claude skill adapters in {adapter}")
         else:
-            adapter.mkdir(parents=True, exist_ok=True)
+            contained_mkdir(adapter)
             for name in sorted(owned_names):
                 source = canonical / name
                 if not source.is_dir():
@@ -1581,7 +1950,7 @@ def install_adapters(target: Path, agents: list[str], *, dry_run: bool) -> None:
             if isinstance(current, str):
                 current = [current]
             context["fileName"] = list(dict.fromkeys([*current, "AGENTS.md"]))
-        merge_json(gemini_path, gemini, dry_run=dry_run)
+        merge_json(gemini_path, gemini, dry_run=dry_run, state_root=target)
         prior_owned = load_state(target).get("gemini_context_added", False)
         record_state(target, "gemini_context_added", prior_owned or "AGENTS.md" not in existing_names, dry_run=dry_run)
     if "aider" in agents:
@@ -1625,25 +1994,22 @@ def copy_runtime(target: Path, *, dry_run: bool) -> Path:
     demo_source = demo_template_path()
     destination = target / ".agentsmith" / "agentsmith.py"
     if not dry_run:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(ROOT / "agentsmith.py", destination)
+        # contained_copy replaces a linked destination instead of writing through it.
+        contained_copy(ROOT / "agentsmith.py", destination)
         config_destination = destination.parent / "config"
-        config_destination.mkdir(parents=True, exist_ok=True)
         for source in (REGISTRY_PATH, PROFILE_CATALOG_PATH, WIZARD_LOCALES_PATH):
-            shutil.copy2(source, config_destination / source.name)
+            contained_copy(source, config_destination / source.name)
         for helper_name in ("native_launcher.py", "evaluate.py", "work_graph.py",
                             "windows_verifier_sandbox.py", "project_memory.py", "config_audit.py"):
             helper_source = ROOT / helper_name
             if helper_source.exists():
-                shutil.copy2(helper_source, destination.parent / helper_name)
+                contained_copy(helper_source, destination.parent / helper_name)
         demo_destination = destination.parent / "templates" / "first-loop"
         for relative in DEMO_TEMPLATE_FILES:
             source = demo_source / relative
             if not source.is_file() or source.is_symlink():
                 raise CliError(f"Bundled first-loop template file is missing or unsafe: {source}")
-            copied = demo_destination / relative
-            copied.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, copied)
+            contained_copy(source, demo_destination / relative)
         posix_launcher = destination.parent / "agentsmith"
         windows_launcher = destination.parent / "agentsmith.cmd"
         atomic_write(posix_launcher, textwrap.dedent("""\
@@ -1676,14 +2042,102 @@ def copy_runtime(target: Path, *, dry_run: bool) -> Path:
     return destination
 
 
+def claude_settings_root(target: Path, global_mode: bool) -> Path:
+    """Where Claude's managed default mode lives: user settings for --global, else the project's.
+
+    A project install must not change the mode of every other project, so it writes the shared
+    project file <target>/.claude/settings.json that Claude Code documents for team settings."""
+    return home_dir() if global_mode else target
+
+
+def claude_permission_mode(path: Path) -> tuple[dict[str, Any], Any]:
+    """Return Claude settings and their permissions.defaultMode (None when absent or null)."""
+    if not path.exists():
+        return {}, None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8") or "{}")
+    except json.JSONDecodeError as exc:
+        raise CliError(f"Refusing to modify invalid JSON {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise CliError(f"Refusing to replace non-object Claude settings in {path}")
+    permissions = data.get("permissions", {})
+    return data, permissions.get("defaultMode") if isinstance(permissions, dict) else None
+
+
+def write_claude_permission_mode(path: Path, state_root: Path, mode: str, *, dry_run: bool) -> None:
+    """Set Claude's default mode and record what it replaced, so uninstall can put it back."""
+    data, current = claude_permission_mode(path)
+    record = load_state(state_root).get(CLAUDE_MODE_RECORD)
+    if isinstance(record, dict) and record.get("value") == current:
+        prior, created = record.get("prior"), bool(record.get("created"))
+        shape = {key: record[key] for key in ("prior_present", "permissions_present") if key in record}
+    else:
+        prior, created = current, not path.exists()
+        permissions = data.get("permissions")
+        # A missing key and an explicit null are different settings; uninstall restores either.
+        shape = {"prior_present": isinstance(permissions, dict) and "defaultMode" in permissions,
+                 "permissions_present": "permissions" in data}
+
+    def claude_settings(data: dict[str, Any]) -> None:
+        permissions = data.setdefault("permissions", {})
+        if not isinstance(permissions, dict):
+            raise CliError("Refusing to replace non-object Claude permissions configuration")
+        permissions["defaultMode"] = mode
+
+    merge_json(path, claude_settings, dry_run=dry_run, state_root=state_root)
+    record_state(state_root, CLAUDE_MODE_RECORD, {"value": mode, "prior": prior, "created": created, **shape},
+                 dry_run=dry_run)
+
+
+def remove_claude_permission_mode(path: Path, state_root: Path, *, dry_run: bool) -> None:
+    """Undo only the default mode the install record says AgentSmith wrote, and only if unchanged."""
+    state = load_state(state_root)
+    record = state.get(CLAUDE_MODE_RECORD)
+    legacy = state.get("native_safety", {}).get("claude") if isinstance(state.get("native_safety"), dict) else None
+    if isinstance(record, dict) and isinstance(record.get("value"), str):
+        written, prior, created = record["value"], record.get("prior"), bool(record.get("created"))
+        prior_present = bool(record.get("prior_present", prior is not None))
+        permissions_present = bool(record.get("permissions_present", prior_present))
+    elif legacy in SAFETY_MODES:
+        # Releases before 0.5.0 recorded only the mode, not what it replaced or whether the file existed.
+        written, prior, created = NATIVE_SAFETY[legacy]["claude"]["defaultMode"], None, False
+        prior_present = permissions_present = False
+    else:
+        return
+    if path.is_file():
+        data, current = claude_permission_mode(path)
+        if current != written:
+            warn(f"Claude's default mode in {path} changed since install ({current!r}); preserved")
+        elif prior != written or not prior_present:
+            permissions = data["permissions"]
+            if prior_present:
+                permissions["defaultMode"] = prior
+            else:
+                permissions.pop("defaultMode", None)
+                if not permissions and not permissions_present:
+                    data.pop("permissions", None)
+            if dry_run:
+                say(f"DRY RUN — would restore Claude's default mode in {path}")
+                return
+            backup(path)
+            if data or not created:
+                atomic_write(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+            else:
+                path.unlink()
+    if not dry_run and CLAUDE_MODE_RECORD in state:
+        state.pop(CLAUDE_MODE_RECORD)
+        atomic_write(state_path(state_root), json.dumps(state, indent=2, ensure_ascii=False) + "\n")
+
+
 def install_native_config(target: Path, agents: list[str], args: argparse.Namespace) -> None:
     selected_mcp = mcp_source(csv(args.with_mcp))
     prior_safety = getattr(args, "prior_managed_safety", {})
+    claude_root = claude_settings_root(target, args.global_mode)
     for agent_id in agents:
         prior = prior_safety.get(agent_id)
         if prior in {"trusted", "container"} and args.safety == "cautious":
             destination = (
-                home_dir() / ".claude" / "settings.json"
+                claude_root / ".claude" / "settings.json"
                 if agent_id == "claude"
                 else codex_home() / "config.toml"
             )
@@ -1698,30 +2152,33 @@ def install_native_config(target: Path, agents: list[str], args: argparse.Namesp
                     f"cautious; the existing config will be backed up: {destination}"
                 )
     if "claude" in agents and not args.assemble_only:
-        def claude_settings(data: dict[str, Any]) -> None:
-            permissions = data.setdefault("permissions", {})
-            if not isinstance(permissions, dict):
-                raise CliError("Refusing to replace non-object Claude permissions configuration")
-            permissions["defaultMode"] = NATIVE_SAFETY[args.safety]["claude"]["defaultMode"]
-        merge_json(home_dir() / ".claude" / "settings.json", claude_settings, dry_run=args.dry_run)
+        write_claude_permission_mode(
+            claude_root / ".claude" / "settings.json", claude_root,
+            NATIVE_SAFETY[args.safety]["claude"]["defaultMode"], dry_run=args.dry_run,
+        )
     if "codex" in agents and not args.assemble_only:
         if args.safety == "container" and not detect_container():
             warn("WARNING: --safety container turns off the Codex sandbox, but no container was detected; "
                  "on this machine Codex would run commands without a sandbox")
-        reconcile_codex_toml(codex_home() / "config.toml", args.safety, {}, dry_run=args.dry_run)
+        reconcile_codex_toml(codex_home() / "config.toml", args.safety, {}, dry_run=args.dry_run, state_root=home_dir())
     if not args.assemble_only:
         install_default_statuslines(agents, target, args.global_mode, dry_run=args.dry_run)
     if not args.assemble_only and not args.dry_run:
-        state = load_state(home_dir())
-        native_safety = state.get("native_safety", {})
-        if not isinstance(native_safety, dict):
-            native_safety = {}
-        # Only Claude and Codex have a safety setting; earlier releases recorded every agent.
-        native_safety = {key: value for key, value in native_safety.items() if key in {"claude", "codex"}}
-        for agent_id in agents:
-            if agent_id in {"claude", "codex"}:
+        # Record each mode beside the settings it governs: Codex's config is always user-level,
+        # Claude's is project-level for a project install.
+        roots = [(home_dir(), {"codex"} | ({"claude"} if args.global_mode else set()))]
+        if not args.global_mode and "claude" in agents:
+            roots.append((target, {"claude"}))
+        for state_root, owned in roots:
+            selected = [agent_id for agent_id in agents if agent_id in owned]
+            native_safety = load_state(state_root).get("native_safety", {})
+            if not isinstance(native_safety, dict):
+                native_safety = {}
+            # Only Claude and Codex have a safety setting; earlier releases recorded every agent.
+            native_safety = {key: value for key, value in native_safety.items() if key in {"claude", "codex"}}
+            for agent_id in selected:
                 native_safety[agent_id] = args.safety
-        record_state(home_dir(), "native_safety", native_safety, dry_run=False)
+            record_state(state_root, "native_safety", native_safety, dry_run=False)
     if selected_mcp and not args.global_mode:
         if "claude" in agents:
             mcp_path = target / ".mcp.json"
@@ -1735,12 +2192,12 @@ def install_native_config(target: Path, agents: list[str], args: argparse.Namesp
                 servers = data.setdefault("mcpServers", {})
                 for name, value in selected_mcp.items():
                     servers.setdefault(name, value)
-            merge_json(mcp_path, claude_mcp, dry_run=args.dry_run)
+            merge_json(mcp_path, claude_mcp, dry_run=args.dry_run, state_root=target)
             prior_state = load_state(target).get("claude_mcp_added", [])
             added = sorted(set(prior_state) | {name for name in selected_mcp if name not in existing_servers})
             record_state(target, "claude_mcp_added", added, dry_run=args.dry_run)
         if "codex" in agents:
-            reconcile_codex_toml(target / ".codex" / "config.toml", None, selected_mcp, dry_run=args.dry_run)
+            reconcile_codex_toml(target / ".codex" / "config.toml", None, selected_mcp, dry_run=args.dry_run, state_root=target)
 
 
 def install_claude_plugin_packs(agents: list[str], requested: str | None, *, dry_run: bool) -> None:
@@ -2009,7 +2466,7 @@ def checkout_planned_release(remote: str, release: dict[str, str], destination: 
 def validate_installation_manifest(state: dict[str, Any]) -> dict[str, Any]:
     allowed_state = {
         "schema_version", "installation", "gemini_context_added", "native_statuslines",
-        "native_safety", "claude_mcp_added", "skills_installed", "update_policy",
+        "native_safety", "claude_mcp_added", "skills_installed", "update_policy", CLAUDE_MODE_RECORD, CREATED_RECORD,
     }
     unknown_state = sorted(set(state) - allowed_state)
     if unknown_state:
@@ -2057,6 +2514,10 @@ def validate_installation_manifest(state: dict[str, Any]) -> dict[str, Any]:
         or len(profiles) != len(set(profiles))
     ):
         raise CliError("Installation manifest profiles field must contain unique profile names")
+    for profile in profiles:
+        kind, name = parse_profile_selector(profile)
+        if kind == "builtin" or (kind == "project" and installation["scope"] != "project"):
+            raise CliError(f"Installation manifest profile {profile!r} is not a recorded selector for this scope")
     for name in ("source", "safety", "operator", "tracker", "capabilities"):
         if not isinstance(installation[name], dict):
             raise CliError(f"Installation manifest {name} field must be an object")
@@ -2353,6 +2814,8 @@ def installation_fingerprints(
         for relative in (
             "AGENTS.md", "CLAUDE.md", *RUNTIME_FILES, ".agentsmith/autonomous-run.py", ".agentsmith/state.json",
             ".harness/templates", ".harness/verify.conf",
+            # A project profile is an input to the staged install, so the plan authenticates it.
+            *sorted(project_profile_paths(installation)),
         ):
             add("target", relative)
         adapters = {
@@ -2364,11 +2827,13 @@ def installation_fingerprints(
         for agent_id in installation["agents"]:
             if agent_id in adapters:
                 add("target", adapters[agent_id])
-        if "memory_startup" in installation.get("capabilities", {}):
-            if "claude" in installation["agents"]:
-                add("target", ".claude/settings.json")
-            if "codex" in installation["agents"]:
-                add("target", ".codex/hooks.json")
+        project_claude_settings = "claude" in installation["agents"] and (
+            not installation["assemble_only"] or "memory_startup" in installation.get("capabilities", {})
+        )
+        if project_claude_settings:
+            add("target", ".claude/settings.json")
+        if "memory_startup" in installation.get("capabilities", {}) and "codex" in installation["agents"]:
+            add("target", ".codex/hooks.json")
         if installation["capabilities"].get("mcp"):
             if "claude" in installation["agents"]:
                 add("target", ".mcp.json")
@@ -2934,6 +3399,12 @@ def translate_root_paths(
         ):
             replacements.add((old, new))
             replacements.add((json.dumps(old, ensure_ascii=False)[1:-1], json.dumps(new, ensure_ascii=False)[1:-1]))
+            # JSON written with the default ensure_ascii spells non-ASCII as \uXXXX escapes. Only an
+            # old path that actually has escapes gets that pair; otherwise it would compete with
+            # the literal pair for the same text.
+            escaped = json.dumps(old)[1:-1]
+            if escaped != json.dumps(old, ensure_ascii=False)[1:-1]:
+                replacements.add((escaped, json.dumps(new)[1:-1]))
     for old, new in sorted(replacements, key=lambda item: len(item[0]), reverse=True):
         text = text.replace(old, new)
     return text.encode("utf-8")
@@ -3019,11 +3490,18 @@ def allowed_update_path(root_name: str, relative: str, installation: dict[str, A
             ".gemini/settings.json", ".continue/rules/agentsmith.md", ".mcp.json", ".codex/config.toml",
             *RUNTIME_FILES, ".agentsmith/autonomous-run.py", ".agentsmith/state.json",
         }
+        if not installation or "claude" in installation["agents"] and (
+            not installation.get("assemble_only") or "memory_startup" in installation.get("capabilities", {})
+        ):
+            # Project hooks and, since 0.5.0, a project install's Claude default mode.
+            exact.add(".claude/settings.json")
         if not installation or "memory_startup" in installation.get("capabilities", {}):
-            if not installation or "claude" in installation["agents"]:
-                exact.add(".claude/settings.json")
             if not installation or "codex" in installation["agents"]:
                 exact.add(".codex/hooks.json")
+        if installation:
+            exact |= project_profile_paths(installation)
+        elif re.fullmatch(r"\.agentsmith/profiles/[a-z0-9][a-z0-9_-]{0,63}\.md", relative):
+            return True
         prefixes = (".harness/templates/", ".agents/skills/", ".claude/skills/")
         return relative in exact or relative.startswith(prefixes)
     if root_name == "home":
@@ -3141,6 +3619,7 @@ def stage_planned_update(
             )
     refresh_translated_statusline_hashes(plan, translated_files)
     proposed: list[tuple[str, str, bytes | None, int | None]] = []
+    owned_by_project = project_profile_paths(plan["installation"]) if plan["scope"] == "project" else set()
     for root_name, files in translated_files.items():
         for relative, (content, mode) in files.items():
             actual = safe_update_path(Path(plan["roots"][root_name]), relative)
@@ -3148,6 +3627,8 @@ def stage_planned_update(
                 raise CliError(f"Update refused to replace non-file path {actual}")
             current = actual.read_bytes() if actual.is_file() else None
             current_mode = actual.stat().st_mode & 0o777 if actual.is_file() else None
+            if root_name == "target" and relative in owned_by_project and (current, current_mode) != (content, mode):
+                raise CliError(f"Release attempted to change the project-owned profile {relative}")
             if current != content or current_mode != mode:
                 proposed.append((root_name, relative, content, mode))
     staged_paths = {
@@ -3380,7 +3861,8 @@ def validate_post_update_health(plan: dict[str, Any]) -> None:
 
     if not installation["assemble_only"]:
         for agent_id, expected_safety in installation["safety"].items():
-            if inspect_safety(agent_id, expected=expected_safety)["state"] != expected_safety:
+            claude_root = target if plan["scope"] == "project" else None
+            if inspect_safety(agent_id, expected=expected_safety, claude_root=claude_root)["state"] != expected_safety:
                 raise CliError(f"Post-update health check failed: native safety does not match the manifest for {agent_id}")
 
     if "effects" in installed and installed["effects"] != capability_effects(installation["capabilities"]):
@@ -3661,11 +4143,18 @@ def reassemble_managed_targets(args: argparse.Namespace) -> None:
             warn(f"{path}: managed block has no generator metadata; rerun install with an explicit profile")
             continue
         profiles = [] if metadata.group(1) == "none" else metadata.group(1).split(",")
-        missing = [profile for profile in profiles if not (ROOT / "profiles" / f"{profile}.md").exists()]
-        if missing:
-            warn(f"{path}: updated harness no longer contains profile(s) {', '.join(missing)}; skipped")
+        profile_target = target if path in project_candidates else None
+        try:
+            resolve_profiles(profiles, profile_target)
+        except CliError as exc:
+            warn(f"{path}: profile(s) {', '.join(profiles)} cannot be assembled ({exc}); skipped")
             continue
-        block = build_instructions(args, profiles, metadata.group(2) == "true", recover_identity([path]))
+        identity_sources = [target / "AGENTS.md", path] if path in project_candidates else [path]
+        block = build_instructions(
+            args, profiles, metadata.group(2) == "true", recover_identity(identity_sources), profile_target
+        )
+        if path in project_candidates:
+            block = project_instruction_block(path, target, block)
         reconcile_markdown(path, block, force=False, dry_run=False)
         refreshed += 1
     if refreshed:
@@ -3689,7 +4178,7 @@ def scaffold_design_system(target: Path, source: str | None, *, dry_run: bool) -
         return
     validate_design_system_source(source)
     destination = target / "DESIGN.md"
-    if destination.exists():
+    if os.path.lexists(destination):
         ok("DESIGN.md already present; left unchanged")
         return
     if dry_run:
@@ -3708,7 +4197,7 @@ def scaffold_design_system(target: Path, source: str | None, *, dry_run: bool) -
             return
         except (OSError, UnicodeError, urllib.error.URLError, CliError) as exc:
             warn(f"could not fetch catalog:{slug} ({exc}); using the bundled template")
-    shutil.copy2(ROOT / "templates" / "design-system.md", destination)
+    contained_copy(ROOT / "templates" / "design-system.md", destination)
     if source == "generate":
         ok("added DESIGN.md template; generate its contents with the project's approved design workflow")
     else:
@@ -3823,7 +4312,8 @@ def install_hooks(target: Path, agents: list[str], args: argparse.Namespace) -> 
     if getattr(args, "without_memory_startup", False):
         for agent_id, path in startup_paths:
             if agent_id in agents:
-                remove_owned_hooks(path, dry_run=args.dry_run, hook_name="memory-startup")
+                remove_owned_hooks(path, dry_run=args.dry_run, hook_name="memory-startup",
+                                   state_root=home_dir() if args.global_mode else target)
     if not (args.with_handoff_hooks or args.with_ui_design_hook or args.with_hooks or args.with_memory_startup):
         return
     runtime = copy_runtime(home_dir() if args.global_mode else target, dry_run=args.dry_run)
@@ -3832,36 +4322,59 @@ def install_hooks(target: Path, agents: list[str], args: argparse.Namespace) -> 
             if agent_id in agents:
                 def startup_hook(data: dict[str, Any]) -> None:
                     append_unique_hook(data, "SessionStart", runtime_command(runtime, "hook", "memory-startup", "--memory-scope", "global" if args.global_mode else "project"), "^(startup|resume)$")
-                merge_json(path, startup_hook, dry_run=args.dry_run)
+                merge_json(path, startup_hook, dry_run=args.dry_run, state_root=home_dir() if args.global_mode else target)
     if args.with_handoff_hooks and "claude" in agents:
         def claude(data: dict[str, Any]) -> None:
             append_unique_hook(data, "UserPromptSubmit", runtime_command(runtime, "hook", "handoff-on-keyword"))
             append_unique_hook(data, "Stop", runtime_command(runtime, "hook", "context-budget-nudge"))
-        merge_json(home_dir() / ".claude" / "settings.json", claude, dry_run=args.dry_run)
+        merge_json(home_dir() / ".claude" / "settings.json", claude, dry_run=args.dry_run, state_root=home_dir())
     if args.with_handoff_hooks and "codex" in agents:
         def codex(data: dict[str, Any]) -> None:
             append_unique_hook(data, "UserPromptSubmit", runtime_command(runtime, "hook", "handoff-on-keyword"))
-        merge_json(codex_home() / "hooks.json", codex, dry_run=args.dry_run)
+        merge_json(codex_home() / "hooks.json", codex, dry_run=args.dry_run, state_root=home_dir())
     if args.with_ui_design_hook:
         for agent, path in (("claude", home_dir() / ".claude" / "settings.json"), ("codex", codex_home() / "hooks.json")):
             if agent in agents:
                 def ui(data: dict[str, Any]) -> None:
                     append_unique_hook(data, "PreToolUse", runtime_command(runtime, "hook", "ui-design-reminder"), "^(Edit|Write|apply_patch)$")
-                merge_json(path, ui, dry_run=args.dry_run)
+                merge_json(path, ui, dry_run=args.dry_run, state_root=home_dir())
     if args.with_hooks and not args.global_mode:
         install_git_hooks(target, runtime, dry_run=args.dry_run)
     elif args.with_hooks:
         warn("--with-hooks is project-scoped and was ignored with --global")
 
 
+def git_hooks_location(target: Path) -> tuple[Path, Path] | None:
+    """Git's hooks folder for the target and the root it must stay in, or None outside a repository.
+
+    The root is the target itself or the repository's common Git folder: a linked worktree keeps
+    its hooks in the main checkout. A core.hooksPath elsewhere (for example a shared folder that
+    every repository uses) is outside both, so the install refuses it instead of writing there."""
+    if not shutil.which("git"):
+        return None
+    result = subprocess.run(
+        ["git", "-C", str(target), "rev-parse", "--git-path", "hooks", "--git-common-dir"],
+        text=True, capture_output=True, check=False,
+    )
+    lines = result.stdout.splitlines()
+    if result.returncode or len(lines) != 2:
+        return None
+    hooks, common = (Path(line.strip()) for line in lines)
+    hooks = hooks if hooks.is_absolute() else target / hooks
+    common = common if common.is_absolute() else target / common
+    try:
+        hooks.relative_to(target)
+        return hooks, target
+    except ValueError:
+        return hooks, common
+
+
 def install_git_hooks(target: Path, runtime: Path, *, dry_run: bool) -> None:
-    git_hooks = subprocess.run(["git", "-C", str(target), "rev-parse", "--git-path", "hooks"], text=True, capture_output=True)
-    if git_hooks.returncode:
+    location = git_hooks_location(target)
+    if location is None:
         warn("--with-hooks skipped: target is not a git repository")
         return
-    hooks = Path(git_hooks.stdout.strip())
-    if not hooks.is_absolute():
-        hooks = target / hooks
+    hooks, hooks_root = location
     # Git supplies its own POSIX launcher on Windows; no separately installed Git Bash/WSL is
     # required. The hook delegates immediately to the exact interpreter that ran setup.
     invocation = runtime_command(runtime, "hook", "git-pre-commit")
@@ -3870,11 +4383,13 @@ def install_git_hooks(target: Path, runtime: Path, *, dry_run: bool) -> None:
         say(f"DRY RUN — would install {hooks / 'pre-commit'}")
         return
     path = hooks / "pre-commit"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists() and " hook git-pre-commit" not in path.read_text(encoding="utf-8", errors="replace"):
-        warn(f"foreign pre-commit hook preserved; add Agentsmith manually: {path}")
-        return
-    atomic_write(path, command)
+    # Git chooses the hooks folder; a linked worktree keeps it in the main checkout, outside the target.
+    with contained_writes([hooks_root]):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and " hook git-pre-commit" not in path.read_text(encoding="utf-8", errors="replace"):
+            warn(f"foreign pre-commit hook preserved; add Agentsmith manually: {path}")
+            return
+        atomic_write(path, command)
     path.chmod(path.stat().st_mode | 0o111)
     ok(f"installed native-Python git hook {path}")
 
@@ -3883,9 +4398,6 @@ def scaffold_project(target: Path, profiles: list[str], agents: list[str], args:
     if args.dry_run:
         say(f"DRY RUN — would scaffold cross-platform helpers under {target / '.agentsmith'}")
         return
-    if "software-dev" in profiles:
-        for relative in AUTONOMOUS_PAYLOADS:
-            safe_update_path(target, relative)
     for path in (
         target / ".agentsmith",
         target / "docs/research/_archive",
@@ -3893,18 +4405,20 @@ def scaffold_project(target: Path, profiles: list[str], agents: list[str], args:
         target / ".harness/handoffs",
         target / ".planning",
     ):
-        path.mkdir(parents=True, exist_ok=True)
+        contained_mkdir(path)
     copy_runtime(target, dry_run=False)
     templates = target / ".harness" / "templates"
-    templates.mkdir(parents=True, exist_ok=True)
+    contained_mkdir(templates)
     for source in (ROOT / "templates").glob("*.md"):
         destination = templates / source.name
-        if not destination.exists():
-            shutil.copy2(source, destination)
+        if not os.path.lexists(destination):
+            contained_copy(source, destination)
     conf = target / ".harness" / "verify.conf"
     if not conf.exists():
         chunks = [f"# Generated for profile(s): {','.join(profiles)}", "# Commands run with the native OS shell.", ""]
         for profile in profiles:
+            if profile.startswith("project:"):
+                continue  # a project profile states its own gates; no bundled preset applies
             preset = ROOT / "config" / "verify-presets" / f"{profile}.conf"
             if preset.exists():
                 chunks.append(preset.read_text(encoding="utf-8").rstrip())
@@ -3915,13 +4429,13 @@ def scaffold_project(target: Path, profiles: list[str], agents: list[str], args:
         if not template.is_file() or template.is_symlink():
             raise CliError(f"Bundled autonomous manifest template is missing or unsafe: {template}")
         template_destination = templates / template.name
-        if not template_destination.exists():
-            shutil.copy2(template, template_destination)
+        if not os.path.lexists(template_destination):
+            contained_copy(template, template_destination)
         source = ROOT / "scripts" / "autonomous-run.py"
         destination = target / ".agentsmith" / "autonomous-run.py"
         if not source.is_file() or source.is_symlink():
             raise CliError(f"Bundled autonomous controller is missing or unsafe: {source}")
-        shutil.copy2(source, destination)
+        contained_copy(source, destination)
 
 
 def instruction_paths(target: Path, agents: list[str], global_mode: bool) -> tuple[list[Path], list[Path]]:
@@ -3932,7 +4446,7 @@ def instruction_paths(target: Path, agents: list[str], global_mode: bool) -> tup
     return canonical, generated
 
 
-def remove_owned_text_block(path: Path, *, dry_run: bool) -> None:
+def remove_owned_text_block(path: Path, *, dry_run: bool, state_root: Path | None = None) -> None:
     if not path.exists():
         return
     old = path.read_text(encoding="utf-8")
@@ -3948,10 +4462,12 @@ def remove_owned_text_block(path: Path, *, dry_run: bool) -> None:
     if rendered.strip():
         atomic_write(path, rendered)
     else:
-        path.unlink()
+        remove_emptied_file(path, state_root, "")
 
 
-def remove_owned_hooks(path: Path, *, dry_run: bool, hook_name: str | None = None) -> None:
+def remove_owned_hooks(
+    path: Path, *, dry_run: bool, hook_name: str | None = None, state_root: Path | None = None
+) -> None:
     if not path.exists():
         return
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -3983,7 +4499,7 @@ def remove_owned_hooks(path: Path, *, dry_run: bool, hook_name: str | None = Non
     if data:
         atomic_write(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
     else:
-        path.unlink()
+        remove_emptied_file(path, state_root, "{}\n")
 
 
 def remove_owned_skills(
@@ -4064,7 +4580,7 @@ def uninstall(args: argparse.Namespace, agents: list[str], target: Path) -> int:
                 if data:
                     atomic_write(gemini_path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
                 else:
-                    gemini_path.unlink()
+                    remove_emptied_file(gemini_path, target, "{}\n")
         for path in (target / ".continue/rules/agentsmith.md", target / ".goosehints", target / ".aider.conf.yml"):
             if path.exists():
                 if args.dry_run:
@@ -4075,7 +4591,7 @@ def uninstall(args: argparse.Namespace, agents: list[str], target: Path) -> int:
                     if text: atomic_write(path, text + "\n")
                     else: path.unlink()
         if "codex" in agents:
-            remove_owned_text_block(target / ".codex" / "config.toml", dry_run=args.dry_run)
+            remove_owned_text_block(target / ".codex" / "config.toml", dry_run=args.dry_run, state_root=target)
         if "claude" in agents:
             mcp_path = target / ".mcp.json"
             owned_names = ownership.get("claude_mcp_added", [])
@@ -4089,38 +4605,32 @@ def uninstall(args: argparse.Namespace, agents: list[str], target: Path) -> int:
                 if not args.dry_run:
                     backup(mcp_path)
                     if data: atomic_write(mcp_path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-                    else: mcp_path.unlink()
-        remove_owned_hooks(home_dir() / ".claude" / "settings.json", dry_run=args.dry_run)
-        remove_owned_hooks(codex_home() / "hooks.json", dry_run=args.dry_run)
+                    else: remove_emptied_file(mcp_path, target, "{}\n")
+        remove_owned_hooks(home_dir() / ".claude" / "settings.json", dry_run=args.dry_run, state_root=home_dir())
+        remove_owned_hooks(codex_home() / "hooks.json", dry_run=args.dry_run, state_root=home_dir())
         if "claude" in agents:
-            remove_owned_hooks(target / ".claude/settings.json", dry_run=args.dry_run, hook_name="memory-startup")
+            remove_owned_hooks(target / ".claude/settings.json", dry_run=args.dry_run, hook_name="memory-startup",
+                               state_root=target)
+            remove_claude_permission_mode(target / ".claude" / "settings.json", target, dry_run=args.dry_run)
         if "codex" in agents:
-            remove_owned_hooks(target / ".codex/hooks.json", dry_run=args.dry_run, hook_name="memory-startup")
+            remove_owned_hooks(target / ".codex/hooks.json", dry_run=args.dry_run, hook_name="memory-startup",
+                               state_root=target)
     else:
         if "codex" in agents:
-            remove_owned_text_block(codex_home() / "config.toml", dry_run=args.dry_run)
+            remove_owned_text_block(codex_home() / "config.toml", dry_run=args.dry_run, state_root=home_dir())
         if "claude" in agents:
-            settings = home_dir() / ".claude" / "settings.json"
-            if settings.exists():
-                data = json.loads(settings.read_text(encoding="utf-8"))
-                permissions = data.get("permissions", {})
-                if isinstance(permissions, dict) and permissions.get("defaultMode") in {"acceptEdits", "bypassPermissions"}:
-                    permissions.pop("defaultMode", None)
-                    if not permissions:
-                        data.pop("permissions", None)
-                    if not args.dry_run:
-                        backup(settings)
-                        if data: atomic_write(settings, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-                        else: settings.unlink()
+            remove_claude_permission_mode(home_dir() / ".claude" / "settings.json", home_dir(), dry_run=args.dry_run)
     if ownership.get("skills_installed"):
         remove_owned_skills(
             home_dir() if args.global_mode else target, agents, ownership, dry_run=args.dry_run
         )
     if args.global_mode:
         if "claude" in agents:
-            remove_owned_hooks(home_dir() / ".claude/settings.json", dry_run=args.dry_run, hook_name="memory-startup")
+            remove_owned_hooks(home_dir() / ".claude/settings.json", dry_run=args.dry_run, hook_name="memory-startup",
+                               state_root=home_dir())
         if "codex" in agents:
-            remove_owned_hooks(codex_home() / "hooks.json", dry_run=args.dry_run, hook_name="memory-startup")
+            remove_owned_hooks(codex_home() / "hooks.json", dry_run=args.dry_run, hook_name="memory-startup",
+                               state_root=home_dir())
     manifest_root = home_dir() if args.global_mode else target
     prior = load_state(manifest_root).get("installation", {})
     if isinstance(prior, dict) and "memory_startup" in prior.get("capabilities", {}):
@@ -4129,6 +4639,66 @@ def uninstall(args: argparse.Namespace, agents: list[str], target: Path) -> int:
         record_state(manifest_root, "installation", prior, dry_run=args.dry_run)
     ok("uninstall removed only Agentsmith-owned instruction/config blocks; scaffolding was retained")
     return 0
+
+
+def install_destinations(target: Path, agents: list[str], profiles: list[str], args: argparse.Namespace) -> list[tuple[Path, Path]]:
+    """Every path this install may create or replace, each paired with the root it must stay inside.
+
+    A path listed here that the run does not write costs nothing; a path the run writes but this
+    list misses is caught later by guard_write, after earlier writes, so keep the list complete."""
+    home = home_dir()
+    hooks = bool(args.with_handoff_hooks or args.with_ui_design_hook or args.with_memory_startup or args.with_hooks)
+    native = not args.assemble_only
+    paths: list[tuple[Path, Path]] = []
+
+    def add(root: Path, *relatives: str) -> None:
+        paths.extend((root, root / relative) for relative in relatives)
+
+    if args.global_mode:
+        roots = {**global_roots(), **({"pi_home": absolute_pi_home()} if "pi" in agents else {})}
+        for agent_id, path in global_instruction_destinations(agents).items():
+            paths.append((roots[GLOBAL_INSTRUCTION_TARGETS[agent_id][0]], path))
+        add(home, ".agentsmith/state.json")
+        install_root = home
+    else:
+        add(target, "AGENTS.md", ".agentsmith/state.json", ".harness/verify.conf", ".harness/handoffs",
+            ".planning", "docs/research/_archive", "docs/feedback/_archive")
+        add(target, *(f".harness/templates/{source.name}" for source in (ROOT / "templates").glob("*.md")))
+        if "claude" in agents:
+            add(target, "CLAUDE.md", ".claude/settings.json", ".mcp.json")
+        if "codex" in agents:
+            add(target, ".codex/config.toml", ".codex/hooks.json")
+        adapters = {"gemini-cli": ".gemini/settings.json", "aider": ".aider.conf.yml",
+                    "continue": ".continue/rules/agentsmith.md", "goose": ".goosehints"}
+        add(target, *(adapters[agent_id] for agent_id in agents if agent_id in adapters))
+        if "software-dev" in profiles:
+            add(target, *AUTONOMOUS_PAYLOADS)
+        if args.design_system and args.design_system != "skip":
+            add(target, "DESIGN.md")
+        if args.with_hooks and (location := git_hooks_location(target)) is not None:
+            hooks, hooks_root = location
+            paths.append((hooks_root, hooks / "pre-commit"))
+        install_root = target
+    if not getattr(sys, "frozen", False) and (not args.global_mode or hooks):
+        add(install_root, *RUNTIME_FILES)
+    if args.with_skills:
+        names = [source.name for source in sorted((ROOT / "skills").iterdir()) if (source / "SKILL.md").is_file()]
+        add(install_root, *(f".agents/skills/{name}" for name in names))
+        if "claude" in agents:
+            add(install_root, *(f".claude/skills/{name}" for name in names))
+    if native or hooks:
+        add(home, ".agentsmith/state.json")
+        if "claude" in agents:
+            add(home, ".claude/settings.json")
+            # The helper name is chosen at write time (a taken name moves on to "-1"), so ask the
+            # same code which files it would write.
+            ownership = load_state(home).get("native_statuslines", {})
+            prior = ownership.get("claude") if isinstance(ownership, dict) else None
+            _, helpers = claude_statusline_installation(prior if isinstance(prior, dict) else None)
+            paths.extend((home, helper) for helper, _ in helpers)
+        if "codex" in agents:
+            add(codex_home(), "config.toml", "hooks.json")
+    return paths
 
 
 def cmd_install(args: argparse.Namespace) -> int:
@@ -4180,9 +4750,22 @@ def cmd_install(args: argparse.Namespace) -> int:
         profiles = [detect_profile(target)]
         say(f"auto-detected profile: {profiles[0]}")
     if args.uninstall:
-        return uninstall(args, agents, target)
+        roots = [root for root in global_roots().values() if root.is_absolute()]
+        with contained_writes([*roots, *([] if args.global_mode else [target])]):
+            return uninstall(args, agents, target)
     if not profiles and not args.global_mode:
         raise CliError("Pick a profile with --profile <name[,name]> or use --global")
+    # Resolve and record each selector once, before any write: built-ins by bare name, project
+    # profiles as project:NAME. A global install has no project, so it accepts built-ins only.
+    profile_target = None if args.global_mode else target
+    profiles = [selector for selector, _ in resolve_profiles(profiles, profile_target)]
+    if not args.global_mode and "claude" in agents and not args.assemble_only and args.safety == "trusted":
+        raise CliError(
+            "--safety trusted cannot apply to Claude in a project install: Claude Code ignores "
+            "permissions.defaultMode bypassPermissions in project settings. Use --safety cautious for this "
+            "project, set trusted mode for your user with 'install --global --safety trusted', or start "
+            "Claude with --permission-mode bypassPermissions."
+        )
     prior_installation = load_state(home_dir() if args.global_mode else target).get("installation", {})
     if not isinstance(prior_installation, dict):
         raise CliError("Malformed installation selection; inspect state before reinstalling")
@@ -4218,6 +4801,11 @@ def cmd_install(args: argparse.Namespace) -> int:
     ownership_safety = load_state(home_dir()).get("native_safety", {})
     if not isinstance(ownership_safety, dict):
         ownership_safety = {}
+    if not args.global_mode:
+        project_safety = load_state(target).get("native_safety", {})
+        ownership_safety = {
+            key: value for key, value in ownership_safety.items() if key != "claude"
+        } | ({"claude": project_safety["claude"]} if isinstance(project_safety, dict) and "claude" in project_safety else {})
     prior_managed_safety: dict[str, str] = {
         agent_id: value
         for agent_id, value in ownership_safety.items()
@@ -4227,7 +4815,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         path.exists() and managed_markers(path.read_text(encoding="utf-8", errors="replace"))
         for path in (*canonical, *generated)
     )
-    if had_managed_instructions and "claude" in agents and "claude" not in prior_managed_safety:
+    if args.global_mode and had_managed_instructions and "claude" in agents and "claude" not in prior_managed_safety:
         claude_path = home_dir() / ".claude" / "settings.json"
         try:
             claude_data = json.loads(claude_path.read_text(encoding="utf-8")) if claude_path.exists() else {}
@@ -4248,32 +4836,41 @@ def cmd_install(args: argparse.Namespace) -> int:
             prior_managed_safety["codex"] = "container"
     args.prior_managed_safety = prior_managed_safety
     recovery = recover_identity([*canonical, *generated])
-    block = build_instructions(args, profiles, not args.profile_only, recovery)
+    block = build_instructions(args, profiles, not args.profile_only, recovery, profile_target)
     if args.export_instructions:
         print(block)
         return 0
-    for path in canonical:
-        reconcile_markdown(path, block, force=args.force, dry_run=args.dry_run)
-    for path in generated:
-        # Claude's copy is generated from canonical source, never independently assembled.
-        reconcile_markdown(path, block, force=args.force, dry_run=args.dry_run)
-    if not args.global_mode:
-        install_adapters(target, agents, dry_run=args.dry_run)
-        scaffold_project(target, profiles, agents, args)
-        scaffold_design_system(target, args.design_system, dry_run=args.dry_run)
-    install_native_config(target, agents, args)
-    install_claude_plugin_packs(agents, args.with_plugins, dry_run=args.dry_run)
-    installed_skill_directories: list[Path] = []
-    if args.with_skills:
-        skill_root = home_dir() if args.global_mode else target
-        installed_skill_directories = install_skills(
-            skill_root, agents, force=args.force, dry_run=args.dry_run
-        )
-        record_state(skill_root, "skills_installed", True, dry_run=args.dry_run)
-    install_hooks(target, agents, args)
-    record_installation_manifest(target, agents, profiles, args, recovery, installed_skill_directories)
-    ok(f"installed for {', '.join(written_agents) or 'no selected agent'}; canonical project instructions: AGENTS.md")
-    return 0
+    # One containment check before the first write: a half install is worse than a refusal.
+    destinations = install_destinations(target, agents, profiles, args)
+    containment_preflight(destinations)
+    if "software-dev" in profiles and not args.global_mode:
+        # The autonomous payloads refuse even a link that stays inside the project.
+        for relative in AUTONOMOUS_PAYLOADS:
+            safe_update_path(target, relative)
+    with contained_writes(root for root, _ in destinations):
+        for path in canonical:
+            reconcile_markdown(path, block, force=args.force, dry_run=args.dry_run)
+        for path in generated:
+            # Claude's project copy imports canonical AGENTS.md; its global file is the full block.
+            claude_block = block if args.global_mode else project_instruction_block(path, target, block)
+            reconcile_markdown(path, claude_block, force=args.force, dry_run=args.dry_run)
+        if not args.global_mode:
+            install_adapters(target, agents, dry_run=args.dry_run)
+            scaffold_project(target, profiles, agents, args)
+            scaffold_design_system(target, args.design_system, dry_run=args.dry_run)
+        install_native_config(target, agents, args)
+        install_claude_plugin_packs(agents, args.with_plugins, dry_run=args.dry_run)
+        installed_skill_directories: list[Path] = []
+        if args.with_skills:
+            skill_root = home_dir() if args.global_mode else target
+            installed_skill_directories = install_skills(
+                skill_root, agents, force=args.force, dry_run=args.dry_run
+            )
+            record_state(skill_root, "skills_installed", True, dry_run=args.dry_run)
+        install_hooks(target, agents, args)
+        record_installation_manifest(target, agents, profiles, args, recovery, installed_skill_directories)
+        ok(f"installed for {', '.join(written_agents) or 'no selected agent'}; canonical project instructions: AGENTS.md")
+        return 0
 
 
 def cmd_agents_list(args: argparse.Namespace) -> int:
@@ -4443,6 +5040,13 @@ def instruction_source(path: Path, scope: str) -> dict[str, Any]:
         return record
     record["profiles"] = [] if metadata.group(1) == "none" else metadata.group(1).split(",")
     record["generated_core"] = metadata.group(2) == "true"
+    imported = path.parent / "AGENTS.md"
+    if CLAUDE_IMPORT_LINE in block.splitlines() and imported.is_file():
+        # Claude loads the imported rulebook with this file, so its cost counts here.
+        imported_text = imported.read_text(encoding="utf-8", errors="replace")
+        record["tokens"] += max(1, len(imported_text) // 4)
+        with contextlib.suppress(CliError):
+            block = managed_block(imported_text) or block
     if record["generated_core"]:
         core = re.split(r"\n---\n\n# Work-Type Profile\(s\):", block, maxsplit=1)[0]
         record["core_tokens"] = max(1, len(core) // 4)
@@ -4657,7 +5261,12 @@ def inspect_instructions(agent_id: str, agent: dict[str, Any], target: Path) -> 
             generated_record = instruction_source(generated, "project")
             canonical_meta = (canonical_record["generated_core"], canonical_record["profiles"])
             generated_meta = (generated_record["generated_core"], generated_record["profiles"])
-            if canonical_meta != generated_meta or managed_block(canonical.read_text(encoding="utf-8")) != managed_block(generated.read_text(encoding="utf-8")):
+            canonical_block = managed_block(canonical.read_text(encoding="utf-8"))
+            generated_block = managed_block(generated.read_text(encoding="utf-8"))
+            expected_blocks = {canonical_block}
+            with contextlib.suppress(CliError):
+                expected_blocks.add(claude_import_block(canonical_block))
+            if canonical_meta != generated_meta or generated_block not in expected_blocks:
                 warnings.append(
                     doctor_warning(
                         "conflicting-generator-metadata",
@@ -5144,10 +5753,22 @@ def inspect_runtime(agent: dict[str, Any], target: Path) -> dict[str, Any]:
     }
 
 
-def inspect_safety(agent_id: str, expected: str | None = None) -> dict[str, Any]:
-    """Name the safety mode the native settings show; `expected` decides between modes that share them."""
+def inspect_safety(agent_id: str, expected: str | None = None, claude_root: Path | None = None) -> dict[str, Any]:
+    """Name the safety mode the native settings show; `expected` decides between modes that share them.
+
+    `claude_root` is a project directory: its shared settings win over the user settings when they
+    set a mode, as in Claude Code's own precedence. None reads only the user settings."""
     if agent_id == "claude":
         path = home_dir() / ".claude" / "settings.json"
+        project = claude_root / ".claude" / "settings.json" if claude_root is not None else None
+        if project is not None and project.is_file():
+            try:
+                project_data = json.loads(project.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                return {"state": "malformed", "path": str(project), "values": {}}
+            permissions = project_data.get("permissions") if isinstance(project_data, dict) else None
+            if isinstance(permissions, dict) and "defaultMode" in permissions:
+                path = project
         if not path.exists():
             return {"state": "missing", "path": str(path), "values": {}}
         try:
@@ -5431,7 +6052,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         global_installation = load_state(home_dir()).get("installation", {})
         global_installation = global_installation if isinstance(global_installation, dict) else {}
         recorded_safety = {**global_installation.get("safety", {}), **installation.get("safety", {})}
-        safety = inspect_safety(agent_id, expected=recorded_safety.get(agent_id))
+        safety = inspect_safety(agent_id, expected=recorded_safety.get(agent_id),
+                                claude_root=target if installation.get("scope") == "project" else None)
         capabilities = {
             "instructions": instructions,
             "skills": skills,
@@ -5574,9 +6196,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             )
             for source in instruction_state["sources"]:
                 fingerprint = source["sha256"][:12] if source["sha256"] else "-"
+                profiles = ",".join(source["profiles"]) or "-"
                 print(
                     f"    {source['scope']:<7} {source['managed_status']:<9} core={source['generated_core']} "
-                    f"tokens={source['tokens']} sha256={fingerprint} path={source['path']}"
+                    f"profiles={profiles} tokens={source['tokens']} sha256={fingerprint} path={source['path']}"
                 )
             firings = capabilities["hook_firings"]
             shown = ", ".join(f"{name}={count}" for name, count in firings["counts"].items()) or "none"
@@ -5615,6 +6238,8 @@ def profile_catalog() -> list[dict[str, Any]]:
 
 
 def profile_purpose(name: str) -> str:
+    if name.startswith("project:"):
+        return f"Project-owned profile in {project_profile_relative(name.removeprefix('project:'))}."
     match = next((item for item in profile_catalog() if item["name"] == name), None)
     return match["purpose"] if match else "Profile source is unavailable; inspect the installation metadata."
 
@@ -5930,8 +6555,35 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def project_profile_catalog(target: Path) -> list[dict[str, Any]]:
+    """The project's own profiles, named by selector. Links and odd names are skipped, never read."""
+    directory = target.joinpath(*PROJECT_PROFILE_DIRECTORY)
+    if contained_link_problem(target, directory) or not directory.is_dir() or directory.is_symlink():
+        return []
+    result = []
+    for path in sorted(directory.glob("*.md")):
+        if path.is_symlink() or not path.is_file() or not PROFILE_NAME.fullmatch(path.stem):
+            continue
+        result.append({
+            "name": f"project:{path.stem}",
+            "kind": "project",
+            "purpose": profile_purpose(f"project:{path.stem}"),
+            "examples": [],
+            "verification_focus": "the gates written in the profile",
+            "not_for": "other projects; it lives in this repository",
+            "work_types": ["project-owned"],
+            "verification_preset": "profile-defined manual gates",
+        })
+    return result
+
+
 def cmd_profiles_list(args: argparse.Namespace) -> int:
     profiles = profile_catalog()
+    if getattr(args, "target", None):
+        profiles = sorted(
+            [*profiles, *project_profile_catalog(Path(args.target).expanduser().resolve())],
+            key=lambda profile: profile["name"],
+        )
     if args.json:
         payload = {
             "schema_version": 1,
@@ -5944,7 +6596,8 @@ def cmd_profiles_list(args: argparse.Namespace) -> int:
         return 0
     for profile in profiles:
         print(f"{profile['name']} ({profile['kind']}): {profile['purpose']}")
-        print(f"  Examples: {', '.join(profile['examples'])}")
+        if profile["examples"]:
+            print(f"  Examples: {', '.join(profile['examples'])}")
         print(f"  Verification focus: {profile['verification_focus']}")
         print(f"  Not for: {profile['not_for']}")
     return 0
@@ -6050,8 +6703,9 @@ def render_profile_switch_document(path: Path, block: str, *, force: bool = Fals
         if count != 1:
             raise CliError(f"Managed instruction reconciliation refused malformed markers in {path}")
     elif text and not force:
-        separator = "" if text.endswith(newline * 2) else newline if text.endswith(newline) else newline * 2
-        rendered = text + separator + replacement + newline
+        # Exactly one line break before and after the block, whatever the text ends with, so
+        # uninstall can remove precisely what install added and restore the original bytes.
+        rendered = text + newline + replacement + newline
     else:
         rendered = replacement + newline
     return old, rendered.encode("utf-8")
@@ -6092,10 +6746,7 @@ def cmd_profiles_switch(args: argparse.Namespace) -> int:
         raise CliError("Profile switch requires --profile NAME[,NAME...]")
     if len(profiles) != len(set(profiles)):
         raise CliError("Profile switch profile names must be unique")
-    available = {item["name"] for item in profile_catalog()}
-    missing = [name for name in profiles if name not in available]
-    if missing:
-        raise CliError(f"Unknown profile(s): {', '.join(missing)}. Run 'agentsmith profiles list'.")
+    profiles = [selector for selector, _ in resolve_profiles(profiles, target)]
     agents = installation.get("agents", [])
     if not isinstance(agents, list) or not agents or any(agent not in AGENT_IDS for agent in agents):
         raise CliError("Project installation manifest has no valid managed agent selection")
@@ -6120,6 +6771,7 @@ def cmd_profiles_switch(args: argparse.Namespace) -> int:
         profiles,
         bool(installation.get("include_core", True)),
         recovery,
+        target,
     )
     line_count = len(block.splitlines())
     token_estimate = len(block) // 4
@@ -6128,7 +6780,10 @@ def cmd_profiles_switch(args: argparse.Namespace) -> int:
             f"Profile stack exceeds the static-context budget ({line_count} lines, ~{token_estimate} tokens); "
             "switch between dominant profiles instead of stacking them"
         )
-    rendered = [(path, *render_profile_switch_document(path, block)) for path in destinations]
+    rendered = [
+        (path, *render_profile_switch_document(path, project_instruction_block(path, target, block)))
+        for path in destinations
+    ]
     verification = build_verification_plan(target)
     config = safe_update_path(target, ".harness/verify.conf")
     gaps = [name.replace("_", " ") for name, cell in verification["coverage"].items() if cell["state"] != "configured"]
@@ -7385,10 +8040,19 @@ def cmd_verify(args: argparse.Namespace) -> int:
         raise CliError("--record requires an explicit tree class (--tree-class)")
     if tree_class and not args.record:
         raise CliError("--tree-class is meaningful only with --record")
+    empty = (
+        f"No verification phase label contains --only {args.only!r} in {conf}" if args.only
+        else f"{conf} defines no phases"
+    )
     if args.list:
+        # A listing asserts nothing, so an empty one is information, not a failed gate.
+        if not phases:
+            warn(empty)
         for index, (label, command) in enumerate(phases, 1):
             print(f"{index}. {label} :: {command}")
         return 0
+    if not phases:
+        raise CliError(f"{empty}; a run that executes no phase proves nothing, so it cannot pass")
     if args.record:
         record_dir = Path(args.record).expanduser()
         if not record_dir.is_absolute():
@@ -8541,7 +9205,11 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
 def add_common_install_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--agent", action="append", help="agent ID/group; repeatable or comma-separated")
     parser.add_argument("--platform", choices=("claude", "codex", "both"), help="deprecated alias for --agent")
-    parser.add_argument("--profile", action="append")
+    parser.add_argument(
+        "--profile", action="append",
+        help="NAME, builtin:NAME, or project:NAME (a project's own .agentsmith/profiles/NAME.md); "
+             "a bare NAME prefers the built-in profile",
+    )
     parser.add_argument("--target")
     parser.add_argument("--global", dest="global_mode", action="store_true")
     parser.add_argument("--profile-only", action="store_true")
@@ -8653,6 +9321,7 @@ def parser() -> argparse.ArgumentParser:
     profile_sub = profiles.add_subparsers(dest="profiles_command", required=True)
     profile_list = profile_sub.add_parser("list", help="list available work profiles")
     profile_list.add_argument("--json", action="store_true")
+    profile_list.add_argument("--target", help="also list this project's own profiles (.agentsmith/profiles)")
     profile_recommend = profile_sub.add_parser("recommend", help="recommend profiles from repository evidence")
     profile_recommend.add_argument("--target")
     profile_recommend.add_argument("--json", action="store_true")
@@ -8672,21 +9341,29 @@ def parser() -> argparse.ArgumentParser:
     verify = sub.add_parser(
         "verify",
         help="run configured checks, discover coverage, or apply a reviewed discovery plan",
+        description="Run the phases in .harness/verify.conf. 'verify discover' and 'verify apply' "
+                    "have their own options; see 'verify discover --help' and 'verify apply --help'.",
     )
-    verify.add_argument("verify_action", nargs="?", choices=("discover", "apply"))
     verify.add_argument("--target")
     verify.add_argument("--only")
     verify.add_argument("--list", action="store_true")
     verify.add_argument("--record", metavar="DIRECTORY")
-    verify.add_argument("--json", action="store_true", help="emit verification discovery as schema-v1 JSON")
-    verify.add_argument("--save", metavar="PLAN", help="save verification discovery to a new plan file")
-    verify.add_argument("--plan", metavar="PLAN", help="reviewed schema-v1 discovery plan to apply")
-    verify.add_argument("--dry-run", action="store_true", help="show the verification-config diff without writing")
     verify.add_argument(
         "--tree-class",
         choices=("clean-clone", "disposable-fixture", "linked-worktree", "operator-worktree"),
         help="required with --record; declares which tree produced the evidence",
     )
+    # Each operation's help shows only its own flags; these defaults keep cmd_verify's checks uniform.
+    verify.set_defaults(verify_action=None, json=False, save=None, plan=None, dry_run=False)
+    verify_sub = verify.add_subparsers(dest="verify_action", metavar="{discover,apply}")
+    verify_discover = verify_sub.add_parser("discover", help="report verification coverage as a reviewable plan")
+    verify_discover.add_argument("--target", default=argparse.SUPPRESS)
+    verify_discover.add_argument("--json", action="store_true", help="emit verification discovery as schema-v1 JSON")
+    verify_discover.add_argument("--save", metavar="PLAN", help="save verification discovery to a new plan file")
+    verify_apply = verify_sub.add_parser("apply", help="apply a reviewed discovery plan to .harness/verify.conf")
+    verify_apply.add_argument("--plan", metavar="PLAN", help="reviewed schema-v1 discovery plan to apply")
+    verify_apply.add_argument("--target", default=argparse.SUPPRESS)
+    verify_apply.add_argument("--dry-run", action="store_true", help="show the verification-config diff without writing")
     integration = sub.add_parser(
         "validate-integration",
         description="validate a structured integration checkpoint without installing or launching it",

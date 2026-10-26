@@ -489,15 +489,21 @@ class DoctorTests(unittest.TestCase):
         subprocess.run(["git", "-C", str(project), "init", "-q"], check=True)
         installed = self.run_core(
             "install", "--agent", "native", "--profile", "software-dev", "--target", str(project),
-            "--safety", "trusted", "--with-skills", "--with-mcp", "playwright",
+            "--with-skills", "--with-mcp", "playwright",
             "--with-hooks", "--with-handoff-hooks",
         )
         self.assertEqual(installed.returncode, 0, installed.stdout)
+        # Claude Code ignores bypassPermissions in project settings, so trusted is Codex-only here.
+        trusted = self.run_core(
+            "install", "--agent", "codex", "--profile", "software-dev", "--target", str(project),
+            "--safety", "trusted",
+        )
+        self.assertEqual(trusted.returncode, 0, trusted.stdout + trusted.stderr)
         for agent_id in ("claude", "codex"):
             result, payload = self.doctor(project, agent_id)
             self.assertEqual(result.returncode, 0, result.stdout)
             agent = payload[agent_id]
-            self.assertEqual(agent["safety"]["state"], "trusted")
+            self.assertEqual(agent["safety"]["state"], "trusted" if agent_id == "codex" else "cautious")
             self.assertEqual(agent["skills"]["state"], "managed")
             self.assertEqual(agent["mcp"]["state"], "managed")
             self.assertEqual(agent["hooks"]["state"], "managed", f"{agent_id}: {agent['hooks']}")
@@ -506,7 +512,8 @@ class DoctorTests(unittest.TestCase):
             self.assertEqual(agent["statusline"]["state"], "managed" if agent_id == "claude" else "builtin")
             self.assertTrue(agent["statusline"]["active"])
             self.assertEqual(agent["runtime"]["state"], "current")
-            self.assertIn("trusted-expanded-surface", self.warning_codes(agent))
+            if agent_id == "codex":
+                self.assertIn("trusted-expanded-surface", self.warning_codes(agent))
 
     def test_container_safety_drops_only_the_codex_sandbox(self) -> None:
         # Inside Docker the Codex sandbox cannot start, so container mode keeps approvals but
@@ -517,7 +524,7 @@ class DoctorTests(unittest.TestCase):
         base = ("install", "--agent", "native", "--profile", "software-dev", "--target", str(project))
         installed = self.run_core(*base, "--safety", "container")
         self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
-        settings_path = Path(self.env["HOME"]) / ".claude" / "settings.json"
+        settings_path = project / ".claude" / "settings.json"  # a project install keeps Claude's mode in the project
         codex_path = Path(self.env["CODEX_HOME"]) / "config.toml"
         self.assertEqual(json.loads(settings_path.read_text(encoding="utf-8"))["permissions"]["defaultMode"], "acceptEdits")
         codex = codex_path.read_text(encoding="utf-8")

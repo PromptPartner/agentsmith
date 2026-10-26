@@ -1216,6 +1216,52 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
         state = json.loads((target / ".agentsmith" / "state.json").read_text(encoding="utf-8"))
         self.assertEqual(state["installation"]["safety"], {"claude": "container", "codex": "container"})
+        # A project install keeps Claude's mode in the project, before and after the update.
+        project_settings = json.loads((target / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        self.assertEqual(project_settings["permissions"]["defaultMode"], "acceptEdits")
+        home_settings = json.loads((home / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        self.assertNotIn("permissions", home_settings)
+
+    def test_project_profile_is_authenticated_by_the_update_plan(self) -> None:
+        self.commit_and_tag(NEXT_VERSION)
+        self.publish_remote()
+        target = self.root / "project-profile"
+        profile = target / ".agentsmith" / "profiles" / "house.md"
+        profile.parent.mkdir(parents=True)
+        reviewed = "# House rules\n\nHOUSE_PROFILE_REVIEWED\n"
+        profile.write_text(reviewed, encoding="utf-8")
+        environment = self.isolated_environment(self.root / "profile-home", self.root / "profile-codex")
+        installed = self.run_core(
+            "install", "--agent", "codex", "--profile", "software-dev,project:house", "--assemble-only",
+            "--target", str(target), env=environment,
+        )
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        plan_path = self.root / "profile-plan.json"
+        planned = self.run_core(
+            "update", "plan", "--target", str(target), "--version", NEXT_TAG,
+            "--from", str(self.remote), "--save", str(plan_path), env=environment,
+        )
+        self.assertEqual(planned.returncode, 0, planned.stdout + planned.stderr)
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        self.assertIn(
+            ("target", ".agentsmith/profiles/house.md"),
+            {(item["root"], item["path"]) for item in plan["fingerprints"]},
+        )
+        self.assertNotIn(".agentsmith/profiles/house.md", [item["path"] for item in plan["proposed_changes"]])
+
+        profile.write_text("# House rules\n\nTAMPERED_AFTER_REVIEW\n", encoding="utf-8")
+        tampered = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
+        self.assertNotEqual(tampered.returncode, 0, tampered.stdout + tampered.stderr)
+        self.assertIn("changed after planning", tampered.stderr)
+        self.assertNotIn("TAMPERED_AFTER_REVIEW", (target / "AGENTS.md").read_text(encoding="utf-8"))
+
+        profile.write_text(reviewed, encoding="utf-8")
+        applied = self.run_core("update", "apply", "--plan", str(plan_path), env=environment)
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        agents = (target / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn("HOUSE_PROFILE_REVIEWED", agents)
+        self.assertIn("Profiles: software-dev,project:house.", agents)
+        self.assertEqual(profile.read_text(encoding="utf-8"), reviewed)
 
     def test_assemble_only_migration_requires_unambiguous_native_ownership(self) -> None:
         self.commit_and_tag(NEXT_VERSION)
