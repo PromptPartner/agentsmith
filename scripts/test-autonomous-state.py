@@ -96,6 +96,24 @@ class AutonomousStateTests(unittest.TestCase):
             self.assertIsNone(error)
             self.assertEqual(result.stdout, text + "\n")
 
+    def test_kill_switch_in_main_checkout_pauses_linked_worktrees(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith pause ") as temporary:
+            repo = Path(temporary).resolve() / "main"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "-c", "user.name=T", "-c", "user.email=t@example.com",
+                            "commit", "-q", "--allow-empty", "-m", "base"], check=True)
+            linked = repo.parent / "linked"
+            subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", "--detach", str(linked)], check=True)
+            CONTROLLER.assert_autonomy_not_paused(linked)
+            marker = repo / ".harness" / "AUTONOMY_PAUSED"
+            marker.parent.mkdir()
+            marker.touch()
+            for checkout in (repo, linked):
+                with self.subTest(checkout=checkout.name):
+                    with self.assertRaisesRegex(CONTROLLER.RunError, "autonomy is paused"):
+                        CONTROLLER.assert_autonomy_not_paused(checkout)
+
     def test_controller_text_io_names_its_encoding(self) -> None:
         # A locale-default read or write corrupts UTF-8 receipts, logs and replayed usage on
         # Windows. Every text-mode file call in the controller names its encoding.

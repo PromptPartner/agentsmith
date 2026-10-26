@@ -139,6 +139,12 @@ generated settings are offline evidence, not proof of native tool denial.
 The controller and manifest template are scaffolded only for `software-dev` projects in v1; the
 Wayfinder spec flow remains available to every work type.
 
+**Kill switch.** While the file `.harness/AUTONOMY_PAUSED` exists, in the checkout you run from
+or in the main checkout, `prepare`, `start` and `resume` refuse, and so do `agentsmith graph
+start` and `graph resume`. The refusal names the file. A run that is already live keeps running;
+use `stop <id>` to end it. Delete the file to allow new work again. Leave it untracked: graph
+validation ignores exactly this path, so `graph status` still works while autonomy is paused.
+
 `status <id>` reads controller state from the repository's git-common directory. `start` and
 `resume` hold one per-run lifecycle lock, so a second live controller is refused; a dead owner's
 lock is reclaimed only after its PID is demonstrably gone. Resume also checks the original spec

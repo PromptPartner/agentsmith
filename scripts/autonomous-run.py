@@ -119,6 +119,24 @@ def shown_paths(paths: list[str]) -> str:
                              for char in path) for path in paths)
 
 
+PAUSE_MARKER = ".harness/AUTONOMY_PAUSED"
+
+
+def assert_autonomy_not_paused(repo: Path) -> None:
+    """The operator's repository-wide kill switch: while the marker exists in this checkout or
+    in the main checkout, no run is prepared, started or resumed. A live run keeps running;
+    `stop <id>` ends it."""
+    roots = [repo]
+    common = resolved_git_path(repo, "--git-common-dir")
+    if common.name == ".git" and common.parent != repo:
+        roots.append(common.parent)
+    for root in roots:
+        marker = root / PAUSE_MARKER
+        if marker.exists() or marker.is_symlink():
+            raise RunError(f"autonomy is paused by {marker}; remove it to allow new work "
+                           "(live runs are not stopped; use stop <id>)")
+
+
 def repo_root(path: Path) -> Path:
     result = run(["git", "rev-parse", "--show-toplevel"], path)
     if result.returncode:
@@ -763,6 +781,7 @@ def graph_effective_base(repo: Path, graph_path: str, manifest_path: Path,
 
 def prepare(args: argparse.Namespace) -> int:
     repo = repo_root(Path.cwd())
+    assert_autonomy_not_paused(repo)
     if args.template:
         source = Path(args.template).resolve()
     else:
@@ -1812,6 +1831,7 @@ def run_controller(state: dict[str, Any], manifest: dict[str, Any]) -> int:
 
 def start(args: argparse.Namespace) -> int:
     repo = repo_root(Path.cwd())
+    assert_autonomy_not_paused(repo)
     manifest_path = Path(args.manifest).resolve()
     manifest = load_json(manifest_path)
     spec_rel, spec_hash = validate_manifest(manifest, repo)
@@ -1988,6 +2008,7 @@ def recover_checker_worktree(state: dict[str, Any], manifest: dict[str, Any]) ->
 
 def resume(args: argparse.Namespace) -> int:
     repo = repo_root(Path.cwd())
+    assert_autonomy_not_paused(repo)
     state = load_run(repo, args.run_id)
     if state["status"] == "accepted":
         raise RunError("accepted runs do not resume")

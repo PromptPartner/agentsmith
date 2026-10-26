@@ -935,6 +935,34 @@ if (cd "$repo" && invoke "$repo" accept resume checker-half-removed >../resume-o
 else bad 'resume escalated over a half-removed checker'; cat "$repo/../resume-err"; fi
 assert 'resume removes the leftover checker entry' test ! -e "$checker_entry"
 
+echo 'autonomous-run — repository kill switch'
+repo="$(new_repo paused)"; make_fake "$repo/../fake"; manifest "$repo" paused; manifest "$repo" paused-next
+(cd "$repo" && invoke "$repo" slow start .harness/runs/paused.json >../out 2>../err) & runner=$!
+wait_for_active_run "$repo" paused || bad 'paused fixture run never became active'
+touch "$repo/.harness/AUTONOMY_PAUSED"
+sleep 0.5
+assert 'the kill switch does not stop a live run' bash -c "cd '$repo' && python3 '$repo/../fake/controller.py' status paused | grep -q '\"status\": \"making\"'"
+(cd "$repo" && python3 "$repo/../fake/controller.py" stop paused >/dev/null 2>&1)
+wait "$runner" 2>/dev/null || true
+if (cd "$repo" && invoke "$repo" accept start .harness/runs/paused-next.json >../paused-out 2>../paused-err); then
+  bad 'start ran while autonomy was paused'
+else ok 'start refuses while autonomy is paused'; fi
+assert 'paused start names the marker' grep -q 'autonomy is paused by .*AUTONOMY_PAUSED' "$repo/../paused-err"
+assert 'paused start creates no branch' bash -c "! git -C '$repo' show-ref --verify --quiet refs/heads/agentsmith/paused-next"
+assert 'paused start creates no state' test ! -e "$repo/.git/agentsmith-runs/paused-next/state.json"
+if (cd "$repo" && invoke "$repo" accept resume paused >../paused-out 2>../paused-err); then
+  bad 'resume ran while autonomy was paused'
+else ok 'resume refuses while autonomy is paused'; fi
+assert 'paused resume leaves the run interrupted' bash -c "cd '$repo' && python3 '$repo/../fake/controller.py' status paused | grep -q '\"status\": \"interrupted\"'"
+if (cd "$repo" && python3 "$repo/../fake/controller.py" prepare --run-id paused-draft --spec docs/specs/test.md --ticket IMP-2 --template "$repo/../fake/template.json" >../paused-out 2>../paused-err); then
+  bad 'prepare ran while autonomy was paused'
+else ok 'prepare refuses while autonomy is paused'; fi
+assert 'paused prepare writes no manifest' test ! -e "$repo/.harness/runs/paused-draft.json"
+rm "$repo/.harness/AUTONOMY_PAUSED"
+if (cd "$repo" && invoke "$repo" accept resume paused >../paused-out 2>../paused-err); then
+  ok 'removing the marker lets the stopped run resume'
+else bad 'run did not resume after the marker was removed'; cat "$repo/../paused-err"; fi
+
 echo
 printf 'autonomous-run: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

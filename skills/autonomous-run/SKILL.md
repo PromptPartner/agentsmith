@@ -73,6 +73,8 @@ controller serializes a repository-local collision scan. Ancestor/descendant fix
 resource keys conflict. Live malformed state fails closed, while stopped or demonstrably dead
 controllers no longer reserve their scopes.
 
+While `.harness/AUTONOMY_PAUSED` exists, `prepare`, `start` and `resume` refuse; live runs keep
+running until `stop <id>`. Never create or delete that file on your own; it is the operator's.
 Use `status <id>`, `stop <id>`, or `resume <id>`. Stop/resume retains the worktree and audit state.
 Resume revalidates a checkpointed candidate and reruns verification/checking in the same attempt.
 Dirty or unreceipted maker commits require operator review. Raw logs survive controller crashes;

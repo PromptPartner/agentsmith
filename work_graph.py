@@ -148,7 +148,8 @@ def _topological_order(nodes: dict[str, dict[str, Any]], declared: list[str]) ->
 
 def load_contract(target: str | Path, graph_path: str) -> dict[str, Any]:
     repo = repository(target)
-    if git(repo, "status", "--porcelain"):
+    # The operator's kill switch is deliberately untracked; status stays readable while paused.
+    if git(repo, "status", "--porcelain", "--", ".", ":(exclude).harness/AUTONOMY_PAUSED"):
         raise GraphError("graph validation requires a clean committed repository")
     commit = git(repo, "rev-parse", "HEAD^{commit}")
     graph_bytes = committed_bytes(repo, commit, graph_path, label="graph")
@@ -656,8 +657,17 @@ def _create_checkpoint(contract: dict[str, Any], state: dict[str, Any], run_id: 
         raise GraphError(f"checkpoint {run_id} could not acquire Git writer phase: {exc}") from exc
 
 
+def _assert_autonomy_not_paused(contract: dict[str, Any]) -> None:
+    controller = _controller()
+    try:
+        controller.assert_autonomy_not_paused(contract["repo"])
+    except controller.RunError as exc:
+        raise GraphError(str(exc)) from exc
+
+
 def start_graph(contract: dict[str, Any]) -> dict[str, Any]:
     """Run a new graph locally while children retain budgets and maker/checker ownership."""
+    _assert_autonomy_not_paused(contract)
     directory = _graph_directory(contract)
     try:
         directory.mkdir(parents=True, exist_ok=False)
@@ -680,6 +690,7 @@ def start_graph(contract: dict[str, Any]) -> dict[str, Any]:
 # enters graph evidence; the refusal text can carry paths or tool output and never does.
 CHILD_REFUSALS = tuple((code, re.compile(pattern)) for code, pattern in (
     ("accepted-run", r"accepted runs do not resume"),
+    ("autonomy-paused", r"autonomy is paused by "),
     ("no-run-state", r"no run state for "),
     ("unreadable-json", r"cannot read JSON "),
     ("coordination-held", r"repository coordination is still held by live process"),
@@ -905,6 +916,7 @@ def stop_graph(contract: dict[str, Any]) -> dict[str, Any]:
 
 
 def resume_graph(contract: dict[str, Any]) -> dict[str, Any]:
+    _assert_autonomy_not_paused(contract)
     directory = _graph_directory(contract)
     _load_graph_state(contract)
     with _graph_lock(contract):
