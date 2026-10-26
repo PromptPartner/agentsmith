@@ -36,12 +36,24 @@ published results, and real runtime or visual checks as separately referenced ar
 receipt does not satisfy an end-to-end gate that requires those observations.
 
 ## Fallback — no runner or no conf
-1. Say so plainly, and look at `.harness/verify.conf.example` for the intended phases.
+1. Say so plainly. With the CLI but no conf, `agentsmith verify discover --save <plan>` proposes
+   phases from the project; review the plan, then `agentsmith verify apply --plan <plan>`.
 2. Run the obvious checks for this project directly and show their output: build, test, lint,
    link/render check, a dry-run. For non-code work, "verify" = open the artifact and confirm it
    renders / the numbers reconcile / the links resolve.
 3. If nothing is wired yet, propose the phases this project needs and offer to write
    `.harness/verify.conf` — but still run the checks by hand this time.
+
+## Output you can quote as proof
+- **Run it raw.** An output-rewriting hook (a token-saving shell wrapper on Bash, for example)
+  can summarise, empty or re-code test, lint, search and git output, and report its own exit
+  status. Run any command whose output you quote through the wrapper's bypass (for `rtk`:
+  `rtk proxy <command>`). `agentsmith doctor` reports such hooks.
+- **Absence needs an untruncated, count-based check.** "No match" from a truncated or
+  summarised search is not proof that something is absent.
+- **CI is green when pending == 0 and failing == 0 on the matching head SHA,** read from step
+  conclusions. A cancelled, missing or not-yet-registered check is not green; don't wait for a
+  fixed number of checks.
 
 ## Report
 State each check and its evidence: "build ok, 42 tests green, lint clean" — with the output, not

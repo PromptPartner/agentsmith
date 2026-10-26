@@ -7,6 +7,7 @@ import json
 import hashlib
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -74,7 +75,8 @@ class DoctorTests(unittest.TestCase):
         subprocess.run(["git", "-C", str(project), "init", "-q"], check=True)
         prepared = subprocess.run(
             [sys.executable, str(project / ".agentsmith/autonomous-run.py"), "prepare",
-             "--run-id", "consumer", "--spec", "docs/specs/task.md", "--ticket", "TASK-1"],
+             "--run-id", "consumer", "--spec", "docs/specs/task.md", "--ticket", "TASK-1",
+             "--maker-model", "fixture-model", "--checker-model", "fixture-model"],
             cwd=project, env=self.env, text=True, capture_output=True, check=False,
         )
         self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
@@ -101,6 +103,32 @@ class DoctorTests(unittest.TestCase):
                 self.assertIn("required-runtime-payload-missing", self.warning_codes(agent))
                 if original is not None:
                     path.write_bytes(original)
+
+    def test_strict_doctor_detects_an_edited_runtime_file(self) -> None:
+        project = self.root / "edited runtime"
+        installed = self.install(project, "--agent", "codex", "--profile", "software-dev")
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        state = json.loads((project / ".agentsmith/state.json").read_text(encoding="utf-8"))
+        recorded = {item["path"]: item["sha256"] for item in state["installation"]["runtime_files"]}
+        self.assertIn(".agentsmith/work_graph.py", recorded)
+        self.assertIn(".agentsmith/autonomous-run.py", recorded)
+        self.assertEqual(
+            recorded[".agentsmith/work_graph.py"],
+            hashlib.sha256((project / ".agentsmith/work_graph.py").read_bytes()).hexdigest(),
+        )
+        # The update planner must accept the new record, or the next update would refuse it.
+        load_core().validate_installation_manifest(state)
+        clean = self.run_core("doctor", "--agent", "codex", "--target", str(project), "--strict", "--json")
+        self.assertEqual(clean.returncode, 0, clean.stdout + clean.stderr)
+        self.assertEqual(json.loads(clean.stdout)["codex"]["runtime"]["modified_files"], [])
+        with (project / ".agentsmith/work_graph.py").open("a", encoding="utf-8") as handle:
+            handle.write("# local edit\n")
+        strict = self.run_core("doctor", "--agent", "codex", "--target", str(project), "--strict", "--json")
+        self.assertNotEqual(strict.returncode, 0, strict.stdout + strict.stderr)
+        agent = json.loads(strict.stdout)["codex"]
+        self.assertEqual(agent["runtime"]["modified_files"], [".agentsmith/work_graph.py"])
+        self.assertIn("runtime-file-modified", self.warning_codes(agent))
+        self.assertEqual(self.doctor(project, "codex")[0].returncode, 0, "a plain doctor run only warns")
 
     def test_reinstall_refreshes_managed_controller_and_preserves_draft_template(self) -> None:
         project = self.root / "reinstalled consumer"
@@ -172,21 +200,361 @@ class DoctorTests(unittest.TestCase):
             [True, False],
         )
 
+    def test_claude_duplicate_core_above_the_git_root_is_reported(self) -> None:
+        # Claude Code loads CLAUDE.md from every ancestor, not only from the Git root down.
+        outer = self.root / "outer workspace"
+        inner = outer / "inner repo"
+        self.assertEqual(self.install(outer, "--agent", "claude", "--profile", "software-dev", "--assemble-only").returncode, 0)
+        self.assertEqual(self.install(inner, "--agent", "claude", "--profile", "software-dev", "--assemble-only").returncode, 0)
+        subprocess.run(["git", "-C", str(inner), "init", "-q"], check=True)
+        _, payload = self.doctor(inner, "claude")
+        agent = payload["claude"]
+        self.assertIn("duplicate-managed-core", self.warning_codes(agent))
+        loaded = [Path(path) for path in agent["instructions"]["loaded_files"]]
+        self.assertIn((outer / "CLAUDE.md").resolve(), loaded)
+        self.assertIn((inner / "CLAUDE.md").resolve(), loaded)
+        message = next(w["message"] for w in agent["warnings"] if w["code"] == "duplicate-managed-core")
+        self.assertIn("Claude Code", message)
+        # The project CLAUDE.md imports AGENTS.md, so the outer AGENTS.md is the copy that loads.
+        self.assertIn(str((outer / "AGENTS.md").resolve()), message)
+        self.assertNotIn("legacy-managed-block", self.warning_codes(agent), "both copies belong to a current install")
+        # Codex reads from the Git root down, so the outer copy is outside its chain.
+        _, codex_payload = self.doctor(inner, "codex")
+        self.assertNotIn("duplicate-managed-core", self.warning_codes(codex_payload["codex"]))
+        self.assertNotIn(str((outer / "AGENTS.md").resolve()), codex_payload["codex"]["instructions"]["loaded_files"])
+
+    def test_legacy_home_agents_block_is_reported_only_for_the_tool_that_loads_it(self) -> None:
+        donor = self.root / "donor"
+        self.assertEqual(self.install(donor, "--agent", "codex", "--profile", "general-admin", "--assemble-only").returncode, 0)
+        home = Path(self.env["HOME"])
+        home.mkdir(parents=True, exist_ok=True)
+        legacy = home / "AGENTS.md"
+        legacy.write_text((donor / "AGENTS.md").read_text(encoding="utf-8"), encoding="utf-8")
+        repo = home / "work" / "repo"
+        repo.mkdir(parents=True)
+        subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+        _, claude_payload = self.doctor(repo, "claude")
+        warning = next(w for w in claude_payload["claude"]["warnings"] if w["code"] == "legacy-managed-block")
+        self.assertIn(str(legacy.resolve()), warning["message"])
+        self.assertIn("Claude Code", warning["message"])
+        # The token estimate counts what the tool really loads, including that stray block.
+        self.assertGreater(claude_payload["claude"]["instructions"]["combined_tokens"], 0)
+        _, codex_payload = self.doctor(repo, "codex")
+        self.assertNotIn("legacy-managed-block", self.warning_codes(codex_payload["codex"]))
+        # A clone carries the project's rules without the untracked install record; that is not legacy.
+        (repo / "AGENTS.md").write_text((donor / "AGENTS.md").read_text(encoding="utf-8"), encoding="utf-8")
+        _, clone_payload = self.doctor(repo, "codex")
+        self.assertNotIn("legacy-managed-block", self.warning_codes(clone_payload["codex"]))
+        # A CLAUDE.md in the folder chain stops Claude Code from reading AGENTS.md at all.
+        (repo / "CLAUDE.md").write_text("# Project notes\n", encoding="utf-8")
+        _, quiet = self.doctor(repo, "claude")
+        self.assertNotIn("legacy-managed-block", self.warning_codes(quiet["claude"]))
+        self.assertNotIn(str(legacy.resolve()), quiet["claude"]["instructions"]["loaded_files"])
+
+    def test_claude_import_only_rules_count_as_loaded(self) -> None:
+        # A project CLAUDE.md now only imports AGENTS.md; the imported rules must count as loaded.
+        outer = self.root / "import outer"
+        inner = outer / "inner"
+        self.assertEqual(self.install(outer, "--agent", "claude", "--profile", "software-dev", "--assemble-only").returncode, 0)
+        self.assertIn("@AGENTS.md", (outer / "CLAUDE.md").read_text(encoding="utf-8"))
+        installed = self.install(inner, "--agent", "claude", "--profile", "software-dev", "--profile-only", "--assemble-only")
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        subprocess.run(["git", "-C", str(inner), "init", "-q"], check=True)
+        _, payload = self.doctor(inner, "claude")
+        agent = payload["claude"]
+        self.assertIn(str((outer / "AGENTS.md").resolve()), agent["instructions"]["loaded_files"])
+        self.assertNotIn("profile-only-core-missing", self.warning_codes(agent))
+        self.assertNotIn("duplicate-managed-core", self.warning_codes(agent), "one imported core is one core")
+
+    def test_claude_imports_follow_the_documented_rules(self) -> None:
+        project = self.root / "imports"
+        (project / "docs").mkdir(parents=True)
+        home = Path(self.env["HOME"])
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "personal.md").write_text("Personal.\n", encoding="utf-8")
+        (project / "CLAUDE.md").write_text(
+            "See @docs/a.md and @~/personal.md.\n"
+            "Literal `@docs/span.md` stays text.\n"
+            "```\n@docs/fenced.md\n```\n"
+            "Mail me at someone@docs/mail.md.\n",
+            encoding="utf-8",
+        )
+        chain = ["a", "b", "c", "d", "e", "f"]
+        for name, following in zip(chain, chain[1:] + [None]):
+            body = f"Rule {name}.\n" + (f"@{following}.md\n" if following else "")
+            (project / "docs" / f"{name}.md").write_text(body, encoding="utf-8")
+        for name in ("span", "fenced", "mail"):
+            (project / "docs" / f"{name}.md").write_text("never loaded\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(project), "init", "-q"], check=True)
+        _, payload = self.doctor(project, "claude")
+        loaded = {Path(path).name for path in payload["claude"]["instructions"]["loaded_files"]}
+        # Relative to the importing file, ~ allowed, four hops deep, code spans and fences skipped.
+        self.assertTrue({"CLAUDE.md", "a.md", "b.md", "c.md", "d.md", "personal.md"} <= loaded, loaded)
+        self.assertNotIn("e.md", loaded, "a fifth hop is beyond the documented depth")
+        self.assertFalse({"span.md", "fenced.md", "mail.md"} & loaded, loaded)
+
+    def test_codex_override_file_replaces_agents_md(self) -> None:
+        repo = self.root / "override repo"
+        self.assertEqual(self.install(repo, "--agent", "codex", "--profile", "general-admin", "--assemble-only").returncode, 0)
+        subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+        (repo / "AGENTS.override.md").write_text("# Local override\n", encoding="utf-8")
+        _, payload = self.doctor(repo, "codex")
+        loaded = payload["codex"]["instructions"]["loaded_files"]
+        self.assertIn(str((repo / "AGENTS.override.md").resolve()), loaded)
+        self.assertNotIn(str((repo / "AGENTS.md").resolve()), loaded)
+
+    def test_output_rewriting_pre_tool_hook_is_reported(self) -> None:
+        project = self.root / "rewritten output"
+        (project / ".claude").mkdir(parents=True)
+        settings = Path(self.env["HOME"]) / ".claude" / "settings.json"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+
+        def hooks(matcher: str, command: str) -> str:
+            return json.dumps({"hooks": {"PreToolUse": [{"matcher": matcher, "hooks": [{"type": "command", "command": command}]}]}})
+
+        settings.write_text(hooks("Write|Edit", "rtk hook claude"), encoding="utf-8")
+        _, quiet = self.doctor(project, "claude")
+        self.assertNotIn("output-rewriting-hook", self.warning_codes(quiet["claude"]), "only shell tools are rewritten")
+        # Claude Code also reads the untracked project-local settings file.
+        (project / ".claude" / "settings.local.json").write_text(hooks("Bash", "rtk hook claude"), encoding="utf-8")
+        _, local = self.doctor(project, "claude")
+        warning = next(w for w in local["claude"]["warnings"] if w["code"] == "output-rewriting-hook")
+        self.assertIn("rtk hook claude", warning["message"])
+        self.assertIn("settings.local.json", warning["message"])
+        self.assertIn("rtk proxy", warning["recommendation"])
+        codex_hooks = Path(self.env["CODEX_HOME"]) / "hooks.json"
+        codex_hooks.parent.mkdir(parents=True, exist_ok=True)
+        codex_hooks.write_text(hooks("*", "/usr/local/bin/rtk hook codex"), encoding="utf-8")
+        _, codex = self.doctor(project, "codex")
+        self.assertIn("output-rewriting-hook", self.warning_codes(codex["codex"]))
+
+    def test_skill_that_cites_a_path_the_install_lacks_is_reported(self) -> None:
+        project = self.root / "skill paths"
+        installed = self.install(project, "--agent", "codex", "--profile", "software-dev", "--with-skills")
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        _, clean = self.doctor(project, "codex")
+        cited = {w["message"] for w in clean["codex"]["warnings"] if w["code"] == "skill-path-missing"}
+        # A skill that names the installed path and the source-checkout path needs only one of them.
+        self.assertFalse(any("autonomous-run" in message or "wayfinder" in message for message in cited), cited)
+        (project / ".harness" / "templates" / "plan.md").unlink()
+        skill = project / ".agents" / "skills" / "handoff" / "SKILL.md"
+        skill.write_text(skill.read_text(encoding="utf-8") + "\nSee `templates/missing-guide.md` and `.harness/runs/<id>.json`.\n", encoding="utf-8")
+        _, payload = self.doctor(project, "codex")
+        messages = {w["message"] for w in payload["codex"]["warnings"] if w["code"] == "skill-path-missing"}
+        grill = next(message for message in messages if "grill-with-docs" in message)
+        self.assertIn(".harness/templates/plan.md", grill)
+        handoff = next(message for message in messages if "handoff" in message)
+        self.assertIn("templates/missing-guide.md", handoff)
+        self.assertNotIn(".harness/runs", handoff, "a placeholder path is created at run time")
+        # A marker the user creates on demand (the autonomy kill switch) is normal when absent.
+        skill.write_text(skill.read_text(encoding="utf-8") + "\nTo pause, create `.harness/AUTONOMY_PAUSED`.\n", encoding="utf-8")
+        _, marker = self.doctor(project, "codex")
+        handoff = next(w["message"] for w in marker["codex"]["warnings"]
+                       if w["code"] == "skill-path-missing" and "handoff" in w["message"])
+        self.assertNotIn("AUTONOMY_PAUSED", handoff)
+        self.assertIn("templates/missing-guide.md", handoff, "a real missing path is still reported")
+
+    def test_installed_runtime_doctor_also_names_missing_core_sections(self) -> None:
+        # The installed runtime has no core/ folder, so it must rely on what install recorded.
+        project = self.root / "installed profile only"
+        installed = self.install(project, "--agent", "codex", "--profile", "software-dev", "--profile-only")
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        rules = Path(self.env["CODEX_HOME"]) / "AGENTS.md"
+        rules.parent.mkdir(parents=True, exist_ok=True)
+        rules.write_text("<!-- CORE · identity · universal -->\nIdentity only.\n", encoding="utf-8")
+        expected = [name for name in load_core().core_section_names() if name != "identity"]
+        self.assertTrue(expected)
+        for runtime in (CORE, project / ".agentsmith" / "agentsmith.py"):
+            result = subprocess.run(
+                [sys.executable, str(runtime), "doctor", "--agent", "codex", "--target", str(project), "--json"],
+                cwd=project, env=self.env, text=True, capture_output=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            warning = next((w for w in json.loads(result.stdout)["codex"]["warnings"]
+                            if w["code"] == "profile-only-core-missing"), None)
+            self.assertIsNotNone(warning, runtime)
+            for name in expected:
+                self.assertIn(name, warning["message"], runtime)
+            self.assertNotIn("identity,", warning["message"], runtime)
+
+    def test_superpowers_skills_named_without_the_plugin_are_reported(self) -> None:
+        project = self.root / "superpowers project"
+        (project / ".claude").mkdir(parents=True)
+        (project / "CLAUDE.md").write_text("Use `superpowers:brainstorming` before building.\n", encoding="utf-8")
+        _, missing = self.doctor(project, "claude")
+        warning = next(w for w in missing["claude"]["warnings"] if w["code"] == "superpowers-not-enabled")
+        self.assertIn("superpowers:brainstorming", warning["message"])
+        settings = Path(self.env["HOME"]) / ".claude" / "settings.json"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text(json.dumps({"enabledPlugins": {"superpowers@claude-plugins-official": True}}), encoding="utf-8")
+        _, enabled = self.doctor(project, "claude")
+        self.assertNotIn("superpowers-not-enabled", self.warning_codes(enabled["claude"]))
+        # Local settings override user settings, so a local opt-out disables it again.
+        (project / ".claude" / "settings.local.json").write_text(
+            json.dumps({"enabledPlugins": {"superpowers@claude-plugins-official": False}}), encoding="utf-8"
+        )
+        _, disabled = self.doctor(project, "claude")
+        self.assertIn("superpowers-not-enabled", self.warning_codes(disabled["claude"]))
+        _, codex = self.doctor(project, "codex")
+        self.assertNotIn("superpowers-not-enabled", self.warning_codes(codex["codex"]))
+
+    def git(self, repo: Path, *arguments: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.com", *arguments],
+            check=True, text=True, capture_output=True,
+        ).stdout.strip()
+
+    def test_managed_block_behind_the_default_branch_is_reported(self) -> None:
+        repo = self.root / "behind repo"
+        self.assertEqual(self.install(repo, "--agent", "codex", "--profile", "general-admin", "--assemble-only").returncode, 0)
+        self.git(repo, "init", "-q", "-b", "master")
+        self.git(repo, "add", "AGENTS.md")
+        self.git(repo, "commit", "-q", "--no-verify", "-m", "chore: rules")
+        self.git(repo, "switch", "-q", "-c", "feature")
+        _, same = self.doctor(repo, "codex")
+        self.assertNotIn("managed-block-behind-default-branch", self.warning_codes(same["codex"]))
+        self.git(repo, "switch", "-q", "master")
+        rules = repo / "AGENTS.md"
+        rules.write_text(rules.read_text(encoding="utf-8").replace("<!-- END AGENTSMITH -->", "Newer rule.\n<!-- END AGENTSMITH -->"), encoding="utf-8")
+        self.git(repo, "commit", "-q", "--no-verify", "-am", "chore: newer rules")
+        self.git(repo, "switch", "-q", "feature")
+        _, behind = self.doctor(repo, "codex")
+        warning = next(w for w in behind["codex"]["warnings"] if w["code"] == "managed-block-behind-default-branch")
+        self.assertIn("master", warning["message"])
+        self.assertIn("AGENTS.md", warning["message"])
+        # A branch that changed the block itself is ahead, not behind.
+        rules.write_text(rules.read_text(encoding="utf-8").replace("<!-- END AGENTSMITH -->", "Branch rule.\n<!-- END AGENTSMITH -->"), encoding="utf-8")
+        self.git(repo, "commit", "-q", "--no-verify", "-am", "chore: branch rules")
+        _, diverged = self.doctor(repo, "codex")
+        self.assertNotIn("managed-block-behind-default-branch", self.warning_codes(diverged["codex"]))
+
+    def test_stale_feedback_records_and_an_overdue_harness_review_are_reported(self) -> None:
+        import datetime
+        project = self.root / "feedback project"
+        feedback = project / "docs" / "feedback"
+        feedback.mkdir(parents=True)
+        today = datetime.date.today()
+        old = (today - datetime.timedelta(days=90)).isoformat()
+        recent = (today - datetime.timedelta(days=3)).isoformat()
+        (feedback / "0001-old-open.md").write_text(f"# Feedback 0001\n\n- **Date:** {old}\n- **Status:** open\n", encoding="utf-8")
+        (feedback / "0002-new-open.md").write_text(f"# Feedback 0002\n\n- **Date:** {recent}\n- **Status:** open\n", encoding="utf-8")
+        (feedback / "0003-applied.md").write_text(f"# Feedback 0003\n\n- **Date:** {old}\n- **Status:** applied\n", encoding="utf-8")
+        readme = feedback / "README.md"
+        readme.write_text("# Feedback\n\n_Last harness review: (none yet — run the checkpoint above and date it here.)_\n", encoding="utf-8")
+        _, payload = self.doctor(project, "codex")
+        warnings = {w["code"]: w["message"] for w in payload["codex"]["warnings"]}
+        self.assertIn("feedback-open-too-long", warnings)
+        self.assertIn("0001-old-open.md", warnings["feedback-open-too-long"])
+        self.assertNotIn("0002-new-open.md", warnings["feedback-open-too-long"])
+        self.assertIn("harness-review-overdue", warnings)
+        readme.write_text(f"# Feedback\n\n_Last harness review: {today.isoformat()}_\n", encoding="utf-8")
+        _, reviewed = self.doctor(project, "codex")
+        self.assertNotIn("harness-review-overdue", self.warning_codes(reviewed["codex"]))
+        self.assertIn("feedback-open-too-long", self.warning_codes(reviewed["codex"]))
+
+    def test_prunable_worktrees_many_worktrees_and_low_disk_are_reported(self) -> None:
+        repo = self.root / "worktree repo"
+        repo.mkdir()
+        self.git(repo, "init", "-q", "-b", "master")
+        self.git(repo, "commit", "-q", "--allow-empty", "--no-verify", "-m", "chore: start")
+        for name in ("one", "gone"):
+            self.git(repo, "worktree", "add", "-q", "-b", name, str(self.root / f"wt {name}"))
+        import shutil as shell_tools
+        shell_tools.rmtree(self.root / "wt gone")
+        _, payload = self.doctor(repo, "codex")
+        stale = next(w for w in payload["codex"]["warnings"] if w["code"] == "stale-worktrees")
+        self.assertIn("wt gone", stale["message"])
+        self.assertIn("git worktree prune", stale["recommendation"])
+        core = load_core()
+        with unittest.mock.patch.dict(os.environ, {"HOME": self.env["HOME"]}):
+            many = core.workspace_findings(repo, worktree_limit=1)
+            self.assertIn("many-worktrees", {item["code"] for item in many})
+            usage = core.shutil.disk_usage(repo)._replace(free=1024 ** 3)
+            with unittest.mock.patch.object(core.shutil, "disk_usage", return_value=usage):
+                low = core.workspace_findings(repo)
+        self.assertIn("low-disk-space", {item["code"] for item in low})
+
+    def test_profile_only_install_names_the_core_sections_no_tool_loads(self) -> None:
+        project = self.root / "profile only"
+        installed = self.install(project, "--agent", "codex", "--profile", "software-dev", "--profile-only", "--assemble-only")
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        _, alone = self.doctor(project, "codex")
+        warning = next(w for w in alone["codex"]["warnings"] if w["code"] == "profile-only-core-missing")
+        sections = load_core().core_section_names()
+        self.assertTrue(sections)
+        for name in sections:
+            self.assertIn(name, warning["message"])
+        global_install = self.run_core("install", "--agent", "codex", "--global", "--profile", "general-admin", "--assemble-only")
+        self.assertEqual(global_install.returncode, 0, global_install.stdout + global_install.stderr)
+        _, layered = self.doctor(project, "codex")
+        self.assertNotIn("profile-only-core-missing", self.warning_codes(layered["codex"]))
+
+    def test_feedback_without_a_review_guide_counts_as_never_reviewed(self) -> None:
+        import datetime
+        # A project install ships no docs/feedback/README.md; the records alone must still be judged.
+        project = self.root / "no guide"
+        feedback = project / "docs" / "feedback"
+        feedback.mkdir(parents=True)
+        old = (datetime.date.today() - datetime.timedelta(days=90)).isoformat()
+        (feedback / "0001-old.md").write_text(f"- **Date:** {old}\n- **Status:** applied\n", encoding="utf-8")
+        result, payload = self.doctor(project, "codex")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        warning = next(w for w in payload["codex"]["warnings"] if w["code"] == "harness-review-overdue")
+        self.assertIn("none recorded", warning["message"])
+        self.assertIn("_Last harness review:", warning["recommendation"])
+
+    def test_applied_feedback_whose_surface_is_gone_is_reported(self) -> None:
+        import datetime
+        project = self.root / "surface project"
+        feedback = project / "docs" / "feedback"
+        feedback.mkdir(parents=True)
+        (project / ".harness").mkdir()
+        (project / ".harness" / "verify.conf").write_text("lint :: ruff check .\n", encoding="utf-8")
+        (project / "rules.md").write_text("Rule A: always verify.\n", encoding="utf-8")
+        today = datetime.date.today().isoformat()
+
+        def record(number: str, surface: str, status: str = "applied") -> None:
+            (feedback / f"{number}-record.md").write_text(
+                f"# Feedback {number}\n\n- **Date:** {today}\n- **Status:** {status}\n- **Surface:** {surface}\n",
+                encoding="utf-8",
+            )
+
+        record("0001", "file: rules.md | text: Rule A: always verify.")
+        record("0002", "verify: lint")
+        record("0003", "<!-- file: <path> | text: <literal line it must keep>  or  verify: <phase name> -->")
+        record("0004", "verify: gone-phase", status="open")
+        _, intact = self.doctor(project, "codex")
+        self.assertNotIn("feedback-surface-missing", self.warning_codes(intact["codex"]))
+        (project / "rules.md").write_text("Rule A was reworded.\n", encoding="utf-8")
+        (project / ".harness" / "verify.conf").write_text("test :: pytest\n", encoding="utf-8")
+        _, gone = self.doctor(project, "codex")
+        warning = next(w for w in gone["codex"]["warnings"] if w["code"] == "feedback-surface-missing")
+        self.assertIn("0001-record.md", warning["message"])
+        self.assertIn("0002-record.md", warning["message"])
+        self.assertNotIn("0003", warning["message"])
+        self.assertNotIn("0004", warning["message"], "only applied records promise a surface")
+
     def test_trusted_native_install_reports_actual_owned_surfaces(self) -> None:
         project = self.root / "owned project ü"
         project.mkdir()
         subprocess.run(["git", "-C", str(project), "init", "-q"], check=True)
         installed = self.run_core(
             "install", "--agent", "native", "--profile", "software-dev", "--target", str(project),
-            "--safety", "trusted", "--with-skills", "--with-mcp", "playwright",
+            "--with-skills", "--with-mcp", "playwright",
             "--with-hooks", "--with-handoff-hooks",
         )
         self.assertEqual(installed.returncode, 0, installed.stdout)
+        # Claude Code ignores bypassPermissions in project settings, so trusted is Codex-only here.
+        trusted = self.run_core(
+            "install", "--agent", "codex", "--profile", "software-dev", "--target", str(project),
+            "--safety", "trusted",
+        )
+        self.assertEqual(trusted.returncode, 0, trusted.stdout + trusted.stderr)
         for agent_id in ("claude", "codex"):
             result, payload = self.doctor(project, agent_id)
             self.assertEqual(result.returncode, 0, result.stdout)
             agent = payload[agent_id]
-            self.assertEqual(agent["safety"]["state"], "trusted")
+            self.assertEqual(agent["safety"]["state"], "trusted" if agent_id == "codex" else "cautious")
             self.assertEqual(agent["skills"]["state"], "managed")
             self.assertEqual(agent["mcp"]["state"], "managed")
             self.assertEqual(agent["hooks"]["state"], "managed", f"{agent_id}: {agent['hooks']}")
@@ -195,7 +563,8 @@ class DoctorTests(unittest.TestCase):
             self.assertEqual(agent["statusline"]["state"], "managed" if agent_id == "claude" else "builtin")
             self.assertTrue(agent["statusline"]["active"])
             self.assertEqual(agent["runtime"]["state"], "current")
-            self.assertIn("trusted-expanded-surface", self.warning_codes(agent))
+            if agent_id == "codex":
+                self.assertIn("trusted-expanded-surface", self.warning_codes(agent))
 
     def test_container_safety_drops_only_the_codex_sandbox(self) -> None:
         # Inside Docker the Codex sandbox cannot start, so container mode keeps approvals but
@@ -206,7 +575,7 @@ class DoctorTests(unittest.TestCase):
         base = ("install", "--agent", "native", "--profile", "software-dev", "--target", str(project))
         installed = self.run_core(*base, "--safety", "container")
         self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
-        settings_path = Path(self.env["HOME"]) / ".claude" / "settings.json"
+        settings_path = project / ".claude" / "settings.json"  # a project install keeps Claude's mode in the project
         codex_path = Path(self.env["CODEX_HOME"]) / "config.toml"
         self.assertEqual(json.loads(settings_path.read_text(encoding="utf-8"))["permissions"]["defaultMode"], "acceptEdits")
         codex = codex_path.read_text(encoding="utf-8")
@@ -526,6 +895,228 @@ class DoctorTests(unittest.TestCase):
         skills = json.loads(strict.stdout)["claude"]["skills"]
         self.assertEqual(skills["adapter_diverged_names"], ["handoff"])
 
+
+
+class HookFiringLogTests(unittest.TestCase):
+    """Every shipped hook records when it acts, so doctor can name hooks that stopped firing."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory(prefix="agentsmith hook log ")
+        self.root = Path(self.temporary.name)
+        self.env = os.environ.copy()
+        home = self.root / "home"
+        self.env.update({"HOME": str(home), "USERPROFILE": str(home), "CODEX_HOME": str(home / ".codex")})
+        for name in ("PI_CODING_AGENT_DIR", "XDG_CONFIG_HOME", "HANDOFF_PCT_THRESHOLD"):
+            self.env.pop(name, None)
+        self.project = self.root / "project"
+        self.project.mkdir()
+        installed = subprocess.run(
+            [sys.executable, str(CORE), "install", "--agent", "claude", "--target", str(self.project),
+             "--profile", "software-dev", "--with-handoff-hooks"],
+            cwd=ROOT, env=self.env, text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        self.runtime = self.project / ".agentsmith" / "agentsmith.py"
+        self.log = self.project / ".agentsmith" / "logs" / "hook-events.jsonl"
+        # Written once before any guardrail run: parallel runs must never see a half-written subject.
+        (self.root / "message").write_text("bad subject\n", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def hook(self, name: str, payload: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(self.runtime), "hook", name], input=payload, cwd=self.project,
+            env=self.env, text=True, capture_output=True, check=False,
+        )
+
+    def events(self) -> list[dict]:
+        if not self.log.is_file():
+            return []
+        return [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
+
+    def test_a_firing_hook_appends_one_line_without_prompt_text(self) -> None:
+        quiet = self.hook("handoff-on-keyword", json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": "hello"}))
+        self.assertEqual(quiet.returncode, 0)
+        self.assertEqual(self.events(), [], "a hook that did nothing must not log")
+        secret_prompt = "please wrap up now, token sk-do-not-log"
+        fired = self.hook("handoff-on-keyword", json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": secret_prompt}))
+        self.assertEqual(fired.returncode, 0)
+        self.assertIn("agentsmith handoff", fired.stdout)
+        [event] = self.events()
+        self.assertEqual(set(event), {"ts", "hook", "event", "outcome"})
+        self.assertEqual((event["hook"], event["event"], event["outcome"]), ("handoff-on-keyword", "UserPromptSubmit", "nudged"))
+        self.assertNotIn("wrap up", self.log.read_text(encoding="utf-8"))
+        self.assertNotIn("sk-do-not-log", self.log.read_text(encoding="utf-8"))
+        # The log folder ignores itself, so a committed .agentsmith/ runtime stays clean in Git.
+        self.assertEqual((self.log.parent / ".gitignore").read_text(encoding="utf-8"), "*\n")
+
+    def test_logging_failure_never_breaks_the_hook(self) -> None:
+        self.log.mkdir(parents=True)
+        fired = self.hook("ui-design-reminder", json.dumps({"hook_event_name": "PreToolUse", "file_path": "a.tsx"}))
+        self.assertEqual(fired.returncode, 0, fired.stderr)
+        self.assertIn("DESIGN.md", fired.stdout)
+        self.assertEqual(fired.stderr, "")
+
+    @unittest.skipIf(not hasattr(os, "mkfifo"), "POSIX FIFO")
+    def test_a_fifo_at_the_log_path_does_not_hang_the_hook(self) -> None:
+        self.log.parent.mkdir(parents=True)
+        os.mkfifo(self.log)
+        try:
+            fired = subprocess.run(
+                [sys.executable, str(self.runtime), "hook", "handoff-on-keyword"], input="please wrap up",
+                cwd=self.project, env=self.env, text=True, capture_output=True, check=False, timeout=5,
+            )
+        except subprocess.TimeoutExpired:
+            self.fail("the hook blocked on a FIFO at the log path")
+        self.assertEqual(fired.returncode, 0)
+        self.assertIn("agentsmith handoff", fired.stdout)
+
+    def test_log_stays_bounded(self) -> None:
+        line = json.dumps({"ts": "2026-01-01T00:00:00Z", "hook": "ui-design-reminder", "event": "PreToolUse", "outcome": "nudged"})
+        self.log.parent.mkdir(parents=True)
+        self.log.write_text((line + "\n") * 4000, encoding="utf-8")
+        self.hook("ui-design-reminder", json.dumps({"hook_event_name": "PreToolUse", "file_path": "a.css"}))
+        core = load_core()
+        self.assertLessEqual(self.log.stat().st_size, core.HOOK_LOG_MAX_BYTES)
+        events = self.events()
+        self.assertEqual(events[-1]["hook"], "ui-design-reminder")
+        self.assertNotEqual(events[-1]["ts"], "2026-01-01T00:00:00Z")
+
+    def test_doctor_counts_firings_and_names_hooks_unused_for_30_days(self) -> None:
+        old = "2026-01-01T00:00:00Z"
+        recent = dt_now_iso()
+        self.log.parent.mkdir(parents=True)
+        self.log.write_text(
+            json.dumps({"ts": old, "hook": "context-budget-nudge", "event": "Stop", "outcome": "blocked"}) + "\n"
+            + json.dumps({"ts": recent, "hook": "handoff-on-keyword", "event": "UserPromptSubmit", "outcome": "nudged"}) + "\n"
+            # A future time is a broken clock or a planted line; it must not hide an unused hook.
+            + json.dumps({"ts": "2999-01-01T00:00:00Z", "hook": "context-budget-nudge", "event": "Stop", "outcome": "blocked"}) + "\n",
+            encoding="utf-8",
+        )
+        # Pretend the install is older than the window, so silence means the hook is not firing.
+        state = self.project / ".agentsmith" / "state.json"
+        os.utime(state, (0, 0))
+        result = subprocess.run(
+            [sys.executable, str(CORE), "doctor", "--agent", "claude", "--target", str(self.project), "--json"],
+            cwd=ROOT, env=self.env, text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        firings = json.loads(result.stdout)["claude"]["hook_firings"]
+        self.assertEqual(firings["window_days"], 30)
+        self.assertEqual(firings["counts"], {"handoff-on-keyword": 1})
+        self.assertEqual(firings["unused"], ["context-budget-nudge"])
+        codes = {warning["code"] for warning in json.loads(result.stdout)["claude"]["warnings"]}
+        self.assertIn("hook-unused-30-days", codes)
+        text = subprocess.run(
+            [sys.executable, str(CORE), "doctor", "--agent", "claude", "--target", str(self.project)],
+            cwd=ROOT, env=self.env, text=True, capture_output=True, check=False,
+        ).stdout
+        self.assertIn("hook firings (30 days): handoff-on-keyword=1", text)
+
+    @unittest.skipIf(os.name == "nt" or not shutil.which("bash") or not shutil.which("git"), "POSIX Git hook")
+    def test_shell_git_hook_records_a_block(self) -> None:
+        subprocess.run(["git", "-C", str(self.project), "init", "-q", "-b", "master"], check=True)
+        subprocess.run(["git", "-C", str(self.project), "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                        "commit", "-q", "--allow-empty", "--no-verify", "-m", "chore: start"], check=True)
+        blocked = subprocess.run(
+            ["bash", str(ROOT / "hooks" / "git" / "protect-main.sh")], cwd=self.project,
+            env=self.env, text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(blocked.returncode, 1)
+        [event] = self.events()
+        self.assertEqual((event["hook"], event["event"], event["outcome"]), ("protect-main", "pre-commit", "blocked"))
+        message = self.root / "message"
+        message.write_text("bad subject\n", encoding="utf-8")
+        subprocess.run(["bash", str(ROOT / "hooks" / "git" / "conventional-commit.sh"), str(message)],
+                       cwd=self.project, env=self.env, capture_output=True, check=False)
+        self.assertEqual([item["hook"] for item in self.events()], ["protect-main", "conventional-commit"])
+
+
+    def shell_guardrail(self, timeout: float = 10, **options) -> subprocess.CompletedProcess[str]:
+        """Run the commit-message guardrail on a bad subject inside the fixture repository."""
+        if not (self.project / ".git").exists():
+            subprocess.run(["git", "-C", str(self.project), "init", "-q"], check=True)
+        message = self.root / "message"
+        return subprocess.run(["bash", str(ROOT / "hooks" / "git" / "conventional-commit.sh"), str(message)],
+                              cwd=self.project, env=self.env, text=True, capture_output=True, check=False,
+                              timeout=timeout, **options)
+
+    @unittest.skipIf(os.name == "nt" or not shutil.which("bash") or not shutil.which("git"), "POSIX Git hook")
+    def test_shell_log_never_writes_through_links(self) -> None:
+        # A cloned repository controls .agentsmith/, so every planted link must be refused.
+        logs = self.log.parent
+        logs.mkdir(parents=True)
+        line = json.dumps({"ts": "2026-01-01T00:00:00Z", "hook": "x", "event": "e", "outcome": "blocked"}) + "\n"
+        self.log.write_text(line * 3000, encoding="utf-8")
+        victim = self.root / "valuable.txt"
+        victim.write_text("DO NOT OVERWRITE", encoding="utf-8")
+        (logs / "hook-events.jsonl.tmp").symlink_to(victim)
+        self.assertEqual(self.shell_guardrail().returncode, 1)
+        self.assertEqual(victim.read_text(encoding="utf-8"), "DO NOT OVERWRITE")
+        self.assertFalse(self.log.is_symlink())
+        shutil.rmtree(logs)
+        logs.mkdir()
+        outside = self.root / "outside-ignore"
+        (logs / ".gitignore").symlink_to(outside)
+        self.assertEqual(self.shell_guardrail().returncode, 1)
+        self.assertFalse(outside.exists(), "a dangling .gitignore link was followed")
+        shutil.rmtree(logs)
+        logs.mkdir()
+        self.log.symlink_to(victim)
+        self.assertEqual(self.shell_guardrail().returncode, 1)
+        self.assertEqual(victim.read_text(encoding="utf-8"), "DO NOT OVERWRITE")
+        shutil.rmtree(logs)
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        logs.symlink_to(elsewhere, target_is_directory=True)
+        self.assertEqual(self.shell_guardrail().returncode, 1)
+        self.assertEqual(list(elsewhere.iterdir()), [])
+
+    @unittest.skipIf(os.name == "nt" or not shutil.which("bash") or not shutil.which("git"), "POSIX Git hook")
+    def test_shell_log_skips_a_fifo_and_stays_bounded(self) -> None:
+        self.log.parent.mkdir(parents=True)
+        os.mkfifo(self.log)
+        try:
+            self.assertEqual(self.shell_guardrail(timeout=5).returncode, 1)
+        except subprocess.TimeoutExpired:
+            self.fail("the shell hook blocked on a FIFO at the log path")
+        self.log.unlink()
+        line = json.dumps({"ts": "2026-01-01T00:00:00Z", "hook": "x", "event": "e", "outcome": "blocked"}) + "\n"
+        self.log.write_text(line * 3000, encoding="utf-8")
+        size = self.log.stat().st_size
+        self.assertEqual(self.shell_guardrail().returncode, 1)
+        self.assertEqual(self.log.stat().st_size, size, "shell hooks append only below the size cap")
+
+    @unittest.skipIf(os.name == "nt" or not shutil.which("bash") or not shutil.which("git"), "POSIX Git hook")
+    def test_concurrent_shell_firings_keep_every_line_whole(self) -> None:
+        import concurrent.futures
+        # Start past the old 64 KiB rotation point: parallel rotation used to tear lines.
+        subprocess.run(["git", "-C", str(self.project), "init", "-q"], check=True)
+        self.log.parent.mkdir(parents=True)
+        line = json.dumps({"ts": "2026-01-01T00:00:00Z", "hook": "x", "event": "e", "outcome": "blocked"}) + "\n"
+        self.log.write_text(line * 1100, encoding="utf-8")
+        with concurrent.futures.ThreadPoolExecutor(16) as pool:
+            codes = set(pool.map(lambda _: self.shell_guardrail().returncode, range(60)))
+        self.assertEqual(codes, {1})
+        lines = self.log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 1160)
+        self.assertEqual(sum(json.loads(line)["hook"] == "conventional-commit" for line in lines), 60)
+
+    @unittest.skipIf(os.name == "nt" or not shutil.which("bash") or not shutil.which("git"), "POSIX Git hook")
+    def test_a_full_disk_never_changes_the_guardrail_result(self) -> None:
+        import resource
+
+        def no_file_growth() -> None:
+            resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))
+
+        self.log.parent.mkdir(parents=True)
+        self.assertEqual(self.shell_guardrail(preexec_fn=no_file_growth).returncode, 1)
+
+
+def dt_now_iso() -> str:
+    import datetime
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def load_core():

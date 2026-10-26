@@ -24,7 +24,9 @@ portable.
    `.agentsmith\\agentsmith.cmd` on Windows when the command is not on PATH. It pre-fills
    branch/HEAD/dirty count and scaffolds
    `.harness/handoffs/handoff-<stamp>.md` with the standard sections.
-2. Fill the scaffolded sections (below), then emit the kickoff block as your final message.
+2. Fill the scaffolded sections (below). Before you treat the note as saved, run
+   `agentsmith secret-scan <note path>`; on a finding, replace the value with the name of the
+   resource and scan again. Then emit the kickoff block as your final message.
 
 ## Fallback — no CLI
 1. **Safe state FIRST** (core/50 step 1): commit or stash so nothing half-edited is lost. Never
@@ -34,11 +36,19 @@ portable.
      branch/commit and external identifiers; completed/skipped verification; active operation;
      next read-only recovery command; remaining authorized writes; stop conditions.
    - **What shipped this session** — with commit SHAs / PR links.
+   - **Verified this session** — the checks you ran in this session, with command and result.
+   - **Carried over, not re-verified** — claims from earlier notes or other agents you did not
+     re-check. Never move a claim into "verified" without running its check.
    - **What is still pending.**
+   - **Open questions — default if unanswered** — each question with the default the next
+     session takes if nobody answers.
    - **Deviations / decisions made** (so they're not re-litigated).
    - **Exact next step** — the single first action for the next session.
    - **Gotchas** a fresh session would otherwise re-derive.
-3. Emit a fenced **"Kickoff prompt for a fresh chat"** block: 3–6 sentences of self-contained
+3. Scan the note before you treat it as saved: `agentsmith secret-scan <note path>` (or
+   `.agentsmith/agentsmith secret-scan <note path>`). A handoff note is read by every later
+   session, so a secret in it spreads.
+4. Emit a fenced **"Kickoff prompt for a fresh chat"** block: 3–6 sentences of self-contained
    prose (not bullets — they paste it straight in) covering the item id, branch + HEAD, what's
    done, the single next step, decisions already made, and the handoff note path.
 

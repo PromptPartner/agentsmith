@@ -45,8 +45,14 @@ forces you past "patch the symptom" into "change the system":
 3. **Bounded edit** — the *smallest* change that prevents the whole class. One rule line, one
    gate, one hook. If it feels big, the mechanism is mis-scoped — narrow it.
 4. **Named surface** — *where* the edit lands, exactly: a `core/` rule, a profile gate, a skill,
-   a hook, a template, or a `verify.conf` phase. Prefer a **deterministic** surface (hook /
-   verify phase the agent *can't* skip) over prose it might.
+   a hook, a template, or a `verify.conf` phase. Prefer a **deterministic** surface the agent
+   *can't* skip (a verify phase or lint check; a hook only when this install runs hooks — the
+   scaffold reads the recorded hooks capability and says which) over prose it might. Record it
+   on the record's machine-readable line, one of:
+   `- **Surface:** file: core/20-principle-rules.md | text: <a literal line it must keep>` or
+   `- **Surface:** verify: <phase name in .harness/verify.conf>`.
+   `agentsmith doctor` reports an `applied` record whose surface is gone
+   (`feedback-surface-missing`): the file, the line or the phase was removed.
 5. **Non-regression validation** — how you confirmed it's fixed *and stays fixed*: the failing
    case that now passes, the hook that now blocks it, the verify phase that's now red on
    regression. Evidence, not intention. Until this is real, the entry's **Status** stays `open`.
@@ -67,13 +73,16 @@ handful of sessions, whichever comes first:
    exactly what to re-check — the rule line still reads that way, the hook still fires, the
    verify phase still exists. Refactors silently undo fixes; this is where you catch it.
 3. **Watch the budget.** Accumulated edits bloat static context. Run
-   `scripts/lint-leanness.sh` (or `setup.sh --doctor`) — over budget is the cue to move
+   `scripts/lint-leanness.sh` (or `agentsmith doctor`) — over budget is the cue to move
    knowledge out of `core/` into a skill/doc, not to keep growing the rules.
 4. **Look for clusters.** Three entries pointing at the same surface mean the surface itself is
    the problem — fix it once, structurally, instead of adding a fourth patch.
 
 Keep a one-line note of when you last ran the review (a dated line at the bottom of this file, a
 tracker ticket, or a memory note) so the cadence is visible and doesn't quietly lapse.
+`agentsmith doctor` reads the dated line below: it warns when ten records, or more than 60 days,
+have passed since the last review, and when a record has stayed `open` for more than 30 days.
+Write the date as `YYYY-MM-DD` so doctor can read it.
 
 ---
 

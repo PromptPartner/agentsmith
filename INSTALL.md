@@ -119,7 +119,7 @@ agentsmith profiles list
 agentsmith profiles recommend --target /path/to/project
 ```
 
-One primary profile is the norm. `autonomous-loops` is a modifier for unattended work. The [profile guide](docs/07-how-to-pick-a-profile.md) describes every profile, examples, close calls, stacking, and safe switching.
+One primary profile is the norm. `autonomous-loops` is a modifier for unattended work. A project can also define its own profile in `.agentsmith/profiles/NAME.md` and select it with `--profile project:NAME`. The [profile guide](docs/07-how-to-pick-a-profile.md) describes every profile, examples, close calls, stacking, and safe switching.
 
 For an existing installation, preview a profile change before applying it:
 
@@ -130,7 +130,7 @@ agentsmith profiles switch --target /path/to/project --profile software-dev
 
 ## What AgentSmith manages
 
-`AGENTS.md` is the canonical project instruction file. Claude also receives a generated `CLAUDE.md`. Selected clients receive small adapters that point to `AGENTS.md`; AgentSmith does not maintain independent copies.
+`AGENTS.md` is the canonical project instruction file. Claude also receives a generated `CLAUDE.md` whose managed block imports `AGENTS.md` (`@AGENTS.md`), so the project has one rulebook; text you already had in `CLAUDE.md` stays above the block. Selected clients receive small adapters that point to `AGENTS.md`; AgentSmith does not maintain independent copies.
 
 New project setups also receive:
 
@@ -143,7 +143,7 @@ Updates touch managed blocks and recorded files only. Existing files are backed 
 
 ## Safety and experience
 
-`cautious` is the default. Claude uses edit approval and Codex uses approval on request in its workspace sandbox. `trusted` is an explicit opt-in for a repository and machine you fully control. Inside Docker or a similar container, use `container`: approvals stay on, and the container replaces the Codex sandbox that cannot start there. To leave Claude's and Codex's own settings untouched, install with `--assemble-only`. See [Safety modes](docs/15-safety-model.md#safety-modes).
+`cautious` is the default. Claude uses edit approval and Codex uses approval on request in its workspace sandbox. A project install writes Claude's mode to the project's `.claude/settings.json`, never to your user settings. `trusted` is an explicit opt-in for a repository and machine you fully control; for Claude it needs a `--global` install, because Claude Code ignores `bypassPermissions` in project settings. Inside Docker or a similar container, use `container`: approvals stay on, and the container replaces the Codex sandbox that cannot start there. To leave Claude's and Codex's own settings untouched, install with `--assemble-only`. See [Safety modes](docs/15-safety-model.md#safety-modes).
 
 The wizard asks about experience in the relevant domain instead of assigning one universal skill level. Choose the closest starting point and adjust the generated operator text later if needed. This affects explanations and confirmation detail; it does not weaken safety or verification rules.
 

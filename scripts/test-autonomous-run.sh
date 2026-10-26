@@ -72,6 +72,7 @@ make_fake() {
     '  git add src/change.txt forbidden.txt 2>/dev/null || git add src/change.txt' \
     '  if [ "$mode" = amend-history ]; then git commit --amend --no-edit >/dev/null' \
     '  else git commit -m "test(run): fake maker checkpoint" >/dev/null; fi' \
+    '  if [ "$mode" = commit-then-wait ]; then sleep 20; fi' \
     '  if [ "$mode" = extra-ref ]; then git branch escaped-ref; fi' \
     '  if [ "$mode" = config-mutation ]; then git config --local agentsmith.escape true; fi' \
     '  if [ "$mode" = hook-mutation ]; then mkdir -p "$(git rev-parse --git-common-dir)/hooks"; printf bad > "$(git rev-parse --git-common-dir)/hooks/escaped"; fi' \
@@ -276,6 +277,13 @@ fi
 
 echo 'autonomous-run — contract and successful handoff'
 repo="$(new_repo success)"; make_fake "$repo/../fake"; manifest "$repo" success
+python3 - "$repo/.harness/runs/success.json" <<'PY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); v = json.loads(p.read_text())
+v['limits']['budget_rationale'] = 'size S fixture; set by Test Operator'
+p.write_text(json.dumps(v, indent=2) + '\n')
+PY
+git -C "$repo" add . && git -C "$repo" commit -qm 'test: record budget rationale'
 if (cd "$repo" && invoke "$repo" accept start .harness/runs/success.json >../out 2>../err); then
   ok 'maker → verifier → fresh checker accepts a local branch'
 else
@@ -284,6 +292,7 @@ else
 fi
 assert 'accepted run says no external action occurred' grep -q 'nothing was pushed' "$repo/../out"
 assert 'status reads durable accepted state' bash -c "cd '$repo' && python3 '$repo/../fake/controller.py' status success | grep -q '\"status\": \"accepted\"'"
+assert 'status reports who set the budget and why' bash -c "cd '$repo' && python3 '$repo/../fake/controller.py' status success | grep -q '\"budget_rationale\": \"size S fixture; set by Test Operator\"'"
 assert 'run branch exists only locally' git -C "$repo" show-ref --verify --quiet refs/heads/agentsmith/success
 assert 'runtime usage is accumulated across the run' python3 - "$repo/.git/agentsmith-runs/success/state.json" <<'PY'
 import json, sys
@@ -934,6 +943,133 @@ if (cd "$repo" && invoke "$repo" accept resume checker-half-removed >../resume-o
   ok 'resume finishes a checker removal stopped after its folder was deleted'
 else bad 'resume escalated over a half-removed checker'; cat "$repo/../resume-err"; fi
 assert 'resume removes the leftover checker entry' test ! -e "$checker_entry"
+
+echo 'autonomous-run — budget overshoot keeps the finished candidate'
+repo="$(new_repo overbudget)"; make_fake "$repo/../fake"; manifest "$repo" overbudget
+python3 - "$repo/.harness/runs/overbudget.json" <<'PY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); v = json.loads(p.read_text())
+v['limits']['codex_goal_tokens'] = 5  # the fake Codex maker reports 10 tokens
+p.write_text(json.dumps(v, indent=2) + '\n')
+PY
+git -C "$repo" add . && git -C "$repo" commit -qm 'test: maker overshoots its token cap'
+if (cd "$repo" && invoke "$repo" accept start .harness/runs/overbudget.json >../out 2>../err); then
+  bad 'run over its token cap was accepted'
+else ok 'a maker over its token cap escalates'; fi
+assert 'overshoot escalation names the cap' grep -q 'Codex run-wide token budget exceeded' "$repo/../err"
+assert 'overshoot keeps the maker receipt and candidate checkpoint' python3 - "$repo/.git/agentsmith-runs/overbudget" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1]); state = json.load(open(root / 'state.json'))
+assert state['status'] == 'escalated' and state['stage'] == 'validating', (state['status'], state['stage'])
+assert state['maker_receipt']['status'] == 'completed'
+assert state['candidate_commit'] == state['maker_receipt']['commit']
+assert json.load(open(root / 'attempt-1-maker-receipt.json')) == state['maker_receipt']
+PY
+if (cd "$repo" && invoke "$repo" accept resume overbudget >../resume-out 2>../resume-err); then
+  ok 'resume verifies and checks the retained candidate'
+else bad 'retained over-budget candidate did not resume'; cat "$repo/../resume-err"; fi
+assert 'resume accepts the retained candidate without a second maker' python3 - "$repo/.git/agentsmith-runs/overbudget/state.json" <<'PY'
+import json, sys
+state = json.load(open(sys.argv[1]))
+assert state['status'] == 'accepted' and state['attempt'] == 1
+assert state['accepted_commit'] == state['candidate_commit']
+assert state['codex_tokens_used'] == 10
+PY
+
+echo 'autonomous-run — sandbox preflight before any run artifact'
+repo="$(new_repo preflight)"; make_fake "$repo/../fake"; manifest "$repo" preflight
+if [ "$(uname -s)" = Darwin ]; then
+  # A nested Seatbelt sandbox is refused, which is how a host policy blocks role shells.
+  blocked=(/usr/bin/sandbox-exec -p '(version 1)(allow default)')
+else
+  mkdir -p "$repo/../blocked-bin"
+  printf '%s\n' '#!/bin/sh' 'echo "bwrap: setting up uid map: Permission denied" >&2' 'exit 1' > "$repo/../blocked-bin/bwrap"
+  chmod +x "$repo/../blocked-bin/bwrap"
+  blocked=(env "PATH=$repo/../blocked-bin:$PATH")
+fi
+printf '%s\n' accept > "$repo/../fake/mode"
+if (cd "$repo" && AGENTSMITH_CODEX_BIN="$repo/../fake/bin/fake-agent" AGENTSMITH_CLAUDE_BIN="$repo/../fake/bin/fake-agent" \
+    CODEX_HOME="$repo/../fake/codex-home" "${blocked[@]}" python3 "$repo/../fake/controller.py" start .harness/runs/preflight.json >../out 2>../err); then
+  bad 'start ran although no role could run a sandboxed command'
+else ok 'start refuses when a role cannot run a sandboxed command'; fi
+assert 'preflight refusal names the role and the reason' grep -q 'maker (codex) cannot run a command in the operating-system sandbox' "$repo/../err"
+assert 'preflight refusal creates no branch' bash -c "! git -C '$repo' show-ref --verify --quiet refs/heads/agentsmith/preflight"
+assert 'preflight refusal creates no worktree' test ! -e "$repo-preflight"
+assert 'preflight refusal creates no state' test ! -e "$repo/.git/agentsmith-runs/preflight/state.json"
+
+echo 'autonomous-run — live-run guard before Git metadata writes'
+repo="$(new_repo guard)"; make_fake "$repo/../fake"; manifest "$repo" guard
+guard() { (cd "$repo" && python3 "$repo/../fake/controller.py" status --all-terminal >"$repo/../guard-out" 2>&1); echo $?; }
+assert 'guard exits 0 when no run exists' test "$(guard)" = 0
+(cd "$repo" && invoke "$repo" slow start .harness/runs/guard.json >../out 2>../err) & runner=$!
+wait_for_active_run "$repo" guard || bad 'guard fixture run never became active'
+assert 'guard exits 1 while a run is live' test "$(guard)" = 1
+assert 'guard names the live run' grep -q 'run guard: making' "$repo/../guard-out"
+(cd "$repo" && python3 "$repo/../fake/controller.py" stop guard >/dev/null 2>&1)
+wait "$runner" 2>/dev/null || true
+assert 'guard exits 0 once every run is terminal' test "$(guard)" = 0
+runs="$repo/.git/agentsmith-runs"; graphs="$repo/.git/agentsmith-graphs"
+mkdir -p "$runs/crashed" && printf '{"run_id":"crashed","status":"making"}\n' > "$runs/crashed/state.json"
+assert 'guard exits 1 for a non-terminal run without a live controller' test "$(guard)" = 1
+assert 'guard says the crashed run needs resume or inspection' grep -q 'run crashed: making with no live controller' "$repo/../guard-out"
+rm -r "$runs/crashed"
+mkdir -p "$runs/broken" && printf '{' > "$runs/broken/state.json"
+assert 'guard exits 2 when a run state cannot be read' test "$(guard)" = 2
+rm -r "$runs/broken"
+mkdir -p "$graphs/g" && printf '{"graph_id":"g","status":"running"}\n' > "$graphs/g/state.json"
+assert 'guard exits 1 for a running graph' test "$(guard)" = 1
+printf '{"graph_id":"g","status":"completed"}\n' > "$graphs/g/state.json"
+assert 'guard exits 0 for a completed graph' test "$(guard)" = 0
+printf 'not json' > "$graphs/g/LOCK"
+assert 'guard exits 2 when a graph lock cannot be read' test "$(guard)" = 2
+rm -r "$graphs/g"
+assert 'guard exits 0 again after cleanup' test "$(guard)" = 0
+
+echo 'autonomous-run — stop after the maker committed but before its receipt'
+repo="$(new_repo late-stop)"; make_fake "$repo/../fake"; manifest "$repo" late-stop
+(cd "$repo" && invoke "$repo" commit-then-wait start .harness/runs/late-stop.json >../out 2>../err) & runner=$!
+base_head="$(git -C "$repo" rev-parse HEAD)"
+for _ in {1..100}; do
+  [ -d "$repo-late-stop" ] && [ "$(git -C "$repo-late-stop" rev-parse HEAD 2>/dev/null)" != "$base_head" ] && break
+  sleep 0.1
+done
+assert 'fixture maker committed before the stop' test "$(git -C "$repo-late-stop" rev-parse HEAD)" != "$base_head"
+(cd "$repo" && python3 "$repo/../fake/controller.py" stop late-stop >/dev/null 2>&1)
+wait "$runner" 2>/dev/null || true
+late_head="$(git -C "$repo-late-stop" rev-parse HEAD)"
+if (cd "$repo" && invoke "$repo" accept resume late-stop >../late-out 2>../late-err); then
+  bad 'resume replayed a maker whose commit has no receipt'
+else ok 'resume stops for operator review when a stopped maker left a commit without a receipt'; fi
+assert 'late-stop refusal says why' grep -q 'unfinished maker advanced HEAD without a validated receipt' "$repo/../late-err"
+assert 'late-stop refusal keeps the commit for review' test "$(git -C "$repo-late-stop" rev-parse HEAD)" = "$late_head"
+
+echo 'autonomous-run — repository kill switch'
+repo="$(new_repo paused)"; make_fake "$repo/../fake"; manifest "$repo" paused; manifest "$repo" paused-next
+(cd "$repo" && invoke "$repo" slow start .harness/runs/paused.json >../out 2>../err) & runner=$!
+wait_for_active_run "$repo" paused || bad 'paused fixture run never became active'
+touch "$repo/.harness/AUTONOMY_PAUSED"
+sleep 0.5
+assert 'the kill switch does not stop a live run' bash -c "cd '$repo' && python3 '$repo/../fake/controller.py' status paused | grep -q '\"status\": \"making\"'"
+(cd "$repo" && python3 "$repo/../fake/controller.py" stop paused >/dev/null 2>&1)
+wait "$runner" 2>/dev/null || true
+if (cd "$repo" && invoke "$repo" accept start .harness/runs/paused-next.json >../paused-out 2>../paused-err); then
+  bad 'start ran while autonomy was paused'
+else ok 'start refuses while autonomy is paused'; fi
+assert 'paused start names the marker' grep -q 'autonomy is paused by .*AUTONOMY_PAUSED' "$repo/../paused-err"
+assert 'paused start creates no branch' bash -c "! git -C '$repo' show-ref --verify --quiet refs/heads/agentsmith/paused-next"
+assert 'paused start creates no state' test ! -e "$repo/.git/agentsmith-runs/paused-next/state.json"
+if (cd "$repo" && invoke "$repo" accept resume paused >../paused-out 2>../paused-err); then
+  bad 'resume ran while autonomy was paused'
+else ok 'resume refuses while autonomy is paused'; fi
+assert 'paused resume leaves the run interrupted' bash -c "cd '$repo' && python3 '$repo/../fake/controller.py' status paused | grep -q '\"status\": \"interrupted\"'"
+if (cd "$repo" && python3 "$repo/../fake/controller.py" prepare --run-id paused-draft --spec docs/specs/test.md --ticket IMP-2 --maker-model m --checker-model m --template "$repo/../fake/template.json" >../paused-out 2>../paused-err); then
+  bad 'prepare ran while autonomy was paused'
+else ok 'prepare refuses while autonomy is paused'; fi
+assert 'paused prepare writes no manifest' test ! -e "$repo/.harness/runs/paused-draft.json"
+rm "$repo/.harness/AUTONOMY_PAUSED"
+if (cd "$repo" && invoke "$repo" accept resume paused >../paused-out 2>../paused-err); then
+  ok 'removing the marker lets the stopped run resume'
+else bad 'run did not resume after the marker was removed'; cat "$repo/../paused-err"; fi
 
 echo
 printf 'autonomous-run: %d passed, %d failed\n' "$pass" "$fail"

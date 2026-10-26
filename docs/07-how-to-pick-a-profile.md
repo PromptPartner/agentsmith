@@ -98,6 +98,39 @@ Claude loads `~/.claude/CLAUDE.md` + `./CLAUDE.md`; Codex loads `$CODEX_HOME/AGE
 thin. Without `--global`, a per-project run writes a **self-contained** core+profile file (good for
 one-offs). See `docs/13-platforms-and-tools.md`.
 
+## Your own project profile
+
+When no built-in profile describes your project's work, write your own. A project profile is a
+Markdown file in the project at `.agentsmith/profiles/<name>.md`. Write it like a built-in profile:
+say what "done" and "verified" mean for this work, list the quality gates, and name the failures
+to guard against. Copy a built-in profile from `profiles/` as a starting point if that helps.
+
+Select it with the `project:` prefix. You can stack it with a built-in profile:
+
+```bash
+agentsmith install --agent native --profile software-dev,project:house-rules --target .
+agentsmith profiles list --target .
+```
+
+The rules for selectors:
+
+- `project:NAME` reads `.agentsmith/profiles/NAME.md`. `builtin:NAME` reads a profile that ships
+  with AgentSmith.
+- A bare `NAME` means the built-in profile when one has that name. Only when no built-in exists
+  does it mean your project profile. AgentSmith records it as `project:NAME`, so a later built-in
+  with the same name never replaces it.
+- `NAME` uses only lower-case letters, digits, `-` and `_`, and starts with a letter or digit.
+- Each profile may appear only once. `--global` installs accept built-in profiles only, because a
+  user-wide install has no project.
+- AgentSmith reads the file only if it is a regular file inside the project. It refuses a symbolic
+  link at any step of the path, a folder, a file over 256 KB, text that is not UTF-8, and text
+  that contains AgentSmith's managed-block markers.
+
+Commit the profile with the project, so collaborators assemble the same rules. `status` and
+`doctor` show `project:NAME` for the active profile. `agentsmith update plan` records a hash of
+the profile, and `update apply` refuses to continue if the file changed after you reviewed the
+plan. The updater never changes your profile.
+
 ## Order matters slightly
 
 When you list several profiles, list the **dominant** one first — its quality gates read first.

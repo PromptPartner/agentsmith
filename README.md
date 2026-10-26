@@ -93,7 +93,7 @@ A profile tells the agent what “done” means for the work at hand. The wizard
 
 ## What gets installed
 
-- `AGENTS.md` is the canonical project agreement. Claude Code also receives a generated `CLAUDE.md`.
+- `AGENTS.md` is the canonical project agreement. Claude Code also receives a generated `CLAUDE.md` that imports it, so there is one rulebook.
 - `.harness/verify.conf` defines the real checks for this project.
 - `.agentsmith/state.json` records only AgentSmith-owned settings so updates and removal preserve foreign content.
 - Optional skills, MCP servers, and hooks are available in the collapsed advanced step.

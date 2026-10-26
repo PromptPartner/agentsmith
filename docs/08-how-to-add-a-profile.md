@@ -13,9 +13,11 @@ profiles fits well, write a ninth instead of fighting the wrong one.
    - **What "done" and "verified" mean here** (sharpen Rule 2/5 for this work)
    - **The load-bearing rules** for this work (the 2–4 things that, if skipped, ship it broken)
    - **Quality gates** (a concrete, checkable list)
-   - **Failure modes to guard against**
-   - **Recommended skills & tools** (map the ecosystem; stay tight — Rule 10)
    - **Addendum to the STOP table** (3–4 work-specific rationalizations + their reality)
+   - *Optional:* **Failure modes to guard against** and **Recommended skills & tools**. Every line
+     here is loaded on every turn, so include only what a capable model would get wrong without
+     being told. Generic advice ("write the test first", "read before you change") costs tokens
+     and changes nothing; tool suggestions belong in `skills/RECOMMENDED.md`.
 3. Reference core rules by number (R1–R10) instead of restating them — the core is always loaded
    alongside the profile.
 4. Keep it **work-type-neutral about tools** (use placeholders), so it travels across projects.

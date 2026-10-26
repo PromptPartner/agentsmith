@@ -57,6 +57,18 @@ class DurableCheckpointTests(unittest.TestCase):
         self.assertIn("count-based", skill)
         self.assertNotIn("search returned no visible match", (ROOT / "core" / "40-subagents-and-tools.md").read_text(encoding="utf-8").casefold())
 
+    def test_verify_skill_says_which_output_counts_as_proof(self) -> None:
+        # The verify skill loads at the moment a result is about to be quoted as proof, so the
+        # three rules that kept producing wrong "green" claims live there, not in core/.
+        skill = (ROOT / "skills" / "verify" / "SKILL.md").read_text(encoding="utf-8")
+        for phrase in (
+            "output-rewriting",          # a token-saving hook can hide or summarise real output
+            "untruncated",               # truncated search output is not proof of absence
+            "pending == 0 and failing == 0",  # what "CI is green" means
+            "head SHA",
+        ):
+            self.assertIn(phrase, skill)
+
         with tempfile.TemporaryDirectory(prefix="agentsmith generated checkpoint ") as temporary:
             target = Path(temporary) / "project"
             target.mkdir()
@@ -74,7 +86,8 @@ class DurableCheckpointTests(unittest.TestCase):
                 cwd=ROOT, env=environment, text=True, capture_output=True, check=False,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertEqual((target / "AGENTS.md").read_bytes(), (target / "CLAUDE.md").read_bytes())
+            # Claude's project file imports the one canonical rulebook instead of copying it.
+            self.assertIn("@AGENTS.md", (target / "CLAUDE.md").read_text(encoding="utf-8").splitlines())
             self.assertEqual(
                 (target / ".agents" / "skills" / "new-feedback" / "SKILL.md").read_bytes(),
                 (target / ".claude" / "skills" / "new-feedback" / "SKILL.md").read_bytes(),

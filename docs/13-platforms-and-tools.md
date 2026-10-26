@@ -17,13 +17,13 @@ read [the compatibility contract](22-compatibility-contract.md).
 
 ## Instruction and adapter model
 
-`AGENTS.md` is canonical. Claude receives a generated `CLAUDE.md` copy. Gemini CLI selects
+`AGENTS.md` is canonical. Claude receives a generated `CLAUDE.md` that imports `AGENTS.md` (Claude Code reads `AGENTS.md` by itself only when no `CLAUDE.md` exists in the folder chain). Gemini CLI selects
 `AGENTS.md`; Aider, Continue, and Goose get minimal managed pointers. Copilot, Cursor,
 Windsurf/Devin, Cline, Roo Code, OpenHands, OpenCode, Junie, Zed, Jules, and Pi use the direct
 adapter.
 
-There are no instruction symlinks, proprietary imports, or independently editable duplicated
-cores. Shared Agent Skills live in `.agents/skills`; only Claude gets a required runtime copy.
+There are no instruction symlinks, imports other than Claude's `@AGENTS.md`, or independently
+editable duplicated cores. Shared Agent Skills live in `.agents/skills`; only Claude gets a required runtime copy.
 
 ## Tiers and targets
 
@@ -41,10 +41,11 @@ backends; local providers are evaluated only behind a client supplying tools and
 | Surface | Claude | Codex |
 |---|---|---|
 | Global instructions | `~/.claude/CLAUDE.md` | `$CODEX_HOME/AGENTS.md` |
-| Project instructions | generated `CLAUDE.md` + canonical `AGENTS.md` | canonical `AGENTS.md` |
+| Project instructions | canonical `AGENTS.md`, imported by a generated `CLAUDE.md` | canonical `AGENTS.md` |
 | Shared project skills | `.agents/skills` | `.agents/skills` |
 | Runtime skill adapter | `.claude/skills` | none |
-| User config | `~/.claude/settings.json` | `$CODEX_HOME/config.toml` |
+| Safety setting (`--global`) | `~/.claude/settings.json` | `$CODEX_HOME/config.toml` |
+| Safety setting (project) | `.claude/settings.json` in the project | `$CODEX_HOME/config.toml` |
 | Status line when unset | AgentSmith model/directory/context gauge | Codex built-in model/directory gauge |
 | Project MCP | `.mcp.json` | `.codex/config.toml` |
 | Managed hooks | Python command in Claude settings | Python command in Codex hooks config |

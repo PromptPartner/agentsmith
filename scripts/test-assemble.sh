@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # test-assemble.sh — every profile must assemble into rules a human can actually follow.
 #
-# The harness's whole output is an assembled CLAUDE.md. If assembly breaks, the agent doesn't
-# crash — it quietly follows *wrong or half-rendered rules*, which is worse. The failures this
+# The harness's whole output is an assembled AGENTS.md (a project CLAUDE.md imports it). If
+# assembly breaks, the agent doesn't crash — it quietly follows *wrong or half-rendered rules*,
+# which is worse. The failures this
 # catches, all of which have happened or nearly happened in this repo:
 #   1. A profile stops assembling at all (renamed/moved file, bad glob).
 #   2. An unrendered {{PLACEHOLDER}} reaches the agent — it improvises around the gap.
@@ -73,10 +74,16 @@ for p in "${profiles[@]}"; do
     bad "$name: assembly failed outright"
     continue
   fi
-  f="$out/CLAUDE.md"
+  # A project's one rulebook is AGENTS.md; CLAUDE.md only imports it for Claude Code.
+  f="$out/AGENTS.md"
   if [ ! -s "$f" ]; then
-    bad "$name: produced no CLAUDE.md"
+    bad "$name: produced no AGENTS.md"
     continue
+  fi
+  if grep -qx '@AGENTS.md' "$out/CLAUDE.md" 2>/dev/null; then
+    ok "$name: CLAUDE.md imports AGENTS.md"
+  else
+    bad "$name: CLAUDE.md does not import AGENTS.md"
   fi
 
   errs=""
@@ -137,16 +144,98 @@ if [ -f "$ROOT_DIR/profiles/software-dev.md" ] && [ -f "$ROOT_DIR/profiles/auton
   out="$WORK/stacked"; mkdir -p "$out"
   if bash "$SETUP" --profile software-dev,autonomous-loops --assemble-only --target "$out" \
         --operator-name "Test" --tracker "Linear" >/dev/null 2>&1 \
-     && [ -s "$out/CLAUDE.md" ] \
-     && ! grep -qE '\{\{[A-Z_]+\}\}' "$out/CLAUDE.md"; then
+     && [ -s "$out/AGENTS.md" ] \
+     && ! grep -qE '\{\{[A-Z_]+\}\}' "$out/AGENTS.md"; then
     ok "stacked profiles (software-dev,autonomous-loops) assemble clean"
     # Measured, not gated: stacking two large profiles already exceeds the budget, so gating here
     # would be red on arrival and train people to ignore this suite. Reported so it stays visible.
     printf '  \033[33m•\033[0m stacked budget (measured, not gated): %s\n' \
-      "$(bash "$ROOT_DIR/scripts/lint-leanness.sh" "$out/CLAUDE.md" 2>&1 | awk '/lines|tokens/{printf "%s ", $0}' | tr -s ' ')"
+      "$(bash "$ROOT_DIR/scripts/lint-leanness.sh" "$out/AGENTS.md" 2>&1 | awk '/lines|tokens/{printf "%s ", $0}' | tr -s ' ')"
   else
     bad "stacked profiles failed to assemble clean"
   fi
+fi
+
+# The repository's own AGENTS.md is a committed assembly (core + software-dev, default operator).
+# Codex and anyone who clones the repo read it, so it must not drift from core/ and profiles/.
+if [ -f "$ROOT_DIR/AGENTS.md" ]; then
+  if ROOT_DIR="$ROOT_DIR" python3 - <<'PY'
+import argparse, os, sys
+from pathlib import Path
+root = Path(os.environ["ROOT_DIR"])
+sys.path.insert(0, str(root))
+import agentsmith
+ns = argparse.Namespace(operator_name=None, operator_role=None, operator_bio=None, tracker=None, tracker_writes=None)
+expected = agentsmith.build_instructions(ns, ["software-dev"], True, {}).rstrip("\n")
+actual = (root / "AGENTS.md").read_text(encoding="utf-8").rstrip("\n")
+sys.exit(0 if actual == expected else 1)
+PY
+  then
+    ok "root AGENTS.md matches core/ + profiles/software-dev.md"
+  else
+    bad "root AGENTS.md drifted from core/ + profiles/software-dev.md (regenerate it)"
+  fi
+fi
+
+# profiles switch refuses an over-budget stack with constants in agentsmith.py; lint-leanness.sh
+# gates assemblies with its own defaults. One budget, two places: keep them equal.
+if ROOT_DIR="$ROOT_DIR" python3 - <<'PY'
+import os, re, sys
+from pathlib import Path
+root = Path(os.environ["ROOT_DIR"])
+sys.path.insert(0, str(root))
+import agentsmith
+lint = (root / "scripts" / "lint-leanness.sh").read_text(encoding="utf-8")
+lines = int(re.search(r'LEANNESS_MAX_LINES:-(\d+)', lint).group(1))
+tokens = int(re.search(r'LEANNESS_MAX_TOKENS:-(\d+)', lint).group(1))
+print(f"lint={lines}/{tokens} cli={agentsmith.STATIC_CONTEXT_MAX_LINES}/{agentsmith.STATIC_CONTEXT_MAX_TOKENS}")
+sys.exit(0 if (lines, tokens) == (agentsmith.STATIC_CONTEXT_MAX_LINES, agentsmith.STATIC_CONTEXT_MAX_TOKENS) else 1)
+PY
+then
+  ok "profiles switch and lint-leanness use the same static-context budget"
+else
+  bad "STATIC_CONTEXT_MAX_* in agentsmith.py differ from lint-leanness.sh defaults"
+fi
+
+# Shipped rules are read inside the user's project, which has no docs/, scripts/, skills/ or
+# templates/ from this repository (templates arrive as .harness/templates/). A rule that cites
+# one of those files points the agent at nothing. Directories (trailing /) are locations the
+# rules ask a project to keep, so they are allowed.
+if ROOT_DIR="$ROOT_DIR" python3 - <<'PY'
+import os, re, sys
+from pathlib import Path
+root = Path(os.environ["ROOT_DIR"])
+offenders = []
+for source in sorted([*(root / "core").glob("*.md"), *(root / "profiles").glob("*.md")]):
+    for number, line in enumerate(source.read_text(encoding="utf-8").splitlines(), 1):
+        for cited in re.findall(r"`\.?/?((?:docs|scripts|skills|templates)/[^`\s]*[^/`\s])[^`]*`", line):
+            # <placeholder> paths name a location the project keeps, not a shipped file.
+            if re.search(r"\.[A-Za-z0-9]+$", cited) and "<" not in cited:
+                offenders.append(f"{source.relative_to(root)}:{number}: {cited}")
+for offender in offenders:
+    print(offender)
+sys.exit(1 if offenders else 0)
+PY
+then
+  ok "core/ and profiles/ cite only files an installed project has"
+else
+  bad "core/ or profiles/ cite repository-only files (see list above)"
+fi
+
+# Installed runtimes have no core/ tree and report a fixed token figure; keep it honest.
+if ROOT_DIR="$ROOT_DIR" python3 - <<'PY'
+import os, sys
+from pathlib import Path
+sys.path.insert(0, os.environ["ROOT_DIR"])
+import agentsmith
+live, fallback = agentsmith.estimate_instruction_tokens(), agentsmith.INSTRUCTION_TOKENS_FALLBACK
+print(f"live={live} fallback={fallback}")
+sys.exit(0 if abs(fallback - live) <= live * 0.10 else 1)
+PY
+then
+  ok "installed-runtime token fallback is within 10% of the live estimate"
+else
+  bad "INSTRUCTION_TOKENS_FALLBACK in agentsmith.py is stale (update it to the live estimate)"
 fi
 
 echo

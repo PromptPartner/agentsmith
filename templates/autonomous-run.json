@@ -9,8 +9,9 @@
   },
   "implementation_ticket": "",
   "limits": {
+    "budget_rationale": "",
     "claude_max_usd": 20,
-    "codex_goal_tokens": 200000,
+    "codex_goal_tokens": 2500000,
     "max_attempts": 3,
     "wall_minutes": 480
   },

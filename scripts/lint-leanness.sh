@@ -8,14 +8,16 @@
 #   ./scripts/lint-leanness.sh [file]        # default: managed CLAUDE.md, AGENTS.md, or both
 #   ./scripts/lint-leanness.sh --strict [f]  # exit 1 if over budget (wire as a verify phase)
 #   ./scripts/lint-leanness.sh --help
-# Budgets (override via env):  LEANNESS_MAX_LINES (default 600)  LEANNESS_MAX_TOKENS (default 10000)
+# Budgets (override via env):  LEANNESS_MAX_LINES (default 480)  LEANNESS_MAX_TOKENS (default 7800)
 # Calibration: no expected sizes are written here — they drift and stale numbers mislead (0007).
 # scripts/test-assemble.sh measures each core+profile assembly per run and is the source of truth;
-# a core+TWO-profile assembly can exceed this budget. Token count is an estimate (chars/4).
+# a core+TWO-profile assembly can exceed this budget. v0.5.0 lowered it from 600 lines / 10k tokens
+# by exactly what core/ lost (114 lines, ~2.2k tokens), so the cut cannot silently grow back and
+# every profile stack keeps the verdict it had. agentsmith.py STATIC_CONTEXT_MAX_* must match. Token count is an estimate (chars/4).
 set -euo pipefail
 
-MAX_LINES="${LEANNESS_MAX_LINES:-600}"
-MAX_TOKENS="${LEANNESS_MAX_TOKENS:-10000}"
+MAX_LINES="${LEANNESS_MAX_LINES:-480}"
+MAX_TOKENS="${LEANNESS_MAX_TOKENS:-7800}"
 STRICT=false; FILE=""
 for a in "$@"; do
   case "$a" in
@@ -80,7 +82,16 @@ for FILE in "${FILES[@]}"; do
 done
 
 mismatch=false
-if $COMPARE_MANAGED; then
+managed_meta() { grep -m1 -F '<!-- Generated. Profiles: ' "$1"; }
+if $COMPARE_MANAGED && sed -n '/<!-- BEGIN AGENTSMITH/,/<!-- END AGENTSMITH/p' CLAUDE.md | grep -qx '@AGENTS.md'; then
+  # A project CLAUDE.md imports AGENTS.md: one rulebook, so only the generator metadata must agree.
+  if [ "$(managed_meta CLAUDE.md)" = "$(managed_meta AGENTS.md)" ]; then
+    printf '%smanaged rules%s  CLAUDE.md imports AGENTS.md\n' "$GREEN" "$RESET"
+  else
+    mismatch=true
+    printf '%s  WARN: CLAUDE.md and AGENTS.md name different profiles.%s Re-run setup.\n' "$YELLOW" "$RESET"
+  fi
+elif $COMPARE_MANAGED; then
   if diff -q \
     <(sed -n '/<!-- BEGIN AGENTSMITH/,/<!-- END AGENTSMITH/p' CLAUDE.md) \
     <(sed -n '/<!-- BEGIN AGENTSMITH/,/<!-- END AGENTSMITH/p' AGENTS.md) >/dev/null; then

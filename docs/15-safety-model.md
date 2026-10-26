@@ -64,11 +64,31 @@ Choose with `--safety cautious|trusted|container`. The wizard offers `container`
 the default, only when it detects a container. `agentsmith doctor` reports the active mode and
 warns when cautious Codex runs inside a container.
 
-The settings live in `~/.claude/settings.json` (`permissions.defaultMode`) and
-`$CODEX_HOME/config.toml` (default `~/.codex`). To leave them exactly as they are — for example
+Where the settings live depends on the install scope. Codex's mode is always in
+`$CODEX_HOME/config.toml` (default `~/.codex`). Claude's mode (`permissions.defaultMode`) is in
+`~/.claude/settings.json` for a `--global` install. A project install writes it to the project's
+shared `.claude/settings.json` instead, so it never changes your mode in other projects. Commit that
+file if the team should share the mode; a person can override it in `.claude/settings.local.json`.
+Claude Code ignores `bypassPermissions` in project settings, so a project install refuses
+`--safety trusted` for Claude: set trusted mode for your user with `install --global --safety trusted`,
+or start one session with `claude --permission-mode bypassPermissions`.
+
+To leave the settings exactly as they are — for example
 when a container image already sets them on purpose — install with `--assemble-only`: AgentSmith
 then writes instructions only and does not touch Claude or Codex permissions, Codex
 `config.toml`, or statuslines.
+
+Uninstall reverses only what the install record says AgentSmith wrote. It puts back the Claude
+default mode that was there before the install, keeps a mode you changed after the install, and
+never deletes a settings file that AgentSmith did not create. After an `--assemble-only` install,
+uninstall leaves your Claude settings unchanged.
+
+Before its first write, install checks every file and folder it will create or replace. If one of
+them is, sits under, or contains a symbolic link that leads outside its root, the install stops and
+writes nothing. The root is the project folder for a project install, and your home folder or the
+agent's configured folder (such as `CODEX_HOME`) for `--global`. A link that stays inside the root,
+such as `~/.claude` pointing to a dotfiles folder in your home, is allowed. AgentSmith replaces a
+linked file with a regular file; it never writes through the link.
 
 ## Behavioral safety evaluation
 

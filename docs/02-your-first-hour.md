@@ -8,14 +8,15 @@ special terms before you start.
 
 A project install (`./setup.sh --agent <id|group> --profile software-dev --target .`,
 or the guided setup) creates these files in the project. Unless you pass `--assemble-only`, it also
-updates the selected coding agent's user settings in `~/.claude` or `CODEX_HOME`:
+updates Codex's user settings in `CODEX_HOME` and Claude's status line in `~/.claude`; Claude's
+safety mode goes into the project's `.claude/settings.json`:
 
 ```
 AGENTS.md                        main generated instruction file (tour below)
-CLAUDE.md                        generated copy when Claude is selected
+CLAUDE.md                        imports AGENTS.md when Claude is selected
 .harness/verify.conf             your project's definition of "shippable" (starts as a stub)
 .harness/templates/              plan, handoff, research, progress-log, quality-gate templates
-.claude/settings.local.json.example   Claude project safety example (when Claude is selected)
+.claude/settings.json             Claude's safety mode for this project (when Claude is selected)
 .codex/config.toml                 Codex project MCP (only with --with-mcp)
 .agents/skills                  canonical pack (only with --with-skills)
 .claude/skills                  required Claude adapter (when selected)
@@ -56,18 +57,18 @@ it and follows the agreement during the session. Changing it changes how the age
 line must earn its place because the full file uses part of the agent's limited working memory
 (see [`04-why-your-agent-ignored-the-rule.md`](04-why-your-agent-ignored-the-rule.md)).
 
-The software-development version is about 540 lines. In order:
+The software-development version is about 340 lines. In order:
 
 | Section | What it does | What to look for on first read |
 |---|---|---|
 | **Identity** | Who the agent believes you are, and how the layers of the agreement relate. | Your name/role. Any `[TODO: …]` setup told you about is a blank only you can fill. |
 | **Operating model** | How much the agent decides alone — and the *short* list of things it must stop and ask about (a missing credential, an external surprise, the first write to an outside system). | The autonomy might surprise you: no approval sought between plan → do → verify. That's deliberate. |
-| **The ten principle rules** | The rigid core: understand before changing, evidence before assertion, atomic changes, no secrets ever, research never deleted… | Each exists because skipping it caused a real, repeated failure. None is decorative. |
-| **The STOP table** | A list of *thoughts* — "I'll verify later," "too small to check" — paired with why each precedes a failure. | Models rationalize exactly the way tired engineers do. This table is the countermeasure, and it works better than you'd expect. |
+| **The ten principle rules** | One line each: understand before changing, evidence before assertion, atomic changes, no secrets ever, research never deleted… | Each exists because skipping it caused a real, repeated failure. Generic coding advice a modern model already follows was cut to keep this short. |
+| **The STOP table** | A short list of *thoughts* — "I'll verify later," "it's a private repo, the key is fine" — paired with why each precedes a failure. | Only the rows a model would not catch on its own: secrets, research, consent, tool creep. |
 | **Subagents & tools** | When work is delegated to parallel agents vs kept on the main thread. | Mostly the agent's business; skim it. |
 | **Git & handoff** | Branch discipline, commit style, and the end-of-session protocol. | "Commit or push only when asked" — the agent won't ship behind your back. |
 | **Evolving the harness** | The habit that compounds: when something goes wrong, fix the *system*, not just the symptom. | This is the section that makes the harness worth more every week you use it. |
-| **Your profile(s)** | What "done" and "verified" mean for *your kind of work*, its quality gates and failure modes. | The part that changes between projects. Everything above it never does. |
+| **Your profile(s)** | What "done" and "verified" mean for *your kind of work*, and its quality gates. | The part that changes between projects. Everything above it never does. |
 
 ## Minutes 25–30: wire one real check into `verify.conf`
 

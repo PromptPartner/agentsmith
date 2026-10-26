@@ -82,10 +82,10 @@ Before a report or assessment goes out — "deferred: reason" is allowed, silenc
 
 ### Recommended skills & tools
 The depth here lives in **dynamic context**, not in these rules (R10): the `security` pack
-(`./setup.sh --with-plugins security`) carries `threat-modeling`, `owasp-audit`, `api-audit`,
+(`agentsmith install --with-plugins security`) carries `threat-modeling`, `owasp-audit`, `api-audit`,
 `cloud-audit`, `iam-audit`, `finding-triage`, `security-comms` and ~20 more, plus `claude-security`
-for an independent verification pass. **`skills/RECOMMENDED.md` maps skill → engagement type** —
-read it there rather than duplicating the catalog here.
+for an independent verification pass. **[AgentSmith's skill map](https://github.com/PromptPartner/agentsmith/blob/master/skills/RECOMMENDED.md) maps skill → engagement
+type** — read it there rather than duplicating the catalog here.
 
 Use `claude-security` or the `codex` two-AI gate as your adversary: have it try to **refute** each
 finding, not confirm it. **If installed, use them; if not, the rule still stands** — be your own

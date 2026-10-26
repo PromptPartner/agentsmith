@@ -35,10 +35,11 @@ client-plus-model scenario.
 ## Canonical instructions and adapters
 
 `AGENTS.md` is the one portable, independently editable instruction artifact. Direct consumers
-read it unchanged. Claude receives a generated `CLAUDE.md` copy. Gemini is configured to select
+read it unchanged. Claude receives a generated `CLAUDE.md` that imports `AGENTS.md` through Claude Code's documented
+`@AGENTS.md` import. Gemini is configured to select
 `AGENTS.md`; Aider, Continue, and Goose receive the smallest managed configuration that points to
-it. Generated or configured surfaces must not introduce symlinks, proprietary imports, or a
-second editable copy of the core.
+it. Generated or configured surfaces must not introduce symlinks, imports of anything except
+canonical `AGENTS.md`, or a second copy of the core.
 
 Registry `global_paths` say where a client reads user-level rules; doctor and status inspect them.
 The files `install --global` writes are a separate, smaller set fixed in code: Claude, Codex,
@@ -74,8 +75,12 @@ also capture the model digest, context window, hardware class, and latency in th
 artifact.
 
 Real-client and local-model records live under [`compatibility/evaluations/`](../compatibility/evaluations/)
-and validate against schema v2. `agentsmith evaluate --agent claude|codex|native` supplies the eight
-foundation scenarios. Its default dry run resolves clients, commands, scenarios, isolation, and
+and validate against the evaluation schema: bundled records are v2; new records are v3, which adds
+the instruction arm and `outcome.usage_total` (cost in USD, tokens and seconds summed over the
+trials, also printed on each result line). `agentsmith evaluate --agent claude|codex|native`
+supplies the foundation scenarios. `--instructions none` runs the same scenarios with the
+AgentSmith rules replaced by a bare file that keeps only the discovery sentinel, so a head-to-head
+compares quality and cost with and without the harness; the default is `--instructions harness`. Its default dry run resolves clients, commands, scenarios, isolation, and
 budgets without invoking a model. Live runs require `--live` and explicit positive budgets; raw
 logs remain outside tracked files. No dated records are bundled until an observed/manual run has
 actually occurred and its failures have been inspected.
