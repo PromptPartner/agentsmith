@@ -910,6 +910,8 @@ class HookFiringLogTests(unittest.TestCase):
         self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
         self.runtime = self.project / ".agentsmith" / "agentsmith.py"
         self.log = self.project / ".agentsmith" / "logs" / "hook-events.jsonl"
+        # Written once before any guardrail run: parallel runs must never see a half-written subject.
+        (self.root / "message").write_text("bad subject\n", encoding="utf-8")
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -1028,8 +1030,6 @@ class HookFiringLogTests(unittest.TestCase):
         if not (self.project / ".git").exists():
             subprocess.run(["git", "-C", str(self.project), "init", "-q"], check=True)
         message = self.root / "message"
-        if not message.exists():  # written once: parallel runs must not see a half-written file
-            message.write_text("bad subject\n", encoding="utf-8")
         return subprocess.run(["bash", str(ROOT / "hooks" / "git" / "conventional-commit.sh"), str(message)],
                               cwd=self.project, env=self.env, text=True, capture_output=True, check=False,
                               timeout=timeout, **options)
