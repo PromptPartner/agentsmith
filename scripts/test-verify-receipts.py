@@ -513,5 +513,46 @@ else:
         self.assertIn("[REDACTED]", exposed)
 
 
+class VerifyHelpTests(unittest.TestCase):
+    """Each verify operation's help lists only the flags that operation accepts."""
+
+    EXECUTION_ONLY = ("--only", "--list", "--record", "--tree-class")
+
+    def help_text(self, *arguments: str) -> str:
+        result = subprocess.run(
+            [sys.executable, str(CORE), "verify", *arguments, "--help"],
+            text=True, encoding="utf-8", errors="replace", capture_output=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result.stdout
+
+    def options(self, text: str) -> set[str]:
+        return set(re.findall(r"(?<![\w-])--[a-z][a-z-]*", text))
+
+    def test_discover_help_shows_only_discovery_flags(self) -> None:
+        self.assertEqual(self.options(self.help_text("discover")), {"--help", "--target", "--json", "--save"})
+
+    def test_apply_help_shows_only_apply_flags(self) -> None:
+        self.assertEqual(self.options(self.help_text("apply")), {"--help", "--target", "--plan", "--dry-run"})
+
+    def test_execution_help_keeps_execution_flags_and_names_the_operations(self) -> None:
+        text = self.help_text()
+        for flag in self.EXECUTION_ONLY:
+            self.assertIn(flag, text)
+        self.assertIn("discover", text)
+        self.assertIn("apply", text)
+        for flag in ("--json", "--save", "--plan", "--dry-run"):
+            self.assertNotIn(flag, self.options(text))
+
+    def test_wrong_operation_flags_still_fail_clearly(self) -> None:
+        for arguments in (("discover", "--only", "x"), ("apply", "--json"), ("--json",), ("--only", "x", "discover")):
+            with self.subTest(arguments=arguments):
+                result = subprocess.run(
+                    [sys.executable, str(CORE), "verify", *arguments],
+                    text=True, encoding="utf-8", errors="replace", capture_output=True, check=False,
+                )
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

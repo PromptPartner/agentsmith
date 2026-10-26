@@ -8351,21 +8351,29 @@ def parser() -> argparse.ArgumentParser:
     verify = sub.add_parser(
         "verify",
         help="run configured checks, discover coverage, or apply a reviewed discovery plan",
+        description="Run the phases in .harness/verify.conf. 'verify discover' and 'verify apply' "
+                    "have their own options; see 'verify discover --help' and 'verify apply --help'.",
     )
-    verify.add_argument("verify_action", nargs="?", choices=("discover", "apply"))
     verify.add_argument("--target")
     verify.add_argument("--only")
     verify.add_argument("--list", action="store_true")
     verify.add_argument("--record", metavar="DIRECTORY")
-    verify.add_argument("--json", action="store_true", help="emit verification discovery as schema-v1 JSON")
-    verify.add_argument("--save", metavar="PLAN", help="save verification discovery to a new plan file")
-    verify.add_argument("--plan", metavar="PLAN", help="reviewed schema-v1 discovery plan to apply")
-    verify.add_argument("--dry-run", action="store_true", help="show the verification-config diff without writing")
     verify.add_argument(
         "--tree-class",
         choices=("clean-clone", "disposable-fixture", "linked-worktree", "operator-worktree"),
         help="required with --record; declares which tree produced the evidence",
     )
+    # Each operation's help shows only its own flags; these defaults keep cmd_verify's checks uniform.
+    verify.set_defaults(verify_action=None, json=False, save=None, plan=None, dry_run=False)
+    verify_sub = verify.add_subparsers(dest="verify_action", metavar="{discover,apply}")
+    verify_discover = verify_sub.add_parser("discover", help="report verification coverage as a reviewable plan")
+    verify_discover.add_argument("--target", default=argparse.SUPPRESS)
+    verify_discover.add_argument("--json", action="store_true", help="emit verification discovery as schema-v1 JSON")
+    verify_discover.add_argument("--save", metavar="PLAN", help="save verification discovery to a new plan file")
+    verify_apply = verify_sub.add_parser("apply", help="apply a reviewed discovery plan to .harness/verify.conf")
+    verify_apply.add_argument("--plan", metavar="PLAN", help="reviewed schema-v1 discovery plan to apply")
+    verify_apply.add_argument("--target", default=argparse.SUPPRESS)
+    verify_apply.add_argument("--dry-run", action="store_true", help="show the verification-config diff without writing")
     integration = sub.add_parser(
         "validate-integration",
         help="validate a structured integration checkpoint without installing or launching it",

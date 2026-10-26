@@ -67,9 +67,11 @@ been authorized, so the entries are kept here.
 - [ ] A contained symlink added inside an AgentSmith-owned `.claude/skills` adapter is detected by
   strict Doctor and repaired by ordinary reinstall, but staged update fails closed because plan
   receipts cannot yet authenticate deletion and exact rollback restoration of symlink metadata.
-- [ ] `agentsmith verify discover --help` and `verify apply --help` currently show the shared
+- [x] `agentsmith verify discover --help` and `verify apply --help` currently show the shared
   verification parser's execution-only options; incompatible combinations fail clearly, but the
-  subcommand help should expose only each operation's valid flags.
+  subcommand help should expose only each operation's valid flags. Fixed 2026-10-26: `discover`
+  and `apply` are subcommands with their own flags. `VerifyHelpTests` in `test-verify-receipts.py`
+  failed before and pass after; wrong-operation flags still exit 2.
 - [ ] 2026-09-22 — A local macOS `agentsmith verify` run failed at the parallel work-graph
   lifecycle fixture when a child snapshot classified transient `packed-refs.lock` as protected
   Git metadata. Both child worktrees were clean afterward. The focused fixture and the full
