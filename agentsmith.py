@@ -7999,6 +7999,12 @@ def add_common_install_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--lang", choices=WIZARD_LANGUAGES, help="wizard language")
 
 
+PUBLIC_COMMANDS = (
+    "install", "update", "doctor", "status", "profiles", "verify", "demo", "resume",
+    "handoff", "new-feedback", "new-research", "memory",
+)
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(
         prog="agentsmith",
@@ -8010,7 +8016,10 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     root.add_argument("--version", action="version", version=f"agentsmith {VERSION}")
-    sub = root.add_subparsers(dest="command")
+    # Internal commands (hook, secret-scan, graph, wizard, evaluate, compatibility, agents,
+    # validate-integration, audit-config) serve programs and CI: they keep working but stay out of
+    # the root help, so the public surface stays small. docs/12-whats-built-in.md lists them.
+    sub = root.add_subparsers(dest="command", metavar="{" + ",".join(PUBLIC_COMMANDS) + "}")
     install = sub.add_parser("install", help="install or update managed rules and adapters")
     add_common_install_flags(install)
     update = sub.add_parser("update", help="check and apply staged stable-release updates")
@@ -8031,7 +8040,7 @@ def parser() -> argparse.ArgumentParser:
     update_rollback.add_argument("--receipt", required=True)
     update_configure = update_sub.add_parser("configure", help="opt into or disable report-only update checks")
     update_configure.add_argument("--auto-check", required=True, choices=("weekly", "off"))
-    agents = sub.add_parser("agents", help="inspect the supported agent registry")
+    agents = sub.add_parser("agents", description="inspect the supported agent registry")
     agents_sub = agents.add_subparsers(dest="agents_command", required=True)
     listing = agents_sub.add_parser("list")
     listing.add_argument("--json", action="store_true")
@@ -8055,13 +8064,13 @@ def parser() -> argparse.ArgumentParser:
     profile_switch.add_argument("--target", required=True)
     profile_switch.add_argument("--profile", action="append", required=True)
     profile_switch.add_argument("--dry-run", action="store_true")
-    wizard = sub.add_parser("wizard", help="describe the install wizard for programs that ask its questions")
+    wizard = sub.add_parser("wizard", description="describe the install wizard for programs that ask its questions")
     wizard_sub = wizard.add_subparsers(dest="wizard_command", required=True)
     wizard_schema_parser = wizard_sub.add_parser("schema", help="print the wizard questions, choices and defaults")
     wizard_schema_parser.add_argument("--json", action="store_true")
     wizard_schema_parser.add_argument("--target", help="resolve the profile recommendation for this folder")
     wizard_schema_parser.add_argument("--lang", choices=WIZARD_LANGUAGES, help="language for the computed default")
-    compatibility = sub.add_parser("compatibility", help="print the evidence-backed compatibility matrix")
+    compatibility = sub.add_parser("compatibility", description="print the evidence-backed compatibility matrix")
     compatibility.add_argument("--agent", action="append")
     compatibility.add_argument("--json", action="store_true")
     verify = sub.add_parser(
@@ -8084,11 +8093,11 @@ def parser() -> argparse.ArgumentParser:
     )
     integration = sub.add_parser(
         "validate-integration",
-        help="validate a structured integration checkpoint without installing or launching it",
+        description="validate a structured integration checkpoint without installing or launching it",
     )
     integration.add_argument("--checkpoint", required=True)
     integration.add_argument("--debug", action="store_true", help="print only redacted structural diagnostics")
-    graph = sub.add_parser("graph", help="inspect a committed local work graph")
+    graph = sub.add_parser("graph", description="inspect a committed local work graph")
     graph_sub = graph.add_subparsers(dest="graph_command", required=True)
     for graph_action in ("validate", "status", "start", "stop", "resume", "integrate", "cleanup"):
         item = graph_sub.add_parser(graph_action)
@@ -8109,8 +8118,12 @@ def parser() -> argparse.ArgumentParser:
     resume.add_argument("handoff_file", nargs="?")
     resume.add_argument("--target")
     resume.add_argument("--json", action="store_true")
-    for name in ("handoff", "new-feedback", "new-research"):
-        scaffold = sub.add_parser(name)
+    for name, summary in (
+        ("handoff", "write a session handoff note with a paste-ready kickoff block"),
+        ("new-feedback", "scaffold a harness feedback record under docs/feedback/"),
+        ("new-research", "scaffold a durable research note under docs/research/"),
+    ):
+        scaffold = sub.add_parser(name, help=summary)
         scaffold.add_argument("name", nargs="?")
         scaffold.add_argument("--target")
         scaffold.add_argument("--dry-run", action="store_true")
@@ -8118,15 +8131,18 @@ def parser() -> argparse.ArgumentParser:
     secret.add_argument("--all", action="store_true", help="scan the tracked working tree")
     secret.add_argument("--target", help="Git/project root for staged, tracked-tree, and allow rules")
     secret.add_argument("paths", nargs="*", metavar="FILE", help="files to scan, or '-' for stdin")
-    audit = sub.add_parser("audit-config", help="advisory static audit of selected native configuration")
+    audit = sub.add_parser("audit-config", description="advisory static audit of selected native configuration")
     audit.add_argument("--target")
     audit.add_argument("--include-user", action="store_true", help="also read native user configuration")
     audit.add_argument("--json", action="store_true", help="schema-versioned report")
     audit.add_argument("--fail-on", choices=("low", "medium", "high", "critical"), help="explicit CI severity gate; incomplete inspection always errors")
     memory = sub.add_parser("memory", help="search and read bounded local Markdown memory")
-    memory_commands = memory.add_subparsers(dest="memory_command", required=True)
+    # `memory startup` is the hook's internal entry point, so it stays out of the listed choices.
+    memory_commands = memory.add_subparsers(dest="memory_command", required=True, metavar="{search,read}")
     for name, argument in (("search", "query"), ("read", "relative_path"), ("startup", None)):
-        command = memory_commands.add_parser(name, help="reference-only startup discovery" if name == "startup" else None)
+        command = memory_commands.add_parser(
+            name, description="reference-only startup discovery" if name == "startup" else None
+        )
         if argument:
             command.add_argument(argument)
         command.add_argument("--target")
@@ -8137,7 +8153,7 @@ def parser() -> argparse.ArgumentParser:
     hook = sub.add_parser("hook")
     hook.add_argument("--memory-scope", choices=("project", "global"), default="project", help=argparse.SUPPRESS)
     hook.add_argument("hook_name", choices=("handoff-on-keyword", "context-budget-nudge", "ui-design-reminder", "git-pre-commit", "memory-startup"))
-    evaluate = sub.add_parser("evaluate", help="run isolated native-client behavioral evaluations")
+    evaluate = sub.add_parser("evaluate", description="run isolated native-client behavioral evaluations")
     evaluate.add_argument("--agent", required=True, choices=("claude", "codex", "native"),
                           help="native client to exercise; 'native' runs Claude and Codex")
     evaluate.add_argument("--scenario", action="append", help="scenario ID; repeatable (default: all nine)")
