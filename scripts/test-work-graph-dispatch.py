@@ -135,6 +135,7 @@ class GraphDispatchTests(unittest.TestCase):
                     import os, time
                     here = Path(__file__).parent
                     slow = (here / "slow-verifier-probe").is_file()
+                    delay = float((here / "slow-verifier-probe").read_text(encoding="utf-8") or 5) if slow else 0
                     began = time.monotonic()
                     while slow:
                         try:
@@ -144,7 +145,7 @@ class GraphDispatchTests(unittest.TestCase):
                             time.sleep(0.05)
                     try:
                         if slow:
-                            time.sleep(5)
+                            time.sleep(delay)
                         return real_verify(command, cwd, timeout, env, **kwargs)
                     finally:
                         if slow:
@@ -482,6 +483,8 @@ class GraphDispatchTests(unittest.TestCase):
 
     def test_changed_graph_contract_cannot_resume_stopped_run(self) -> None:
         (self.fake_client.parent / "sleep-seconds.txt").write_text("4", encoding="utf-8")
+        # The graph's one host verifier probe can take long on Windows before any dispatch.
+        (self.fake_client.parent / "slow-verifier-probe").write_text("16", encoding="utf-8")
         running = subprocess.Popen(
             [sys.executable, str(self.graph_cli), "graph", "start", "--graph", self.graph_path,
              "--target", str(self.repo), "--json"],
@@ -490,13 +493,24 @@ class GraphDispatchTests(unittest.TestCase):
         )
         def reap_graph() -> None:
             if running.poll() is None:
+                # Stop the children too: a killed graph leaves child controllers holding the
+                # repository open, and Windows then cannot remove the fixture folder.
+                self.invoke("stop", diagnose_unexpected=False)
                 running.kill()
             running.communicate()
         self.addCleanup(reap_graph)
+        preflight = self.fake_client.parent / "preflight.log"
+        # The graph probes the host verifier once before it dispatches; on Windows that can take
+        # longer than dispatch itself, so the 15 s budget below starts after the probe.
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline and not preflight.is_file() and running.poll() is None:
+            time.sleep(0.05)
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline and not (self.fake_client.parent / "starts.log").is_file():
             time.sleep(0.05)
-        self.assertTrue((self.fake_client.parent / "starts.log").is_file())
+        self.assertTrue((self.fake_client.parent / "starts.log").is_file(),
+                        "no maker started within 15 s of the graph's verifier probe; probes: "
+                        + (preflight.read_text(encoding="utf-8").strip() if preflight.is_file() else "none"))
         stopped = self.invoke("stop")
         self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
         running.communicate(timeout=15)

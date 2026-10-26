@@ -833,3 +833,12 @@ global selections needs its own design because update replays the record.
   mutex, so sibling b waited for a. The graph now probes the verifier once before dispatch and
   children keep only the per-role probes. A fixture with a slow, serialised probe lost the
   overlap before the fix and keeps it after, with exactly one probe per graph.
+- [ ] 2026-10-26 — PR #63 push run `40334174397`, Windows only, intermittent (the PR run on the
+  same commit passed): `test_changed_graph_contract_cannot_resume_stopped_run` saw no maker
+  start within its 15 s wait, then cleanup failed with `WinError 32` on `coordination.lock`.
+  Strongest hypothesis, not confirmed on Windows: the graph's one verifier probe, which now runs
+  before dispatch, took most of that 15 s; the cleanup error followed because cleanup killed only
+  the graph process and left its children holding the repository. A simulated 16 s probe
+  reproduced the same assertion on macOS. The fixture now starts its 15 s budget after the probe,
+  prints probe timing on failure, and stops the children in cleanup. Open until a native rerun
+  passes with the timing printed.
