@@ -984,6 +984,8 @@ def record_installation_manifest(
         },
         "managed_files": managed_files,
         "runtime_files": runtime_files,
+        # The installed runtime ships no core/ folder; doctor checks a profile-only layer against this.
+        "core_sections": core_section_names(),
     }
     if args.with_memory_startup or getattr(args, "without_memory_startup", False) or "memory_startup" in prior_capabilities:
         state["installation"]["capabilities"]["memory_startup"] = bool(args.with_memory_startup and not args.without_memory_startup)
@@ -2020,7 +2022,7 @@ def validate_installation_manifest(state: dict[str, Any]) -> dict[str, Any]:
     allowed_installation = {
         "installed_version", "source", "scope", "agents", "profiles", "include_core",
         "assemble_only", "runtime", "safety", "operator", "tracker", "capabilities", "managed_files", "effects",
-        "runtime_files",
+        "runtime_files", "core_sections",
     }
     unknown_installation = sorted(set(installation) - allowed_installation)
     if unknown_installation:
@@ -2032,7 +2034,7 @@ def validate_installation_manifest(state: dict[str, Any]) -> dict[str, Any]:
         )
     if not isinstance(installation["assemble_only"], bool):
         raise CliError("Installation manifest assemble_only field must be true or false; rerun install explicitly")
-    required = allowed_installation - {"runtime", "effects", "runtime_files"}
+    required = allowed_installation - {"runtime", "effects", "runtime_files", "core_sections"}
     missing = sorted(required - set(installation))
     if missing:
         raise CliError(f"Installation manifest is missing field(s): {', '.join(missing)}")
@@ -2079,6 +2081,9 @@ def validate_installation_manifest(state: dict[str, Any]) -> dict[str, Any]:
         for item in runtime_files
     ):
         raise CliError("Installation manifest runtime_files field is invalid; rerun install explicitly")
+    core_sections = installation.get("core_sections", [])
+    if not isinstance(core_sections, list) or not all(isinstance(name, str) for name in core_sections):
+        raise CliError("Installation manifest core_sections field is invalid; rerun install explicitly")
     return installation
 
 
@@ -4612,7 +4617,10 @@ def inspect_instructions(agent_id: str, agent: dict[str, Any], target: Path) -> 
             for source in loaded_records if source["exists"]
             for name in CORE_SECTION_MARKER.findall(Path(source["path"]).read_text(encoding="utf-8", errors="replace"))
         }
-        expected = core_section_names()
+        recorded = project_installation.get("core_sections")
+        expected = core_section_names() or (
+            [name for name in recorded if isinstance(name, str)] if isinstance(recorded, list) else []
+        )
         missing = [name for name in expected if name not in present] if expected else ([] if present else ["all"])
         if missing:
             warnings.append(doctor_warning(

@@ -303,6 +303,29 @@ class DoctorTests(unittest.TestCase):
         self.assertIn("templates/missing-guide.md", handoff)
         self.assertNotIn(".harness/runs", handoff, "a placeholder path is created at run time")
 
+    def test_installed_runtime_doctor_also_names_missing_core_sections(self) -> None:
+        # The installed runtime has no core/ folder, so it must rely on what install recorded.
+        project = self.root / "installed profile only"
+        installed = self.install(project, "--agent", "codex", "--profile", "software-dev", "--profile-only")
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        rules = Path(self.env["CODEX_HOME"]) / "AGENTS.md"
+        rules.parent.mkdir(parents=True, exist_ok=True)
+        rules.write_text("<!-- CORE · identity · universal -->\nIdentity only.\n", encoding="utf-8")
+        expected = [name for name in load_core().core_section_names() if name != "identity"]
+        self.assertTrue(expected)
+        for runtime in (CORE, project / ".agentsmith" / "agentsmith.py"):
+            result = subprocess.run(
+                [sys.executable, str(runtime), "doctor", "--agent", "codex", "--target", str(project), "--json"],
+                cwd=project, env=self.env, text=True, capture_output=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            warning = next((w for w in json.loads(result.stdout)["codex"]["warnings"]
+                            if w["code"] == "profile-only-core-missing"), None)
+            self.assertIsNotNone(warning, runtime)
+            for name in expected:
+                self.assertIn(name, warning["message"], runtime)
+            self.assertNotIn("identity,", warning["message"], runtime)
+
     def test_superpowers_skills_named_without_the_plugin_are_reported(self) -> None:
         project = self.root / "superpowers project"
         (project / ".claude").mkdir(parents=True)
