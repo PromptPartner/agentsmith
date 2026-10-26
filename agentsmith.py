@@ -4358,7 +4358,10 @@ def git_hooks_location(target: Path) -> tuple[Path, Path] | None:
         return None
     result = subprocess.run(
         ["git", "-C", str(target), "rev-parse", "--git-path", "hooks", "--git-common-dir"],
-        text=True, capture_output=True, check=False,
+        # Git prints paths as UTF-8 on every platform; the Windows locale (CP-1252) would turn "ü"
+        # into "Ã¼" and send the hook to another folder. surrogateescape keeps undecodable POSIX
+        # path bytes intact for the filesystem instead of failing.
+        text=True, encoding="utf-8", errors="surrogateescape", capture_output=True, check=False,
     )
     lines = result.stdout.splitlines()
     if result.returncode or len(lines) != 2:

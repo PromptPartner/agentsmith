@@ -292,12 +292,30 @@ class ContainmentTests(InstallerFixture):
         self.assert_ok(result)
         located = subprocess.run(
             ["git", "-C", str(worktree), "rev-parse", "--git-path", "hooks", "--git-common-dir"],
-            text=True, capture_output=True, check=False,
+            text=True, encoding="utf-8", errors="replace", capture_output=True, check=False,
         )
         self.assertTrue(
             (main / ".git" / "hooks" / "pre-commit").is_file(),
             f"git reported {located.stdout!r}; install said:\n{result.stdout}{result.stderr}",
         )
+
+    def test_git_hooks_location_decodes_git_output_as_utf8_under_a_windows_locale(self) -> None:
+        # PR #61 windows-latest: Git prints UTF-8, but text=True decoded it with CP-1252, so the
+        # "ü" in the fixture path became "Ã¼" and the hook went into a mis-spelled folder.
+        main = self.root / "main ü"  # the fixture root holds an "ü" too
+        self.git("init", "-q", str(main))
+        (main / "README.md").write_text("x\n", encoding="utf-8")
+        self.git("-C", str(main), "add", "README.md")
+        self.git("-C", str(main), "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qm", "init")
+        worktree = self.root / "worktree ü"
+        self.git("-C", str(main), "worktree", "add", "-q", "-b", "probe", str(worktree))
+        spec = importlib.util.spec_from_file_location("agentsmith_locale_probe", CORE)
+        core = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(core)
+        with mock.patch.object(subprocess, "_text_encoding", return_value="cp1252"):
+            hooks, root = core.git_hooks_location(worktree)
+        self.assertEqual(hooks.resolve(), (main / ".git" / "hooks").resolve())
+        self.assertEqual(root.resolve(), (main / ".git").resolve())
 
     def test_git_hooks_location_normalises_paths_git_leaves_unresolved(self) -> None:
         # Git can report a worktree's common folder through its "commondir" file without collapsing
