@@ -74,8 +74,12 @@ also capture the model digest, context window, hardware class, and latency in th
 artifact.
 
 Real-client and local-model records live under [`compatibility/evaluations/`](../compatibility/evaluations/)
-and validate against schema v2. `agentsmith evaluate --agent claude|codex|native` supplies the eight
-foundation scenarios. Its default dry run resolves clients, commands, scenarios, isolation, and
+and validate against the evaluation schema: bundled records are v2; new records are v3, which adds
+the instruction arm and `outcome.usage_total` (cost in USD, tokens and seconds summed over the
+trials, also printed on each result line). `agentsmith evaluate --agent claude|codex|native`
+supplies the foundation scenarios. `--instructions none` runs the same scenarios with the
+AgentSmith rules replaced by a bare file that keeps only the discovery sentinel, so a head-to-head
+compares quality and cost with and without the harness; the default is `--instructions harness`. Its default dry run resolves clients, commands, scenarios, isolation, and
 budgets without invoking a model. Live runs require `--live` and explicit positive budgets; raw
 logs remain outside tracked files. No dated records are bundled until an observed/manual run has
 actually occurred and its failures have been inspected.

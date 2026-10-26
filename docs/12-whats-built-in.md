@@ -76,7 +76,7 @@ surface stays small.
 | `agentsmith secret-scan [--all|FILE...|-]` | Scan staged additions by default, or the tracked tree/files/stdin, with redacted findings. |
 | `agentsmith graph <action> --graph <file>` | Validate, run, and clean up a committed local work graph ([parallel work graphs](24-parallel-work-graphs.md)). |
 | `agentsmith wizard schema --json [--target <path>] [--lang <code>]` | Print the install wizard's questions, choices, conditions, computed defaults and translations, so another program can ask them. |
-| `agentsmith evaluate --agent claude\|codex\|native` | Dry-run or execute the nine isolated, budgeted native-client behavior scenarios. |
+| `agentsmith evaluate --agent claude\|codex\|native [--instructions harness\|none]` | Dry-run or execute the nine isolated, budgeted native-client behavior scenarios; each result reports cost, tokens and duration next to pass or fail. |
 | `agentsmith compatibility` | Render the registry and static-context measurement without overstating evidence. |
 | `agentsmith agents list [--json]` | Print the supported agent registry. |
 | `agentsmith validate-integration --checkpoint <file>` | Validate a structured integration checkpoint without installing or launching packages. |

@@ -8158,6 +8158,8 @@ def parser() -> argparse.ArgumentParser:
                           help="native client to exercise; 'native' runs Claude and Codex")
     evaluate.add_argument("--scenario", action="append", help="scenario ID; repeatable (default: all nine)")
     evaluate.add_argument("--trials", type=int, default=3, help="fresh-repository trials per scenario (default: 3)")
+    evaluate.add_argument("--instructions", choices=("harness", "none"), default="harness",
+                          help="'none' runs the same scenarios without AgentSmith rules, for a head-to-head")
     mode = evaluate.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="resolve the run without calling a model (default)")
     mode.add_argument("--live", action="store_true", help="call native clients; explicit positive budgets required")
