@@ -170,6 +170,22 @@ PY
   fi
 fi
 
+# Installed runtimes have no core/ tree and report a fixed token figure; keep it honest.
+if ROOT_DIR="$ROOT_DIR" python3 - <<'PY'
+import os, sys
+from pathlib import Path
+sys.path.insert(0, os.environ["ROOT_DIR"])
+import agentsmith
+live, fallback = agentsmith.estimate_instruction_tokens(), agentsmith.INSTRUCTION_TOKENS_FALLBACK
+print(f"live={live} fallback={fallback}")
+sys.exit(0 if abs(fallback - live) <= live * 0.10 else 1)
+PY
+then
+  ok "installed-runtime token fallback is within 10% of the live estimate"
+else
+  bad "INSTRUCTION_TOKENS_FALLBACK in agentsmith.py is stale (update it to the live estimate)"
+fi
+
 echo
 printf 'assemble: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

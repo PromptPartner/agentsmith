@@ -4309,14 +4309,18 @@ def cmd_compatibility(args: argparse.Namespace) -> int:
     return 0
 
 
+# Installed helper runtimes intentionally do not duplicate source core/profile trees, so they
+# report this figure. scripts/test-assemble.sh keeps it within 10% of the live source estimate.
+INSTRUCTION_TOKENS_FALLBACK = 8950
+
+
 def estimate_instruction_tokens() -> int:
     # The published baseline is one self-contained coding project (core + software-dev),
     # not the core in isolation. Keep the same chars/4 calibration as lint-leanness.sh.
     sources = [*sorted((ROOT / "core").glob("*.md")), ROOT / "profiles" / "software-dev.md"]
     if all(path.exists() for path in sources):
         return sum(len(path.read_text(encoding="utf-8")) for path in sources) // 4
-    # Installed helper runtimes intentionally do not duplicate source core/profile trees.
-    return 8950
+    return INSTRUCTION_TOKENS_FALLBACK
 
 
 def doctor_warning(code: str, message: str, recommendation: str = "") -> dict[str, str]:
