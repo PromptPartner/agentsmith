@@ -235,6 +235,8 @@ class DoctorTests(unittest.TestCase):
         warning = next(w for w in claude_payload["claude"]["warnings"] if w["code"] == "legacy-managed-block")
         self.assertIn(str(legacy.resolve()), warning["message"])
         self.assertIn("Claude Code", warning["message"])
+        # The token estimate counts what the tool really loads, including that stray block.
+        self.assertGreater(claude_payload["claude"]["instructions"]["combined_tokens"], 0)
         _, codex_payload = self.doctor(repo, "codex")
         self.assertNotIn("legacy-managed-block", self.warning_codes(codex_payload["codex"]))
         # A clone carries the project's rules without the untracked install record; that is not legacy.

@@ -4664,7 +4664,7 @@ def inspect_instructions(agent_id: str, agent: dict[str, Any], target: Path) -> 
         "state": state,
         "path": path,
         "sources": sources,
-        "combined_tokens": sum(source["tokens"] for source in existing),
+        "combined_tokens": sum(source["tokens"] for source in loaded_records if source["exists"]),
         "duplicate_tokens": duplicate_tokens,
         "loaded_files": [source["path"] for source in loaded_records if source["exists"]],
     }, warnings
