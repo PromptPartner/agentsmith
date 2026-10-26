@@ -785,3 +785,20 @@ installation's root. Uninstall leaves Pi's file in place when the global record 
 Codex, so a later global uninstall leaves Pi's file in place and update no longer manages it. The
 record cannot prove ownership of Claude, Codex, or OpenCode files for the same reason. Merging
 global selections needs its own design because update replays the record.
+
+## Run guards and development pipeline (2026-10-26)
+
+- [x] 2026-10-26 — `prepare` wrote a manifest with blank role models and only warned; `start`
+  refused it later, and `REPLACE-WITH...`/`TO-FILL` values passed both. `prepare` now refuses and
+  names each field; a test that saw the draft written before the fix passes after.
+- [x] 2026-10-26 — `start` checked only that a sandbox binary existed. On a host that forbids a
+  nested sandbox it created the branch, worktree and state, then failed later. A per-role and
+  verifier sandbox preflight now refuses first; run inside a nested Seatbelt sandbox, the old
+  controller left all three artifacts and the new one leaves none.
+- [x] 2026-10-26 — A maker that finished but crossed its token cap left no receipt and no
+  candidate checkpoint, so resume stopped for operator review and the work was effectively lost.
+  The candidate is now checkpointed before the escalation and resume accepts it; the fixture
+  saw stage `making` and no receipt before the fix.
+- [x] 2026-10-26 — After a resume, a Claude checker escalated on the Codex cap that only the
+  maker had crossed, after spending checker money. Each cap is now checked after the roles that
+  spend it; found while fixing the entry above, and covered by the same fixture.

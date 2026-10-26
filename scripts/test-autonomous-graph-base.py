@@ -77,6 +77,13 @@ class GraphBaseTests(unittest.TestCase):
                 self.assertNotIn("ghp_", reason)
                 self.assertNotIn("customer", reason)
 
+    def test_autonomy_pause_refuses_graph_resume_before_reading_graph_state(self) -> None:
+        marker = self.repo / ".harness/AUTONOMY_PAUSED"
+        marker.parent.mkdir(exist_ok=True)
+        marker.touch()
+        with self.assertRaisesRegex(GRAPH.GraphError, "autonomy is paused by "):
+            GRAPH.resume_graph({"repo": self.repo, "graph_id": "unused"})
+
     def test_refusal_codes_name_real_controller_refusals(self) -> None:
         source = (ROOT / "scripts" / "autonomous-run.py").read_text(encoding="utf-8")
         messages = [re.sub(r"\{[^{}]*\}", "a", match.group(2))
