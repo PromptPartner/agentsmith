@@ -183,6 +183,15 @@ Claude gets a generated `CLAUDE.md`, while configured adapters must still point 
 do not gain local hooks merely by reading instructions. See
 [`13-platforms-and-tools.md`](13-platforms-and-tools.md).
 
+**What a doctor finding means.** Each finding has a stable code. All are warnings; the ones
+marked *strict* also make `agentsmith doctor --strict` exit 1, because they mean a run's evidence
+cannot be quoted as the shipped behaviour.
+
+| Code | Means | What to do |
+|---|---|---|
+| `runtime-file-modified` (strict) | An installed runtime file no longer matches the hash install recorded. Hooks, verify receipts and runs come from edited code. | Re-run install or the reviewed update. |
+| `hook-unused-30-days` | An installed hook did not fire in 30 days ([firing log](../hooks/README.md#firing-log--track-every-workaround-delete-it-when-it-stops-firing)). | Advisory: consider removing it; a safety gate may rightly never block. |
+
 **"`agentsmith evaluate` refuses to call the client."** Real model calls require all three pieces:
 `--live`, a positive `--claude-max-usd` when Claude is selected, and a positive
 `--codex-max-tokens` when Codex is selected. Without `--live`, the command intentionally performs a

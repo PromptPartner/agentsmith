@@ -944,6 +944,12 @@ def record_installation_manifest(
                     "sha256": file_sha256(path),
                 }
     managed_files = [managed_files_by_path[path] for path in sorted(managed_files_by_path)]
+    # Doctor hash-checks these, so an edited or replaced runtime is reported, not just a missing one.
+    runtime_files = [
+        {"path": relative, "sha256": file_sha256(managed_root / relative)}
+        for relative in (*RUNTIME_FILES, AUTONOMOUS_PAYLOADS[0])
+        if (managed_root / relative).is_file() and not (managed_root / relative).is_symlink()
+    ]
     state["installation"] = {
         "installed_version": VERSION,
         "source": source,
@@ -977,6 +983,7 @@ def record_installation_manifest(
             "ui_design_hook": bool(args.with_ui_design_hook or prior_capabilities.get("ui_design_hook")),
         },
         "managed_files": managed_files,
+        "runtime_files": runtime_files,
     }
     if args.with_memory_startup or getattr(args, "without_memory_startup", False) or "memory_startup" in prior_capabilities:
         state["installation"]["capabilities"]["memory_startup"] = bool(args.with_memory_startup and not args.without_memory_startup)
@@ -2013,6 +2020,7 @@ def validate_installation_manifest(state: dict[str, Any]) -> dict[str, Any]:
     allowed_installation = {
         "installed_version", "source", "scope", "agents", "profiles", "include_core",
         "assemble_only", "runtime", "safety", "operator", "tracker", "capabilities", "managed_files", "effects",
+        "runtime_files",
     }
     unknown_installation = sorted(set(installation) - allowed_installation)
     if unknown_installation:
@@ -2024,7 +2032,7 @@ def validate_installation_manifest(state: dict[str, Any]) -> dict[str, Any]:
         )
     if not isinstance(installation["assemble_only"], bool):
         raise CliError("Installation manifest assemble_only field must be true or false; rerun install explicitly")
-    required = allowed_installation - {"runtime", "effects"}
+    required = allowed_installation - {"runtime", "effects", "runtime_files"}
     missing = sorted(required - set(installation))
     if missing:
         raise CliError(f"Installation manifest is missing field(s): {', '.join(missing)}")
@@ -2064,6 +2072,13 @@ def validate_installation_manifest(state: dict[str, Any]) -> dict[str, Any]:
         or not runtime["path"]
     ):
         raise CliError("Installation manifest runtime field is invalid; rerun install explicitly")
+    runtime_files = installation.get("runtime_files", [])
+    if not isinstance(runtime_files, list) or any(
+        not isinstance(item, dict) or set(item) != {"path", "sha256"}
+        or not isinstance(item["path"], str) or not isinstance(item["sha256"], str)
+        for item in runtime_files
+    ):
+        raise CliError("Installation manifest runtime_files field is invalid; rerun install explicitly")
     return installation
 
 
@@ -4880,6 +4895,15 @@ def inspect_runtime(agent: dict[str, Any], target: Path) -> dict[str, Any]:
             required_payloads.extend(AUTONOMOUS_PAYLOADS)
     missing_payloads = [relative for relative in required_payloads
                         if not (target / relative).is_file() or (target / relative).is_symlink()]
+    modified_files: list[str] = []
+    for root, record in ((target, installation), (home_dir(), load_state(home_dir()).get("installation", {}))):
+        recorded = record.get("runtime_files", []) if isinstance(record, dict) else []
+        for item in recorded if isinstance(recorded, list) else []:
+            if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+                continue
+            path_on_disk = root / item["path"]
+            if path_on_disk.is_file() and not path_on_disk.is_symlink() and file_sha256(path_on_disk) != item.get("sha256"):
+                modified_files.append(item["path"] if root == target else str(path_on_disk))
     # Availability is diagnostic, not permission to launch or an installation failure.
     dependencies = {name: {"available": shutil.which(name) is not None,
                            "path": shutil.which(name) or ""}
@@ -4896,6 +4920,7 @@ def inspect_runtime(agent: dict[str, Any], target: Path) -> dict[str, Any]:
         "autonomous_state": autonomous_state,
         "required_payloads": required_payloads,
         "missing_payloads": missing_payloads,
+        "modified_files": sorted(dict.fromkeys(modified_files)),
         "dependencies": dependencies,
         "ownership_state_path": str(target / ".agentsmith" / "state.json"),
         "ownership_state_present": (target / ".agentsmith" / "state.json").is_file(),
@@ -5031,6 +5056,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 "Required installed runtime payloads are missing or unsafe: " + ", ".join(runtime["missing_payloads"]),
                 "Re-run install or the reviewed update to restore the managed runtime.",
             ))
+        if runtime["modified_files"]:
+            warnings.append(doctor_warning(
+                "runtime-file-modified",
+                "Installed runtime files differ from what install recorded: " + ", ".join(runtime["modified_files"]),
+                "Hooks, verify receipts and runs from this runtime are not the shipped code. Re-run install "
+                "or the reviewed update to restore it.",
+            ))
         if AUTONOMOUS_PAYLOADS[0] in runtime["required_payloads"]:
             unavailable = [name for name, dependency in runtime["dependencies"].items() if not dependency["available"]]
             if unavailable:
@@ -5119,6 +5151,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         unhealthy |= instructions["state"] in {"missing", "malformed"}
         unhealthy |= bool(skills["adapter_diverged_names"])
         unhealthy |= bool(runtime["missing_payloads"])
+        unhealthy |= bool(runtime["modified_files"])
     if args.json:
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:

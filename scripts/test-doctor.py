@@ -103,6 +103,32 @@ class DoctorTests(unittest.TestCase):
                 if original is not None:
                     path.write_bytes(original)
 
+    def test_strict_doctor_detects_an_edited_runtime_file(self) -> None:
+        project = self.root / "edited runtime"
+        installed = self.install(project, "--agent", "codex", "--profile", "software-dev")
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        state = json.loads((project / ".agentsmith/state.json").read_text(encoding="utf-8"))
+        recorded = {item["path"]: item["sha256"] for item in state["installation"]["runtime_files"]}
+        self.assertIn(".agentsmith/work_graph.py", recorded)
+        self.assertIn(".agentsmith/autonomous-run.py", recorded)
+        self.assertEqual(
+            recorded[".agentsmith/work_graph.py"],
+            hashlib.sha256((project / ".agentsmith/work_graph.py").read_bytes()).hexdigest(),
+        )
+        # The update planner must accept the new record, or the next update would refuse it.
+        load_core().validate_installation_manifest(state)
+        clean = self.run_core("doctor", "--agent", "codex", "--target", str(project), "--strict", "--json")
+        self.assertEqual(clean.returncode, 0, clean.stdout + clean.stderr)
+        self.assertEqual(json.loads(clean.stdout)["codex"]["runtime"]["modified_files"], [])
+        with (project / ".agentsmith/work_graph.py").open("a", encoding="utf-8") as handle:
+            handle.write("# local edit\n")
+        strict = self.run_core("doctor", "--agent", "codex", "--target", str(project), "--strict", "--json")
+        self.assertNotEqual(strict.returncode, 0, strict.stdout + strict.stderr)
+        agent = json.loads(strict.stdout)["codex"]
+        self.assertEqual(agent["runtime"]["modified_files"], [".agentsmith/work_graph.py"])
+        self.assertIn("runtime-file-modified", self.warning_codes(agent))
+        self.assertEqual(self.doctor(project, "codex")[0].returncode, 0, "a plain doctor run only warns")
+
     def test_reinstall_refreshes_managed_controller_and_preserves_draft_template(self) -> None:
         project = self.root / "reinstalled consumer"
         installed = self.install(project, "--agent", "codex", "--profile", "software-dev")
