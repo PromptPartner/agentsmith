@@ -149,6 +149,27 @@ if [ -f "$ROOT_DIR/profiles/software-dev.md" ] && [ -f "$ROOT_DIR/profiles/auton
   fi
 fi
 
+# The repository's own AGENTS.md is a committed assembly (core + software-dev, default operator).
+# Codex and anyone who clones the repo read it, so it must not drift from core/ and profiles/.
+if [ -f "$ROOT_DIR/AGENTS.md" ]; then
+  if ROOT_DIR="$ROOT_DIR" python3 - <<'PY'
+import argparse, os, sys
+from pathlib import Path
+root = Path(os.environ["ROOT_DIR"])
+sys.path.insert(0, str(root))
+import agentsmith
+ns = argparse.Namespace(operator_name=None, operator_role=None, operator_bio=None, tracker=None, tracker_writes=None)
+expected = agentsmith.build_instructions(ns, ["software-dev"], True, {}).rstrip("\n")
+actual = (root / "AGENTS.md").read_text(encoding="utf-8").rstrip("\n")
+sys.exit(0 if actual == expected else 1)
+PY
+  then
+    ok "root AGENTS.md matches core/ + profiles/software-dev.md"
+  else
+    bad "root AGENTS.md drifted from core/ + profiles/software-dev.md (regenerate it)"
+  fi
+fi
+
 echo
 printf 'assemble: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
