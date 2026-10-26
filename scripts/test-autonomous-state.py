@@ -197,6 +197,35 @@ class AutonomousStateTests(unittest.TestCase):
         probe.assert_not_called()
         verify.assert_called_once()
 
+    def test_start_and_prepare_refuse_an_accepted_spec_without_pipeline_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith pipeline ") as temporary:
+            repo = Path(temporary).resolve()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            spec = repo / "docs/specs/item.md"
+            spec.parent.mkdir(parents=True)
+            spec.write_text("---\nschema: 2\nstatus: accepted\ndecision_ticket: DEC-1\n"
+                            "route: direct — one reproduced bug\naccepted_by: Test Operator\n"
+                            "accepted_at: 2026-10-26\n---\n# Spec\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "-c", "user.name=T", "-c", "user.email=t@example.com",
+                            "commit", "-qm", "spec"], check=True)
+            manifest = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
+            manifest.update(run_id="item", spec_path="docs/specs/item.md", implementation_ticket="IMP-1")
+            for role in manifest["roles"].values():
+                role["model"] = "fixture-model"
+            with self.assertRaisesRegex(CONTROLLER.RunError,
+                                        "accepted spec fails the pipeline check: research is missing; "
+                                        "reviewer_receipt is missing"):
+                CONTROLLER.validate_manifest(manifest, repo)
+            args = CONTROLLER.parser().parse_args([
+                "prepare", "--run-id", "item", "--spec", "docs/specs/item.md", "--ticket", "IMP-1",
+                "--maker-model", "m", "--checker-model", "m",
+                "--template", str(ROOT / "templates/autonomous-run.json")])
+            with mock.patch.object(CONTROLLER.Path, "cwd", return_value=repo):
+                with self.assertRaisesRegex(CONTROLLER.RunError, "research is missing"):
+                    CONTROLLER.prepare(args)
+            self.assertFalse((repo / ".harness/runs/item.json").exists())
+
     def test_kill_switch_in_main_checkout_pauses_linked_worktrees(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith pause ") as temporary:
             repo = Path(temporary).resolve() / "main"

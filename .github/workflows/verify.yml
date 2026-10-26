@@ -251,6 +251,7 @@ jobs:
           bash scripts/test-operator-identity.sh
           bash scripts/test-leak-gate.sh
           bash scripts/test-wayfinder-spec.sh
+          python3 scripts/autonomous-run.py check-specs
           bash scripts/test-ui-design-reminder.sh
           bash scripts/test-handoff-on-keyword.sh
           bash scripts/test-context-budget-nudge.sh

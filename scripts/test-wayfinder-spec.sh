@@ -29,7 +29,9 @@ required_sections=(
   '### Fog'
   '## Decision index'
   '## Explicit deferrals'
+  '## Needs operator'
   '## Acceptance and evidence'
+  '## Review resolution'
   '## Decision-ticket drafts'
   '## Implementation-ticket drafts'
 )
@@ -56,7 +58,7 @@ if [ "$(head -1 "$TEMPLATE")" = '---' ] && [ "$(grep -c '^---$' "$TEMPLATE")" -g
 else
   bad 'template: YAML-style frontmatter missing'
 fi
-for field in 'decision_ticket:' 'accepted_by:' 'accepted_at:'; do
+for field in 'schema: 2' 'decision_ticket:' 'research:' 'route:' 'reviewer_receipt:' 'accepted_by:' 'accepted_at:'; do
   has "$TEMPLATE" "$field" \
     && ok "template: frontmatter carries $field" \
     || bad "template: frontmatter missing $field"
@@ -78,6 +80,51 @@ for phrase in \
     && ok "skill: guarded — $phrase" \
     || bad "skill: missing guard — $phrase"
 done
+
+# The pipeline guard: an accepted schema-2 spec must point at its research and reviewer receipt
+# and record its route. Each fixture removes or breaks one field and must turn the check red.
+GUARD="$ROOT_DIR/scripts/autonomous-run.py"
+FIX="$(mktemp -d)"; trap 'rm -rf "$FIX"' EXIT
+git -C "$FIX" init -q
+mkdir -p "$FIX/docs/specs" "$FIX/docs/research/reviews"
+printf '# Research\n' > "$FIX/docs/research/item.md"
+printf 'ACCEPT\n' > "$FIX/docs/research/reviews/item-spec-review.md"
+write_spec() { # $1 = status, then lines to drop or replace via sed expressions
+  local status="$1"; shift
+  printf '%s\n' '---' 'schema: 2' "status: $status" 'decision_ticket: DEC-1' \
+    'research: docs/research/item.md' 'route: direct — one bug with a reproduction' \
+    'reviewer_receipt: docs/research/reviews/item-spec-review.md' \
+    'accepted_by: Test Operator' 'accepted_at: 2026-10-26' '---' '# Spec' > "$FIX/docs/specs/item.md"
+  for expression in "$@"; do sed -i.bak "$expression" "$FIX/docs/specs/item.md"; rm -f "$FIX/docs/specs/item.md.bak"; done
+}
+check() { (cd "$FIX" && python3 "$GUARD" check-specs "$@" >"$FIX/out" 2>&1); echo $?; }
+write_spec accepted
+[ "$(check)" = 0 ] && ok 'guard: a complete accepted spec passes' || { bad 'guard: complete spec failed'; cat "$FIX/out"; }
+for case in \
+  'research is missing|/^research:/d' \
+  'reviewer_receipt is missing|/^reviewer_receipt:/d' \
+  'route must start with direct, grill or wayfinder|/^route:/d' \
+  'research points at docs/research/gone.md, which does not exist|s#^research:.*#research: docs/research/gone.md#' \
+  'reviewer_receipt points at docs/research/reviews/none.md, which does not exist|s#^reviewer_receipt:.*#reviewer_receipt: docs/research/reviews/none.md#' \
+  'route needs a one-line reason|s#^route:.*#route: wayfinder#' \
+  'route must start with direct, grill or wayfinder|s#^route:.*#route: <direct | grill | wayfinder> — <reason>#' \
+  'research must be a repository-relative path|s#^research:.*#research: ../outside.md#' \
+  "unsupported schema '3'|s#^schema: 2#schema: 3#"; do
+  expected="${case%%|*}"; expression="${case#*|}"
+  write_spec accepted "$expression"
+  if [ "$(check)" = 1 ] && grep -qF "$expected" "$FIX/out"; then
+    ok "guard: red when $expected"
+  else
+    bad "guard: stayed green or wrong reason for: $expected"; cat "$FIX/out"
+  fi
+done
+write_spec draft '/^research:/d'
+[ "$(check)" = 0 ] && ok 'guard: a draft is not checked in the repository scan' || bad 'guard: scan checked a draft'
+[ "$(check docs/specs/item.md)" = 1 ] && ok 'guard: a named draft is checked, so a goal cannot finish early' || bad 'guard: named draft passed'
+write_spec accepted '/^schema:/d' '/^research:/d' '/^route:/d' '/^reviewer_receipt:/d'
+if [ "$(check)" = 0 ] && grep -q 'legacy spec' "$FIX/out"; then
+  ok 'guard: a spec accepted before schema 2 passes and says it is legacy'
+else bad 'guard: legacy spec failed or was not reported'; cat "$FIX/out"; fi
 
 if has "$TEMPLATE" '## Decision-ticket drafts' && has "$TEMPLATE" '## Implementation-ticket drafts'; then
   ok 'template: decision and implementation tickets are separate artifacts'

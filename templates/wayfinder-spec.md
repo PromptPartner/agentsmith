@@ -1,6 +1,10 @@
 ---
+schema: 2
 status: draft
 decision_ticket: <tracker link/id or paste-ready draft name>
+research: <docs/research/<slug>.md, the research note this spec builds on>
+route: <direct | grill | wayfinder> — <one-line reason>
+reviewer_receipt: <path to the verdict file of a reviewer who did not draft this spec>
 accepted_by:
 accepted_at:
 ---
@@ -37,9 +41,17 @@ accepted_at:
 
 - <Non-blocking uncertainty intentionally deferred, with reason and future owner/item.>
 
+## Needs operator
+
+- <A human-preference decision or gate an agent may not answer, and the decisions it blocks.>
+
 ## Acceptance and evidence
 
 - <End-to-end observable that proves the destination was reached.>
+
+## Review resolution
+
+- <Each reviewer finding and what changed, or why it was declined.>
 
 ## Decision-ticket drafts
 

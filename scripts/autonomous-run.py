@@ -589,6 +589,75 @@ def frontmatter(text: str) -> dict[str, str]:
     return values
 
 
+ROUTE = re.compile(r"(direct|grill|wayfinder)\b[\s\-—–:;,(]*(.*)")
+
+
+def spec_pipeline_problems(repo: Path, meta: dict[str, str]) -> list[str]:
+    """What a schema-2 spec lacks of the development pipeline's artifacts.
+
+    A spec without `schema:` predates the pipeline fields and is not checked, so specs accepted
+    before they existed keep working; the template declares `schema: 2`."""
+    schema = meta.get("schema", "")
+    if not schema:
+        return []
+    if schema != "2":
+        return [f"unsupported schema {schema!r}; this controller reads schema 2"]
+    problems = []
+    for field in ("research", "reviewer_receipt"):
+        value = meta.get(field, "")
+        if not value:
+            problems.append(f"{field} is missing")
+            continue
+        relative = Path(value)
+        if relative.is_absolute() or "\\" in value or ".." in relative.parts:
+            problems.append(f"{field} must be a repository-relative path")
+        elif not (repo / relative).is_file() or not (repo / relative).resolve().is_relative_to(repo.resolve()):
+            problems.append(f"{field} points at {value}, which does not exist")
+    route = ROUTE.fullmatch(meta.get("route", ""))
+    if route is None:
+        problems.append("route must start with direct, grill or wayfinder")
+    elif not route.group(2).strip():
+        problems.append("route needs a one-line reason after direct, grill or wayfinder")
+    return problems
+
+
+def check_specs(args: argparse.Namespace) -> int:
+    """The pipeline guard: 0 when every checked spec is complete, 1 when one is not."""
+    repo = repo_root(Path.cwd())
+    named = [Path(path) for path in args.paths]
+    targets = named or sorted(path for path in (repo / "docs/specs").rglob("*.md") if path.is_file())
+    failed = False
+    checked = 0
+    for path in targets:
+        path = path if path.is_absolute() else Path.cwd() / path
+        shown = path.relative_to(repo).as_posix() if path.resolve().is_relative_to(repo) else str(path)
+        try:
+            text = read_text(path)
+            if not named and not text.startswith("---\n"):
+                continue  # not a spec, for example the folder's README
+            meta = frontmatter(text)
+        except (OSError, UnicodeError, RunError) as exc:
+            print(f"FAIL {shown}: {exc}")
+            failed = True
+            continue
+        status = meta.get("status", "")
+        if not named and status != "accepted":
+            continue
+        checked += 1
+        problems = spec_pipeline_problems(repo, meta)
+        if problems:
+            print(f"FAIL {shown}: " + "; ".join(problems))
+            failed = True
+        elif not meta.get("schema"):
+            print(f"ok   {shown}: legacy spec without schema: 2; pipeline fields not checked")
+        else:
+            waiting = "" if status == "accepted" else " (waiting for operator acceptance)"
+            print(f"ok   {shown}: {status}{waiting}")
+    if not checked and not failed:
+        print("no accepted spec under docs/specs to check")
+    return 1 if failed else 0
+
+
 RESOURCE_KEY = re.compile(r"[a-z][a-z0-9_-]*:[a-z0-9][a-z0-9._/-]*\Z")
 
 
@@ -731,6 +800,9 @@ def validate_manifest(manifest: dict[str, Any], repo: Path) -> tuple[Path, str]:
         raise RunError("accepted spec requires accepted_by and accepted_at")
     if not meta.get("decision_ticket"):
         raise RunError("accepted spec requires a decision_ticket reference")
+    problems = spec_pipeline_problems(repo, meta)
+    if problems:
+        raise RunError("accepted spec fails the pipeline check: " + "; ".join(problems))
     if str(manifest["implementation_ticket"]) == meta.get("decision_ticket"):
         raise RunError("implementation_ticket must be separate from decision_ticket")
     digest = hashlib.sha256(shown.encode()).hexdigest()
@@ -823,6 +895,11 @@ def prepare(args: argparse.Namespace) -> int:
         manifest["roles"]["maker"]["runtime"] = args.maker
     if args.checker:
         manifest["roles"]["checker"]["runtime"] = args.checker
+    spec = repo / args.spec
+    if spec.is_file():
+        problems = spec_pipeline_problems(repo, frontmatter(read_text(spec)))
+        if problems:
+            raise RunError(f"{args.spec} fails the pipeline check: " + "; ".join(problems))
     if args.maker_model:
         manifest["roles"]["maker"]["model"] = args.maker_model
     if args.checker_model:
@@ -2283,6 +2360,11 @@ def parser() -> argparse.ArgumentParser:
     prep.add_argument("--output")
     prep.add_argument("--force", action="store_true")
     prep.set_defaults(func=prepare)
+    specs = sub.add_parser("check-specs", help="pipeline guard: accepted specs point at their "
+                                              "research and review receipt and record a route")
+    specs.add_argument("paths", nargs="*", help="specs to check whatever their status "
+                                                "(default: every accepted spec under docs/specs)")
+    specs.set_defaults(func=check_specs)
     begin = sub.add_parser("start", help="explicitly authorize and run a committed manifest")
     begin.add_argument("manifest")
     begin.add_argument("--graph", help="committed work-graph path authorizing a pinned effective base")
