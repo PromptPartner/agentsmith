@@ -89,6 +89,8 @@ NATIVE_SAFETY = {
     "container": {"claude": {"defaultMode": "acceptEdits"},
                   "codex": {"approval_policy": "on-request", "sandbox_mode": "danger-full-access"}},
 }
+# State key recording the Claude default mode AgentSmith wrote and the value it replaced.
+CLAUDE_MODE_RECORD = "claude_permission_mode"
 CODE_PROFILES = {"software-dev", "devops-setup"}
 DEMO_TEMPLATE_FILES = (
     ".harness/verify.conf",
@@ -1667,6 +1669,76 @@ def copy_runtime(target: Path, *, dry_run: bool) -> Path:
     return destination
 
 
+def claude_permission_mode(path: Path) -> tuple[dict[str, Any], Any]:
+    """Return Claude settings and their permissions.defaultMode (None when absent)."""
+    if not path.exists():
+        return {}, None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8") or "{}")
+    except json.JSONDecodeError as exc:
+        raise CliError(f"Refusing to modify invalid JSON {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise CliError(f"Refusing to replace non-object Claude settings in {path}")
+    permissions = data.get("permissions", {})
+    return data, permissions.get("defaultMode") if isinstance(permissions, dict) else None
+
+
+def write_claude_permission_mode(path: Path, state_root: Path, mode: str, *, dry_run: bool) -> None:
+    """Set Claude's default mode and record what it replaced, so uninstall can put it back."""
+    _, current = claude_permission_mode(path)
+    record = load_state(state_root).get(CLAUDE_MODE_RECORD)
+    if isinstance(record, dict) and record.get("value") == current:
+        prior, created = record.get("prior"), bool(record.get("created"))
+    else:
+        prior, created = current, not path.exists()
+
+    def claude_settings(data: dict[str, Any]) -> None:
+        permissions = data.setdefault("permissions", {})
+        if not isinstance(permissions, dict):
+            raise CliError("Refusing to replace non-object Claude permissions configuration")
+        permissions["defaultMode"] = mode
+
+    merge_json(path, claude_settings, dry_run=dry_run)
+    record_state(state_root, CLAUDE_MODE_RECORD, {"value": mode, "prior": prior, "created": created}, dry_run=dry_run)
+
+
+def remove_claude_permission_mode(path: Path, state_root: Path, *, dry_run: bool) -> None:
+    """Undo only the default mode the install record says AgentSmith wrote, and only if unchanged."""
+    state = load_state(state_root)
+    record = state.get(CLAUDE_MODE_RECORD)
+    legacy = state.get("native_safety", {}).get("claude") if isinstance(state.get("native_safety"), dict) else None
+    if isinstance(record, dict) and isinstance(record.get("value"), str):
+        written, prior, created = record["value"], record.get("prior"), bool(record.get("created"))
+    elif legacy in SAFETY_MODES:
+        # Releases before 0.5.0 recorded only the mode, not what it replaced or whether the file existed.
+        written, prior, created = NATIVE_SAFETY[legacy]["claude"]["defaultMode"], None, False
+    else:
+        return
+    if path.is_file():
+        data, current = claude_permission_mode(path)
+        if current != written:
+            warn(f"Claude's default mode in {path} changed since install ({current!r}); preserved")
+        elif prior != written:
+            permissions = data["permissions"]
+            if prior is None:
+                permissions.pop("defaultMode", None)
+                if not permissions:
+                    data.pop("permissions", None)
+            else:
+                permissions["defaultMode"] = prior
+            if dry_run:
+                say(f"DRY RUN — would restore Claude's default mode in {path}")
+                return
+            backup(path)
+            if data or not created:
+                atomic_write(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+            else:
+                path.unlink()
+    if not dry_run and CLAUDE_MODE_RECORD in state:
+        state.pop(CLAUDE_MODE_RECORD)
+        atomic_write(state_path(state_root), json.dumps(state, indent=2, ensure_ascii=False) + "\n")
+
+
 def install_native_config(target: Path, agents: list[str], args: argparse.Namespace) -> None:
     selected_mcp = mcp_source(csv(args.with_mcp))
     prior_safety = getattr(args, "prior_managed_safety", {})
@@ -1689,12 +1761,10 @@ def install_native_config(target: Path, agents: list[str], args: argparse.Namesp
                     f"cautious; the existing config will be backed up: {destination}"
                 )
     if "claude" in agents and not args.assemble_only:
-        def claude_settings(data: dict[str, Any]) -> None:
-            permissions = data.setdefault("permissions", {})
-            if not isinstance(permissions, dict):
-                raise CliError("Refusing to replace non-object Claude permissions configuration")
-            permissions["defaultMode"] = NATIVE_SAFETY[args.safety]["claude"]["defaultMode"]
-        merge_json(home_dir() / ".claude" / "settings.json", claude_settings, dry_run=args.dry_run)
+        write_claude_permission_mode(
+            home_dir() / ".claude" / "settings.json", home_dir(),
+            NATIVE_SAFETY[args.safety]["claude"]["defaultMode"], dry_run=args.dry_run,
+        )
     if "codex" in agents and not args.assemble_only:
         if args.safety == "container" and not detect_container():
             warn("WARNING: --safety container turns off the Codex sandbox, but no container was detected; "
@@ -2000,7 +2070,7 @@ def checkout_planned_release(remote: str, release: dict[str, str], destination: 
 def validate_installation_manifest(state: dict[str, Any]) -> dict[str, Any]:
     allowed_state = {
         "schema_version", "installation", "gemini_context_added", "native_statuslines",
-        "native_safety", "claude_mcp_added", "skills_installed", "update_policy",
+        "native_safety", "claude_mcp_added", "skills_installed", "update_policy", CLAUDE_MODE_RECORD,
     }
     unknown_state = sorted(set(state) - allowed_state)
     if unknown_state:
@@ -4080,18 +4150,7 @@ def uninstall(args: argparse.Namespace, agents: list[str], target: Path) -> int:
         if "codex" in agents:
             remove_owned_text_block(codex_home() / "config.toml", dry_run=args.dry_run)
         if "claude" in agents:
-            settings = home_dir() / ".claude" / "settings.json"
-            if settings.exists():
-                data = json.loads(settings.read_text(encoding="utf-8"))
-                permissions = data.get("permissions", {})
-                if isinstance(permissions, dict) and permissions.get("defaultMode") in {"acceptEdits", "bypassPermissions"}:
-                    permissions.pop("defaultMode", None)
-                    if not permissions:
-                        data.pop("permissions", None)
-                    if not args.dry_run:
-                        backup(settings)
-                        if data: atomic_write(settings, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-                        else: settings.unlink()
+            remove_claude_permission_mode(home_dir() / ".claude" / "settings.json", home_dir(), dry_run=args.dry_run)
     if ownership.get("skills_installed"):
         remove_owned_skills(
             home_dir() if args.global_mode else target, agents, ownership, dry_run=args.dry_run

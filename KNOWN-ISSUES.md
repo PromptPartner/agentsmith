@@ -776,3 +776,14 @@ installation's root. Uninstall leaves Pi's file in place when the global record 
 Codex, so a later global uninstall leaves Pi's file in place and update no longer manages it. The
 record cannot prove ownership of Claude, Codex, or OpenCode files for the same reason. Merging
 global selections needs its own design because update replays the record.
+
+### INSTALLER-SAFETY: phase-1 installer fixes (2026-10-26)
+
+- [x] 2026-10-26 — GitHub issue #50a: `install --global --assemble-only` and then
+  `install --global --uninstall` deleted a user-owned `~/.claude/settings.json` that held only
+  `{"permissions":{"defaultMode":"acceptEdits"}}`, while it reported that only AgentSmith-owned
+  blocks were removed. Uninstall dropped any `acceptEdits` or `bypassPermissions` value and then
+  removed the emptied file. Install now records the mode it wrote, the value it replaced, and
+  whether it created the file; uninstall restores that value only if the mode is unchanged and never
+  deletes a file it did not create. `scripts/test-installer-safety.py` failed before the fix (file
+  deleted, earlier mode lost) and passes after.

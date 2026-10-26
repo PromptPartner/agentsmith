@@ -70,6 +70,11 @@ when a container image already sets them on purpose — install with `--assemble
 then writes instructions only and does not touch Claude or Codex permissions, Codex
 `config.toml`, or statuslines.
 
+Uninstall reverses only what the install record says AgentSmith wrote. It puts back the Claude
+default mode that was there before the install, keeps a mode you changed after the install, and
+never deletes a settings file that AgentSmith did not create. After an `--assemble-only` install,
+uninstall leaves your Claude settings unchanged.
+
 ## Behavioral safety evaluation
 
 `agentsmith evaluate` exercises the safety contract against installed Claude Code and Codex
