@@ -830,3 +830,19 @@ reported as fully loaded.
 `--strict`, because `update apply` runs `doctor --strict` in the operator's environment as its
 post-check and would roll back every update for an rtk user. A strict failure needs the update
 post-check to exclude environment findings first.
+
+### HOOKS: shell guardrail log rotation wrote through planted links (fixed)
+
+2026-10-26 — Codex review of `61c8650`: a planted `.agentsmith/logs/hook-events.jsonl.tmp`
+symlink made the shell guardrails overwrite its target and install the link as the log; a FIFO
+hung the hooks; parallel rotation tore lines; `RLIMIT_FSIZE=0` killed the hook with SIGXFSZ.
+The shell hooks now append only, to a regular non-link file (`HookFiringLogTests`, red on the
+old hooks). Same review: negative usage figures, future-dated firings, the installed doctor's
+missing core sections and a non-hermetic evaluation test are fixed with their own tests.
+
+### HOOKS: the shell log check and append are not one atomic step (open, low)
+
+2026-10-26 — the shell guardrails check that the log is a regular, non-link file and then append
+with `>>`. A local process that swaps in a link between the two steps could still redirect one
+line. A planted link in a cloned repository is refused; closing the race needs an `O_NOFOLLOW`
+open, which plain shell lacks.
