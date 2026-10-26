@@ -188,3 +188,25 @@ fails safe. They're plain scripts — test one directly, e.g. `hooks/git/convent
 Installation previews disclose hook effects and persist the selected effect versions. See [capability selection](../docs/local-capabilities.md).
 
 `memory-startup` is separately selected. Its scoped `SessionStart` registration matches startup/resume only; it supplies local references through `hookSpecificOutput.additionalContext`, with a two-second watchdog. See [memory limits and selection](../docs/project-memory.md).
+
+## Firing log — track every workaround, delete it when it stops firing
+
+A hook is a workaround for something the model or the client does not do on its own. When the
+underlying gap closes, the hook keeps costing time and context but no longer acts. To make that
+visible, every shipped hook appends one JSON line when it actually acts (nudges, blocks or adds
+context). A hook run that does nothing writes nothing.
+
+- **Where:** `<runtime root>/.agentsmith/hook-events.jsonl`, that is, beside the installed
+  runtime: the project's `.agentsmith/` for a project install, `~/.agentsmith/` for a global one.
+  The shell guardrails in `hooks/git/` log to `<repo>/.agentsmith/` only when that folder exists.
+  A runtime run from a source checkout does not log.
+- **What:** `{"ts", "hook", "event", "outcome"}` only, for example
+  `{"ts":"2026-10-26T09:00:00Z","hook":"handoff-on-keyword","event":"UserPromptSubmit","outcome":"nudged"}`.
+  No prompt text, file paths, commit messages or secrets.
+- **Size:** once the log passes 64 KiB, it keeps its newest half.
+- **Failure:** a log that cannot be written is skipped; the hook still runs and returns as before.
+
+`agentsmith doctor` prints the firings per hook for the last 30 days and warns
+(`hook-unused-30-days`, advisory) about an installed hook that did not fire in that window, once
+the install is older than 30 days. Treat that as a removal candidate, not an order: a safety gate
+such as the secret scan may rightly never block.

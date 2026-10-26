@@ -4946,12 +4946,63 @@ def container_safety_advisory(agent_id: str, state: str, evidence: list[str]) ->
     )
 
 
+def hook_firing_counts(target: Path) -> tuple[dict[str, int], list[str]]:
+    """Count hook firings in the last HOOK_LOG_WINDOW_DAYS from the project and user logs."""
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=HOOK_LOG_WINDOW_DAYS)
+    counts: dict[str, int] = {}
+    paths: list[str] = []
+    for root in dict.fromkeys((target.resolve() / ".agentsmith", home_dir().resolve() / ".agentsmith")):
+        path = root / HOOK_LOG_NAME
+        if path.is_symlink() or not path.is_file():
+            continue
+        paths.append(str(path))
+        try:
+            lines = path.read_bytes()[-HOOK_LOG_MAX_BYTES:].decode("utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                event = json.loads(line)
+                when = dt.datetime.strptime(event["ts"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+                hook = event["hook"]
+            except (ValueError, KeyError, TypeError):
+                continue
+            if isinstance(hook, str) and re.fullmatch(r"[a-z0-9-]{1,64}", hook) and when >= cutoff:
+                counts[hook] = counts.get(hook, 0) + 1
+    return dict(sorted(counts.items())), paths
+
+
+def hook_firing_report(target: Path, hooks: dict[str, Any], counts: dict[str, int], logs: list[str]) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    installed = {name for name in (managed_hook_name(command) for command in hooks["managed_commands"]) if name}
+    if hooks["scanner_current"]:
+        installed.add("git-pre-commit")
+    # A hook installed inside the window has not had the chance to fire, so silence proves nothing yet.
+    # Every install rewrites state.json, so its age is the time since the last install.
+    record = state_path(target) if load_state(target).get("installation") else state_path(home_dir())
+    try:
+        age_days = (time.time() - record.stat().st_mtime) / 86400
+    except OSError:
+        age_days = 0.0
+    unused = sorted(installed - set(counts)) if age_days >= HOOK_LOG_WINDOW_DAYS else []
+    warnings = []
+    if unused:
+        warnings.append(doctor_warning(
+            "hook-unused-30-days",
+            f"These installed hooks did not fire in the last {HOOK_LOG_WINDOW_DAYS} days: " + ", ".join(unused),
+            "Advisory: a hook that never acts only costs time; consider removing it. A safety gate "
+            "that never blocks may still be worth keeping.",
+        ))
+    return {"window_days": HOOK_LOG_WINDOW_DAYS, "counts": counts, "installed": sorted(installed),
+            "unused": unused, "logs": logs}, warnings
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     selected = resolve_agents(args.agent, args.platform)
     target = Path(args.target or os.getcwd()).resolve()
     rows = {row["id"]: row for row in compatibility_rows(selected)}
     result: dict[str, Any] = {}
     unhealthy = False
+    firing_counts, firing_logs = hook_firing_counts(target)
     for agent_id in selected:
         agent = rows[agent_id]
         instructions, warnings = inspect_instructions(agent_id, agent, target)
@@ -5056,9 +5107,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     "Use cautious safety unless this expanded tool surface is deliberately trusted.",
                 )
             )
+        hook_firings, firing_warnings = hook_firing_report(target, hooks, firing_counts, firing_logs)
+        warnings.extend(firing_warnings)
         selected_capabilities = {**global_installation.get("capabilities", {}), **installation.get("capabilities", {})}
         effect_records = {"project": installation.get("effects", {}), "user": global_installation.get("effects", {})}
-        result[agent_id] = {**capabilities, "safety": safety, "warnings": warnings,
+        result[agent_id] = {**capabilities, "safety": safety, "warnings": warnings, "hook_firings": hook_firings,
                             "effects": {**effect_records["user"], **effect_records["project"]},
                             "effect_records": effect_records, "selected_capabilities": selected_capabilities,
                             "memory_startup": {"selected": bool(selected_capabilities.get("memory_startup")),
@@ -5087,6 +5140,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     f"    {source['scope']:<7} {source['managed_status']:<9} core={source['generated_core']} "
                     f"tokens={source['tokens']} sha256={fingerprint} path={source['path']}"
                 )
+            firings = capabilities["hook_firings"]
+            shown = ", ".join(f"{name}={count}" for name, count in firings["counts"].items()) or "none"
+            print(f"  hook firings ({firings['window_days']} days): {shown}")
             for warning in capabilities["warnings"]:
                 suffix = f" Fix: {warning['recommendation']}" if warning["recommendation"] else ""
                 print(f"  WARNING [{warning['code']}] {warning['message']}{suffix}")
@@ -7912,9 +7968,54 @@ def cmd_memory_startup_hook(args: argparse.Namespace) -> int:
             raise ValueError("Invalid startup report")
         if context:
             print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context[:2000]}}))
+            record_hook_firing("memory-startup", event="SessionStart", outcome="added-context")
     except Exception:
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "Local memory unavailable or timed out; session can continue with manual recall."}}))
     return 0
+
+
+HOOK_LOG_NAME = "hook-events.jsonl"
+HOOK_LOG_MAX_BYTES = 64 * 1024
+HOOK_LOG_WINDOW_DAYS = 30
+
+
+def record_hook_firing(hook: str, payload: str = "", *, event: str = "", outcome: str) -> None:
+    """Append one line when a shipped hook acts, so doctor can name hooks that stopped firing.
+
+    The line holds only the time, hook, native event and outcome: never prompt text, paths or
+    secrets. Only an installed runtime logs (beside itself, in <root>/.agentsmith/). The log
+    keeps its newest half once it reaches HOOK_LOG_MAX_BYTES. Any failure is swallowed, because
+    a hook must never fail because its log could not be written.
+    """
+    try:
+        if ROOT.name != ".agentsmith":
+            return
+        if not event:
+            try:
+                data = json.loads(payload) if payload else {}
+            except ValueError:
+                data = {}
+            name = data.get("hook_event_name") if isinstance(data, dict) else None
+            event = name if isinstance(name, str) and re.fullmatch(r"[A-Za-z]{1,40}", name) else "unknown"
+        line = json.dumps({
+            "ts": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "hook": hook, "event": event, "outcome": outcome,
+        }).encode("utf-8") + b"\n"
+        path = ROOT / HOOK_LOG_NAME
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags, 0o600)
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                return
+            os.write(descriptor, line)
+            size = os.fstat(descriptor).st_size
+        finally:
+            os.close(descriptor)
+        if size > HOOK_LOG_MAX_BYTES:
+            tail = path.read_bytes()[-(HOOK_LOG_MAX_BYTES // 2):]
+            atomic_write_bytes(path, tail[tail.find(b"\n") + 1:], 0o600)
+    except Exception:
+        return
 
 
 def cmd_hook(args: argparse.Namespace) -> int:
@@ -7922,15 +8023,21 @@ def cmd_hook(args: argparse.Namespace) -> int:
         return cmd_memory_startup_hook(args)
     payload = sys.stdin.read()
     if args.hook_name == "git-pre-commit":
-        return cmd_secret_scan(argparse.Namespace(target=os.getcwd()))
+        result = cmd_secret_scan(argparse.Namespace(target=os.getcwd()))
+        if result:
+            record_hook_firing("git-pre-commit", event="pre-commit", outcome="blocked")
+        return result
     if args.hook_name == "handoff-on-keyword" and re.search(r"(?i)\b(wrap up|handoff|reset context)\b", payload):
         print(json.dumps({"additionalContext": "Before ending, create durable handoff memory with `agentsmith handoff`."}))
+        record_hook_firing(args.hook_name, payload, outcome="nudged")
     elif args.hook_name == "context-budget-nudge":
         cue = context_budget_nudge(payload)
         if cue is not None:
             print(json.dumps(cue))
+            record_hook_firing(args.hook_name, payload, outcome="blocked")
     elif args.hook_name == "ui-design-reminder" and re.search(r"(?i)\.(css|scss|tsx|jsx|vue|svelte|html)", payload):
         print(json.dumps({"additionalContext": "Consult DESIGN.md before changing user-interface files, if it exists."}))
+        record_hook_firing(args.hook_name, payload, outcome="nudged")
     return 0  # hooks fail open by design
 
 

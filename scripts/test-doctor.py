@@ -7,6 +7,7 @@ import json
 import hashlib
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -526,6 +527,125 @@ class DoctorTests(unittest.TestCase):
         skills = json.loads(strict.stdout)["claude"]["skills"]
         self.assertEqual(skills["adapter_diverged_names"], ["handoff"])
 
+
+
+class HookFiringLogTests(unittest.TestCase):
+    """Every shipped hook records when it acts, so doctor can name hooks that stopped firing."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory(prefix="agentsmith hook log ")
+        self.root = Path(self.temporary.name)
+        self.env = os.environ.copy()
+        home = self.root / "home"
+        self.env.update({"HOME": str(home), "USERPROFILE": str(home), "CODEX_HOME": str(home / ".codex")})
+        for name in ("PI_CODING_AGENT_DIR", "XDG_CONFIG_HOME", "HANDOFF_PCT_THRESHOLD"):
+            self.env.pop(name, None)
+        self.project = self.root / "project"
+        self.project.mkdir()
+        installed = subprocess.run(
+            [sys.executable, str(CORE), "install", "--agent", "claude", "--target", str(self.project),
+             "--profile", "software-dev", "--with-handoff-hooks"],
+            cwd=ROOT, env=self.env, text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        self.runtime = self.project / ".agentsmith" / "agentsmith.py"
+        self.log = self.project / ".agentsmith" / "hook-events.jsonl"
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def hook(self, name: str, payload: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(self.runtime), "hook", name], input=payload, cwd=self.project,
+            env=self.env, text=True, capture_output=True, check=False,
+        )
+
+    def events(self) -> list[dict]:
+        if not self.log.is_file():
+            return []
+        return [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
+
+    def test_a_firing_hook_appends_one_line_without_prompt_text(self) -> None:
+        quiet = self.hook("handoff-on-keyword", json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": "hello"}))
+        self.assertEqual(quiet.returncode, 0)
+        self.assertEqual(self.events(), [], "a hook that did nothing must not log")
+        secret_prompt = "please wrap up now, token sk-do-not-log"
+        fired = self.hook("handoff-on-keyword", json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": secret_prompt}))
+        self.assertEqual(fired.returncode, 0)
+        self.assertIn("agentsmith handoff", fired.stdout)
+        [event] = self.events()
+        self.assertEqual(set(event), {"ts", "hook", "event", "outcome"})
+        self.assertEqual((event["hook"], event["event"], event["outcome"]), ("handoff-on-keyword", "UserPromptSubmit", "nudged"))
+        self.assertNotIn("wrap up", self.log.read_text(encoding="utf-8"))
+        self.assertNotIn("sk-do-not-log", self.log.read_text(encoding="utf-8"))
+
+    def test_logging_failure_never_breaks_the_hook(self) -> None:
+        self.log.mkdir()
+        fired = self.hook("ui-design-reminder", json.dumps({"hook_event_name": "PreToolUse", "file_path": "a.tsx"}))
+        self.assertEqual(fired.returncode, 0, fired.stderr)
+        self.assertIn("DESIGN.md", fired.stdout)
+        self.assertEqual(fired.stderr, "")
+
+    def test_log_stays_bounded(self) -> None:
+        line = json.dumps({"ts": "2026-01-01T00:00:00Z", "hook": "ui-design-reminder", "event": "PreToolUse", "outcome": "nudged"})
+        self.log.write_text((line + "\n") * 4000, encoding="utf-8")
+        self.hook("ui-design-reminder", json.dumps({"hook_event_name": "PreToolUse", "file_path": "a.css"}))
+        core = load_core()
+        self.assertLessEqual(self.log.stat().st_size, core.HOOK_LOG_MAX_BYTES)
+        events = self.events()
+        self.assertEqual(events[-1]["hook"], "ui-design-reminder")
+        self.assertNotEqual(events[-1]["ts"], "2026-01-01T00:00:00Z")
+
+    def test_doctor_counts_firings_and_names_hooks_unused_for_30_days(self) -> None:
+        old = "2026-01-01T00:00:00Z"
+        recent = dt_now_iso()
+        self.log.write_text(
+            json.dumps({"ts": old, "hook": "context-budget-nudge", "event": "Stop", "outcome": "blocked"}) + "\n"
+            + json.dumps({"ts": recent, "hook": "handoff-on-keyword", "event": "UserPromptSubmit", "outcome": "nudged"}) + "\n",
+            encoding="utf-8",
+        )
+        # Pretend the install is older than the window, so silence means the hook is not firing.
+        state = self.project / ".agentsmith" / "state.json"
+        os.utime(state, (0, 0))
+        result = subprocess.run(
+            [sys.executable, str(CORE), "doctor", "--agent", "claude", "--target", str(self.project), "--json"],
+            cwd=ROOT, env=self.env, text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        firings = json.loads(result.stdout)["claude"]["hook_firings"]
+        self.assertEqual(firings["window_days"], 30)
+        self.assertEqual(firings["counts"], {"handoff-on-keyword": 1})
+        self.assertEqual(firings["unused"], ["context-budget-nudge"])
+        codes = {warning["code"] for warning in json.loads(result.stdout)["claude"]["warnings"]}
+        self.assertIn("hook-unused-30-days", codes)
+        text = subprocess.run(
+            [sys.executable, str(CORE), "doctor", "--agent", "claude", "--target", str(self.project)],
+            cwd=ROOT, env=self.env, text=True, capture_output=True, check=False,
+        ).stdout
+        self.assertIn("hook firings (30 days): handoff-on-keyword=1", text)
+
+    @unittest.skipIf(os.name == "nt" or not shutil.which("bash") or not shutil.which("git"), "POSIX Git hook")
+    def test_shell_git_hook_records_a_block(self) -> None:
+        subprocess.run(["git", "-C", str(self.project), "init", "-q", "-b", "master"], check=True)
+        subprocess.run(["git", "-C", str(self.project), "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                        "commit", "-q", "--allow-empty", "--no-verify", "-m", "chore: start"], check=True)
+        blocked = subprocess.run(
+            ["bash", str(ROOT / "hooks" / "git" / "protect-main.sh")], cwd=self.project,
+            env=self.env, text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(blocked.returncode, 1)
+        [event] = self.events()
+        self.assertEqual((event["hook"], event["event"], event["outcome"]), ("protect-main", "pre-commit", "blocked"))
+        message = self.root / "message"
+        message.write_text("bad subject\n", encoding="utf-8")
+        subprocess.run(["bash", str(ROOT / "hooks" / "git" / "conventional-commit.sh"), str(message)],
+                       cwd=self.project, env=self.env, capture_output=True, check=False)
+        self.assertEqual([item["hook"] for item in self.events()], ["protect-main", "conventional-commit"])
+
+
+def dt_now_iso() -> str:
+    import datetime
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def load_core():
