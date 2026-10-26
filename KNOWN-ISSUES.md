@@ -842,6 +842,13 @@ discovery rule that doctor now uses, so the two commands can disagree about an a
 `project_doc_max_bytes` cap (default 32 KiB), so a long `AGENTS.md` that Codex truncates is
 reported as fully loaded.
 
+### DOCTOR: Claude Code's "Project instructions" setting is not modelled (open)
+
+2026-10-26 — doctor models Claude Code's default, `claude-md-or-agents-md`, and follows `@path`
+imports. With `claude-md-and-agents-md`, `claude-md` or `managed-only` (set under
+`pluginConfigs` for `cc-plugin-agents-md@builtin`), Claude loads a different set of files than
+doctor reports.
+
 ### DOCTOR: an output-rewriting hook does not fail `--strict` (open, by design for now)
 
 2026-10-26 — `output-rewriting-hook` (for example `rtk hook claude`) stays a warning under

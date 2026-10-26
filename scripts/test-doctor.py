@@ -214,7 +214,8 @@ class DoctorTests(unittest.TestCase):
         self.assertIn((inner / "CLAUDE.md").resolve(), loaded)
         message = next(w["message"] for w in agent["warnings"] if w["code"] == "duplicate-managed-core")
         self.assertIn("Claude Code", message)
-        self.assertIn(str((outer / "CLAUDE.md").resolve()), message)
+        # The project CLAUDE.md imports AGENTS.md, so the outer AGENTS.md is the copy that loads.
+        self.assertIn(str((outer / "AGENTS.md").resolve()), message)
         self.assertNotIn("legacy-managed-block", self.warning_codes(agent), "both copies belong to a current install")
         # Codex reads from the Git root down, so the outer copy is outside its chain.
         _, codex_payload = self.doctor(inner, "codex")
@@ -248,6 +249,48 @@ class DoctorTests(unittest.TestCase):
         _, quiet = self.doctor(repo, "claude")
         self.assertNotIn("legacy-managed-block", self.warning_codes(quiet["claude"]))
         self.assertNotIn(str(legacy.resolve()), quiet["claude"]["instructions"]["loaded_files"])
+
+    def test_claude_import_only_rules_count_as_loaded(self) -> None:
+        # A project CLAUDE.md now only imports AGENTS.md; the imported rules must count as loaded.
+        outer = self.root / "import outer"
+        inner = outer / "inner"
+        self.assertEqual(self.install(outer, "--agent", "claude", "--profile", "software-dev", "--assemble-only").returncode, 0)
+        self.assertIn("@AGENTS.md", (outer / "CLAUDE.md").read_text(encoding="utf-8"))
+        installed = self.install(inner, "--agent", "claude", "--profile", "software-dev", "--profile-only", "--assemble-only")
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        subprocess.run(["git", "-C", str(inner), "init", "-q"], check=True)
+        _, payload = self.doctor(inner, "claude")
+        agent = payload["claude"]
+        self.assertIn(str((outer / "AGENTS.md").resolve()), agent["instructions"]["loaded_files"])
+        self.assertNotIn("profile-only-core-missing", self.warning_codes(agent))
+        self.assertNotIn("duplicate-managed-core", self.warning_codes(agent), "one imported core is one core")
+
+    def test_claude_imports_follow_the_documented_rules(self) -> None:
+        project = self.root / "imports"
+        (project / "docs").mkdir(parents=True)
+        home = Path(self.env["HOME"])
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "personal.md").write_text("Personal.\n", encoding="utf-8")
+        (project / "CLAUDE.md").write_text(
+            "See @docs/a.md and @~/personal.md.\n"
+            "Literal `@docs/span.md` stays text.\n"
+            "```\n@docs/fenced.md\n```\n"
+            "Mail me at someone@docs/mail.md.\n",
+            encoding="utf-8",
+        )
+        chain = ["a", "b", "c", "d", "e", "f"]
+        for name, following in zip(chain, chain[1:] + [None]):
+            body = f"Rule {name}.\n" + (f"@{following}.md\n" if following else "")
+            (project / "docs" / f"{name}.md").write_text(body, encoding="utf-8")
+        for name in ("span", "fenced", "mail"):
+            (project / "docs" / f"{name}.md").write_text("never loaded\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(project), "init", "-q"], check=True)
+        _, payload = self.doctor(project, "claude")
+        loaded = {Path(path).name for path in payload["claude"]["instructions"]["loaded_files"]}
+        # Relative to the importing file, ~ allowed, four hops deep, code spans and fences skipped.
+        self.assertTrue({"CLAUDE.md", "a.md", "b.md", "c.md", "d.md", "personal.md"} <= loaded, loaded)
+        self.assertNotIn("e.md", loaded, "a fifth hop is beyond the documented depth")
+        self.assertFalse({"span.md", "fenced.md", "mail.md"} & loaded, loaded)
 
     def test_codex_override_file_replaces_agents_md(self) -> None:
         repo = self.root / "override repo"

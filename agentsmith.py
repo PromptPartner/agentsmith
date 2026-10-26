@@ -5094,6 +5094,8 @@ def loaded_rule_files(agent_id: str, target: Path) -> list[Path] | None:
     - Codex reads $CODEX_HOME/AGENTS.override.md, else $CODEX_HOME/AGENTS.md, then one file per
       folder from the Git root down to the working directory: AGENTS.override.md, else AGENTS.md.
       So ~/AGENTS.md is outside its chain for a repository below home.
+    Claude Code also loads every file these import with `@path` (with_claude_imports). This models
+    its default "Project instructions" setting, claude-md-or-agents-md.
     Other clients return None and keep the registry-declared chain.
     """
     resolved = target.resolve()
@@ -5106,7 +5108,7 @@ def loaded_rule_files(agent_id: str, target: Path) -> list[Path] | None:
             return [path for path in dict.fromkeys(files) if path.is_file() and path != user]
 
         project = found(("CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md"))
-        return ([user] if user.is_file() else []) + (project or found(("AGENTS.md", ".claude/AGENTS.md")))
+        return with_claude_imports(([user] if user.is_file() else []) + (project or found(("AGENTS.md", ".claude/AGENTS.md"))))
     if agent_id == "codex":
         loaded = [path for path in (codex_home() / "AGENTS.override.md", codex_home() / "AGENTS.md") if path.is_file()][:1]
         root = doctor_project_root(resolved)
@@ -5117,6 +5119,62 @@ def loaded_rule_files(agent_id: str, target: Path) -> list[Path] | None:
             loaded += [path for path in (folder / "AGENTS.override.md", folder / "AGENTS.md") if path.is_file()][:1]
         return [path.resolve() for path in loaded]
     return None
+
+
+CLAUDE_IMPORT_DEPTH = 4
+CLAUDE_IMPORT = re.compile(r"(?:^|(?<=\s))@((?:\\ |[^\s`\"'])+)")
+
+
+def claude_imports(path: Path) -> list[Path]:
+    """The files one instruction file imports with `@path`, per code.claude.com/docs/en/memory.
+
+    Relative paths resolve from the importing file, `~/` from home, absolute paths as given; a
+    backslash escapes a space; quoted paths, Markdown code spans and fenced code blocks are not
+    imports. Only existing files count.
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    found: list[Path] = []
+    fence = ""
+    for line in text.splitlines():
+        marker = re.match(r"\s*(`{3,}|~{3,})", line)
+        if marker:
+            fence = "" if fence and marker.group(1).startswith(fence) else (fence or marker.group(1)[:3])
+            continue
+        if fence:
+            continue
+        for match in CLAUDE_IMPORT.finditer(re.sub(r"(`+).*?\1", "", line)):
+            raw = match.group(1).replace("\\ ", " ")
+            for candidate in dict.fromkeys((raw, raw.rstrip(".,;:!?)"))):
+                if candidate.startswith("~/"):
+                    resolved = home_dir() / candidate[2:]
+                elif Path(candidate).is_absolute():
+                    resolved = Path(candidate)
+                else:
+                    resolved = path.parent / candidate
+                if resolved.is_file():
+                    found.append(resolved.resolve())
+                    break
+    return found
+
+
+def with_claude_imports(files: list[Path]) -> list[Path]:
+    """Add what each file imports, recursively and at most CLAUDE_IMPORT_DEPTH hops, once each."""
+    result: list[Path] = []
+
+    def visit(path: Path, depth: int) -> None:
+        if path in result:
+            return
+        result.append(path)
+        if depth < CLAUDE_IMPORT_DEPTH:
+            for imported in claude_imports(path):
+                visit(imported, depth + 1)
+
+    for path in files:
+        visit(path, 0)
+    return result
 
 
 def claude_plugin_enabled(plugin: str, target: Path) -> bool:
@@ -5180,7 +5238,14 @@ def inspect_instructions(agent_id: str, agent: dict[str, Any], target: Path) -> 
         )
     loaded = loaded_rule_files(agent_id, target)
     loaded_records = [instruction_source(path, "loaded") for path in loaded] if loaded is not None else existing
-    full_cores = [source for source in loaded_records if source["generated_core"] is True]
+    own_text = {
+        source["path"]: Path(source["path"]).read_text(encoding="utf-8", errors="replace")
+        for source in loaded_records if source["exists"]
+    }
+    # A file carries the core only if its own text holds the core sections: an import-only
+    # CLAUDE.md says core=true, but the AGENTS.md it imports is the copy that loads (and counts).
+    full_cores = [source for source in loaded_records if source["generated_core"] is True
+                  and CORE_SECTION_MARKER.search(own_text.get(source["path"], ""))]
     duplicate_tokens = max(0, sum(source["core_tokens"] for source in full_cores) - max(
         (source["core_tokens"] for source in full_cores), default=0
     ))
@@ -5281,7 +5346,7 @@ def inspect_instructions(agent_id: str, agent: dict[str, Any], target: Path) -> 
         "state": state,
         "path": path,
         "sources": sources,
-        "combined_tokens": sum(source["tokens"] for source in loaded_records if source["exists"]),
+        "combined_tokens": sum(max(1, len(text) // 4) for text in own_text.values()),
         "duplicate_tokens": duplicate_tokens,
         "loaded_files": [source["path"] for source in loaded_records if source["exists"]],
     }, warnings
