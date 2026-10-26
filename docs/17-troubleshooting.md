@@ -204,6 +204,7 @@ cannot be quoted as the shipped behaviour.
 | `stale-worktrees` | Git still lists worktrees whose folders are gone (`prunable`). | Check nothing unmerged lives only there, then `git worktree prune`. |
 | `many-worktrees` | More than 10 linked worktrees. | Remove worktrees of merged or abandoned work. |
 | `low-disk-space` | Less than 5 GiB free on the target's disk. | Free space before long runs. |
+| `profile-only-core-missing` | The project was installed with `--profile-only`, but the tool loads no file with the named core sections, so the consent, secrets and identity rules are absent. | Install the core at user level (`--global`), or reinstall without `--profile-only`. |
 | `hook-unused-30-days` | An installed hook did not fire in 30 days ([firing log](../hooks/README.md#firing-log--track-every-workaround-delete-it-when-it-stops-firing)). | Advisory: consider removing it; a safety gate may rightly never block. |
 
 **"`agentsmith evaluate` refuses to call the client."** Real model calls require all three pieces:

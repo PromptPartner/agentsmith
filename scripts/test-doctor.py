@@ -398,6 +398,21 @@ class DoctorTests(unittest.TestCase):
                 low = core.workspace_findings(repo)
         self.assertIn("low-disk-space", {item["code"] for item in low})
 
+    def test_profile_only_install_names_the_core_sections_no_tool_loads(self) -> None:
+        project = self.root / "profile only"
+        installed = self.install(project, "--agent", "codex", "--profile", "software-dev", "--profile-only", "--assemble-only")
+        self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
+        _, alone = self.doctor(project, "codex")
+        warning = next(w for w in alone["codex"]["warnings"] if w["code"] == "profile-only-core-missing")
+        sections = load_core().core_section_names()
+        self.assertTrue(sections)
+        for name in sections:
+            self.assertIn(name, warning["message"])
+        global_install = self.run_core("install", "--agent", "codex", "--global", "--profile", "general-admin", "--assemble-only")
+        self.assertEqual(global_install.returncode, 0, global_install.stdout + global_install.stderr)
+        _, layered = self.doctor(project, "codex")
+        self.assertNotIn("profile-only-core-missing", self.warning_codes(layered["codex"]))
+
     def test_trusted_native_install_reports_actual_owned_surfaces(self) -> None:
         project = self.root / "owned project ü"
         project.mkdir()

@@ -4529,6 +4529,19 @@ def claude_plugin_enabled(plugin: str, target: Path) -> bool:
     return any(value for key, value in resolved.items() if key.split("@", 1)[0] == plugin)
 
 
+CORE_SECTION_MARKER = re.compile(r"<!-- CORE · ([^·]+?) ·")
+
+
+def core_section_names() -> list[str]:
+    """The core sections this release ships, from each core file's marker; empty in an installed runtime."""
+    names = []
+    for source in sorted((ROOT / "core").glob("*.md")):
+        match = CORE_SECTION_MARKER.search(source.read_text(encoding="utf-8", errors="replace"))
+        if match:
+            names.append(match.group(1).strip())
+    return names
+
+
 def owned_instruction_file(path: Path, project_root: Path) -> bool:
     """True when the file belongs to this project or to a current install.
 
@@ -4592,6 +4605,23 @@ def inspect_instructions(agent_id: str, agent: dict[str, Any], target: Path) -> 
                 "uninstall does not touch it.",
             )
         )
+    project_installation = load_state(target).get("installation")
+    if isinstance(project_installation, dict) and project_installation.get("include_core") is False:
+        present = {
+            name.strip()
+            for source in loaded_records if source["exists"]
+            for name in CORE_SECTION_MARKER.findall(Path(source["path"]).read_text(encoding="utf-8", errors="replace"))
+        }
+        expected = core_section_names()
+        missing = [name for name in expected if name not in present] if expected else ([] if present else ["all"])
+        if missing:
+            warnings.append(doctor_warning(
+                "profile-only-core-missing",
+                f"This project installed profile-only rules, but {tool} loads no file with these core sections: "
+                + ", ".join(missing) + ". The consent, secrets and identity rules live there.",
+                f"Install the core for {tool} at user level (agentsmith install --global), or reinstall "
+                "the project without --profile-only.",
+            ))
     if agent_id == "claude" and not claude_plugin_enabled("superpowers", target):
         for source in loaded_records:
             text = Path(source["path"]).read_text(encoding="utf-8", errors="replace") if source["exists"] else ""
