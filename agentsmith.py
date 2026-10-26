@@ -5150,6 +5150,49 @@ def container_safety_advisory(agent_id: str, state: str, evidence: list[str]) ->
     )
 
 
+def git_text(directory: Path, *arguments: str) -> str | None:
+    """stdout of a read-only Git query, or None when Git is missing or the query fails."""
+    try:
+        result = doctor_git(directory, *arguments)
+    except OSError:
+        return None
+    return result.stdout if result is not None and result.returncode == 0 else None
+
+
+def managed_block_behind_default(target: Path) -> list[dict[str, str]]:
+    """Report a managed block that the default branch has updated while this branch has not."""
+    root_text = git_text(target, "rev-parse", "--show-toplevel")
+    if not root_text:
+        return []
+    root = Path(root_text.strip())
+    default = (git_text(root, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD") or "").strip()
+    if not default:
+        default = next((name for name in ("main", "master")
+                        if git_text(root, "rev-parse", "--verify", "--quiet", f"refs/heads/{name}") is not None), "")
+    base = (git_text(root, "merge-base", "HEAD", default) or "").strip() if default else ""
+    if not base:
+        return []
+
+    def block(text: str | None) -> str:
+        try:
+            return managed_block(text) if text else ""
+        except CliError:
+            return ""
+
+    findings = []
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        path = root / name
+        current = block(path.read_text(encoding="utf-8", errors="replace") if path.is_file() else None)
+        newer = block(git_text(root, "show", f"{default}:{name}"))
+        if current and newer and current != newer and current == block(git_text(root, "show", f"{base}:{name}")):
+            findings.append(doctor_warning(
+                "managed-block-behind-default-branch",
+                f"The managed block in {path} is older than the one on {default}; this branch runs outdated rules.",
+                f"Merge or rebase onto {default}, or re-run install, before relying on these rules.",
+            ))
+    return findings
+
+
 def hook_firing_counts(target: Path) -> tuple[dict[str, int], list[str]]:
     """Count hook firings in the last HOOK_LOG_WINDOW_DAYS from the project and user logs."""
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=HOOK_LOG_WINDOW_DAYS)
@@ -5207,6 +5250,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     result: dict[str, Any] = {}
     unhealthy = False
     firing_counts, firing_logs = hook_firing_counts(target)
+    # Findings about the project, not one agent; every agent's report carries them.
+    project_findings = managed_block_behind_default(target)
     for agent_id in selected:
         agent = rows[agent_id]
         instructions, warnings = inspect_instructions(agent_id, agent, target)
@@ -5334,6 +5379,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             )
         hook_firings, firing_warnings = hook_firing_report(target, hooks, firing_counts, firing_logs)
         warnings.extend(firing_warnings)
+        warnings.extend(dict(finding) for finding in project_findings)
         selected_capabilities = {**global_installation.get("capabilities", {}), **installation.get("capabilities", {})}
         effect_records = {"project": installation.get("effects", {}), "user": global_installation.get("effects", {})}
         result[agent_id] = {**capabilities, "safety": safety, "warnings": warnings, "hook_firings": hook_firings,

@@ -198,6 +198,7 @@ cannot be quoted as the shipped behaviour.
 | `output-rewriting-hook` | A pre-tool hook on the shell tool (today: `rtk hook`) rewrites commands, so the agent reads filtered output. It stays a warning under `--strict`: the update's own post-check runs doctor in your environment. | Quote proof from a raw run (`rtk proxy <command>`) or from the verify receipt. |
 | `skill-path-missing` | An installed skill tells the agent to use a script, template or `.harness/` file this install does not have. A skill that names the installed path and the source path needs only one. | Install the profile that ships the file, or adjust the skill. |
 | `superpowers-not-enabled` | A rules file Claude Code loads names `superpowers:*` skills, but `enabledPlugins` (user, project or local settings) does not enable the superpowers plugin. | Enable it with `/plugin`, or know that the rule falls back to doing the step by hand. |
+| `managed-block-behind-default-branch` | The default branch has a newer managed block in `AGENTS.md` or `CLAUDE.md` than this branch, and this branch did not change it. Skipped without Git or a default branch. | Merge or rebase onto the default branch, or re-run install. |
 | `hook-unused-30-days` | An installed hook did not fire in 30 days ([firing log](../hooks/README.md#firing-log--track-every-workaround-delete-it-when-it-stops-firing)). | Advisory: consider removing it; a safety gate may rightly never block. |
 
 **"`agentsmith evaluate` refuses to call the client."** Real model calls require all three pieces:

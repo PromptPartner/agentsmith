@@ -322,6 +322,36 @@ class DoctorTests(unittest.TestCase):
         _, codex = self.doctor(project, "codex")
         self.assertNotIn("superpowers-not-enabled", self.warning_codes(codex["codex"]))
 
+    def git(self, repo: Path, *arguments: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.com", *arguments],
+            check=True, text=True, capture_output=True,
+        ).stdout.strip()
+
+    def test_managed_block_behind_the_default_branch_is_reported(self) -> None:
+        repo = self.root / "behind repo"
+        self.assertEqual(self.install(repo, "--agent", "codex", "--profile", "general-admin", "--assemble-only").returncode, 0)
+        self.git(repo, "init", "-q", "-b", "master")
+        self.git(repo, "add", "AGENTS.md")
+        self.git(repo, "commit", "-q", "--no-verify", "-m", "chore: rules")
+        self.git(repo, "switch", "-q", "-c", "feature")
+        _, same = self.doctor(repo, "codex")
+        self.assertNotIn("managed-block-behind-default-branch", self.warning_codes(same["codex"]))
+        self.git(repo, "switch", "-q", "master")
+        rules = repo / "AGENTS.md"
+        rules.write_text(rules.read_text(encoding="utf-8").replace("<!-- END AGENTSMITH -->", "Newer rule.\n<!-- END AGENTSMITH -->"), encoding="utf-8")
+        self.git(repo, "commit", "-q", "--no-verify", "-am", "chore: newer rules")
+        self.git(repo, "switch", "-q", "feature")
+        _, behind = self.doctor(repo, "codex")
+        warning = next(w for w in behind["codex"]["warnings"] if w["code"] == "managed-block-behind-default-branch")
+        self.assertIn("master", warning["message"])
+        self.assertIn("AGENTS.md", warning["message"])
+        # A branch that changed the block itself is ahead, not behind.
+        rules.write_text(rules.read_text(encoding="utf-8").replace("<!-- END AGENTSMITH -->", "Branch rule.\n<!-- END AGENTSMITH -->"), encoding="utf-8")
+        self.git(repo, "commit", "-q", "--no-verify", "-am", "chore: branch rules")
+        _, diverged = self.doctor(repo, "codex")
+        self.assertNotIn("managed-block-behind-default-branch", self.warning_codes(diverged["codex"]))
+
     def test_trusted_native_install_reports_actual_owned_surfaces(self) -> None:
         project = self.root / "owned project ü"
         project.mkdir()
