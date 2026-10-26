@@ -828,3 +828,8 @@ global selections needs its own design because update replays the record.
   graph validation saw a dirty base (that refusal reports as `graph-changed`). The probe now
   runs in a throwaway repository; a test with a Windows-like verifier left a file in the
   repository before the fix and none after. The dirty-base refusal now names the paths.
+- [x] 2026-10-26 — PR #63 CI, Windows only: the two graph roots stopped overlapping. Each child's
+  start preflight probed the verifier, which on Windows is slow and holds a machine-wide ACL
+  mutex, so sibling b waited for a. The graph now probes the verifier once before dispatch and
+  children keep only the per-role probes. A fixture with a slow, serialised probe lost the
+  overlap before the fix and keeps it after, with exactly one probe per graph.

@@ -126,6 +126,32 @@ class GraphDispatchTests(unittest.TestCase):
                         original_guard()
                     raise AssertionError("production guard accepted unsupported host")
                 controller.require_native_role_sandbox = lambda: None
+                real_verify = controller.sandboxed_verify
+                def timed_verify(command, cwd, timeout, env, **kwargs):
+                    # Log every host verifier probe; optionally make it slow and machine-wide
+                    # serialised, as the Windows AppContainer verifier is.
+                    if Path(cwd).name != "probe":
+                        return real_verify(command, cwd, timeout, env, **kwargs)
+                    import os, time
+                    here = Path(__file__).parent
+                    slow = (here / "slow-verifier-probe").is_file()
+                    began = time.monotonic()
+                    while slow:
+                        try:
+                            os.close(os.open(here / "probe.lock", os.O_CREAT | os.O_EXCL))
+                            break
+                        except FileExistsError:
+                            time.sleep(0.05)
+                    try:
+                        if slow:
+                            time.sleep(5)
+                        return real_verify(command, cwd, timeout, env, **kwargs)
+                    finally:
+                        if slow:
+                            (here / "probe.lock").unlink()
+                        with (here / "preflight.log").open("a", encoding="utf-8") as log:
+                            log.write(f"pid={{os.getpid()}} start={{began}} end={{time.monotonic()}}\\n")
+                controller.sandboxed_verify = timed_verify
                 return controller
             if __name__ == "__main__":
                 early_exit = Path(__file__).parent / "early-exit-a"
@@ -314,6 +340,8 @@ class GraphDispatchTests(unittest.TestCase):
         # Overlap is only observable while a maker still runs when its sibling starts. The 1 s default
         # was shorter than the dispatch gap on a loaded Windows runner, so give each maker 4 s.
         (self.fake_client.parent / "sleep-seconds.txt").write_text("4", encoding="utf-8")
+        # The host verifier probe is slow and serialised on Windows; roots must still overlap.
+        (self.fake_client.parent / "slow-verifier-probe").touch()
         started = self.invoke("start")
         self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
         status = self.invoke("status")
@@ -335,8 +363,13 @@ class GraphDispatchTests(unittest.TestCase):
                 line.split() for line in (self.fake_client.parent / "finishes.log").read_text().splitlines()
             )
         }
-        self.assertLess(max(starts["a"], starts["b"]), min(finishes["a"], finishes["b"]))
-        self.assertGreater(starts["c"], max(finishes["a"], finishes["b"]))
+        preflight = self.fake_client.parent / "preflight.log"
+        timeline = (f"maker starts {starts}; maker finishes {finishes}; verifier probes: "
+                    + (preflight.read_text(encoding="utf-8").strip() if preflight.is_file() else "none"))
+        self.assertLess(max(starts["a"], starts["b"]), min(finishes["a"], finishes["b"]), timeline)
+        self.assertGreater(starts["c"], max(finishes["a"], finishes["b"]), timeline)
+        probes = preflight.read_text(encoding="utf-8").splitlines() if preflight.is_file() else []
+        self.assertEqual(len(probes), 1, "the graph probes the host verifier once: " + timeline)
         self.assertEqual(git(self.repo, "status", "--porcelain"), "")
 
     def test_early_child_exit_retains_live_independent_peer_acceptance(self) -> None:

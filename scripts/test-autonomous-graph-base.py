@@ -242,6 +242,14 @@ class GraphBaseTests(unittest.TestCase):
     def _repo_root(self, path: Path) -> Path:
         return self.repo if path == Path.cwd() else path.resolve()
 
+    def test_graph_child_keeps_role_probes_and_leaves_the_verifier_probe_to_the_graph(self) -> None:
+        checkpoint = self.accepted_predecessor()
+        with mock.patch.object(CONTROLLER, "preflight_sandboxes") as preflight:
+            self.assertEqual(self._start("--graph", self.graph_path, "--effective-base", checkpoint), 0)
+        preflight.assert_called_once()
+        self.assertEqual(preflight.call_args.kwargs, {"verifier": False})
+        self.created_worktrees.append(self.repo.parent / "repo-b")
+
     def test_dependent_run_inherits_pinned_checkpoint_not_manifest_head(self) -> None:
         checkpoint = self.accepted_predecessor()
         self.assertNotEqual(subprocess.run(["git", "cat-file", "-e", f"{self.contract}:src/a/inherited.txt"],

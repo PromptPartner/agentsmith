@@ -668,9 +668,19 @@ def _assert_autonomy_not_paused(contract: dict[str, Any]) -> None:
         raise GraphError(str(exc)) from exc
 
 
+def _preflight_verifier(contract: dict[str, Any]) -> None:
+    controller = _controller()
+    try:
+        controller.preflight_verifier_sandbox()
+    except controller.RunError as exc:
+        raise GraphError(str(exc)) from exc
+
+
 def start_graph(contract: dict[str, Any]) -> dict[str, Any]:
     """Run a new graph locally while children retain budgets and maker/checker ownership."""
     _assert_autonomy_not_paused(contract)
+    # Once per graph, before any child: children skip this host probe so roots start together.
+    _preflight_verifier(contract)
     directory = _graph_directory(contract)
     try:
         directory.mkdir(parents=True, exist_ok=False)

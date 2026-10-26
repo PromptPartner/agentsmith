@@ -1502,11 +1502,12 @@ def role_sandbox_probe(role: str, cwd: Path) -> list[str] | None:
     return None  # native roles are refused on every other host
 
 
-def preflight_sandboxes(repo: Path, manifest: dict[str, Any]) -> None:
+def preflight_sandboxes(repo: Path, manifest: dict[str, Any], *, verifier: bool = True) -> None:
     """Fail before any branch, worktree or model spend when a role or the verifier cannot run
     one command on this host, for example because host policy forbids a nested sandbox.
 
-    This proves the sandbox starts; it does not prove a client's own tool policy."""
+    This proves the sandbox starts; it does not prove a client's own tool policy. A graph
+    probes the verifier once before dispatch and its children skip it (`verifier=False`)."""
     for role in ("maker", "checker"):
         probe = role_sandbox_probe(role, repo)
         if probe is None:
@@ -1520,6 +1521,13 @@ def preflight_sandboxes(repo: Path, manifest: dict[str, Any]) -> None:
             detail = (result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}")
             raise RunError(f"{role} ({runtime}) cannot run a command in the operating-system sandbox "
                            f"on this host: {shown_paths([detail.splitlines()[-1][:300]])}")
+    if verifier:
+        preflight_verifier_sandbox()
+
+
+def preflight_verifier_sandbox() -> None:
+    """The verifier sandbox is a property of the host, not of one run. On Windows the probe is
+    slow and holds a machine-wide ACL mutex, so a graph runs it once, not once per child."""
     # Probe the verifier in a throwaway repository: on Windows it writes its script, request and
     # result files into its working folder and grants that folder's ACLs, and in the shared
     # checkout those files made a parallel graph child see a dirty base.
@@ -2064,7 +2072,9 @@ def start(args: argparse.Namespace) -> int:
     if tracked.returncode:
         raise RunError("run manifest must be committed before start")
     require_native_role_sandbox()
-    preflight_sandboxes(repo, manifest)
+    # A graph child shares its host with siblings that start at the same moment; the graph has
+    # already probed the verifier, and a per-child probe would serialise the roots on Windows.
+    preflight_sandboxes(repo, manifest, verifier=not args.graph)
     name = str(manifest["run_id"])
     path = state_path(repo, name)
     if path.exists():
