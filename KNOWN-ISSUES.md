@@ -839,3 +839,16 @@ global selections needs its own design because update replays the record.
   shadow state and could write the live helper during `update plan` when its bytes changed. The
   translation now also maps the escaped spelling. `test_legacy_claude_global_foreign_mcp_survives_plan_apply_and_health`
   failed after the preflight change and passes with this fix.
+- [x] 2026-10-26 — Same review, two races after the preflight: (1) a `.agentsmith` link to HOME
+  created after the preflight let project runtime files land in HOME, because the write guard
+  accepted any install root; (2) swapping a folder for a link between the guard and file creation
+  wrote about 450 KB of runtime outside the target. The guard now holds each path to the root that
+  spells it, and on POSIX every guarded write creates its temporary file with `O_EXCL | O_NOFOLLOW`
+  inside a folder opened component by component with `O_NOFOLLOW`, then renames it within that
+  folder. Both reproducers and two in-process tests (`RaceTests`) failed before and pass after.
+- [ ] 2026-10-26 — Residual race risk after the fix above (local attacker who can swap files during
+  an install): on Windows, which has no directory descriptors, guarded writes still check paths and
+  then write by path. On every platform, skill directory replacement (`rmtree` and `copytree`) and
+  the `chmod` that makes the launcher and the Git hook executable still act by path after the
+  check. The preflight and the path guard still refuse anything that is already a link when they
+  look.

@@ -337,31 +337,87 @@ def resolve_central_runtime(runtime_record: dict[str, Any]) -> Path:
     return Path(command)
 
 
-# Roots an install may write in. While set, every low-level writer refuses a destination that
-# resolves outside them: defence in depth behind the install preflight.
-WRITE_ROOTS: tuple[Path, ...] | None = None
+# Roots an install may write in, as (spelled, resolved) pairs. While set, every low-level writer
+# refuses a destination that leaves its own root: defence in depth behind the install preflight.
+WRITE_ROOTS: tuple[tuple[Path, Path], ...] | None = None
 
 
 @contextlib.contextmanager
 def contained_writes(roots: Iterable[Path]) -> Iterator[None]:
     global WRITE_ROOTS
     prior = WRITE_ROOTS
-    WRITE_ROOTS = tuple(dict.fromkeys(root.resolve() for root in roots))
+    pairs = [(root, root.resolve()) for root in roots]
+    # A nested call (the Git hook writer) extends the active roots with its spelled forms.
+    for spelled, resolved in prior or ():
+        pairs.append((spelled, resolved))
+    WRITE_ROOTS = tuple(dict.fromkeys(pairs))
     try:
         yield
     finally:
         WRITE_ROOTS = prior
 
 
+def write_root(path: Path) -> Path | None:
+    """The resolved root that spells `path` most specifically, or None when no active root does.
+
+    Each write must stay in its own root: a project file that a link turns into a HOME file
+    stays refused, although HOME is also a root of the same install."""
+    best: tuple[int, Path] | None = None
+    for spelled, resolved in WRITE_ROOTS or ():
+        for base in (spelled, resolved):
+            if path == base or path.is_relative_to(base):
+                if best is None or len(base.parts) > best[0]:
+                    best = (len(base.parts), resolved)
+    return best[1] if best else None
+
+
 def guard_write(path: Path) -> Path:
-    """Refuse a write whose destination resolves, through any link, outside the active roots."""
+    """Refuse a write whose destination resolves, through any link, outside its root."""
     if WRITE_ROOTS is not None:
         resolved = path.resolve(strict=False)
-        if not any(resolved == root or resolved.is_relative_to(root) for root in WRITE_ROOTS):
+        own = write_root(path)
+        allowed = [own] if own is not None else [resolved_root for _, resolved_root in WRITE_ROOTS]
+        if not any(resolved == root or resolved.is_relative_to(root) for root in allowed):
             raise CliError(
-                f"Refused to write {path}: a symbolic link makes it resolve outside the install roots ({resolved})"
+                f"Refused to write {path}: a symbolic link makes it resolve outside its install root ({resolved})"
             )
     return path
+
+
+def contained_directory_descriptor(directory: Path) -> int | None:
+    """Open `directory` (created if absent) through descriptors that never follow a link.
+
+    The walk starts at the directory's resolved install root and opens each resolved component
+    with O_NOFOLLOW, so a component swapped for a link after the check fails instead of being
+    followed. Returns None where the platform lacks directory descriptors (Windows) or no install
+    roots are active; callers then fall back to path-based writes."""
+    no_follow, directory_flag = getattr(os, "O_NOFOLLOW", 0), getattr(os, "O_DIRECTORY", 0)
+    if WRITE_ROOTS is None or not (no_follow and directory_flag and os.open in os.supports_dir_fd):
+        return None
+    resolved = directory.resolve(strict=False)
+    root = write_root(directory)
+    roots = [root] if root is not None else [resolved_root for _, resolved_root in WRITE_ROOTS]
+    root = next((candidate for candidate in roots if resolved == candidate or resolved.is_relative_to(candidate)), None)
+    if root is None:
+        raise CliError(f"Refused to write in {directory}: it resolves outside its install root ({resolved})")
+    flags = os.O_RDONLY | directory_flag | no_follow
+    root.mkdir(parents=True, exist_ok=True)  # a configured root such as CODEX_HOME may not exist yet
+    descriptor = os.open(root, os.O_RDONLY | directory_flag)
+    try:
+        for part in resolved.relative_to(root).parts:
+            try:
+                child = os.open(part, flags, dir_fd=descriptor)
+            except FileNotFoundError:
+                os.mkdir(part, 0o777, dir_fd=descriptor)
+                child = os.open(part, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+    except OSError as exc:
+        os.close(descriptor)
+        raise CliError(
+            f"Refused to write in {directory}: a folder on the way changed into a link or a file ({exc.strerror})"
+        ) from exc
+    return descriptor
 
 
 def contained_link_problem(root: Path, path: Path) -> str | None:
@@ -409,7 +465,11 @@ def contained_copy(source: Path, destination: Path) -> None:
 
 
 def contained_mkdir(path: Path) -> None:
-    guard_write(path).mkdir(parents=True, exist_ok=True)
+    descriptor = contained_directory_descriptor(guard_write(path))
+    if descriptor is None:
+        path.mkdir(parents=True, exist_ok=True)
+    else:
+        os.close(descriptor)
 
 
 def backup(path: Path) -> Path | None:
@@ -422,15 +482,20 @@ def backup(path: Path) -> Path | None:
     while os.path.lexists(candidate):
         counter += 1
         candidate = path.with_name(f"{path.name}.bak.{stamp}.{counter}")
-    shutil.copy2(path, guard_write(candidate))
+    if WRITE_ROOTS is None:
+        shutil.copy2(path, candidate)
+    else:
+        atomic_write_bytes(candidate, path.read_bytes(), stat.S_IMODE(path.stat().st_mode))
     return candidate
 
 
 def atomic_write(path: Path, content: str) -> None:
     guard_write(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
     newline = "\r\n" if path.exists() and "\r\n" in path.read_text(encoding="utf-8", errors="replace") else "\n"
     content = content.replace("\r\n", "\n").replace("\n", newline)
+    if WRITE_ROOTS is not None and write_through_descriptor(path, content.encode("utf-8"), None):
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", newline="", dir=path.parent, delete=False) as handle:
         handle.write(content)
         temp = Path(handle.name)
@@ -453,8 +518,40 @@ def replace_with_retry(source: Path, destination: Path) -> None:
             time.sleep(delays[attempt])
 
 
+def write_through_descriptor(path: Path, content: bytes, mode: int | None) -> bool:
+    """Atomically replace `path` inside a link-free verified folder; False where unsupported.
+
+    The temporary file is created with O_EXCL | O_NOFOLLOW and renamed within the same directory
+    descriptor, so neither the folder nor the final name can redirect the write."""
+    descriptor = contained_directory_descriptor(path.parent)
+    if descriptor is None:
+        return False
+    temporary = f".{path.name}.{secrets.token_hex(8)}.tmp"
+    try:
+        handle_descriptor = os.open(
+            temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=descriptor
+        )
+        try:
+            with os.fdopen(handle_descriptor, "wb") as handle:
+                handle.write(content)
+                handle.flush()
+                if mode is not None:
+                    os.fchmod(handle.fileno(), mode)
+                os.fsync(handle.fileno())
+            os.replace(temporary, path.name, src_dir_fd=descriptor, dst_dir_fd=descriptor)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(temporary, dir_fd=descriptor)
+            raise
+    finally:
+        os.close(descriptor)
+    return True
+
+
 def atomic_write_bytes(path: Path, content: bytes, mode: int | None = None) -> None:
     guard_write(path)
+    if WRITE_ROOTS is not None and write_through_descriptor(path, content, mode):
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("wb", dir=path.parent, delete=False) as handle:
         handle.write(content)
@@ -4207,7 +4304,7 @@ def install_git_hooks(target: Path, runtime: Path, *, dry_run: bool) -> None:
         return
     path = hooks / "pre-commit"
     # Git chooses the hooks folder; a linked worktree keeps it in the main checkout, outside the target.
-    with contained_writes([*(WRITE_ROOTS or ()), hooks_root]):
+    with contained_writes([hooks_root]):
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists() and " hook git-pre-commit" not in path.read_text(encoding="utf-8", errors="replace"):
             warn(f"foreign pre-commit hook preserved; add Agentsmith manually: {path}")

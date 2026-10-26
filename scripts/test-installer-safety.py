@@ -8,8 +8,10 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import importlib.util
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -472,6 +474,70 @@ class ProjectProfileTests(InstallerFixture):
         listed = self.run_core("profiles", "list", "--target", str(project), "--json")
         self.assert_ok(listed)
         self.assertIn("project:house", [item["name"] for item in json.loads(listed.stdout)["profiles"]])
+
+
+class RaceTests(InstallerFixture):
+    """A link swapped in after a check must not redirect a write (review reproducers, in process)."""
+
+    def load_core(self):
+        spec = importlib.util.spec_from_file_location("agentsmith_race_probe", CORE)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def install_in_process(self, core, project: Path, *extra: str) -> Exception | None:
+        arguments = ["install", "--target", str(project), "--agent", "claude", "--profile", "general-admin", *extra]
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                mock.patch("sys.stdout", new_callable=lambda: open(os.devnull, "w")), \
+                mock.patch("sys.stderr", new_callable=lambda: open(os.devnull, "w")):
+            try:
+                core.cmd_install(core.parser().parse_args(arguments))
+            except Exception as exc:  # the refusal is the expected outcome
+                return exc
+        return None
+
+    def test_link_to_another_install_root_after_the_preflight_is_refused(self) -> None:
+        core = self.load_core()
+        project = self.root / "project"
+        project.mkdir()
+        real = core.containment_preflight
+
+        def preflight_then_swap(destinations):
+            real(destinations)
+            try:
+                (project / ".agentsmith").symlink_to(self.home, target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symbolic links unavailable: {exc}")
+
+        core.containment_preflight = preflight_then_swap
+        error = self.install_in_process(core, project)
+        self.assertIsInstance(error, core.CliError)
+        self.assertFalse((self.home / "agentsmith.py").exists(), "project runtime was written into HOME")
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and os.open in os.supports_dir_fd, "needs directory descriptors")
+    def test_link_swapped_between_check_and_write_is_not_followed(self) -> None:
+        core = self.load_core()
+        project = self.root / "project"
+        runtime = project / ".agentsmith"
+        runtime.mkdir(parents=True)
+        outside = self.root / "outside"
+        outside.mkdir()
+        real = core.guard_write
+        swapped = []
+
+        def guard_then_swap(path):
+            result = real(path)
+            if path == runtime / "agentsmith.py" and not swapped:
+                swapped.append(True)
+                runtime.rename(project / "saved-agentsmith")
+                runtime.symlink_to(outside, target_is_directory=True)
+            return result
+
+        core.guard_write = guard_then_swap
+        error = self.install_in_process(core, project, "--assemble-only")
+        self.assertTrue(swapped)
+        self.assertIsInstance(error, core.CliError)
+        self.assertEqual(list(outside.iterdir()), [], "a write followed the swapped link")
 
 
 if __name__ == "__main__":
