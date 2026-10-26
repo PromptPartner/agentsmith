@@ -16,13 +16,16 @@ separate human action. If Linear writes are not authorized, the ticket remains a
 until the operator posts it; naming Linear never grants the run a connector.
 
 Run `python3 .agentsmith/autonomous-run.py prepare --run-id <id> --spec docs/specs/<name>.md
---ticket <implementation-ticket>` in an installed consumer project. It uses
+--ticket <implementation-ticket> --maker-model <model> --checker-model <model>` in an installed
+consumer project. It uses
 `.harness/templates/autonomous-run.json`; the source checkout uses `scripts/autonomous-run.py`
 and `templates/autonomous-run.json`. The manifest pins
 the spec hash, ticket, base ref, maker/checker runtime and model, path boundary, verifier, attempt
 cap, wall-clock budget, and git/external-write policy. It must be reviewed and committed before
-`start` will accept it. Both roles require explicit model and effort settings; blank or placeholder
-settings keep the prepared draft non-executable. `scope.resources` optionally names local coordination keys such as
+`start` will accept it. Both roles require explicit model and effort settings. `prepare` refuses to write a
+manifest while a model or effort is blank or a placeholder (`<...>`, `REPLACE-WITH...`,
+`TO-FILL`, `TODO`, `TBD`, `CHANGEME`, `PLACEHOLDER`, `FIXME`) and names each field to fill;
+`start` refuses the same values. `scope.resources` optionally names local coordination keys such as
 `port:3000`, `db:local/test`, or `service:redis`; omit it in an older manifest or use an empty list
 when the run reserves none.
 

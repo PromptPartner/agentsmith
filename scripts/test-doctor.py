@@ -74,7 +74,8 @@ class DoctorTests(unittest.TestCase):
         subprocess.run(["git", "-C", str(project), "init", "-q"], check=True)
         prepared = subprocess.run(
             [sys.executable, str(project / ".agentsmith/autonomous-run.py"), "prepare",
-             "--run-id", "consumer", "--spec", "docs/specs/task.md", "--ticket", "TASK-1"],
+             "--run-id", "consumer", "--spec", "docs/specs/task.md", "--ticket", "TASK-1",
+             "--maker-model", "fixture-model", "--checker-model", "fixture-model"],
             cwd=project, env=self.env, text=True, capture_output=True, check=False,
         )
         self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)

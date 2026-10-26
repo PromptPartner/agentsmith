@@ -655,6 +655,24 @@ def scope_collision(left_scope: Any, right_scope: Any) -> tuple[str, str] | None
     return None
 
 
+# A template or hand-edited draft marks a value the operator still has to choose this way.
+PLACEHOLDER_SETTING = re.compile(
+    r"\A\s*\Z|\A\s*<|replace[-_ ]?with|to[-_ ]?fill|\A\s*(todo|tbd|changeme|placeholder|fixme)\s*\Z",
+    re.IGNORECASE)
+
+
+def unset_role_settings(manifest: dict[str, Any]) -> list[str]:
+    roles = manifest.get("roles") if isinstance(manifest.get("roles"), dict) else {}
+    unset = []
+    for role in ("maker", "checker"):
+        config = roles.get(role) if isinstance(roles.get(role), dict) else {}
+        for key in ("model", "effort"):
+            value = config.get(key)
+            if not isinstance(value, str) or PLACEHOLDER_SETTING.search(value):
+                unset.append(f"roles.{role}.{key}")
+    return unset
+
+
 def validate_manifest(manifest: dict[str, Any], repo: Path) -> tuple[Path, str]:
     required = ["schema_version", "run_id", "spec_path", "implementation_ticket", "base_ref",
                 "roles", "scope", "verify", "limits", "git", "external_writes"]
@@ -679,10 +697,9 @@ def validate_manifest(manifest: dict[str, Any], repo: Path) -> tuple[Path, str]:
         config = manifest["roles"].get(role, {})
         if config.get("runtime") not in {"claude", "codex"}:
             raise RunError(f"roles.{role}.runtime must be claude or codex")
-        for key in ("model", "effort"):
-            value = config.get(key)
-            if not isinstance(value, str) or not value.strip() or value.strip().startswith("<"):
-                raise RunError(f"roles.{role}.{key} must be explicit before execution; draft manifest is non-executable")
+    unset = unset_role_settings(manifest)
+    if unset:
+        raise RunError(f"{', '.join(unset)} must be explicit before execution; draft manifest is non-executable")
     verify_config = manifest["verify"]
     if not isinstance(verify_config, dict) or not isinstance(verify_config.get("command"), str) or not verify_config["command"].strip():
         raise RunError("verify.command must name a required verification command")
@@ -796,13 +813,21 @@ def prepare(args: argparse.Namespace) -> int:
         manifest["roles"]["maker"]["runtime"] = args.maker
     if args.checker:
         manifest["roles"]["checker"]["runtime"] = args.checker
+    if args.maker_model:
+        manifest["roles"]["maker"]["model"] = args.maker_model
+    if args.checker_model:
+        manifest["roles"]["checker"]["model"] = args.checker_model
+    unset = unset_role_settings(manifest)
+    if unset:
+        raise RunError(f"{', '.join(unset)} are blank or placeholders; pass --maker-model and "
+                       "--checker-model, or fill them in the template, before prepare writes a manifest")
     output = Path(args.output or f".harness/runs/{args.run_id}.json")
     output = output if output.is_absolute() else repo / output
     if output.exists() and not args.force:
         raise RunError(f"refusing to overwrite {output}; pass --force deliberately")
     write_json(output, manifest)
     print(f"prepared {output.relative_to(repo) if output.is_relative_to(repo) else output}")
-    print("draft is non-executable until both role models and efforts are explicit; review and commit it before start")
+    print("review the scope, verifier, models and budgets, then commit the manifest before start")
     return 0
 
 
@@ -2095,6 +2120,8 @@ def parser() -> argparse.ArgumentParser:
     prep.add_argument("--ticket", required=True)
     prep.add_argument("--maker", choices=["claude", "codex"])
     prep.add_argument("--checker", choices=["claude", "codex"])
+    prep.add_argument("--maker-model", help="exact model name for the maker role")
+    prep.add_argument("--checker-model", help="exact model name for the checker role")
     prep.add_argument("--template")
     prep.add_argument("--output")
     prep.add_argument("--force", action="store_true")

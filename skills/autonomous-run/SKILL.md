@@ -31,11 +31,11 @@ Use `.agentsmith/autonomous-run.py` in an installed project; the source checkout
 `templates/autonomous-run.json`):
 
 ```text
-python3 .agentsmith/autonomous-run.py prepare --run-id <short-id> --spec docs/specs/<name>.md --ticket <implementation-ticket> --maker codex --checker claude --template .harness/templates/autonomous-run.json
+python3 .agentsmith/autonomous-run.py prepare --run-id <short-id> --spec docs/specs/<name>.md --ticket <implementation-ticket> --maker codex --checker claude --maker-model <model> --checker-model <model> --template .harness/templates/autonomous-run.json
 ```
 
-This creates a non-executable draft until both roles have explicit model and effort settings.
-Review its exact allowed/denied paths, verifier, models, attempt cap,
+`prepare` refuses blank or placeholder models and efforts and names the fields to fill. Ask the
+operator which models to use; never invent one. Review the manifest's exact allowed/denied paths, verifier, models, attempt cap,
 wall-clock limit, budgets, and optional `scope.resources` keys such as `port:3000` or
 `db:local/test`. Resource keys coordinate cooperating local runs; they do not replace operating-
 system port binding or database isolation. Commit the manifest before execution; the controller

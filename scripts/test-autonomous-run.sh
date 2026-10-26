@@ -954,7 +954,7 @@ if (cd "$repo" && invoke "$repo" accept resume paused >../paused-out 2>../paused
   bad 'resume ran while autonomy was paused'
 else ok 'resume refuses while autonomy is paused'; fi
 assert 'paused resume leaves the run interrupted' bash -c "cd '$repo' && python3 '$repo/../fake/controller.py' status paused | grep -q '\"status\": \"interrupted\"'"
-if (cd "$repo" && python3 "$repo/../fake/controller.py" prepare --run-id paused-draft --spec docs/specs/test.md --ticket IMP-2 --template "$repo/../fake/template.json" >../paused-out 2>../paused-err); then
+if (cd "$repo" && python3 "$repo/../fake/controller.py" prepare --run-id paused-draft --spec docs/specs/test.md --ticket IMP-2 --maker-model m --checker-model m --template "$repo/../fake/template.json" >../paused-out 2>../paused-err); then
   bad 'prepare ran while autonomy was paused'
 else ok 'prepare refuses while autonomy is paused'; fi
 assert 'paused prepare writes no manifest' test ! -e "$repo/.harness/runs/paused-draft.json"

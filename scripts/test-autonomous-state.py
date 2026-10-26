@@ -42,7 +42,7 @@ class AutonomousStateTests(unittest.TestCase):
             shutil.copy2(ROOT / "templates/autonomous-run.json", template)
             args = CONTROLLER.parser().parse_args([
                 "prepare", "--run-id", "consumer", "--spec", "docs/specs/task.md",
-                "--ticket", "TASK-1",
+                "--ticket", "TASK-1", "--maker-model", "fixture-model", "--checker-model", "fixture-model",
             ])
             with mock.patch.object(subprocess, "_text_encoding", return_value="cp1252"):
                 self.assertEqual(CONTROLLER.repo_root(repo), repo)
@@ -95,6 +95,48 @@ class AutonomousStateTests(unittest.TestCase):
                     child, directory, 30, dict(os.environ), state, "attempt-1-probe")
             self.assertIsNone(error)
             self.assertEqual(result.stdout, text + "\n")
+
+    def test_prepare_refuses_blank_or_placeholder_models_and_names_the_fields(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith prepare ") as temporary:
+            repo = Path(temporary).resolve()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            template = repo / "template.json"
+            base = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
+            for maker_model in ("", "REPLACE-WITH-MODEL", "<model>", "to-fill", "TODO"):
+                with self.subTest(maker_model=maker_model):
+                    value = json.loads(json.dumps(base))
+                    value["roles"]["maker"]["model"] = maker_model
+                    value["roles"]["checker"]["model"] = ""
+                    template.write_text(json.dumps(value), encoding="utf-8")
+                    args = CONTROLLER.parser().parse_args([
+                        "prepare", "--run-id", "draft", "--spec", "docs/specs/task.md",
+                        "--ticket", "TASK-1", "--template", str(template)])
+                    with mock.patch.object(CONTROLLER.Path, "cwd", return_value=repo):
+                        with self.assertRaisesRegex(
+                                CONTROLLER.RunError,
+                                r"roles\.maker\.model, roles\.checker\.model .*--maker-model"):
+                            CONTROLLER.prepare(args)
+                    self.assertFalse((repo / ".harness/runs/draft.json").exists())
+            args = CONTROLLER.parser().parse_args([
+                "prepare", "--run-id", "ready", "--spec", "docs/specs/task.md", "--ticket", "TASK-1",
+                "--template", str(template), "--maker-model", "maker-x", "--checker-model", "checker-y"])
+            with mock.patch.object(CONTROLLER.Path, "cwd", return_value=repo):
+                self.assertEqual(CONTROLLER.prepare(args), 0)
+            prepared = json.loads((repo / ".harness/runs/ready.json").read_text(encoding="utf-8"))
+            self.assertEqual(prepared["roles"]["maker"]["model"], "maker-x")
+            self.assertEqual(prepared["roles"]["checker"]["model"], "checker-y")
+
+    def test_start_refuses_placeholder_role_settings(self) -> None:
+        manifest = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
+        manifest.update(run_id="placeholder", spec_path="docs/specs/task.md", implementation_ticket="IMP-1")
+        manifest["roles"]["maker"]["model"] = "maker-x"
+        for field, value in (("model", "TO-FILL"), ("model", "replace-with-checker-model"), ("effort", " ")):
+            with self.subTest(field=field, value=value):
+                role = json.loads(json.dumps(manifest))
+                role["roles"]["checker"]["model"] = "checker-y"
+                role["roles"]["checker"][field] = value
+                with self.assertRaisesRegex(CONTROLLER.RunError, rf"roles\.checker\.{field} "):
+                    CONTROLLER.validate_manifest(role, ROOT)
 
     def test_kill_switch_in_main_checkout_pauses_linked_worktrees(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith pause ") as temporary:
