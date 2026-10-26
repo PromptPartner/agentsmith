@@ -36,7 +36,8 @@ published results, and real runtime or visual checks as separately referenced ar
 receipt does not satisfy an end-to-end gate that requires those observations.
 
 ## Fallback — no runner or no conf
-1. Say so plainly, and look at `.harness/verify.conf.example` for the intended phases.
+1. Say so plainly. With the CLI but no conf, `agentsmith verify discover --save <plan>` proposes
+   phases from the project; review the plan, then `agentsmith verify apply --plan <plan>`.
 2. Run the obvious checks for this project directly and show their output: build, test, lint,
    link/render check, a dry-run. For non-code work, "verify" = open the artifact and confirm it
    renders / the numbers reconcile / the links resolve.
