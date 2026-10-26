@@ -237,6 +237,34 @@ class AutonomousStateTests(unittest.TestCase):
         maker = CONTROLLER.role_prompt(state, manifest, "maker")
         self.assertNotIn("smallest change that solves", maker)
 
+    def guard_repository(self) -> Path:
+        temporary = tempfile.TemporaryDirectory(prefix="agentsmith guard ")
+        self.addCleanup(temporary.cleanup)
+        repo = Path(temporary.name).resolve()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        return repo
+
+    def guard_exit(self, repo: Path) -> int:
+        with contextlib.redirect_stdout(io.StringIO()):
+            return CONTROLLER.all_terminal(repo)
+
+    def test_live_run_guard_reports_corrupt_text_as_undetermined(self) -> None:
+        cases = {
+            "run state": (".git/agentsmith-runs/a/state.json", b"\xff"),
+            "graph state": (".git/agentsmith-graphs/g/state.json", b"\xff"),
+            "run lock": (".git/agentsmith-runs/a/controller.lock", b"\xff"),
+            "graph lock": (".git/agentsmith-graphs/g/LOCK", b"\xff"),
+        }
+        for label, (relative, payload) in cases.items():
+            with self.subTest(label=label):
+                repo = self.guard_repository()
+                for kind, name, status in (("runs", "a", "accepted"), ("graphs", "g", "completed")):
+                    directory = repo / f".git/agentsmith-{kind}/{name}"
+                    directory.mkdir(parents=True)
+                    (directory / "state.json").write_text(json.dumps({"status": status}), encoding="utf-8")
+                (repo / relative).write_bytes(payload)
+                self.assertEqual(self.guard_exit(repo), 2)
+
     def test_kill_switch_in_main_checkout_pauses_linked_worktrees(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith pause ") as temporary:
             repo = Path(temporary).resolve() / "main"

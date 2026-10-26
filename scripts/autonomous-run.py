@@ -2116,7 +2116,7 @@ def live_work(repo: Path) -> tuple[list[str], list[str]]:
                     live.append(f"run {name}: starting (controller {owner['pid']})")
                 continue
             state = load_json(run_dir / "state.json")
-        except (OSError, RunError) as exc:
+        except (OSError, ValueError, RunError) as exc:  # ValueError: undecodable text
             unknown.append(f"run {name}: cannot read its state or lock: {exc}")
             continue
         status = state.get("status")
@@ -2138,7 +2138,7 @@ def live_work(repo: Path) -> tuple[list[str], list[str]]:
                 if not isinstance(owner, dict) or not isinstance(owner.get("pid"), int):
                     raise RunError("malformed graph lock owner")
             state = load_json(graph_dir / "state.json")
-        except (OSError, RunError, json.JSONDecodeError) as exc:
+        except (OSError, ValueError, RunError) as exc:  # ValueError: undecodable text or JSON
             unknown.append(f"graph {name}: cannot read its state or lock: {exc}")
             continue
         status = state.get("status")
@@ -2153,7 +2153,7 @@ def all_terminal(repo: Path) -> int:
     """0: every run and graph is terminal. 1: something is live or not terminal. 2: cannot tell."""
     try:
         live, unknown = live_work(repo)
-    except (OSError, RunError) as exc:
+    except (OSError, ValueError, RunError) as exc:
         print(f"cannot tell whether autonomous work is live: {exc}")
         return 2
     for line in [*unknown, *live]:
