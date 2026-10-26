@@ -43,6 +43,17 @@ receipt does not satisfy an end-to-end gate that requires those observations.
 3. If nothing is wired yet, propose the phases this project needs and offer to write
    `.harness/verify.conf` — but still run the checks by hand this time.
 
+## Output you can quote as proof
+- **Run it raw.** An output-rewriting hook (a token-saving shell wrapper on Bash, for example)
+  can summarise, empty or re-code test, lint, search and git output, and report its own exit
+  status. Run any command whose output you quote through the wrapper's bypass (for `rtk`:
+  `rtk proxy <command>`). `agentsmith doctor` reports such hooks.
+- **Absence needs an untruncated, count-based check.** "No match" from a truncated or
+  summarised search is not proof that something is absent.
+- **CI is green when pending == 0 and failing == 0 on the matching head SHA,** read from step
+  conclusions. A cancelled, missing or not-yet-registered check is not green; don't wait for a
+  fixed number of checks.
+
 ## Report
 State each check and its evidence: "build ok, 42 tests green, lint clean" — with the output, not
 "should pass". Anything skipped is "deferred: reason", never silence.
