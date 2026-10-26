@@ -5,7 +5,9 @@ Wayfinder keeps living decision maps and terminal specs here. Start from
 only explicit operator acceptance advances it to `accepted` and fills `accepted_by` / `accepted_at`.
 
 A spec from the current template declares `schema: 2` and must name its `research` note, its
-`route` with a reason, and its `reviewer_receipt`. `python3 .agentsmith/autonomous-run.py
+`route` with a reason, and its `reviewer_receipt`. Commit the research note and the review
+verdict: a run's worktree holds only what Git holds, so `check-specs` requires them to be tracked
+and `autonomous-run` requires them in the run's base commit. `python3 .agentsmith/autonomous-run.py
 check-specs` fails while an accepted schema-2 spec lacks one of them or points at a missing
 file, and `autonomous-run` refuses such a spec. Only a spec with no `schema` key at all counts
 as accepted before these fields existed and is not checked; any other schema value, a blank one

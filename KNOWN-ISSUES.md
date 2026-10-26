@@ -813,3 +813,7 @@ global selections needs its own design because update replays the record.
   (valid YAML), a repeated or a blank `schema` key, and no pipeline fields passed `check-specs`
   as legacy. Indented lines now continue their key, repeated keys are refused, and any `schema`
   key other than exactly 2 is refused; three such fixtures passed before and fail after.
+- [x] 2026-10-26 — Independent review: an ignored or untracked research note or review verdict
+  satisfied `prepare` and `start`, but the run's worktree lacked it and failed `check-specs`.
+  `start` and `prepare` now require each cited file in the run's base commit and `check-specs`
+  requires it tracked; a test with ignored files passed `start` before and is refused after.

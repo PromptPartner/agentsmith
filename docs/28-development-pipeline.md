@@ -9,10 +9,10 @@ in prose an agent can skip. `python3 .agentsmith/autonomous-run.py check-specs` 
 | # | Stage | The artifact it must leave | Gate to the next stage |
 |---|---|---|---|
 | 0 | **Goal** | The goal and the problem, restated by the agent in its own words, in the spec | The restatement is in the spec |
-| 1 | **Research** | `docs/research/<slug>.md`: sources, verified and inferred claims marked, the premise reproduced | The spec's `research:` names that file |
+| 1 | **Research** | `docs/research/<slug>.md`: sources, verified and inferred claims marked, the premise reproduced | The spec's `research:` names that file, committed |
 | 2 | **Shape** | The draft spec `docs/specs/<slug>.md` (`status: draft`): destination, non-goals, alternatives, "Needs operator" | The draft exists |
 | 3 | **Route** | `route:` with a one-line reason (see below) | `route` is set; for `wayfinder`, no open in-scope decision remains |
-| 4 | **Spec review** | A verdict file from a reviewer who did not draft the spec, named in `reviewer_receipt:`, and a "Review resolution" section | The verdict accepts, or every requested change is resolved |
+| 4 | **Spec review** | A verdict file from a reviewer who did not draft the spec, named in `reviewer_receipt:`, and a "Review resolution" section | The verdict accepts, or every requested change is resolved; the verdict file is committed |
 | 5 | **Accept** | `status: accepted`, `accepted_by`, `accepted_at` | Only the operator accepts. An agent never accepts a spec |
 | 6 | **Implement** | Commits with a red-first proof | The project verifier is green |
 | 7 | **Prove** | Verifier output and `check-specs` output, both shown | Both exit 0 |

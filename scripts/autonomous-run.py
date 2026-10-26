@@ -604,12 +604,15 @@ def frontmatter(text: str) -> dict[str, str]:
 ROUTE = re.compile(r"(direct|grill|wayfinder)\b[\s\-—–:;,(]*(.*)")
 
 
-def spec_pipeline_problems(repo: Path, meta: dict[str, str]) -> list[str]:
+def spec_pipeline_problems(repo: Path, meta: dict[str, str], commit: str | None = None) -> list[str]:
     """What a schema-2 spec lacks of the development pipeline's artifacts.
 
     A spec with no `schema` key at all predates the pipeline fields and is not checked, so specs
     accepted before they existed keep working; the template declares `schema: 2`. Any schema
-    value other than 2, blank included, is refused rather than treated as legacy."""
+    value other than 2, blank included, is refused rather than treated as legacy.
+
+    A run's worktree holds only what Git holds. With `commit`, each cited file must be a regular
+    file in that commit; without it, the file must exist and be tracked."""
     if "schema" not in meta:
         return []
     schema = meta["schema"]
@@ -624,8 +627,16 @@ def spec_pipeline_problems(repo: Path, meta: dict[str, str]) -> list[str]:
         relative = Path(value)
         if relative.is_absolute() or "\\" in value or ".." in relative.parts:
             problems.append(f"{field} must be a repository-relative path")
+        elif commit is not None:
+            entry = run(["git", "ls-tree", commit, "--", relative.as_posix()], repo).stdout.split()
+            if not entry or not entry[0].startswith("100") or entry[1] != "blob":
+                problems.append(f"{field} names {value}, which is not committed at {commit}; "
+                                "commit it so the run's worktree has it")
         elif not (repo / relative).is_file() or not (repo / relative).resolve().is_relative_to(repo.resolve()):
             problems.append(f"{field} points at {value}, which does not exist")
+        elif run(["git", "ls-files", "--error-unmatch", "--", relative.as_posix()], repo).returncode:
+            problems.append(f"{field} names {value}, which Git does not track; "
+                            "add and commit it so a run's worktree has it")
     route = ROUTE.fullmatch(meta.get("route", ""))
     if route is None:
         problems.append("route must start with direct, grill or wayfinder")
@@ -813,7 +824,7 @@ def validate_manifest(manifest: dict[str, Any], repo: Path) -> tuple[Path, str]:
         raise RunError("accepted spec requires accepted_by and accepted_at")
     if not meta.get("decision_ticket"):
         raise RunError("accepted spec requires a decision_ticket reference")
-    problems = spec_pipeline_problems(repo, meta)
+    problems = spec_pipeline_problems(repo, meta, str(manifest["base_ref"]))
     if problems:
         raise RunError("accepted spec fails the pipeline check: " + "; ".join(problems))
     if str(manifest["implementation_ticket"]) == meta.get("decision_ticket"):
@@ -910,7 +921,8 @@ def prepare(args: argparse.Namespace) -> int:
         manifest["roles"]["checker"]["runtime"] = args.checker
     spec = repo / args.spec
     if spec.is_file():
-        problems = spec_pipeline_problems(repo, frontmatter(read_text(spec)))
+        problems = spec_pipeline_problems(repo, frontmatter(read_text(spec)),
+                                          str(manifest.get("base_ref") or "HEAD"))
         if problems:
             raise RunError(f"{args.spec} fails the pipeline check: " + "; ".join(problems))
     if args.maker_model:

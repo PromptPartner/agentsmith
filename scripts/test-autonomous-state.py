@@ -328,6 +328,42 @@ class AutonomousStateTests(unittest.TestCase):
         (run_dir(repo, "done") / "state.json").write_text(json.dumps({"status": "escalated"}), encoding="utf-8")
         self.assertEqual(self.guard_exit(repo), 0)
 
+    def test_start_and_prepare_refuse_cited_artifacts_missing_from_the_base_commit(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith artifacts ") as temporary:
+            repo = Path(temporary).resolve()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            (repo / ".gitignore").write_text("docs/research/\n", encoding="utf-8")
+            (repo / "docs/research").mkdir(parents=True)
+            (repo / "docs/research/r.md").write_text("research\n", encoding="utf-8")
+            (repo / "docs/research/v.md").write_text("ACCEPT\n", encoding="utf-8")
+            spec = repo / "docs/specs/item.md"
+            spec.parent.mkdir(parents=True)
+            spec.write_text("---\nschema: 2\nstatus: accepted\ndecision_ticket: DEC-1\n"
+                            "research: docs/research/r.md\nreviewer_receipt: docs/research/v.md\n"
+                            "route: direct — one reproduced bug\naccepted_by: Test Operator\n"
+                            "accepted_at: 2026-10-26\n---\n# Spec\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "-c", "user.name=T", "-c", "user.email=t@example.com",
+                            "commit", "-qm", "spec"], check=True)
+            manifest = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
+            manifest.update(run_id="item", spec_path="docs/specs/item.md", implementation_ticket="IMP-1")
+            for role in manifest["roles"].values():
+                role["model"] = "fixture-model"
+            message = "research names docs/research/r.md, which is not committed at HEAD"
+            with self.assertRaisesRegex(CONTROLLER.RunError, message):
+                CONTROLLER.validate_manifest(manifest, repo)
+            args = CONTROLLER.parser().parse_args([
+                "prepare", "--run-id", "item", "--spec", "docs/specs/item.md", "--ticket", "IMP-1",
+                "--maker-model", "m", "--checker-model", "m",
+                "--template", str(ROOT / "templates/autonomous-run.json")])
+            with mock.patch.object(CONTROLLER.Path, "cwd", return_value=repo):
+                with self.assertRaisesRegex(CONTROLLER.RunError, message):
+                    CONTROLLER.prepare(args)
+            subprocess.run(["git", "-C", str(repo), "add", "-f", "docs/research"], check=True)
+            subprocess.run(["git", "-C", str(repo), "-c", "user.name=T", "-c", "user.email=t@example.com",
+                            "commit", "-qm", "research"], check=True)
+            CONTROLLER.validate_manifest(manifest, repo)
+
     def test_kill_switch_in_main_checkout_pauses_linked_worktrees(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith pause ") as temporary:
             repo = Path(temporary).resolve() / "main"

@@ -95,6 +95,7 @@ git -C "$FIX" init -q
 mkdir -p "$FIX/docs/specs" "$FIX/docs/research/reviews"
 printf '# Research\n' > "$FIX/docs/research/item.md"
 printf 'ACCEPT\n' > "$FIX/docs/research/reviews/item-spec-review.md"
+git -C "$FIX" add docs/research
 write_spec() { # $1 = status, then lines to drop or replace via sed expressions
   local status="$1"; shift
   printf '%s\n' '---' 'schema: 2' "status: $status" 'decision_ticket: DEC-1' \
@@ -142,6 +143,14 @@ done
 write_spec accepted 's#^route:.*#route: >-#' '/^route:/a\
   direct — one bug with a reproduction'
 [ "$(check)" = 0 ] && ok 'guard: a folded multi-line route is read' || { bad 'guard: folded route not read'; cat "$FIX/out"; }
+
+# A run's worktree has only what Git has, so a cited file that Git does not track would vanish there.
+printf 'local notes\n' > "$FIX/docs/research/untracked.md"
+write_spec accepted 's#^research:.*#research: docs/research/untracked.md#'
+if [ "$(check)" = 1 ] && grep -qF 'research names docs/research/untracked.md, which Git does not track' "$FIX/out"; then
+  ok 'guard: red when the research note is not tracked by Git'
+else bad 'guard: untracked research note passed'; cat "$FIX/out"; fi
+rm "$FIX/docs/research/untracked.md"
 
 write_spec draft '/^research:/d'
 [ "$(check)" = 0 ] && ok 'guard: a draft is not checked in the repository scan' || bad 'guard: scan checked a draft'
