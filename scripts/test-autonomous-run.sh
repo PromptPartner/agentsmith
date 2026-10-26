@@ -996,6 +996,34 @@ assert 'preflight refusal creates no branch' bash -c "! git -C '$repo' show-ref 
 assert 'preflight refusal creates no worktree' test ! -e "$repo-preflight"
 assert 'preflight refusal creates no state' test ! -e "$repo/.git/agentsmith-runs/preflight/state.json"
 
+echo 'autonomous-run — live-run guard before Git metadata writes'
+repo="$(new_repo guard)"; make_fake "$repo/../fake"; manifest "$repo" guard
+guard() { (cd "$repo" && python3 "$repo/../fake/controller.py" status --all-terminal >"$repo/../guard-out" 2>&1); echo $?; }
+assert 'guard exits 0 when no run exists' test "$(guard)" = 0
+(cd "$repo" && invoke "$repo" slow start .harness/runs/guard.json >../out 2>../err) & runner=$!
+wait_for_active_run "$repo" guard || bad 'guard fixture run never became active'
+assert 'guard exits 1 while a run is live' test "$(guard)" = 1
+assert 'guard names the live run' grep -q 'run guard: making' "$repo/../guard-out"
+(cd "$repo" && python3 "$repo/../fake/controller.py" stop guard >/dev/null 2>&1)
+wait "$runner" 2>/dev/null || true
+assert 'guard exits 0 once every run is terminal' test "$(guard)" = 0
+runs="$repo/.git/agentsmith-runs"; graphs="$repo/.git/agentsmith-graphs"
+mkdir -p "$runs/crashed" && printf '{"run_id":"crashed","status":"making"}\n' > "$runs/crashed/state.json"
+assert 'guard exits 1 for a non-terminal run without a live controller' test "$(guard)" = 1
+assert 'guard says the crashed run needs resume or inspection' grep -q 'run crashed: making with no live controller' "$repo/../guard-out"
+rm -r "$runs/crashed"
+mkdir -p "$runs/broken" && printf '{' > "$runs/broken/state.json"
+assert 'guard exits 2 when a run state cannot be read' test "$(guard)" = 2
+rm -r "$runs/broken"
+mkdir -p "$graphs/g" && printf '{"graph_id":"g","status":"running"}\n' > "$graphs/g/state.json"
+assert 'guard exits 1 for a running graph' test "$(guard)" = 1
+printf '{"graph_id":"g","status":"completed"}\n' > "$graphs/g/state.json"
+assert 'guard exits 0 for a completed graph' test "$(guard)" = 0
+printf 'not json' > "$graphs/g/LOCK"
+assert 'guard exits 2 when a graph lock cannot be read' test "$(guard)" = 2
+rm -r "$graphs/g"
+assert 'guard exits 0 again after cleanup' test "$(guard)" = 0
+
 echo 'autonomous-run — repository kill switch'
 repo="$(new_repo paused)"; make_fake "$repo/../fake"; manifest "$repo" paused; manifest "$repo" paused-next
 (cd "$repo" && invoke "$repo" slow start .harness/runs/paused.json >../out 2>../err) & runner=$!

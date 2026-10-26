@@ -43,6 +43,11 @@ refuses an uncommitted contract. Concurrent worktrees share writable Git metadat
 commits, so this guard prevents accidental collisions between cooperating runs; it is not a
 security boundary for mutually untrusted makers.
 
+Before any Git metadata write in this repository (`git worktree remove` or `prune`, a branch
+delete, a history rewrite), run the read-only guard and continue only on exit 0:
+`python3 .agentsmith/autonomous-run.py status --all-terminal && <git command>`. Exit 1 names the
+live or unfinished run; exit 2 means it cannot tell, which you treat as live.
+
 Size budgets per run. Class the work by the lines it should change (S up to about 350, M up to
 about 800, L up to about 2,500; split anything larger), cap at the highest usage measured for an
 accepted run of that class plus at least 20% headroom, and write the class, the measurement and

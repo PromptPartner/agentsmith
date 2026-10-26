@@ -100,6 +100,26 @@ worktrees also share writable Git metadata needed for local commits. The control
 peer identity before accounting for peer Git artifacts, but this is collision coordination, not
 adversarial isolation: do not run mutually untrusted makers concurrently in one repository.
 
+**Guard Git metadata writes.** Every linked worktree shares one set of refs and worktree records.
+A `git worktree remove`, `git worktree prune`, branch delete or history rewrite in any checkout
+can break a run that is still live, or one that has stopped but is not finished, and its work is
+then lost or must be redone. `status --all-terminal` is a read-only guard with three exits:
+
+| Exit | Meaning | What to do |
+|---|---|---|
+| `0` | every run and graph in this repository is terminal (or none exists) | go ahead |
+| `1` | a run or graph is live, or stopped without finishing; each is named | wait, `stop`, or `resume` it first |
+| `2` | a state or lock file cannot be read, so it cannot tell | stop and inspect; treat as live |
+
+Chain it in front of every Git metadata write, so the write runs only on exit 0:
+
+```text
+python3 .agentsmith/autonomous-run.py status --all-terminal && git worktree remove <path>
+```
+
+`accepted`, `escalated` and `interrupted` runs and `completed`, `failed`, `stopped` and `blocked`
+graphs count as terminal once no controller or role process for them is live.
+
 Codex receives the manifest objective and remaining native goal token budget. Claude receives only
 the remaining run-wide USD allowance. The controller accumulates usage reported by both CLIs and
 its persisted state remains authoritative, so resume cannot reset time or reported spend. Codex's

@@ -2010,8 +2010,91 @@ def start(args: argparse.Namespace) -> int:
                     pass
 
 
+TERMINAL_RUN_STATUSES = {"accepted", "escalated", "interrupted"}
+TERMINAL_GRAPH_STATUSES = {"completed", "failed", "stopped", "blocked"}
+
+
+def live_work(repo: Path) -> tuple[list[str], list[str]]:
+    """Read-only scan of every run and graph sharing this repository's Git metadata.
+
+    Returns (live, undetermined). Linked worktrees share refs and worktree administration, so
+    a `git worktree remove` or branch delete anywhere can break a run that is not terminal."""
+    live: list[str] = []
+    unknown: list[str] = []
+    common = resolved_git_path(repo, "--git-common-dir")
+    runs = common / "agentsmith-runs"
+    for run_dir in sorted(runs.iterdir() if runs.is_dir() else []):
+        if not run_dir.is_dir() or run_dir.name in {"git-phases", "graph-stop"}:
+            continue
+        name = run_dir.name
+        try:
+            owner = read_lock(run_dir)
+            owner_live = owner is not None and process_is_live(owner["pid"])
+            if not (run_dir / "state.json").exists():
+                if owner_live:
+                    live.append(f"run {name}: starting (controller {owner['pid']})")
+                continue
+            state = load_json(run_dir / "state.json")
+        except (OSError, RunError) as exc:
+            unknown.append(f"run {name}: cannot read its state or lock: {exc}")
+            continue
+        status = state.get("status")
+        if owner_live:
+            live.append(f"run {name}: {status} (controller {owner['pid']} is live)")
+        elif state.get("active_pid") and process_is_live(state["active_pid"]):
+            live.append(f"run {name}: {status} (role process {state['active_pid']} is live)")
+        elif status not in TERMINAL_RUN_STATUSES:
+            live.append(f"run {name}: {status} with no live controller; resume or inspect it first")
+    graphs = common / "agentsmith-graphs"
+    for graph_dir in sorted(graphs.iterdir() if graphs.is_dir() else []):
+        if not graph_dir.is_dir():
+            continue
+        name = graph_dir.name
+        try:
+            owner = None
+            if (graph_dir / "LOCK").exists():
+                owner = json.loads(read_text(graph_dir / "LOCK"))
+                if not isinstance(owner, dict) or not isinstance(owner.get("pid"), int):
+                    raise RunError("malformed graph lock owner")
+            state = load_json(graph_dir / "state.json")
+        except (OSError, RunError, json.JSONDecodeError) as exc:
+            unknown.append(f"graph {name}: cannot read its state or lock: {exc}")
+            continue
+        status = state.get("status")
+        if owner is not None and process_is_live(owner["pid"]):
+            live.append(f"graph {name}: {status} (controller {owner['pid']} is live)")
+        elif status not in TERMINAL_GRAPH_STATUSES:
+            live.append(f"graph {name}: {status} with no live controller; resume or inspect it first")
+    return live, unknown
+
+
+def all_terminal(repo: Path) -> int:
+    """0: every run and graph is terminal. 1: something is live or not terminal. 2: cannot tell."""
+    try:
+        live, unknown = live_work(repo)
+    except (OSError, RunError) as exc:
+        print(f"cannot tell whether autonomous work is live: {exc}")
+        return 2
+    for line in [*unknown, *live]:
+        print(line)
+    if unknown:
+        print("cannot tell whether every autonomous run is terminal; do not change Git metadata")
+        return 2
+    if live:
+        print("autonomous work is not terminal; do not change Git metadata yet")
+        return 1
+    print("every autonomous run and graph in this repository is terminal")
+    return 0
+
+
 def status_cmd(args: argparse.Namespace) -> int:
     repo = repo_root(Path.cwd())
+    if args.all_terminal:
+        if args.run_id:
+            raise RunError("status takes either a run id or --all-terminal, not both")
+        return all_terminal(repo)
+    if not args.run_id:
+        raise RunError("status needs a run id, or --all-terminal for the live-run guard")
     state = load_run(repo, args.run_id)
     keys = ["run_id", "status", "stage", "attempt", "active_pid", "branch", "worktree", "base_head",
             "accepted_commit", "deadline_epoch", "claude_cost_usd", "codex_tokens_used",
@@ -2207,8 +2290,12 @@ def parser() -> argparse.ArgumentParser:
     begin.set_defaults(func=start)
     for name, func in (("status", status_cmd), ("stop", stop), ("resume", resume)):
         item = sub.add_parser(name)
-        item.add_argument("run_id")
+        item.add_argument("run_id", nargs="?" if name == "status" else None)
         item.set_defaults(func=func)
+        if name == "status":
+            item.add_argument("--all-terminal", action="store_true",
+                              help="read-only guard: exit 0 if every run and graph is terminal, "
+                                   "1 if any is live or unfinished, 2 if that cannot be told")
     return result
 
 
