@@ -875,6 +875,20 @@ class HookFiringLogTests(unittest.TestCase):
         self.assertIn("DESIGN.md", fired.stdout)
         self.assertEqual(fired.stderr, "")
 
+    @unittest.skipIf(not hasattr(os, "mkfifo"), "POSIX FIFO")
+    def test_a_fifo_at_the_log_path_does_not_hang_the_hook(self) -> None:
+        self.log.parent.mkdir(parents=True)
+        os.mkfifo(self.log)
+        try:
+            fired = subprocess.run(
+                [sys.executable, str(self.runtime), "hook", "handoff-on-keyword"], input="please wrap up",
+                cwd=self.project, env=self.env, text=True, capture_output=True, check=False, timeout=5,
+            )
+        except subprocess.TimeoutExpired:
+            self.fail("the hook blocked on a FIFO at the log path")
+        self.assertEqual(fired.returncode, 0)
+        self.assertIn("agentsmith handoff", fired.stdout)
+
     def test_log_stays_bounded(self) -> None:
         line = json.dumps({"ts": "2026-01-01T00:00:00Z", "hook": "ui-design-reminder", "event": "PreToolUse", "outcome": "nudged"})
         self.log.parent.mkdir(parents=True)

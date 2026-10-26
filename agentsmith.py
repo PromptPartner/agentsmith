@@ -8478,7 +8478,12 @@ def record_hook_firing(hook: str, payload: str = "", *, event: str = "", outcome
         if not ignore.exists() and not ignore.is_symlink():
             ignore.write_text("*\n", encoding="utf-8")
         path = folder / HOOK_LOG_NAME
-        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+        # Only a regular file (or none yet) is a log: a FIFO or device would block or misdirect the write.
+        with contextlib.suppress(FileNotFoundError):
+            if not stat.S_ISREG(os.lstat(path).st_mode):
+                return
+        flags = (os.O_WRONLY | os.O_CREAT | os.O_APPEND
+                 | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
         descriptor = os.open(path, flags, 0o600)
         try:
             if not stat.S_ISREG(os.fstat(descriptor).st_mode):
