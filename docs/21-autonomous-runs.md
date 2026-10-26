@@ -55,7 +55,10 @@ Controller verification writes the raw exit code and stdout/stderr to `attempt-N
 an adjacent JSON receipt. That receipt binds the candidate and base commits, spec and manifest
 hashes, verification policy and configuration hashes, controller/launcher hashes, output hash,
 and checker receipt hash. A checker acceptance with empty evidence or unresolved findings does
-not accept a candidate. Role exit codes are retained separately from structured receipts.
+not accept a candidate. Besides trying to falsify the acceptance criteria, the checker is told
+to reject a change that is larger than the stated problem needs, and a red test that failed for
+the wrong reason (a stub, an import error or an earlier gate instead of the bug's own failure
+message). Role exit codes are retained separately from structured receipts.
 
 Trusted state stays in the controller's shared run directory. Each native role receives explicit
 write restrictions for that directory, the original contract, and the controller/launcher source

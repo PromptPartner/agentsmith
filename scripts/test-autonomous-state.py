@@ -226,6 +226,17 @@ class AutonomousStateTests(unittest.TestCase):
                     CONTROLLER.prepare(args)
             self.assertFalse((repo / ".harness/runs/item.json").exists())
 
+    def test_checker_prompt_checks_smallest_change_and_red_failure_reason(self) -> None:
+        manifest = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
+        manifest.update(spec_path="docs/specs/task.md", implementation_ticket="IMP-1")
+        state = {"run_id": "prompt", "base_head": "a" * 40, "codex_tokens_used": 0}
+        checker = CONTROLLER.role_prompt(state, manifest, "checker", verify_output="exit=0")
+        self.assertIn("Is this the smallest change that solves the stated problem?", checker)
+        self.assertIn("Did each new red test fail for the intended reason?", checker)
+        self.assertIn("failure message", checker)
+        maker = CONTROLLER.role_prompt(state, manifest, "maker")
+        self.assertNotIn("smallest change that solves", maker)
+
     def test_kill_switch_in_main_checkout_pauses_linked_worktrees(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith pause ") as temporary:
             repo = Path(temporary).resolve() / "main"

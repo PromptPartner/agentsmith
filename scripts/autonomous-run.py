@@ -1742,7 +1742,11 @@ and make atomic local commits only. Leave the worktree clean. HEAD must advance 
 Use status completed or blocked; do not mark your own work accepted.{feedback}"""
     return common + f"""You are the independent checker and default to REJECT. Do not edit files or commit.
 Inspect the committed diff from {base} to HEAD and the controller verification evidence.
-Try to falsify the acceptance criteria using read-only commands. Controller verification output:
+Try to falsify the acceptance criteria using read-only commands. Also reject when either answer is no:
+- Is this the smallest change that solves the stated problem? Name any part the spec does not need.
+- Did each new red test fail for the intended reason? Check that it asserts on the failure message
+  or value the bug produces, not on a stub, an import error or an earlier gate.
+Controller verification output:
 {verify_output[-6000:]}
 Use status accepted, rejected, or blocked."""
 
