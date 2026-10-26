@@ -412,6 +412,11 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual(usage_metrics(claude), (0.3, 150))
         self.assertEqual(usage_metrics(json.dumps({"type": "result", "total_cost_usd": 0.25})), (0.25, 0))
         self.assertEqual(usage_metrics("not json"), (0.0, 0))
+        # A negative figure would refund the run-wide budget, so it is excluded, never subtracted.
+        negative = json.dumps({"type": "turn.completed", "usage": {"input_tokens": -7, "output_tokens": 3}})
+        self.assertEqual(usage_metrics(negative), (0.0, 3))
+        self.assertEqual(usage_metrics(json.dumps({"type": "result", "total_cost_usd": -1})), (0.0, 0))
+        self.assertEqual(usage_metrics(json.dumps({"type": "result", "total_cost_usd": float("nan")}).replace("NaN", "-1e999")), (0.0, 0))
 
     def test_no_instructions_arm_keeps_the_scenario_but_drops_agentsmith_rules(self) -> None:
         from evaluate import setup_repository

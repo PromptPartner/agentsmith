@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -116,14 +117,17 @@ def usage_metrics(stdout: str) -> tuple[float, int]:
     results = [event for event in events if isinstance(event, dict) and event.get("type") == "result"]
     token_keys = ("input_tokens", "output_tokens", "cached_input_tokens", "reasoning_tokens")
 
+    def amount(value: Any) -> float:
+        # A negative or non-finite figure would refund the run-wide budget, so it counts as zero.
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            return 0.0
+        return max(0.0, float(value))
+
     def measure(value: Any) -> tuple[float, int]:
         # The outermost usage block counts once; nested breakdowns inside it are not added again.
         if isinstance(value, dict):
-            cost = value.get("total_cost_usd")
-            cost = float(cost) if isinstance(cost, (int, float)) else 0.0
-            tokens = sum(
-                int(value[key]) for key in token_keys if isinstance(value.get(key), (int, float))
-            )
+            cost = amount(value.get("total_cost_usd"))
+            tokens = sum(int(amount(value.get(key))) for key in token_keys)
             if tokens:
                 return cost, tokens
             for child in value.values():
