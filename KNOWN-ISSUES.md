@@ -502,10 +502,13 @@ been authorized, so the entries are kept here.
   Windows locale. Preparing a manifest under a `ü` directory looked for a nonexistent `Ã¼`
   template path. A real Git repository with a simulated CP-1252 subprocess decoder reproduced
   the corruption; explicit UTF-8 Git transport preserves the original repository path.
-- [ ] 2026-10-05 — Controller receipt, captured-log and usage-replay file reads still use
+- [x] 2026-10-05 — Controller receipt, captured-log and usage-replay file reads still use
   the locale default. A simulated CP-1252 read corrupts UTF-8 JSON text. These paths need
   explicit encoding and their own receipt/replay regressions; native Windows model-role
   execution remains unsupported, separately from the corrected prepare command.
+  Fixed 2026-10-26: receipt reads, captured logs, usage replay, `events.jsonl` and the verifier
+  log now name UTF-8. A simulated CP-1252 default failed on byte 0x81 before the fix and passes
+  after; a source check fails if any text-mode file call in the controller omits its encoding.
 
 ### LOCAL-CAPABILITIES: shared hook groups lost foreign handlers (fixed)
 

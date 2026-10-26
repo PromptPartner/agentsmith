@@ -151,6 +151,11 @@ def read_text(path: Path) -> str:
     raise AssertionError("unreachable")
 
 
+def read_output(path: Path) -> str:
+    """Captured role and verifier output: UTF-8 whatever the locale, never a decode crash."""
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
 def write_json(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
@@ -532,7 +537,7 @@ def assert_no_live_scope_conflicts(repo: Path, run_id: str, scope: Any) -> None:
 def event(state: dict[str, Any], kind: str, **fields: Any) -> None:
     path = Path(state["state_path"]).parent / "events.jsonl"
     record = {"at": now(), "event": kind, **fields}
-    with path.open("a") as handle:
+    with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, sort_keys=True) + "\n")
 
 
@@ -1241,8 +1246,8 @@ def parse_receipt(path: Path, stdout: str) -> dict[str, Any]:
     candidates: list[Any] = []
     if path.exists():
         try:
-            candidates.append(json.loads(path.read_text()))
-        except json.JSONDecodeError:
+            candidates.append(json.loads(path.read_text(encoding="utf-8")))
+        except (json.JSONDecodeError, UnicodeDecodeError):
             pass
     try:
         candidates.append(json.loads(stdout))
@@ -1379,7 +1384,7 @@ def supervised_process(command: list[str], cwd: Path, timeout: int, env: dict[st
     stdout_path = directory / (prefix + '.stdout')
     stderr_path = directory / (prefix + '.stderr')
     error: BaseException | None = None
-    with stdout_path.open('w') as output, stderr_path.open('w') as errors:
+    with stdout_path.open('w', encoding='utf-8') as output, stderr_path.open('w', encoding='utf-8') as errors:
         process = subprocess.Popen(command, cwd=cwd, env=env, text=True,
                                    stdout=output, stderr=errors, start_new_session=os.name != 'nt')
         try:
@@ -1411,7 +1416,7 @@ def supervised_process(command: list[str], cwd: Path, timeout: int, env: dict[st
             state['active_pid'] = None
             save_state(state)
     return subprocess.CompletedProcess(command, process.returncode,
-                                       stdout_path.read_text(), stderr_path.read_text()), error
+                                       read_output(stdout_path), read_output(stderr_path)), error
 
 
 def verifier_process(command: list[str], cwd: Path, timeout: int, env: dict[str, str],
@@ -1685,7 +1690,7 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
                                       remaining_seconds(state, manifest), verifier_env(), state=state)
             verify_output = f"exit={verify.returncode}\nSTDOUT:\n{verify.stdout}\nSTDERR:\n{verify.stderr}"
             verify_path = Path(state["state_path"]).parent / f"attempt-{state['attempt']}-verify.txt"
-            verify_path.write_text(verify_output)
+            verify_path.write_text(verify_output, encoding="utf-8")
             proof = verification_binding(state, manifest, checker_head)
             proof.update(exit_code=verify.returncode, output_sha256=file_digest(verify_path))
             proof_path = verify_path.with_suffix(".json")
@@ -2034,7 +2039,7 @@ def resume(args: argparse.Namespace) -> int:
                 if role not in {'maker', 'checker'} or runtime != manifest['roles'][role]['runtime'] or pending_usage.get('prefix') != prefix:
                     raise RunError('invalid unfinished usage checkpoint')
                 output_path = run_dir / (prefix + '.stdout')
-                record_role_usage(state, runtime, role, output_path.read_text() if output_path.exists() else '')
+                record_role_usage(state, runtime, role, read_output(output_path) if output_path.exists() else '')
                 state['usage_accounting_incomplete'] = True
                 save_state(state, 'usage_recovered', accounting='reported output only; unreported spend unknown')
             if state.get('stage') == 'making' and state.get('maker_before_head') != git(worktree, 'rev-parse', 'HEAD'):

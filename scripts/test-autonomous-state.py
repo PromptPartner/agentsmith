@@ -53,6 +53,77 @@ class AutonomousStateTests(unittest.TestCase):
             self.assertEqual(manifest["run_id"], "consumer")
             self.assertEqual(manifest["implementation_ticket"], "TASK-1")
 
+    @contextlib.contextmanager
+    def windows_locale_file_default(self):
+        """Simulate a CP-1252 locale: text file I/O without an explicit encoding uses it."""
+        originals = {name: getattr(Path, name) for name in ("read_text", "write_text", "open")}
+
+        def read_text(path, encoding=None, errors=None, **kwargs):
+            return originals["read_text"](path, encoding=encoding or "cp1252", errors=errors, **kwargs)
+
+        def write_text(path, data, encoding=None, errors=None, **kwargs):
+            return originals["write_text"](path, data, encoding=encoding or "cp1252", errors=errors, **kwargs)
+
+        def open_(path, mode="r", buffering=-1, encoding=None, errors=None, newline=None):
+            if "b" not in mode and encoding is None:
+                encoding = "cp1252"
+            return originals["open"](path, mode, buffering, encoding, errors, newline)
+
+        with mock.patch.object(Path, "read_text", read_text), \
+                mock.patch.object(Path, "write_text", write_text), \
+                mock.patch.object(Path, "open", open_):
+            yield
+
+    def test_receipt_and_captured_output_keep_utf8_under_windows_locale(self) -> None:
+        text = "naïve ✓ Á résumé"
+        with tempfile.TemporaryDirectory(prefix="agentsmith utf8 ") as temporary:
+            directory = Path(temporary)
+            receipt = {"status": "completed", "summary": text, "commit": "a" * 40,
+                       "changed_paths": ["src/résumé.txt"], "evidence": [text],
+                       "unresolved": [], "next_state": "checking"}
+            receipt_path = directory / "receipt.json"
+            receipt_path.write_bytes(json.dumps(receipt, ensure_ascii=False).encode("utf-8"))
+            log = directory / "attempt-1-maker.stdout"
+            log.write_bytes((text + "\n").encode("utf-8"))
+            state = {"state_path": str(directory / "state.json"), "attempt": 1}
+            child = [CONTROLLER.sys.executable, "-c",
+                     "import sys; sys.stdout.buffer.write(%r.encode('utf-8'))" % (text + "\n")]
+            with self.windows_locale_file_default():
+                self.assertEqual(CONTROLLER.parse_receipt(receipt_path, "")["summary"], text)
+                self.assertEqual(CONTROLLER.read_output(log), text + "\n")
+                result, error = CONTROLLER.supervised_process(
+                    child, directory, 30, dict(os.environ), state, "attempt-1-probe")
+            self.assertIsNone(error)
+            self.assertEqual(result.stdout, text + "\n")
+
+    def test_controller_text_io_names_its_encoding(self) -> None:
+        # A locale-default read or write corrupts UTF-8 receipts, logs and replayed usage on
+        # Windows. Every text-mode file call in the controller names its encoding.
+        import ast
+        tree = ast.parse(CONTROLLER_PATH.read_text(encoding="utf-8"))
+        unnamed = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            # A bare read_text() call is the controller's own UTF-8 helper.
+            name = (node.func.attr if isinstance(node.func, ast.Attribute)
+                    else node.func.id if isinstance(node.func, ast.Name) and node.func.id == "open" else "")
+            if name not in {"read_text", "write_text", "open", "fdopen"}:
+                continue
+            if name in {"open", "fdopen"}:
+                mode_args = [arg for arg in node.args if isinstance(arg, ast.Constant) and isinstance(arg.value, str)]
+                mode_args += [kw.value for kw in node.keywords if kw.arg == "mode" and isinstance(kw.value, ast.Constant)]
+                if isinstance(node.func, ast.Name) or name == "fdopen":
+                    mode_args = [arg for arg in mode_args if arg is not node.args[0]] if node.args else mode_args
+                if any("b" in arg.value for arg in mode_args):
+                    continue
+                if name == "open" and isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name) \
+                        and node.func.value.id == "os":
+                    continue  # os.open returns a descriptor, not a text stream
+            if not any(keyword.arg == "encoding" for keyword in node.keywords):
+                unnamed.append(f"line {node.lineno}: {name}")
+        self.assertEqual(unnamed, [])
+
     def test_verifier_cannot_replace_trusted_contract_in_temporary_repository(self) -> None:
         if CONTROLLER.sys.platform != 'darwin':
             self.skipTest('macOS verifier execution probe')
