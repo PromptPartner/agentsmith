@@ -875,3 +875,11 @@ global selections needs its own design because update replays the record.
   read waited for a writer). The profile is now opened with `O_NONBLOCK` and refused unless it is a
   regular file; on Windows the path check requires a regular file before opening. The review's
   reproducer timed out before and now exits 2; a new test failed (hung) before and passes after.
+- [x] 2026-10-26 — PR #61 CI run `40317178374` (ubuntu-latest): a legacy global update failed with
+  "staged managed changes do not match the authenticated plan". A global plan's target root is HOME
+  itself, and on Linux both have one spelling, so root translation held two destinations for the
+  same text in a set and picked the shadow target or the shadow HOME at random (the order depends
+  on the per-process hash seed). Plan and apply could then disagree, or the status-line helper
+  could land in the shadow target. Translation now keeps one destination per spelling, HOME before
+  target, in a fixed order. Reproduced in a Linux container before the fix; a new test that runs
+  12 hash seeds failed before and passes after.

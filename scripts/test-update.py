@@ -2527,5 +2527,29 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertIn("symbolic link", planned.stderr)
 
 
+class RootTranslationTests(unittest.TestCase):
+    def test_a_path_shared_by_two_roots_translates_the_same_way_every_run(self) -> None:
+        # A global plan's target root is HOME itself. Live text must map to the shadow HOME, and
+        # must not depend on set order: plan and apply translate in different processes.
+        probe = (
+            "import json, sys\n"
+            f"sys.path.insert(0, {str(ROOT)!r})\n"
+            "import agentsmith\n"
+            "live = '/tmp/agentsmith update \\u00fc/home'\n"
+            "text = json.dumps({'file': live + '/.claude/agentsmith-statusline.py'})\n"
+            "print(agentsmith.translate_root_paths(text.encode(), {'target': live, 'home': live},\n"
+            "    {'target': '/shadow/target', 'home': '/shadow/home'}).decode())\n"
+        )
+        outputs = set()
+        for seed in range(12):
+            result = subprocess.run(
+                [sys.executable, "-c", probe], text=True, capture_output=True, check=False,
+                env={**os.environ, "PYTHONHASHSEED": str(seed)},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            outputs.add(result.stdout.strip())
+        self.assertEqual(outputs, {json.dumps({"file": "/shadow/home/.claude/agentsmith-statusline.py"})})
+
+
 if __name__ == "__main__":
     unittest.main()
