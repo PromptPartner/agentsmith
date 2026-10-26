@@ -827,3 +827,9 @@ global selections needs its own design because update replays the record.
   the hooks folder and refuses one that resolves outside the target or the repository's common Git
   folder (a linked worktree keeps its hooks in the main checkout, which stays allowed). The review's
   reproducer and two new tests failed before and pass after.
+- [x] 2026-10-26 — Found while fixing the status-line preflight: the updater's root translation
+  missed paths in JSON written with ASCII escapes (`\u00fc` for `ü`, as Python's default
+  `json.dumps` writes). A staged install then saw the live HOME's status-line helper path in the
+  shadow state and could write the live helper during `update plan` when its bytes changed. The
+  translation now also maps the escaped spelling. `test_legacy_claude_global_foreign_mcp_survives_plan_apply_and_health`
+  failed after the preflight change and passes with this fix.

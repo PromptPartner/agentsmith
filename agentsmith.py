@@ -3223,6 +3223,12 @@ def translate_root_paths(
         ):
             replacements.add((old, new))
             replacements.add((json.dumps(old, ensure_ascii=False)[1:-1], json.dumps(new, ensure_ascii=False)[1:-1]))
+            # JSON written with the default ensure_ascii spells non-ASCII as \uXXXX escapes. Only an
+            # old path that actually has escapes gets that pair; otherwise it would compete with
+            # the literal pair for the same text.
+            escaped = json.dumps(old)[1:-1]
+            if escaped != json.dumps(old, ensure_ascii=False)[1:-1]:
+                replacements.add((escaped, json.dumps(new)[1:-1]))
     for old, new in sorted(replacements, key=lambda item: len(item[0]), reverse=True):
         text = text.replace(old, new)
     return text.encode("utf-8")
