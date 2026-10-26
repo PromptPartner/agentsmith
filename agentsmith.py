@@ -5193,6 +5193,57 @@ def managed_block_behind_default(target: Path) -> list[dict[str, str]]:
     return findings
 
 
+FEEDBACK_OPEN_DAYS = 30
+HARNESS_REVIEW_DAYS = 60
+HARNESS_REVIEW_RECORDS = 10
+
+
+def feedback_findings(target: Path) -> list[dict[str, str]]:
+    """Feedback records left open too long, and a harness review that is overdue (docs/feedback/README.md)."""
+    folder = doctor_project_root(target) / "docs" / "feedback"
+    if not folder.is_dir():
+        return []
+    today = dt.date.today()
+
+    def date_in(text: str, pattern: str) -> dt.date | None:
+        match = re.search(pattern, text)
+        try:
+            return dt.date.fromisoformat(match.group(1)) if match else None
+        except ValueError:
+            return None
+
+    records: list[tuple[str, dt.date | None, str]] = []
+    for path in sorted(folder.glob("[0-9][0-9][0-9][0-9]-*.md")):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        status = re.search(r"\*\*Status:\*\*\s*([a-z-]+)", text)
+        records.append((path.name, date_in(text, r"\*\*Date:\*\*\s*(\d{4}-\d{2}-\d{2})"), status.group(1) if status else ""))
+    findings = []
+    stale = [name for name, date, status in records
+             if status == "open" and date and (today - date).days > FEEDBACK_OPEN_DAYS]
+    if stale:
+        findings.append(doctor_warning(
+            "feedback-open-too-long",
+            f"Feedback records open for more than {FEEDBACK_OPEN_DAYS} days: " + ", ".join(stale),
+            "Land each bounded edit and set Status to applied, or mark it wont-fix with one line of why.",
+        ))
+    readme = folder / "README.md"
+    review_text = readme.read_text(encoding="utf-8", errors="replace") if readme.is_file() else ""
+    reviewed = date_in(review_text, r"_Last harness review:\s*(\d{4}-\d{2}-\d{2})")
+    since = [date for _, date, _ in records if date and (reviewed is None or date > reviewed)]
+    if since and (len(since) >= HARNESS_REVIEW_RECORDS
+                  or (today - (reviewed or min(since))).days > HARNESS_REVIEW_DAYS):
+        findings.append(doctor_warning(
+            "harness-review-overdue",
+            f"{len(since)} feedback record(s) since the last harness review "
+            f"({reviewed.isoformat() if reviewed else 'none recorded'}).",
+            f"Run the harness-review checkpoint in {readme} and date its last line.",
+        ))
+    return findings
+
+
 def hook_firing_counts(target: Path) -> tuple[dict[str, int], list[str]]:
     """Count hook firings in the last HOOK_LOG_WINDOW_DAYS from the project and user logs."""
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=HOOK_LOG_WINDOW_DAYS)
@@ -5251,7 +5302,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     unhealthy = False
     firing_counts, firing_logs = hook_firing_counts(target)
     # Findings about the project, not one agent; every agent's report carries them.
-    project_findings = managed_block_behind_default(target)
+    project_findings = managed_block_behind_default(target) + feedback_findings(target)
     for agent_id in selected:
         agent = rows[agent_id]
         instructions, warnings = inspect_instructions(agent_id, agent, target)

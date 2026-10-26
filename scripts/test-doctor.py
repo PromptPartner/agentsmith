@@ -352,6 +352,30 @@ class DoctorTests(unittest.TestCase):
         _, diverged = self.doctor(repo, "codex")
         self.assertNotIn("managed-block-behind-default-branch", self.warning_codes(diverged["codex"]))
 
+    def test_stale_feedback_records_and_an_overdue_harness_review_are_reported(self) -> None:
+        import datetime
+        project = self.root / "feedback project"
+        feedback = project / "docs" / "feedback"
+        feedback.mkdir(parents=True)
+        today = datetime.date.today()
+        old = (today - datetime.timedelta(days=90)).isoformat()
+        recent = (today - datetime.timedelta(days=3)).isoformat()
+        (feedback / "0001-old-open.md").write_text(f"# Feedback 0001\n\n- **Date:** {old}\n- **Status:** open\n", encoding="utf-8")
+        (feedback / "0002-new-open.md").write_text(f"# Feedback 0002\n\n- **Date:** {recent}\n- **Status:** open\n", encoding="utf-8")
+        (feedback / "0003-applied.md").write_text(f"# Feedback 0003\n\n- **Date:** {old}\n- **Status:** applied\n", encoding="utf-8")
+        readme = feedback / "README.md"
+        readme.write_text("# Feedback\n\n_Last harness review: (none yet — run the checkpoint above and date it here.)_\n", encoding="utf-8")
+        _, payload = self.doctor(project, "codex")
+        warnings = {w["code"]: w["message"] for w in payload["codex"]["warnings"]}
+        self.assertIn("feedback-open-too-long", warnings)
+        self.assertIn("0001-old-open.md", warnings["feedback-open-too-long"])
+        self.assertNotIn("0002-new-open.md", warnings["feedback-open-too-long"])
+        self.assertIn("harness-review-overdue", warnings)
+        readme.write_text(f"# Feedback\n\n_Last harness review: {today.isoformat()}_\n", encoding="utf-8")
+        _, reviewed = self.doctor(project, "codex")
+        self.assertNotIn("harness-review-overdue", self.warning_codes(reviewed["codex"]))
+        self.assertIn("feedback-open-too-long", self.warning_codes(reviewed["codex"]))
+
     def test_trusted_native_install_reports_actual_owned_surfaces(self) -> None:
         project = self.root / "owned project ü"
         project.mkdir()

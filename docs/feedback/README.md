@@ -74,6 +74,9 @@ handful of sessions, whichever comes first:
 
 Keep a one-line note of when you last ran the review (a dated line at the bottom of this file, a
 tracker ticket, or a memory note) so the cadence is visible and doesn't quietly lapse.
+`agentsmith doctor` reads the dated line below: it warns when ten records, or more than 60 days,
+have passed since the last review, and when a record has stayed `open` for more than 30 days.
+Write the date as `YYYY-MM-DD` so doctor can read it.
 
 ---
 
