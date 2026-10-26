@@ -13,9 +13,9 @@ an expert developer, most of the friction here is words — clear that, and the 
   the same as reliable capacity: results vary by model, task, information position, and history.
   The usage gauge is a load signal, not a universal quality score.
 - **Static context** — what's loaded *every turn* and paid for every turn: canonical `AGENTS.md`
-  (or Claude's generated copy). Rationed hard (480 lines / ~7.8k tokens here). → [`04-why-your-agent-ignored-the-rule.md`](04-why-your-agent-ignored-the-rule.md)
+  (which a project `CLAUDE.md` imports). Rationed hard (480 lines / ~7.8k tokens here). → [`04-why-your-agent-ignored-the-rule.md`](04-why-your-agent-ignored-the-rule.md)
 - **Dynamic context** — loaded only on demand: skills, docs, memory, tool results. Free until used.
-- **`AGENTS.md` / `CLAUDE.md`** — canonical portable rulebook and Claude's generated adapter copy;
+- **`AGENTS.md` / `CLAUDE.md`** — canonical portable rulebook and Claude's generated file that imports it;
   both are distinct from runtime JSON/TOML config. → [`02-your-first-hour.md`](02-your-first-hour.md)
 - **Agent target** — an ID selected by repeatable `--agent`, or by the `native`, `standard`,
   `local`, or `all` groups. `--platform` is a migration alias. → [`13-platforms-and-tools.md`](13-platforms-and-tools.md)

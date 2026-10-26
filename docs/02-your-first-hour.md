@@ -8,14 +8,15 @@ special terms before you start.
 
 A project install (`./setup.sh --agent <id|group> --profile software-dev --target .`,
 or the guided setup) creates these files in the project. Unless you pass `--assemble-only`, it also
-updates the selected coding agent's user settings in `~/.claude` or `CODEX_HOME`:
+updates Codex's user settings in `CODEX_HOME` and Claude's status line in `~/.claude`; Claude's
+safety mode goes into the project's `.claude/settings.json`:
 
 ```
 AGENTS.md                        main generated instruction file (tour below)
-CLAUDE.md                        generated copy when Claude is selected
+CLAUDE.md                        imports AGENTS.md when Claude is selected
 .harness/verify.conf             your project's definition of "shippable" (starts as a stub)
 .harness/templates/              plan, handoff, research, progress-log, quality-gate templates
-.claude/settings.local.json.example   Claude project safety example (when Claude is selected)
+.claude/settings.json             Claude's safety mode for this project (when Claude is selected)
 .codex/config.toml                 Codex project MCP (only with --with-mcp)
 .agents/skills                  canonical pack (only with --with-skills)
 .claude/skills                  required Claude adapter (when selected)

@@ -71,6 +71,14 @@ class RunError(RuntimeError):
     pass
 
 
+class BudgetExceeded(RunError):
+    """A role crossed a run-wide cap; a finished role's receipt is kept as evidence."""
+
+    def __init__(self, message: str, receipt: dict[str, Any] | None) -> None:
+        super().__init__(message)
+        self.receipt = receipt
+
+
 class RunInterrupted(RuntimeError):
     """Operator cancellation must bypass handlers for invalid run or peer state."""
 
@@ -119,6 +127,31 @@ def shown_paths(paths: list[str]) -> str:
                              for char in path) for path in paths)
 
 
+PAUSE_MARKER = ".harness/AUTONOMY_PAUSED"
+
+
+def assert_autonomy_not_paused(repo: Path) -> None:
+    """The operator's repository-wide kill switch: while the marker exists in this checkout or
+    in the main checkout, no run is prepared, started or resumed. A live run keeps running;
+    `stop <id>` ends it. Any entry in `.harness/` named AUTONOMY_PAUSED ignoring case counts,
+    so the result does not depend on whether the filesystem ignores case."""
+    roots = [repo]
+    common = resolved_git_path(repo, "--git-common-dir")
+    if common.name == ".git" and common.parent != repo:
+        roots.append(common.parent)
+    wanted = Path(PAUSE_MARKER).name.casefold()
+    for root in roots:
+        folder = root / Path(PAUSE_MARKER).parent
+        try:
+            names = os.listdir(folder) if folder.is_dir() else []
+        except OSError as exc:
+            raise RunError(f"cannot tell whether autonomy is paused: {folder}: {exc}") from exc
+        for name in names:
+            if name.casefold() == wanted:
+                raise RunError(f"autonomy is paused by {folder / name}; remove it to allow new work "
+                               "(live runs are not stopped; use stop <id>)")
+
+
 def repo_root(path: Path) -> Path:
     result = run(["git", "rev-parse", "--show-toplevel"], path)
     if result.returncode:
@@ -149,6 +182,11 @@ def read_text(path: Path) -> str:
                 raise
             time.sleep(0.01)
     raise AssertionError("unreachable")
+
+
+def read_output(path: Path) -> str:
+    """Captured role and verifier output: UTF-8 whatever the locale, never a decode crash."""
+    return path.read_text(encoding="utf-8", errors="replace")
 
 
 def write_json(path: Path, value: dict[str, Any]) -> None:
@@ -532,7 +570,7 @@ def assert_no_live_scope_conflicts(repo: Path, run_id: str, scope: Any) -> None:
 def event(state: dict[str, Any], kind: str, **fields: Any) -> None:
     path = Path(state["state_path"]).parent / "events.jsonl"
     record = {"at": now(), "event": kind, **fields}
-    with path.open("a") as handle:
+    with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, sort_keys=True) + "\n")
 
 
@@ -549,13 +587,106 @@ def frontmatter(text: str) -> dict[str, str]:
     end = text.find("\n---\n", 4)
     if end < 0:
         raise RunError("spec frontmatter is not closed")
+    # Flat `key: value` pairs. An indented line continues the previous key, as in YAML
+    # (`schema:` then `  2`, or a folded `route: >-`), and a repeated key is refused, so a
+    # gate field cannot be hidden by its YAML shape.
     values: dict[str, str] = {}
+    key = None
     for raw in text[4:end].splitlines():
-        if not raw.strip() or raw.lstrip().startswith("#") or ":" not in raw:
+        if not raw.strip() or raw.lstrip().startswith("#"):
             continue
-        key, value = raw.split(":", 1)
-        values[key.strip()] = value.strip().strip('"\'')
-    return values
+        if raw[:1] in (" ", "\t") and key is not None:
+            values[key] = " ".join(part for part in (values[key], raw.strip()) if part)
+            continue
+        if ":" not in raw:
+            key = None
+            continue
+        key, value = (part.strip() for part in raw.split(":", 1))
+        if key in values:
+            raise RunError(f"spec front matter repeats the key {key!r}")
+        values[key] = "" if value in {">", ">-", ">+", "|", "|-", "|+"} else value
+    return {name: value.strip().strip('"\'') for name, value in values.items()}
+
+
+ROUTE = re.compile(r"(direct|grill|wayfinder)\b[\s\-—–:;,(]*(.*)")
+
+
+def spec_pipeline_problems(repo: Path, meta: dict[str, str], commit: str | None = None) -> list[str]:
+    """What a schema-2 spec lacks of the development pipeline's artifacts.
+
+    A spec with no `schema` key at all predates the pipeline fields and is not checked, so specs
+    accepted before they existed keep working; the template declares `schema: 2`. Any schema
+    value other than 2, blank included, is refused rather than treated as legacy.
+
+    A run's worktree holds only what Git holds. With `commit`, each cited file must be a regular
+    file in that commit; without it, the file must exist and be tracked."""
+    if "schema" not in meta:
+        return []
+    schema = meta["schema"]
+    if schema != "2":
+        return [f"unsupported schema {schema!r}; this controller reads schema 2"]
+    problems = []
+    for field in ("research", "reviewer_receipt"):
+        value = meta.get(field, "")
+        if not value:
+            problems.append(f"{field} is missing")
+            continue
+        relative = Path(value)
+        if relative.is_absolute() or "\\" in value or ".." in relative.parts:
+            problems.append(f"{field} must be a repository-relative path")
+        elif commit is not None:
+            entry = run(["git", "ls-tree", commit, "--", relative.as_posix()], repo).stdout.split()
+            if not entry or not entry[0].startswith("100") or entry[1] != "blob":
+                problems.append(f"{field} names {value}, which is not committed at {commit}; "
+                                "commit it so the run's worktree has it")
+        elif not (repo / relative).is_file() or not (repo / relative).resolve().is_relative_to(repo.resolve()):
+            problems.append(f"{field} points at {value}, which does not exist")
+        elif run(["git", "ls-files", "--error-unmatch", "--", relative.as_posix()], repo).returncode:
+            problems.append(f"{field} names {value}, which Git does not track; "
+                            "add and commit it so a run's worktree has it")
+    route = ROUTE.fullmatch(meta.get("route", ""))
+    if route is None:
+        problems.append("route must start with direct, grill or wayfinder")
+    elif not route.group(2).strip():
+        problems.append("route needs a one-line reason after direct, grill or wayfinder")
+    return problems
+
+
+def check_specs(args: argparse.Namespace) -> int:
+    """The pipeline guard: 0 when every checked spec is complete, 1 when one is not."""
+    repo = repo_root(Path.cwd())
+    named = [Path(path) for path in args.paths]
+    targets = named or sorted(path for path in (repo / "docs/specs").rglob("*.md") if path.is_file())
+    failed = False
+    checked = 0
+    for path in targets:
+        path = path if path.is_absolute() else Path.cwd() / path
+        shown = path.relative_to(repo).as_posix() if path.resolve().is_relative_to(repo) else str(path)
+        try:
+            text = read_text(path)
+            if not named and not text.startswith("---\n"):
+                continue  # not a spec, for example the folder's README
+            meta = frontmatter(text)
+        except (OSError, UnicodeError, RunError) as exc:
+            print(f"FAIL {shown}: {exc}")
+            failed = True
+            continue
+        status = meta.get("status", "")
+        if not named and status != "accepted":
+            continue
+        checked += 1
+        problems = spec_pipeline_problems(repo, meta)
+        if problems:
+            print(f"FAIL {shown}: " + "; ".join(problems))
+            failed = True
+        elif "schema" not in meta:
+            print(f"ok   {shown}: legacy spec without schema: 2; pipeline fields not checked")
+        else:
+            waiting = "" if status == "accepted" else " (waiting for operator acceptance)"
+            print(f"ok   {shown}: {status}{waiting}")
+    if not checked and not failed:
+        print("no accepted spec under docs/specs to check")
+    return 1 if failed else 0
 
 
 RESOURCE_KEY = re.compile(r"[a-z][a-z0-9_-]*:[a-z0-9][a-z0-9._/-]*\Z")
@@ -632,6 +763,24 @@ def scope_collision(left_scope: Any, right_scope: Any) -> tuple[str, str] | None
     return None
 
 
+# A template or hand-edited draft marks a value the operator still has to choose this way.
+PLACEHOLDER_SETTING = re.compile(
+    r"\A\s*\Z|\A\s*<|replace[-_ ]?with|to[-_ ]?fill|\A\s*(todo|tbd|changeme|placeholder|fixme)\s*\Z",
+    re.IGNORECASE)
+
+
+def unset_role_settings(manifest: dict[str, Any]) -> list[str]:
+    roles = manifest.get("roles") if isinstance(manifest.get("roles"), dict) else {}
+    unset = []
+    for role in ("maker", "checker"):
+        config = roles.get(role) if isinstance(roles.get(role), dict) else {}
+        for key in ("model", "effort"):
+            value = config.get(key)
+            if not isinstance(value, str) or PLACEHOLDER_SETTING.search(value):
+                unset.append(f"roles.{role}.{key}")
+    return unset
+
+
 def validate_manifest(manifest: dict[str, Any], repo: Path) -> tuple[Path, str]:
     required = ["schema_version", "run_id", "spec_path", "implementation_ticket", "base_ref",
                 "roles", "scope", "verify", "limits", "git", "external_writes"]
@@ -656,10 +805,9 @@ def validate_manifest(manifest: dict[str, Any], repo: Path) -> tuple[Path, str]:
         config = manifest["roles"].get(role, {})
         if config.get("runtime") not in {"claude", "codex"}:
             raise RunError(f"roles.{role}.runtime must be claude or codex")
-        for key in ("model", "effort"):
-            value = config.get(key)
-            if not isinstance(value, str) or not value.strip() or value.strip().startswith("<"):
-                raise RunError(f"roles.{role}.{key} must be explicit before execution; draft manifest is non-executable")
+    unset = unset_role_settings(manifest)
+    if unset:
+        raise RunError(f"{', '.join(unset)} must be explicit before execution; draft manifest is non-executable")
     verify_config = manifest["verify"]
     if not isinstance(verify_config, dict) or not isinstance(verify_config.get("command"), str) or not verify_config["command"].strip():
         raise RunError("verify.command must name a required verification command")
@@ -668,6 +816,8 @@ def validate_manifest(manifest: dict[str, Any], repo: Path) -> tuple[Path, str]:
         raise RunError("limits.max_attempts must be between 1 and 3")
     if int(limits.get("wall_minutes", 0)) <= 0:
         raise RunError("limits.wall_minutes must be positive")
+    if "budget_rationale" in limits and not isinstance(limits["budget_rationale"], str):
+        raise RunError("limits.budget_rationale must be text: the size class, the usage it rests on, and who set it")
     spec_rel = Path(str(manifest["spec_path"]))
     if spec_rel.is_absolute() or ".." in spec_rel.parts or spec_rel.parts[:2] != ("docs", "specs"):
         raise RunError("spec_path must be a repository-relative path under docs/specs/")
@@ -681,6 +831,9 @@ def validate_manifest(manifest: dict[str, Any], repo: Path) -> tuple[Path, str]:
         raise RunError("accepted spec requires accepted_by and accepted_at")
     if not meta.get("decision_ticket"):
         raise RunError("accepted spec requires a decision_ticket reference")
+    problems = spec_pipeline_problems(repo, meta, str(manifest["base_ref"]))
+    if problems:
+        raise RunError("accepted spec fails the pipeline check: " + "; ".join(problems))
     if str(manifest["implementation_ticket"]) == meta.get("decision_ticket"):
         raise RunError("implementation_ticket must be separate from decision_ticket")
     digest = hashlib.sha256(shown.encode()).hexdigest()
@@ -758,6 +911,7 @@ def graph_effective_base(repo: Path, graph_path: str, manifest_path: Path,
 
 def prepare(args: argparse.Namespace) -> int:
     repo = repo_root(Path.cwd())
+    assert_autonomy_not_paused(repo)
     if args.template:
         source = Path(args.template).resolve()
     else:
@@ -772,13 +926,27 @@ def prepare(args: argparse.Namespace) -> int:
         manifest["roles"]["maker"]["runtime"] = args.maker
     if args.checker:
         manifest["roles"]["checker"]["runtime"] = args.checker
+    spec = repo / args.spec
+    if spec.is_file():
+        problems = spec_pipeline_problems(repo, frontmatter(read_text(spec)),
+                                          str(manifest.get("base_ref") or "HEAD"))
+        if problems:
+            raise RunError(f"{args.spec} fails the pipeline check: " + "; ".join(problems))
+    if args.maker_model:
+        manifest["roles"]["maker"]["model"] = args.maker_model
+    if args.checker_model:
+        manifest["roles"]["checker"]["model"] = args.checker_model
+    unset = unset_role_settings(manifest)
+    if unset:
+        raise RunError(f"{', '.join(unset)} are blank or placeholders; pass --maker-model and "
+                       "--checker-model, or fill them in the template, before prepare writes a manifest")
     output = Path(args.output or f".harness/runs/{args.run_id}.json")
     output = output if output.is_absolute() else repo / output
     if output.exists() and not args.force:
         raise RunError(f"refusing to overwrite {output}; pass --force deliberately")
     write_json(output, manifest)
     print(f"prepared {output.relative_to(repo) if output.is_relative_to(repo) else output}")
-    print("draft is non-executable until both role models and efforts are explicit; review and commit it before start")
+    print("review the scope, verifier, models and budgets, then commit the manifest before start")
     return 0
 
 
@@ -1241,8 +1409,8 @@ def parse_receipt(path: Path, stdout: str) -> dict[str, Any]:
     candidates: list[Any] = []
     if path.exists():
         try:
-            candidates.append(json.loads(path.read_text()))
-        except json.JSONDecodeError:
+            candidates.append(json.loads(path.read_text(encoding="utf-8")))
+        except (json.JSONDecodeError, UnicodeDecodeError):
             pass
     try:
         candidates.append(json.loads(stdout))
@@ -1319,6 +1487,63 @@ def require_native_role_sandbox() -> None:
     raise RunError('no supported fail-closed trusted-state sandbox; use macOS or Linux with bubblewrap')
 
 
+def role_sandbox_probe(role: str, cwd: Path) -> list[str] | None:
+    """A trivial command under the operating-system sandbox that both native clients use for
+    shell commands (Seatbelt on macOS, bubblewrap on Linux), with the role's write access."""
+    command = ["/bin/sh", "-c", "exit 0"]
+    if sys.platform == "darwin":
+        writes = f"(allow file-write* (subpath {json.dumps(str(cwd))}))" if role == "maker" else ""
+        return ["/usr/bin/sandbox-exec", "-p",
+                f"(version 1)(allow default)(deny network*)(deny file-write*){writes}", *command]
+    if sys.platform.startswith("linux"):
+        return ["bwrap", "--unshare-net", "--die-with-parent", "--ro-bind", "/", "/",
+                "--bind" if role == "maker" else "--ro-bind", str(cwd), str(cwd),
+                "--dev", "/dev", "--proc", "/proc", "--chdir", str(cwd), *command]
+    return None  # native roles are refused on every other host
+
+
+def preflight_sandboxes(repo: Path, manifest: dict[str, Any], *, verifier: bool = True) -> None:
+    """Fail before any branch, worktree or model spend when a role or the verifier cannot run
+    one command on this host, for example because host policy forbids a nested sandbox.
+
+    This proves the sandbox starts; it does not prove a client's own tool policy. A graph
+    probes the verifier once before dispatch and its children skip it (`verifier=False`)."""
+    for role in ("maker", "checker"):
+        probe = role_sandbox_probe(role, repo)
+        if probe is None:
+            continue
+        runtime = manifest["roles"][role]["runtime"]
+        try:
+            result = run(probe, repo, timeout=30, env=minimal_environment())
+        except subprocess.TimeoutExpired:
+            result = subprocess.CompletedProcess(probe, 124, "", "timed out after 30 seconds")
+        if result.returncode:
+            detail = (result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}")
+            raise RunError(f"{role} ({runtime}) cannot run a command in the operating-system sandbox "
+                           f"on this host: {shown_paths([detail.splitlines()[-1][:300]])}")
+    if verifier:
+        preflight_verifier_sandbox()
+
+
+def preflight_verifier_sandbox() -> None:
+    """The verifier sandbox is a property of the host, not of one run. On Windows the probe is
+    slow and holds a machine-wide ACL mutex, so a graph runs it once, not once per child."""
+    # Probe the verifier in a throwaway repository: on Windows it writes its script, request and
+    # result files into its working folder and grants that folder's ACLs, and in the shared
+    # checkout those files made a parallel graph child see a dirty base.
+    with tempfile.TemporaryDirectory(prefix="agentsmith-preflight-") as temporary:
+        probe_repo = Path(temporary).resolve() / "probe"
+        probe_repo.mkdir()
+        initialized = run(["git", "init", "-q", str(probe_repo)], probe_repo)
+        if initialized.returncode:
+            raise RunError(f"cannot prepare the verifier sandbox probe: {initialized.stderr.strip()}")
+        verify = sandboxed_verify("exit 0", probe_repo, 60, verifier_env())
+    if verify.returncode:
+        detail = verify.stderr.strip() or verify.stdout.strip()
+        raise RunError(f"verifier sandbox cannot run a command on this host (exit {verify.returncode})"
+                       + (f": {shown_paths([detail.splitlines()[-1][:300]])}" if detail else ""))
+
+
 def trusted_paths(state: dict[str, Any]) -> list[Path]:
     repo = Path(state['repo'])
     runtime = Path(claude_sandbox_settings.__code__.co_filename).resolve()
@@ -1379,7 +1604,7 @@ def supervised_process(command: list[str], cwd: Path, timeout: int, env: dict[st
     stdout_path = directory / (prefix + '.stdout')
     stderr_path = directory / (prefix + '.stderr')
     error: BaseException | None = None
-    with stdout_path.open('w') as output, stderr_path.open('w') as errors:
+    with stdout_path.open('w', encoding='utf-8') as output, stderr_path.open('w', encoding='utf-8') as errors:
         process = subprocess.Popen(command, cwd=cwd, env=env, text=True,
                                    stdout=output, stderr=errors, start_new_session=os.name != 'nt')
         try:
@@ -1411,7 +1636,7 @@ def supervised_process(command: list[str], cwd: Path, timeout: int, env: dict[st
             state['active_pid'] = None
             save_state(state)
     return subprocess.CompletedProcess(command, process.returncode,
-                                       stdout_path.read_text(), stderr_path.read_text()), error
+                                       read_output(stdout_path), read_output(stderr_path)), error
 
 
 def verifier_process(command: list[str], cwd: Path, timeout: int, env: dict[str, str],
@@ -1510,20 +1735,34 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
         if isinstance(error, subprocess.TimeoutExpired):
             raise RunError(f'{role} exceeded wall-clock budget') from error
         raise error
+    # Each cap is checked after a role that spends it; the launch checks above refuse a role
+    # whose own runtime has nothing left.
+    over_budget = None
     max_cost = float(manifest["limits"].get("claude_max_usd", 0))
-    if max_cost and state["claude_cost_usd"] > max_cost:
-        raise RunError("Claude run-wide USD budget exceeded")
+    if runtime == "claude" and max_cost and state["claude_cost_usd"] > max_cost:
+        over_budget = "Claude run-wide USD budget exceeded"
     max_tokens = int(manifest["limits"].get("codex_goal_tokens", 0))
-    if max_tokens and state["codex_tokens_used"] > max_tokens:
-        raise RunError("Codex run-wide token budget exceeded")
+    if runtime == "codex" and max_tokens and state["codex_tokens_used"] > max_tokens:
+        over_budget = "Codex run-wide token budget exceeded"
+    receipt = None
+    if not result.returncode:
+        # Keep a finished role's receipt before enforcing a cap it crossed on the way.
+        try:
+            receipt = parse_receipt(receipt_path, stdout)
+        except RunError:
+            if over_budget is None:
+                raise
+        if receipt is not None:
+            write_json(run_dir / f"attempt-{state['attempt']}-{role}-receipt.json", receipt)
+            event(state, "role_completed", role=role, status=receipt["status"], attempt=state["attempt"])
+    if over_budget:
+        raise BudgetExceeded(over_budget, receipt)
     if result.returncode:
         if state.get("status") == "interrupted":
             raise RunInterrupted("stopped by operator")
         raise_if_stopped(run_dir)
         raise RunError(f"{runtime} {role} exited {result.returncode}: {stderr[-500:].strip()}")
-    receipt = parse_receipt(receipt_path, stdout)
-    write_json(run_dir / f"attempt-{state['attempt']}-{role}-receipt.json", receipt)
-    event(state, "role_completed", role=role, status=receipt["status"], attempt=state["attempt"])
+    assert receipt is not None
     return receipt
 
 
@@ -1552,7 +1791,11 @@ and make atomic local commits only. Leave the worktree clean. HEAD must advance 
 Use status completed or blocked; do not mark your own work accepted.{feedback}"""
     return common + f"""You are the independent checker and default to REJECT. Do not edit files or commit.
 Inspect the committed diff from {base} to HEAD and the controller verification evidence.
-Try to falsify the acceptance criteria using read-only commands. Controller verification output:
+Try to falsify the acceptance criteria using read-only commands. Also reject when either answer is no:
+- Is this the smallest change that solves the stated problem? Name any part the spec does not need.
+- Did each new red test fail for the intended reason? Check that it asserts on the failure message
+  or value the bug produces, not on a stub, an import error or an earlier gate.
+Controller verification output:
 {verify_output[-6000:]}
 Use status accepted, rejected, or blocked."""
 
@@ -1638,6 +1881,14 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
                     after_meta = git_metadata(worktree, known_peers=before_meta["registered_peers"])
                 validate_git_transition(worktree, before_meta, after_meta, state["branch"],
                                         before_head, after_head)
+            if isinstance(maker_error, BudgetExceeded) and maker_error.receipt is not None:
+                # The maker finished but crossed a cap: checkpoint its candidate before the
+                # escalation, so resume can verify and check it instead of discarding it.
+                state['maker_receipt'] = maker_error.receipt
+                state['candidate_commit'] = after_head
+                state['stage'] = 'validating'
+                save_state(state, 'candidate_checkpointed', stage='validating',
+                           attempt=state['attempt'], reason=str(maker_error))
             if maker_error:
                 raise maker_error
             state['maker_receipt'] = maker
@@ -1685,7 +1936,7 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
                                       remaining_seconds(state, manifest), verifier_env(), state=state)
             verify_output = f"exit={verify.returncode}\nSTDOUT:\n{verify.stdout}\nSTDERR:\n{verify.stderr}"
             verify_path = Path(state["state_path"]).parent / f"attempt-{state['attempt']}-verify.txt"
-            verify_path.write_text(verify_output)
+            verify_path.write_text(verify_output, encoding="utf-8")
             proof = verification_binding(state, manifest, checker_head)
             proof.update(exit_code=verify.returncode, output_sha256=file_digest(verify_path))
             proof_path = verify_path.with_suffix(".json")
@@ -1807,6 +2058,7 @@ def run_controller(state: dict[str, Any], manifest: dict[str, Any]) -> int:
 
 def start(args: argparse.Namespace) -> int:
     repo = repo_root(Path.cwd())
+    assert_autonomy_not_paused(repo)
     manifest_path = Path(args.manifest).resolve()
     manifest = load_json(manifest_path)
     spec_rel, spec_hash = validate_manifest(manifest, repo)
@@ -1820,6 +2072,9 @@ def start(args: argparse.Namespace) -> int:
     if tracked.returncode:
         raise RunError("run manifest must be committed before start")
     require_native_role_sandbox()
+    # A graph child shares its host with siblings that start at the same moment; the graph has
+    # already probed the verifier, and a per-child probe would serialise the roots on Windows.
+    preflight_sandboxes(repo, manifest, verifier=not args.graph)
     name = str(manifest["run_id"])
     path = state_path(repo, name)
     if path.exists():
@@ -1869,6 +2124,7 @@ def start(args: argparse.Namespace) -> int:
                 "deadline_epoch": time.time() + int(manifest["limits"]["wall_minutes"]) * 60,
                 "claude_cost_usd": 0.0,
                 "codex_tokens_used": 0,
+                "budget_rationale": manifest["limits"].get("budget_rationale") or None,
                 "active_pid": None,
                 "controller_pid": os.getpid(),
                 "controller_token": token,
@@ -1886,12 +2142,140 @@ def start(args: argparse.Namespace) -> int:
                     pass
 
 
+TERMINAL_RUN_STATUSES = {"accepted", "escalated", "interrupted"}
+UNFINISHED_RUN_STATUSES = {"prepared", "making", "checking", "retrying", "resuming"}
+TERMINAL_GRAPH_STATUSES = {"completed", "failed", "stopped", "blocked"}
+UNFINISHED_GRAPH_STATUSES = {"prepared", "running"}
+# What the controller keeps beside run folders in agentsmith-runs.
+RUN_ROOT_FILES = {"coordination.lock"}
+RUN_ROOT_FOLDERS = {"git-phases", "graph-stop"}
+
+
+def _real_directory(path: Path) -> bool:
+    return path.is_dir() and not path.is_symlink()
+
+
+def _real_file(path: Path) -> bool:
+    return path.is_file() and not path.is_symlink()
+
+
+def live_work(repo: Path) -> tuple[list[str], list[str]]:
+    """Read-only scan of every run and graph sharing this repository's Git metadata.
+
+    Returns (live, undetermined). Linked worktrees share refs and worktree administration, so
+    a `git worktree remove` or branch delete anywhere can break a run that is not terminal.
+    Only shapes the controller writes and statuses it knows count; anything else is
+    undetermined, because the guard must prove "terminal", not assume it."""
+    live: list[str] = []
+    unknown: list[str] = []
+    common = resolved_git_path(repo, "--git-common-dir")
+    for root in (common / "agentsmith-runs", common / "agentsmith-graphs"):
+        if (root.exists() or root.is_symlink()) and not _real_directory(root):
+            unknown.append(f"{root.name}: not a plain folder")
+    runs = common / "agentsmith-runs"
+    for entry in sorted(runs.iterdir() if _real_directory(runs) else []):
+        name = entry.name
+        if name in RUN_ROOT_FILES and _real_file(entry):
+            continue
+        if name in RUN_ROOT_FOLDERS and _real_directory(entry):
+            continue
+        if not _real_directory(entry):
+            unknown.append(f"run {name}: not a plain run folder")
+            continue
+        try:
+            lock = entry / "controller.lock"
+            if lock.is_symlink():
+                raise RunError("lifecycle lock is a symbolic link")
+            owner = read_lock(entry)
+            owner_live = owner is not None and process_is_live(owner["pid"])
+            state_file = entry / "state.json"
+            if not state_file.exists() and not state_file.is_symlink():
+                if owner_live:
+                    live.append(f"run {name}: starting (controller {owner['pid']})")
+                elif any(entry.iterdir()):
+                    unknown.append(f"run {name}: files but no state; inspect it")
+                continue
+            if not _real_file(state_file):
+                raise RunError("state.json is not a regular file")
+            state = load_json(state_file)
+        except (OSError, ValueError, RunError) as exc:  # ValueError: undecodable text
+            unknown.append(f"run {name}: cannot read its state or lock: {exc}")
+            continue
+        status = state.get("status")
+        if owner_live:
+            live.append(f"run {name}: {status} (controller {owner['pid']} is live)")
+        elif state.get("active_pid") and process_is_live(state["active_pid"]):
+            live.append(f"run {name}: {status} (role process {state['active_pid']} is live)")
+        elif status in UNFINISHED_RUN_STATUSES:
+            live.append(f"run {name}: {status} with no live controller; resume or inspect it first")
+        elif status not in TERMINAL_RUN_STATUSES:
+            unknown.append(f"run {name}: unrecognized status {status!r}")
+    graphs = common / "agentsmith-graphs"
+    for entry in sorted(graphs.iterdir() if _real_directory(graphs) else []):
+        name = entry.name
+        if not _real_directory(entry):
+            unknown.append(f"graph {name}: not a plain graph folder")
+            continue
+        try:
+            owner = None
+            lock = entry / "LOCK"
+            if lock.exists() or lock.is_symlink():
+                if not _real_file(lock):
+                    raise RunError("LOCK is not a regular file")
+                owner = json.loads(read_text(lock))
+                if not isinstance(owner, dict) or not isinstance(owner.get("pid"), int):
+                    raise RunError("malformed graph lock owner")
+            state_file = entry / "state.json"
+            if not state_file.exists() and not state_file.is_symlink() and owner is None \
+                    and not any(entry.iterdir()):
+                continue
+            if not _real_file(state_file):
+                raise RunError("state.json is missing or not a regular file")
+            state = load_json(state_file)
+        except (OSError, ValueError, RunError) as exc:  # ValueError: undecodable text or JSON
+            unknown.append(f"graph {name}: cannot read its state or lock: {exc}")
+            continue
+        status = state.get("status")
+        if owner is not None and process_is_live(owner["pid"]):
+            live.append(f"graph {name}: {status} (controller {owner['pid']} is live)")
+        elif status in UNFINISHED_GRAPH_STATUSES:
+            live.append(f"graph {name}: {status} with no live controller; resume or inspect it first")
+        elif status not in TERMINAL_GRAPH_STATUSES:
+            unknown.append(f"graph {name}: unrecognized status {status!r}")
+    return live, unknown
+
+
+def all_terminal(repo: Path) -> int:
+    """0: every run and graph is terminal. 1: something is live or not terminal. 2: cannot tell."""
+    try:
+        live, unknown = live_work(repo)
+    except (OSError, ValueError, RunError) as exc:
+        print(f"cannot tell whether autonomous work is live: {exc}")
+        return 2
+    for line in [*unknown, *live]:
+        print(line)
+    if unknown:
+        print("cannot tell whether every autonomous run is terminal; do not change Git metadata")
+        return 2
+    if live:
+        print("autonomous work is not terminal; do not change Git metadata yet")
+        return 1
+    print("every autonomous run and graph in this repository is terminal")
+    return 0
+
+
 def status_cmd(args: argparse.Namespace) -> int:
     repo = repo_root(Path.cwd())
+    if args.all_terminal:
+        if args.run_id:
+            raise RunError("status takes either a run id or --all-terminal, not both")
+        return all_terminal(repo)
+    if not args.run_id:
+        raise RunError("status needs a run id, or --all-terminal for the live-run guard")
     state = load_run(repo, args.run_id)
     keys = ["run_id", "status", "stage", "attempt", "active_pid", "branch", "worktree", "base_head",
             "accepted_commit", "deadline_epoch", "claude_cost_usd", "codex_tokens_used",
-            "usage_accounting_incomplete", "reason", "updated_at"]
+            "budget_rationale", "usage_accounting_incomplete", "reason", "updated_at"]
     print(json.dumps({key: state.get(key) for key in keys if state.get(key) is not None}, indent=2))
     return 0
 
@@ -1983,6 +2367,7 @@ def recover_checker_worktree(state: dict[str, Any], manifest: dict[str, Any]) ->
 
 def resume(args: argparse.Namespace) -> int:
     repo = repo_root(Path.cwd())
+    assert_autonomy_not_paused(repo)
     state = load_run(repo, args.run_id)
     if state["status"] == "accepted":
         raise RunError("accepted runs do not resume")
@@ -2034,7 +2419,7 @@ def resume(args: argparse.Namespace) -> int:
                 if role not in {'maker', 'checker'} or runtime != manifest['roles'][role]['runtime'] or pending_usage.get('prefix') != prefix:
                     raise RunError('invalid unfinished usage checkpoint')
                 output_path = run_dir / (prefix + '.stdout')
-                record_role_usage(state, runtime, role, output_path.read_text() if output_path.exists() else '')
+                record_role_usage(state, runtime, role, read_output(output_path) if output_path.exists() else '')
                 state['usage_accounting_incomplete'] = True
                 save_state(state, 'usage_recovered', accounting='reported output only; unreported spend unknown')
             if state.get('stage') == 'making' and state.get('maker_before_head') != git(worktree, 'rev-parse', 'HEAD'):
@@ -2069,10 +2454,17 @@ def parser() -> argparse.ArgumentParser:
     prep.add_argument("--ticket", required=True)
     prep.add_argument("--maker", choices=["claude", "codex"])
     prep.add_argument("--checker", choices=["claude", "codex"])
+    prep.add_argument("--maker-model", help="exact model name for the maker role")
+    prep.add_argument("--checker-model", help="exact model name for the checker role")
     prep.add_argument("--template")
     prep.add_argument("--output")
     prep.add_argument("--force", action="store_true")
     prep.set_defaults(func=prepare)
+    specs = sub.add_parser("check-specs", help="pipeline guard: accepted specs point at their "
+                                              "research and review receipt and record a route")
+    specs.add_argument("paths", nargs="*", help="specs to check whatever their status "
+                                                "(default: every accepted spec under docs/specs)")
+    specs.set_defaults(func=check_specs)
     begin = sub.add_parser("start", help="explicitly authorize and run a committed manifest")
     begin.add_argument("manifest")
     begin.add_argument("--graph", help="committed work-graph path authorizing a pinned effective base")
@@ -2080,8 +2472,12 @@ def parser() -> argparse.ArgumentParser:
     begin.set_defaults(func=start)
     for name, func in (("status", status_cmd), ("stop", stop), ("resume", resume)):
         item = sub.add_parser(name)
-        item.add_argument("run_id")
+        item.add_argument("run_id", nargs="?" if name == "status" else None)
         item.set_defaults(func=func)
+        if name == "status":
+            item.add_argument("--all-terminal", action="store_true",
+                              help="read-only guard: exit 0 if every run and graph is terminal, "
+                                   "1 if any is live or unfinished, 2 if that cannot be told")
     return result
 
 

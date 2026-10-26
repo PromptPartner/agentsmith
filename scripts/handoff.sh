@@ -11,7 +11,8 @@ STAMP="$(date +%Y%m%d-%H%M 2>/dev/null || echo session)"
 FILE="$DIR/handoff-$STAMP.md"
 BRANCH="$(git -C "$ROOT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'n/a')"
 HEAD="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || echo 'n/a')"
-DIRTY="$(git -C "$ROOT_DIR" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+# Outside Git, `git status` exits 128; under pipefail that must not abort the scaffold.
+DIRTY="$({ git -C "$ROOT_DIR" status --porcelain 2>/dev/null || true; } | wc -l | tr -d ' ')"
 
 cat > "$FILE" <<EOF
 # Handoff — $ITEM — $STAMP
@@ -35,7 +36,13 @@ $( [ "$DIRTY" != "0" ] && echo '> ⚠ Tree is dirty — commit or stash BEFORE h
 
 ## What shipped this session
 
+## Verified this session
+
+## Carried over, not re-verified
+
 ## What is still pending
+
+## Open questions — default if unanswered
 
 ## Deviations from the plan / decisions made (don't re-litigate)
 

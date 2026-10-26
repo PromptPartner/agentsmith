@@ -14,6 +14,7 @@ import sys
 import tempfile
 import textwrap
 import time
+from typing import Any
 import unittest
 
 
@@ -126,6 +127,33 @@ class GraphDispatchTests(unittest.TestCase):
                         original_guard()
                     raise AssertionError("production guard accepted unsupported host")
                 controller.require_native_role_sandbox = lambda: None
+                real_verify = controller.sandboxed_verify
+                def timed_verify(command, cwd, timeout, env, **kwargs):
+                    # Log every host verifier probe; optionally make it slow and machine-wide
+                    # serialised, as the Windows AppContainer verifier is.
+                    if Path(cwd).name != "probe":
+                        return real_verify(command, cwd, timeout, env, **kwargs)
+                    import os, time
+                    here = Path(__file__).parent
+                    slow = (here / "slow-verifier-probe").is_file()
+                    delay = float((here / "slow-verifier-probe").read_text(encoding="utf-8") or 5) if slow else 0
+                    began = time.monotonic()
+                    while slow:
+                        try:
+                            os.close(os.open(here / "probe.lock", os.O_CREAT | os.O_EXCL))
+                            break
+                        except FileExistsError:
+                            time.sleep(0.05)
+                    try:
+                        if slow:
+                            time.sleep(delay)
+                        return real_verify(command, cwd, timeout, env, **kwargs)
+                    finally:
+                        if slow:
+                            (here / "probe.lock").unlink()
+                        with (here / "preflight.log").open("a", encoding="utf-8") as log:
+                            log.write(f"pid={{os.getpid()}} start={{began}} end={{time.monotonic()}}\\n")
+                controller.sandboxed_verify = timed_verify
                 return controller
             if __name__ == "__main__":
                 early_exit = Path(__file__).parent / "early-exit-a"
@@ -244,6 +272,11 @@ class GraphDispatchTests(unittest.TestCase):
         self.assertEqual((self.repo / self.graph_path).read_bytes(), committed_graph,
                          "fixture graph must match its committed contract bytes")
         self.addCleanup(self._remove_worktrees)
+        # AGENTSMITH_TEST_SLOW_PROBE=<seconds> makes every graph's verifier probe that slow and
+        # machine-wide serialised, as on Windows, to prove no start window depends on its speed.
+        if os.environ.get("AGENTSMITH_TEST_SLOW_PROBE"):
+            (fake / "slow-verifier-probe").write_text(os.environ["AGENTSMITH_TEST_SLOW_PROBE"],
+                                                      encoding="utf-8")
 
     def _remove_worktrees(self) -> None:
         for path in (self.repo.parent / "repo-a", self.repo.parent / "repo-b", self.repo.parent / "repo-c",
@@ -252,6 +285,42 @@ class GraphDispatchTests(unittest.TestCase):
             if path.exists():
                 subprocess.run(["git", "worktree", "remove", "--force", str(path)], cwd=self.repo,
                                capture_output=True, check=False)
+
+    def start_graph_in_background(self) -> subprocess.Popen[str]:
+        running = subprocess.Popen(
+            [sys.executable, str(self.graph_cli), "graph", "start", "--graph", self.graph_path,
+             "--target", str(self.repo), "--json"],
+            cwd=self.repo, env=self.environment, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+
+        def reap_graph() -> None:
+            if running.poll() is None:
+                # Stop the children first: a killed graph leaves child controllers holding the
+                # repository open, and Windows then cannot remove the fixture folder.
+                self.invoke("stop", diagnose_unexpected=False)
+                running.kill()
+            running.communicate()
+        self.addCleanup(reap_graph)
+        return running
+
+    def probe_timing(self) -> str:
+        log = self.fake_client.parent / "preflight.log"
+        return log.read_text(encoding="utf-8").strip() if log.is_file() else "none"
+
+    def wait_after_graph_probe(self, running: subprocess.Popen[str], done: Any, window: float,
+                               failure: str) -> None:
+        """A window measured from `graph start` begins after the graph's one verifier probe,
+        which can take longer than dispatch itself on Windows."""
+        preflight = self.fake_client.parent / "preflight.log"
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline and not preflight.is_file() and running.poll() is None:
+            time.sleep(0.05)
+        deadline = time.monotonic() + window
+        while time.monotonic() < deadline and not done():
+            time.sleep(0.05)
+        self.assertTrue(done(), f"{failure} within {window} s of the graph's verifier probe; "
+                                f"probes: {self.probe_timing()}")
 
     def invoke(self, action: str, *, diagnose_unexpected: bool = True) -> subprocess.CompletedProcess[str]:
         result = subprocess.run(
@@ -269,6 +338,10 @@ class GraphDispatchTests(unittest.TestCase):
                 result.stderr += f"\n{state_path.parent.name}: {state.get('status')}: {state.get('reason')}\n"
                 for verify_path in sorted(state_path.parent.glob("attempt-*-verify.txt")):
                     result.stderr += f"{verify_path.name}: {verify_path.read_text(encoding='utf-8')[:1000]}\n"
+            base = subprocess.run(["git", "status", "--porcelain=v1", "--untracked-files=all"],
+                                  cwd=self.repo, env=self.environment, text=True,
+                                  capture_output=True, check=False)
+            result.stderr += f"repository Git status: {base.stdout[:1000]}{base.stderr[:300]}\n"
             for run_id in ("a", "b", "c"):
                 worktree = self.repo.parent / f"repo-{run_id}"
                 if worktree.is_dir():
@@ -289,10 +362,29 @@ class GraphDispatchTests(unittest.TestCase):
         self.assertFalse((self.repo / ".git/agentsmith-runs").exists())
         self.assertFalse((self.fake_client.parent / "starts.log").exists())
 
+    def test_autonomy_pause_refuses_graph_start_before_any_state(self) -> None:
+        (self.repo / ".harness/AUTONOMY_PAUSED").write_text("paused for review\n", encoding="utf-8")
+        started = self.invoke("start", diagnose_unexpected=False)
+        self.assertNotEqual(started.returncode, 0)
+        self.assertIn("autonomy is paused", started.stdout + started.stderr)
+        self.assertFalse((self.repo / ".git/agentsmith-graphs/dispatch-fixture").exists())
+        self.assertFalse((self.fake_client.parent / "starts.log").exists())
+
+    def test_any_case_of_the_pause_marker_pauses_start_and_keeps_status_readable(self) -> None:
+        (self.repo / ".harness/autonomy_paused").write_text("paused\n", encoding="utf-8")
+        status = self.invoke("status", diagnose_unexpected=False)
+        self.assertEqual(status.returncode, 0, status.stdout + status.stderr)
+        started = self.invoke("start", diagnose_unexpected=False)
+        self.assertNotEqual(started.returncode, 0)
+        self.assertIn("autonomy is paused", started.stdout + started.stderr)
+        self.assertFalse((self.fake_client.parent / "starts.log").exists())
+
     def test_parallel_roots_and_dependent_checkpoint(self) -> None:
         # Overlap is only observable while a maker still runs when its sibling starts. The 1 s default
         # was shorter than the dispatch gap on a loaded Windows runner, so give each maker 4 s.
         (self.fake_client.parent / "sleep-seconds.txt").write_text("4", encoding="utf-8")
+        # The host verifier probe is slow and serialised on Windows; roots must still overlap.
+        (self.fake_client.parent / "slow-verifier-probe").touch()
         started = self.invoke("start")
         self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
         status = self.invoke("status")
@@ -314,8 +406,12 @@ class GraphDispatchTests(unittest.TestCase):
                 line.split() for line in (self.fake_client.parent / "finishes.log").read_text().splitlines()
             )
         }
-        self.assertLess(max(starts["a"], starts["b"]), min(finishes["a"], finishes["b"]))
-        self.assertGreater(starts["c"], max(finishes["a"], finishes["b"]))
+        preflight = self.fake_client.parent / "preflight.log"
+        timeline = f"maker starts {starts}; maker finishes {finishes}; verifier probes: {self.probe_timing()}"
+        self.assertLess(max(starts["a"], starts["b"]), min(finishes["a"], finishes["b"]), timeline)
+        self.assertGreater(starts["c"], max(finishes["a"], finishes["b"]), timeline)
+        probes = preflight.read_text(encoding="utf-8").splitlines() if preflight.is_file() else []
+        self.assertEqual(len(probes), 1, "the graph probes the host verifier once: " + timeline)
         self.assertEqual(git(self.repo, "status", "--porcelain"), "")
 
     def test_early_child_exit_retains_live_independent_peer_acceptance(self) -> None:
@@ -350,25 +446,13 @@ class GraphDispatchTests(unittest.TestCase):
 
     def test_stop_then_resume_preserves_partial_work_and_limits(self) -> None:
         (self.fake_client.parent / "sleep-seconds.txt").write_text("20", encoding="utf-8")
-        running = subprocess.Popen(
-            [sys.executable, str(self.graph_cli), "graph", "start", "--graph", self.graph_path,
-             "--target", str(self.repo), "--json"],
-            cwd=self.repo, env=self.environment, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
-        def reap_graph() -> None:
-            if running.poll() is None:
-                running.kill()
-            running.communicate()
-        self.addCleanup(reap_graph)
+        running = self.start_graph_in_background()
         common = Path(git(self.repo, "rev-parse", "--git-common-dir"))
         if not common.is_absolute():
             common = self.repo / common
         state_path = common / "agentsmith-graphs" / "dispatch-fixture" / "state.json"
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline and not (self.fake_client.parent / "starts.log").is_file():
-            time.sleep(0.05)
-        self.assertTrue((self.fake_client.parent / "starts.log").is_file(), "child maker did not start")
+        self.wait_after_graph_probe(running, (self.fake_client.parent / "starts.log").is_file, 15,
+                                    "child maker did not start")
         duplicate = self.invoke("start")
         self.assertEqual(duplicate.returncode, 2, duplicate.stdout + duplicate.stderr)
         self.assertIn("already has local state", duplicate.stderr)
@@ -428,21 +512,11 @@ class GraphDispatchTests(unittest.TestCase):
 
     def test_changed_graph_contract_cannot_resume_stopped_run(self) -> None:
         (self.fake_client.parent / "sleep-seconds.txt").write_text("4", encoding="utf-8")
-        running = subprocess.Popen(
-            [sys.executable, str(self.graph_cli), "graph", "start", "--graph", self.graph_path,
-             "--target", str(self.repo), "--json"],
-            cwd=self.repo, env=self.environment, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
-        def reap_graph() -> None:
-            if running.poll() is None:
-                running.kill()
-            running.communicate()
-        self.addCleanup(reap_graph)
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline and not (self.fake_client.parent / "starts.log").is_file():
-            time.sleep(0.05)
-        self.assertTrue((self.fake_client.parent / "starts.log").is_file())
+        # The graph's one host verifier probe can take long on Windows before any dispatch.
+        (self.fake_client.parent / "slow-verifier-probe").write_text("16", encoding="utf-8")
+        running = self.start_graph_in_background()
+        self.wait_after_graph_probe(running, (self.fake_client.parent / "starts.log").is_file, 15,
+                                    "no maker started")
         stopped = self.invoke("stop")
         self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
         running.communicate(timeout=15)

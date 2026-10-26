@@ -93,7 +93,7 @@ Un profil indique à l’agent ce que signifie « terminé » pour le travail en
 
 ## Éléments installés
 
-- `AGENTS.md` est l’accord de projet de référence. Claude Code reçoit également un fichier `CLAUDE.md` généré.
+- `AGENTS.md` est l’accord de projet de référence. Claude Code reçoit également un fichier `CLAUDE.md` généré qui l’importe, pour qu’il n’y ait qu’un seul ensemble de règles.
 - `.harness/verify.conf` définit les vérifications réelles de ce projet.
 - `.agentsmith/state.json` ne consigne que les paramètres appartenant à AgentSmith, afin que les mises à jour et la désinstallation préservent le reste du contenu.
 - Des compétences, des serveurs MCP et des hooks facultatifs sont disponibles dans l’étape avancée, repliée par défaut.

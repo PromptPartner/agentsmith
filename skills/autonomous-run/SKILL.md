@@ -31,17 +31,29 @@ Use `.agentsmith/autonomous-run.py` in an installed project; the source checkout
 `templates/autonomous-run.json`):
 
 ```text
-python3 .agentsmith/autonomous-run.py prepare --run-id <short-id> --spec docs/specs/<name>.md --ticket <implementation-ticket> --maker codex --checker claude --template .harness/templates/autonomous-run.json
+python3 .agentsmith/autonomous-run.py prepare --run-id <short-id> --spec docs/specs/<name>.md --ticket <implementation-ticket> --maker codex --checker claude --maker-model <model> --checker-model <model> --template .harness/templates/autonomous-run.json
 ```
 
-This creates a non-executable draft until both roles have explicit model and effort settings.
-Review its exact allowed/denied paths, verifier, models, attempt cap,
-wall-clock limit, budgets, and optional `scope.resources` keys such as `port:3000` or
+`prepare` refuses blank or placeholder models and efforts and names the fields to fill. Ask the
+operator which models to use; never invent one. Review the manifest's exact allowed/denied
+paths, verifier, models, attempt cap, wall-clock limit, budgets, and optional `scope.resources` keys such as `port:3000` or
 `db:local/test`. Resource keys coordinate cooperating local runs; they do not replace operating-
 system port binding or database isolation. Commit the manifest before execution; the controller
 refuses an uncommitted contract. Concurrent worktrees share writable Git metadata needed for local
 commits, so this guard prevents accidental collisions between cooperating runs; it is not a
 security boundary for mutually untrusted makers.
+
+Before any Git metadata write in this repository (`git worktree remove` or `prune`, a branch
+delete, a history rewrite), run the read-only guard and continue only on exit 0:
+`python3 .agentsmith/autonomous-run.py status --all-terminal && <git command>`. Exit 1 names the
+live or unfinished run; exit 2 means it cannot tell, which you treat as live.
+
+Size budgets per run. Class the work by the lines it should change (S up to about 350, M up to
+about 800, L up to about 2,500; split anything larger), cap at the highest usage measured for an
+accepted run of that class plus at least 20% headroom, and write the class, the measurement and
+who set it in `limits.budget_rationale`. A run stops at the first report over a cap, even by 1%; a
+finished maker's candidate is checkpointed first, so `resume` can verify and check it.
+Keep `max_attempts` at 3.
 
 ## Start and supervise
 
@@ -56,7 +68,9 @@ receipt, scope and Git transition, then creates a disposable detached worktree f
 deterministic verifier and a fresh checker. A rejection becomes the next maker's input. Three
 failed attempts, invalid state, denied scope, immutable-deadline or reported-budget exhaustion,
 Git metadata drift, protected verification edits, or checker mutation escalates instead of widening authority. Verification
-fails closed unless macOS `sandbox-exec` or Linux `bubblewrap` is available.
+fails closed unless macOS `sandbox-exec` or Linux `bubblewrap` is available. Before creating
+anything, `start` runs one trivial sandboxed command per role and one through the verifier
+sandbox; if the host cannot run them, it refuses and names the role and reason.
 
 Existing baseline tests, the accepted spec, runtime launchers, and verification policy are protected
 even with broad maker scope, and moving or renaming one of them counts as changing it. A moved
@@ -73,6 +87,8 @@ controller serializes a repository-local collision scan. Ancestor/descendant fix
 resource keys conflict. Live malformed state fails closed, while stopped or demonstrably dead
 controllers no longer reserve their scopes.
 
+While `.harness/AUTONOMY_PAUSED` exists, `prepare`, `start` and `resume` refuse; live runs keep
+running until `stop <id>`. Never create or delete that file on your own; it is the operator's.
 Use `status <id>`, `stop <id>`, or `resume <id>`. Stop/resume retains the worktree and audit state.
 Resume revalidates a checkpointed candidate and reruns verification/checking in the same attempt.
 Dirty or unreceipted maker commits require operator review. Raw logs survive controller crashes;

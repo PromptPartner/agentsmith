@@ -45,17 +45,33 @@ been authorized, so the entries are kept here.
   archives and `SHA256SUMS` for each `v*` tag (`RELEASING.md`). Downloads appear with the next
   tagged release. macOS and Windows platform code signing remains open.
 
-- [ ] Project-scoped install writes Claude's user-global `permissions.defaultMode` through
+- [x] Project-scoped install writes Claude's user-global `permissions.defaultMode` through
   `install_native_config()`; the default `--safety cautious` therefore changes the user's global
-  mode to `acceptEdits` from a project operation.
-- [ ] Project install appends a generated block to an existing unmarked `CLAUDE.md` and also adds
-  `AGENTS.md`, leaving two authoritative instruction rulebooks in one repository.
+  mode to `acceptEdits` from a project operation. Fixed 2026-10-26: a project install writes the
+  mode to the project's shared `.claude/settings.json` (Claude Code's documented team settings
+  file) and refuses `--safety trusted` for Claude, which Claude Code ignores in project settings.
+  `test-installer-safety.py` and the update round trip in `test-update.py` failed before and pass
+  after; `test-agent-conformance.py` had asserted the defect and now asserts the fix.
+- [ ] 2026-10-26 — A project install still writes user-level files: Codex's safety keys in
+  `$CODEX_HOME/config.toml`, the Claude status line and the handoff and UI hooks in
+  `~/.claude/settings.json`, and the Codex hooks in `$CODEX_HOME/hooks.json`. Project uninstall also
+  removes every AgentSmith hook from those user files, including hooks a global install added.
+  Codex reads a project `.codex/config.toml` only for trusted projects, so moving its safety keys
+  needs its own design.
+- [x] Project install appends a generated block to an existing unmarked `CLAUDE.md` and also adds
+  `AGENTS.md`, leaving two authoritative instruction rulebooks in one repository. Fixed 2026-10-26:
+  the project `CLAUDE.md` block now holds only the generator metadata and Claude Code's documented
+  `@AGENTS.md` import, so `AGENTS.md` is the one rulebook; text already in `CLAUDE.md` stays above
+  the block. Global `~/.claude/CLAUDE.md` keeps the full block. `RulebookTests` in
+  `test-installer-safety.py` failed before and pass after.
 - [ ] A contained symlink added inside an AgentSmith-owned `.claude/skills` adapter is detected by
   strict Doctor and repaired by ordinary reinstall, but staged update fails closed because plan
   receipts cannot yet authenticate deletion and exact rollback restoration of symlink metadata.
-- [ ] `agentsmith verify discover --help` and `verify apply --help` currently show the shared
+- [x] `agentsmith verify discover --help` and `verify apply --help` currently show the shared
   verification parser's execution-only options; incompatible combinations fail clearly, but the
-  subcommand help should expose only each operation's valid flags.
+  subcommand help should expose only each operation's valid flags. Fixed 2026-10-26: `discover`
+  and `apply` are subcommands with their own flags. `VerifyHelpTests` in `test-verify-receipts.py`
+  failed before and pass after; wrong-operation flags still exit 2.
 - [ ] 2026-09-22 — A local macOS `agentsmith verify` run failed at the parallel work-graph
   lifecycle fixture when a child snapshot classified transient `packed-refs.lock` as protected
   Git metadata. Both child worktrees were clean afterward. The focused fixture and the full
@@ -170,6 +186,12 @@ been authorized, so the entries are kept here.
   worktree with nothing new to commit. A local graph stop/resume test exposed this under heavy
   concurrent verification. The fixture now holds the maker before commit to test a deterministic
   mid-maker stop; the late-stop reconciliation path still needs a bounded controller fix.
+  Re-checked 2026-10-26: resume no longer replays the maker. It refuses with "unfinished maker
+  advanced HEAD without a validated receipt; operator review required" and keeps the commit;
+  `test-autonomous-run.sh` "stop after the maker committed but before its receipt" pins this.
+  Automatic recovery was not added: the stop ended the maker before it wrote a receipt, so the
+  controller cannot tell finished work from half-done work, and accepting or discarding the
+  commit on its own would not be safe. Open until an operator-facing recovery path is designed.
 ## Resolved during W2-06
 
 - [x] 2026-09-21 — Windows AppContainer ACL grants initially left inherited ACE drift after
@@ -471,10 +493,12 @@ been authorized, so the entries are kept here.
   symlink and could overwrite a file outside the project. Software-development scaffolding now
   rejects symbolic links in either autonomous payload path before runtime/template writes.
   Four real-install regression variants cover payload files and parent directories.
-- [ ] 2026-10-05 — Other runtime payload copies in `copy_runtime()` still use `shutil.copy2`
+- [x] 2026-10-05 — Other runtime payload copies in `copy_runtime()` still use `shutil.copy2`
   without checking every destination component. The new autonomous payload guard protects its
   own files and their parents; existing links at other individual runtime filenames need a
-  separate installer containment fix.
+  separate installer containment fix. Fixed 2026-10-26 by the install containment preflight
+  (#50b below); runtime files are now copied by atomic replacement, so a link inside the project
+  is replaced, not written through. `test-installer-safety.py` failed before and passes after.
 
 - [x] 2026-10-05 — A child preflight refusal before run-state creation left the graph waiting
   indefinitely with a dispatched node still reported as ready. Graph dispatch now persists
@@ -502,10 +526,13 @@ been authorized, so the entries are kept here.
   Windows locale. Preparing a manifest under a `ü` directory looked for a nonexistent `Ã¼`
   template path. A real Git repository with a simulated CP-1252 subprocess decoder reproduced
   the corruption; explicit UTF-8 Git transport preserves the original repository path.
-- [ ] 2026-10-05 — Controller receipt, captured-log and usage-replay file reads still use
+- [x] 2026-10-05 — Controller receipt, captured-log and usage-replay file reads still use
   the locale default. A simulated CP-1252 read corrupts UTF-8 JSON text. These paths need
   explicit encoding and their own receipt/replay regressions; native Windows model-role
   execution remains unsupported, separately from the corrected prepare command.
+  Fixed 2026-10-26: receipt reads, captured logs, usage replay, `events.jsonl` and the verifier
+  log now name UTF-8. A simulated CP-1252 default failed on byte 0x81 before the fix and passes
+  after; a source check fails if any text-mode file call in the controller omits its encoding.
 
 ### LOCAL-CAPABILITIES: shared hook groups lost foreign handlers (fixed)
 
@@ -776,3 +803,243 @@ installation's root. Uninstall leaves Pi's file in place when the global record 
 Codex, so a later global uninstall leaves Pi's file in place and update no longer manages it. The
 record cannot prove ownership of Claude, Codex, or OpenCode files for the same reason. Merging
 global selections needs its own design because update replays the record.
+
+## Run guards and development pipeline (2026-10-26)
+
+- [x] 2026-10-26 — `prepare` wrote a manifest with blank role models and only warned; `start`
+  refused it later, and `REPLACE-WITH...`/`TO-FILL` values passed both. `prepare` now refuses and
+  names each field; a test that saw the draft written before the fix passes after.
+- [x] 2026-10-26 — `start` checked only that a sandbox binary existed. On a host that forbids a
+  nested sandbox it created the branch, worktree and state, then failed later. A per-role and
+  verifier sandbox preflight now refuses first; run inside a nested Seatbelt sandbox, the old
+  controller left all three artifacts and the new one leaves none.
+- [x] 2026-10-26 — A maker that finished but crossed its token cap left no receipt and no
+  candidate checkpoint, so resume stopped for operator review and the work was effectively lost.
+  The candidate is now checkpointed before the escalation and resume accepts it; the fixture
+  saw stage `making` and no receipt before the fix.
+- [x] 2026-10-26 — After a resume, a Claude checker escalated on the Codex cap that only the
+  maker had crossed, after spending checker money. Each cap is now checked after the roles that
+  spend it; found while fixing the entry above, and covered by the same fixture.
+- [x] 2026-10-26 — Independent review: `status --all-terminal` printed a traceback and exited 1
+  when a run state, graph state or lock held invalid UTF-8. It now reports that state as
+  undetermined (exit 2); a test with `\xff` in each of the four files errored before and passes.
+- [x] 2026-10-26 — Independent review: `status --all-terminal` failed open. A dangling
+  `state.json` link, a file where `agentsmith-runs` should be, or a dead lock with no state
+  exited 0 ("terminal"). It now accepts only the shapes and statuses the controller writes and
+  answers 2 for anything else; ten such cases exited 0 or 1 before and exit 2 after.
+- [x] 2026-10-26 — Independent review: an accepted spec with `schema:` and `2` on the next line
+  (valid YAML), a repeated or a blank `schema` key, and no pipeline fields passed `check-specs`
+  as legacy. Indented lines now continue their key, repeated keys are refused, and any `schema`
+  key other than exactly 2 is refused; three such fixtures passed before and fail after.
+- [x] 2026-10-26 — Independent review: an ignored or untracked research note or review verdict
+  satisfied `prepare` and `start`, but the run's worktree lacked it and failed `check-specs`.
+  `start` and `prepare` now require each cited file in the run's base commit and `check-specs`
+  requires it tracked; a test with ignored files passed `start` before and is refused after.
+- [x] 2026-10-26 — Independent review: on a case-insensitive filesystem `.harness/autonomy_paused`
+  paused runs, but graph `validate`/`status` then refused a "dirty" repository; on a
+  case-sensitive one it would not pause at all. The marker name now matches ignoring case on
+  every filesystem, graph validation ignores every case of it, and the refusal names the real
+  file; graph status exited 2 before and 0 after.
+- [x] 2026-10-26 — PR #63 CI, Windows only: a graph child failed with `refusal=graph-changed`.
+  The new start preflight ran the Windows verifier probe in the shared checkout; that verifier
+  writes its script, request and result files into its working folder, so a parallel sibling's
+  graph validation saw a dirty base (that refusal reports as `graph-changed`). The probe now
+  runs in a throwaway repository; a test with a Windows-like verifier left a file in the
+  repository before the fix and none after. The dirty-base refusal now names the paths.
+- [x] 2026-10-26 — PR #63 CI, Windows only: the two graph roots stopped overlapping. Each child's
+  start preflight probed the verifier, which on Windows is slow and holds a machine-wide ACL
+  mutex, so sibling b waited for a. The graph now probes the verifier once before dispatch and
+  children keep only the per-role probes. A fixture with a slow, serialised probe lost the
+  overlap before the fix and keeps it after, with exactly one probe per graph.
+- [ ] 2026-10-26 — PR #63 push run `40334174397`, Windows only, intermittent (the PR run on the
+  same commit passed): `test_changed_graph_contract_cannot_resume_stopped_run` saw no maker
+  start within its 15 s wait, then cleanup failed with `WinError 32` on `coordination.lock`.
+  Strongest hypothesis, not confirmed on Windows: the graph's one verifier probe, which now runs
+  before dispatch, took most of that 15 s; the cleanup error followed because cleanup killed only
+  the graph process and left its children holding the repository. A simulated 16 s probe
+  reproduced the same assertion on macOS. The fixture now starts its 15 s budget after the probe,
+  prints probe timing on failure, and stops the children in cleanup. Open until a native rerun
+  passes with the timing printed. PR run `40339849693` then failed the sibling
+  `test_stop_then_resume_preserves_partial_work_and_limits` ("child maker did not start") the
+  same way, so every wait timed from `graph start` now goes through one helper: in the dispatch
+  tests `wait_after_graph_probe` and `start_graph_in_background` (cleanup stops the children);
+  in `test-work-graph-status.py` the child-exit test's 10 s window starts after the probe. With
+  `AGENTSMITH_TEST_SLOW_PROBE=16`, one dispatch test and one status test failed before and both
+  modules pass after.
+
+## Doctor signals, hook log, evaluation cost and CLI surface (2026-10-26)
+
+### DOCTOR: duplicate rules above the Git root and in `~/AGENTS.md` were invisible (fixed)
+
+2026-10-26 — doctor walked one chain for every tool (registry global file, then Git root down), so
+it missed a full core in a `CLAUDE.md` above the Git root, and it could not see that Claude Code
+loads a stale `~/AGENTS.md` block in any folder with no `CLAUDE.md` above it. Evidence: in an
+operator worktree, doctor now reports `legacy-managed-block` for `~/AGENTS.md` (Claude Code only)
+and the core loaded three times. Fixed with per-tool discovery (`loaded_rule_files`), tested in
+`test-doctor.py`.
+
+### DOCTOR: runtime files were checked for presence only (fixed)
+
+2026-10-26 — an edited `.agentsmith/work_graph.py` passed `doctor --strict`. Install now records
+`runtime_files` hashes; doctor reports `runtime-file-modified` and fails `--strict`
+(`test_strict_doctor_detects_an_edited_runtime_file`).
+
+### EVALUATION: usage kept the largest turn instead of the sum (fixed)
+
+2026-10-26 — `native_launcher.usage_metrics` returned `(0.0, 10)` for two Codex turns of 10 tokens
+each, so evaluation and autonomous-run budgets undercounted. Now sums per event without
+double-counting Claude's final `result` total (`test_usage_metrics_sum_every_turn_...`).
+
+### HANDOFF: `scripts/handoff.sh` died outside a Git repository (fixed)
+
+2026-10-26 — under `pipefail`, `git status | wc -l` exited 128 in a non-git folder and no note
+was written. Fixed; `test-scaffolds.py` runs the script in a non-git fixture.
+
+### DOCTOR: a global hook looks stale from a project (open)
+
+2026-10-26 — after `install --global --with-ui-design-hook` (throwaway HOME), `doctor --target
+<project>` reports hooks `stale` and `stale-managed-command`, because `inspect_hooks` expects every
+managed hook command to use the project's runtime, while a global hook correctly uses
+`~/.agentsmith/agentsmith.py`.
+
+### DOCTOR: `status` still uses the old duplicate check (open)
+
+2026-10-26 — `agentsmith status` marks duplicates from the registry chain, not from the per-tool
+discovery rule that doctor now uses, so the two commands can disagree about an ancestor
+`CLAUDE.md` or `~/AGENTS.md`. Move `status_instruction_chain` to `loaded_rule_files`.
+
+### DOCTOR: Codex discovery limits are not modelled (open)
+
+2026-10-26 — doctor's Codex chain ignores `project_doc_fallback_filenames` and the
+`project_doc_max_bytes` cap (default 32 KiB), so a long `AGENTS.md` that Codex truncates is
+reported as fully loaded.
+
+### DOCTOR: Claude Code's "Project instructions" setting is not modelled (open)
+
+2026-10-26 — doctor models Claude Code's default, `claude-md-or-agents-md`, and follows `@path`
+imports. With `claude-md-and-agents-md`, `claude-md` or `managed-only` (set under
+`pluginConfigs` for `cc-plugin-agents-md@builtin`), Claude loads a different set of files than
+doctor reports.
+
+### DOCTOR: an output-rewriting hook does not fail `--strict` (open, by design for now)
+
+2026-10-26 — `output-rewriting-hook` (for example `rtk hook claude`) stays a warning under
+`--strict`, because `update apply` runs `doctor --strict` in the operator's environment as its
+post-check and would roll back every update for an rtk user. A strict failure needs the update
+post-check to exclude environment findings first.
+
+### HOOKS: shell guardrail log rotation wrote through planted links (fixed)
+
+2026-10-26 — Codex review of `61c8650`: a planted `.agentsmith/logs/hook-events.jsonl.tmp`
+symlink made the shell guardrails overwrite its target and install the link as the log; a FIFO
+hung the hooks; parallel rotation tore lines; `RLIMIT_FSIZE=0` killed the hook with SIGXFSZ.
+The shell hooks now append only, to a regular non-link file (`HookFiringLogTests`, red on the
+old hooks). Same review: negative usage figures, future-dated firings, the installed doctor's
+missing core sections and a non-hermetic evaluation test are fixed with their own tests.
+
+### HOOKS: the shell log check and append are not one atomic step (open, low)
+
+2026-10-26 — the shell guardrails check that the log is a regular, non-link file and then append
+with `>>`. A local process that swaps in a link between the two steps could still redirect one
+line. A planted link in a cloned repository is refused; closing the race needs an `O_NOFOLLOW`
+open, which plain shell lacks.
+
+### INSTALLER-SAFETY: phase-1 installer fixes (2026-10-26)
+
+- [x] 2026-10-26 — GitHub issue #50a: `install --global --assemble-only` and then
+  `install --global --uninstall` deleted a user-owned `~/.claude/settings.json` that held only
+  `{"permissions":{"defaultMode":"acceptEdits"}}`, while it reported that only AgentSmith-owned
+  blocks were removed. Uninstall dropped any `acceptEdits` or `bypassPermissions` value and then
+  removed the emptied file. Install now records the mode it wrote, the value it replaced, and
+  whether it created the file; uninstall restores that value only if the mode is unchanged and never
+  deletes a file it did not create. `scripts/test-installer-safety.py` failed before the fix (file
+  deleted, earlier mode lost) and passes after.
+- [x] 2026-10-26 — GitHub issue #50b: a `.harness` or `.agentsmith` link out of the target was
+  refused (exit 2) only after `AGENTS.md` and `CLAUDE.md` were written, and for profiles other than
+  `software-dev` it was not refused at all. Adapter files, `docs/`, project and user-level native
+  config, runtime files and global rules files had no link check. One preflight now lists every
+  destination of the install and refuses before the first write when any of them is, sits under, or
+  contains a link (dangling or not) that resolves outside its root. Every low-level writer also
+  checks the active roots, and runtime, template and design-system copies replace a linked file
+  instead of writing through it. `test-installer-safety.py` (project, runtime-file, dangling,
+  contained and global cases) failed before and passes after.
+- [x] 2026-10-26 — `agentsmith verify --only <filter>` that matched no phase printed "all 0
+  verification phases passed" and exited 0 (reproduced on master `3fd1846`); a `verify.conf` with no
+  phases and `--record` did the same, the latter writing a passing receipt for nothing.
+  `scripts/verify.sh` also exited 0 on "No matching phases." Both now exit non-zero and name the
+  filter. `--list` with an empty result still exits 0 with a warning, because a listing asserts
+  nothing. `EmptyVerificationTests` in `test-verify-receipts.py` failed 5 of 5 before and pass
+  after.
+- [x] 2026-10-26 — Independent review (Codex) of the containment preflight: with `--with-hooks`, a
+  `.git/hooks` link out of the repository, or a `core.hooksPath` outside it, still received the
+  pre-commit hook, because the hook path was not in the preflight. The preflight now asks Git for
+  the hooks folder and refuses one that resolves outside the target or the repository's common Git
+  folder (a linked worktree keeps its hooks in the main checkout, which stays allowed). The review's
+  reproducer and two new tests failed before and pass after.
+- [x] 2026-10-26 — Same review: the preflight listed only the default status-line helper names, but
+  the install picks `agentsmith-statusline-1.py` (and so on) when the default name is taken. A link
+  at that name out of HOME was refused only by the write guard, after `AGENTS.md`, `CLAUDE.md` and
+  `.claude/settings.json` were written. The preflight now asks the status-line code for the exact
+  helper files it will write. The reproducer (`rc 2 AGENTS_written True`) now reports
+  `AGENTS_written False`; a new test failed before and passes after.
+- [x] 2026-10-26 — Found while fixing the status-line preflight: the updater's root translation
+  missed paths in JSON written with ASCII escapes (`\u00fc` for `ü`, as Python's default
+  `json.dumps` writes). A staged install then saw the live HOME's status-line helper path in the
+  shadow state and could write the live helper during `update plan` when its bytes changed. The
+  translation now also maps the escaped spelling. `test_legacy_claude_global_foreign_mcp_survives_plan_apply_and_health`
+  failed after the preflight change and passes with this fix.
+- [x] 2026-10-26 — Same review, two races after the preflight: (1) a `.agentsmith` link to HOME
+  created after the preflight let project runtime files land in HOME, because the write guard
+  accepted any install root; (2) swapping a folder for a link between the guard and file creation
+  wrote about 450 KB of runtime outside the target. The guard now holds each path to the root that
+  spells it, and on POSIX every guarded write creates its temporary file with `O_EXCL | O_NOFOLLOW`
+  inside a folder opened component by component with `O_NOFOLLOW`, then renames it within that
+  folder. Both reproducers and two in-process tests (`RaceTests`) failed before and pass after.
+- [ ] 2026-10-26 — Residual race risk after the fix above (local attacker who can swap files during
+  an install): on Windows, which has no directory descriptors, guarded writes still check paths and
+  then write by path. On every platform, skill directory replacement (`rmtree` and `copytree`) and
+  the `chmod` that makes the launcher and the Git hook executable still act by path after the
+  check. The preflight and the path guard still refuse anything that is already a link when they
+  look.
+- [x] 2026-10-26 — Same review: uninstall deleted a user-created `~/.claude/settings.json` holding
+  only `{}` when it removed the last AgentSmith hook or status line from it (after
+  `install --global --agent claude --with-memory-startup`, or after a project install that added the
+  status line). The #50a record covered only the default mode. Install now records which
+  configuration files it created (`created_files` in the state beside them: Claude and Codex
+  settings and hooks, `.mcp.json`, Gemini settings, Codex `config.toml`); uninstall deletes an
+  emptied file only when that record names it and otherwise leaves `{}`. State from earlier
+  releases has no record and keeps the old behaviour. Two new tests failed before and pass after.
+- [x] 2026-10-26 — Same review: uninstall changed the user's bytes in `AGENTS.md` and `CLAUDE.md`
+  outside the managed block (CRLF became LF, leading and trailing whitespace was stripped, a final
+  LF was added). Uninstall now works on bytes and removes only the block plus the one line break
+  install put on each side of it; install now always adds exactly one line break before an
+  appended block, so the removal is exact. The user's text before and after the block, including
+  CRLF and edge whitespace, comes back byte for byte. The new test failed before (LF and CRLF) and
+  passes after; the public proof's existing-config lifecycle is unchanged.
+- [x] 2026-10-26 — Same review: an explicit `"defaultMode": null` became `{}` after install and
+  uninstall, because a missing key and a null value were recorded the same way. The record now
+  keeps whether the mode and the `permissions` object existed. The new test failed before and
+  passes after.
+- [x] 2026-10-26 — Same review: a project profile that is a named pipe made `install` hang (the
+  read waited for a writer). The profile is now opened with `O_NONBLOCK` and refused unless it is a
+  regular file; on Windows the path check requires a regular file before opening. The review's
+  reproducer timed out before and now exits 2; a new test failed (hung) before and passes after.
+- [x] 2026-10-26 — PR #61 CI run `40317178374` (ubuntu-latest): a legacy global update failed with
+  "staged managed changes do not match the authenticated plan". A global plan's target root is HOME
+  itself, and on Linux both have one spelling, so root translation held two destinations for the
+  same text in a set and picked the shadow target or the shadow HOME at random (the order depends
+  on the per-process hash seed). Plan and apply could then disagree, or the status-line helper
+  could land in the shadow target. Translation now keeps one destination per spelling, HOME before
+  target, in a fixed order. Reproduced in a Linux container before the fix; a new test that runs
+  12 hash seeds failed before and passes after.
+- [x] 2026-10-26 — PR #61 CI run `40317178374` (windows-latest): `test_git_hook_of_a_linked_worktree_is_allowed`
+  found no `pre-commit` in the main checkout after a successful install into a linked worktree.
+  Not reproducible here (no Windows host). Reading the code did not show a Windows-only branch
+  that skips the hook; Git on macOS and in the Linux container reports normalised absolute paths.
+  Hardened anyway: Git's hooks and common-folder answers are now `normpath`-ed (collapses `..`,
+  native separators), with a unit test that feeds an unresolved, forward-slash answer. The worktree
+  test now prints Git's answer and the installer output when it fails, so the next native run names
+  the cause. It did (run `40325409578`): Git answered in UTF-8, but `git_hooks_location()` decoded
+  with the Windows locale (CP-1252), so `ü` became `Ã¼` and the hook went into a mis-spelled
+  folder. The call now decodes UTF-8 (`surrogateescape`); a test that forces the CP-1252 decoder
+  failed before and passes after. Native Windows confirmation of the fix is CI's.

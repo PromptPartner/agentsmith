@@ -316,6 +316,28 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
     results.check(help_run.returncode == 0, "agentsmith --help succeeds", help_run.stdout[-300:])
     results.check(output_has_all(help_run.stdout, ("--agent", "--platform")), "help documents new selector and legacy alias")
     results.check("install --help" in help_run.stdout, "root help points to install --help")
+    # Internal commands serve programs and CI. They stay callable but leave the public root help.
+    usage_list = re.search(r"\{([a-z,-]+)\}", help_run.stdout)
+    listed = set(usage_list.group(1).split(",")) if usage_list else set()
+    rows = set(re.findall(r"^    ([a-z][a-z-]*)", help_run.stdout, re.MULTILINE))
+    internal = {"hook", "secret-scan", "graph", "wizard", "evaluate", "compatibility", "agents",
+                "validate-integration", "audit-config"}
+    results.check(
+        bool(listed) and not (listed | rows) & internal,
+        "root help lists only public commands",
+        ", ".join(sorted((listed | rows) & internal)),
+    )
+    results.check({"install", "doctor", "status", "verify", "handoff"} <= listed, "root help keeps the public commands")
+    for name in sorted(internal):
+        internal_help = run_core(name, "--help")
+        results.check(internal_help.returncode == 0, f"internal command {name} still runs", internal_help.stdout[-300:])
+    memory_help = run_core("memory", "--help")
+    results.check(
+        memory_help.returncode == 0 and "startup" not in memory_help.stdout,
+        "memory help hides the internal startup command",
+        memory_help.stdout[-300:],
+    )
+    results.check(run_core("memory", "startup", "--help").returncode == 0, "internal memory startup still runs")
     install_help = run_core("install", "--help")
     results.check(
         install_help.returncode == 0 and output_has_all(install_help.stdout, ("--profile", "--profile-only")),
@@ -440,8 +462,10 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
         results.check(install.returncode == 0, "all-agent assembly succeeds in a Unicode path", install.stdout[-500:])
         results.check(canonical.is_file() and not canonical.is_symlink(), "all-agent assembly writes a real canonical AGENTS.md")
         results.check(
-            claude_copy.is_file() and canonical.is_file() and claude_copy.read_bytes() == canonical.read_bytes(),
-            "Claude receives an equivalent generated copy",
+            claude_copy.is_file() and canonical.is_file()
+            and "@AGENTS.md" in claude_copy.read_text(encoding="utf-8").splitlines()
+            and "## The Principle Rules" not in claude_copy.read_text(encoding="utf-8"),
+            "Claude receives a generated CLAUDE.md that imports canonical AGENTS.md",
         )
         project_cli = project / ".agentsmith" / "agentsmith"
         windows_cli = project / ".agentsmith" / "agentsmith.cmd"
@@ -529,6 +553,8 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
             "--target", str(safety_fresh_project), env=safety_fresh_env,
         )
         fresh_claude_data = load_json(fresh_claude) if fresh_claude.exists() else {}
+        fresh_project_claude = safety_fresh_project / ".claude" / "settings.json"
+        fresh_project_data = load_json(fresh_project_claude) if fresh_project_claude.exists() else {}
         fresh_codex = Path(safety_fresh_env["CODEX_HOME"]) / "config.toml"
         try:
             fresh_codex_data = tomllib.loads(fresh_codex.read_text(encoding="utf-8"))
@@ -536,15 +562,17 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
             fresh_codex_data = {}
         results.check(
             safety_fresh.returncode == 0
-            and fresh_claude_data.get("permissions", {}).get("defaultMode") == "acceptEdits"
-            and fresh_claude_data.get("permissions", {}).get("foreign") == "keep"
+            and fresh_project_data.get("permissions", {}).get("defaultMode") == "acceptEdits"
+            and fresh_claude_data.get("permissions") == {"foreign": "keep"}
             and fresh_claude_data.get("other") == 7
             and fresh_codex_data.get("approval_policy") == "on-request"
             and fresh_codex_data.get("sandbox_mode") == "workspace-write",
-            "omitted safety produces cautious Claude and Codex config while preserving foreign JSON",
+            "omitted safety produces cautious project Claude and Codex config; user Claude settings keep their mode",
             safety_fresh.stdout[-500:],
         )
 
+        # Trusted Claude is a user-level choice: Claude Code ignores bypassPermissions in project
+        # settings, so the trusted lifecycle runs as a global install.
         safety_trusted_root = sandbox / "safety trusted"
         safety_trusted_project = safety_trusted_root / "project"
         safety_trusted_project.mkdir(parents=True)
@@ -556,7 +584,7 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
         })
         safety_trusted = run_core(
             "install", "--agent", "native", "--profile", "general-admin", "--safety", "trusted",
-            "--target", str(safety_trusted_project), env=safety_trusted_env,
+            "--global", env=safety_trusted_env,
         )
         trusted_claude = Path(safety_trusted_env["HOME"]) / ".claude" / "settings.json"
         trusted_codex = Path(safety_trusted_env["CODEX_HOME"]) / "config.toml"
@@ -583,7 +611,7 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
         }
         safety_dry_migration = run_core(
             "install", "--agent", "native", "--profile", "general-admin", "--dry-run",
-            "--target", str(safety_trusted_project), env=safety_trusted_env,
+            "--global", env=safety_trusted_env,
         )
         results.check(
             safety_dry_migration.returncode == 0
@@ -595,7 +623,7 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
         )
         safety_migration = run_core(
             "install", "--agent", "native", "--profile", "general-admin",
-            "--target", str(safety_trusted_project), env=safety_trusted_env,
+            "--global", env=safety_trusted_env,
         )
         migrated_claude_data = load_json(trusted_claude) if trusted_claude.exists() else {}
         try:
@@ -608,7 +636,7 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
         migrated_backups = {path: adjacent_backups(path) for path in (trusted_claude, trusted_codex)}
         safety_rerun = run_core(
             "install", "--agent", "native", "--profile", "general-admin",
-            "--target", str(safety_trusted_project), env=safety_trusted_env,
+            "--global", env=safety_trusted_env,
         )
         results.check(
             safety_migration.returncode == 0
@@ -901,8 +929,8 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
             native_install.returncode == 0
             and (native_project / "AGENTS.md").is_file()
             and (native_project / "CLAUDE.md").is_file()
-            and (native_project / "AGENTS.md").read_bytes() == (native_project / "CLAUDE.md").read_bytes(),
-            "native install generates canonical and equivalent instruction files",
+            and "@AGENTS.md" in (native_project / "CLAUDE.md").read_text(encoding="utf-8").splitlines(),
+            "native install generates canonical AGENTS.md and a CLAUDE.md that imports it",
             native_install.stdout[-500:],
         )
         results.check(installed_skills, "native skill install preserves foreign skills and installs managed skills")
@@ -913,7 +941,8 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
         )
         results.check(
             native_claude.get("foreign") == {"keep": True}
-            and native_claude.get("permissions", {}).get("defaultMode") == "acceptEdits"
+            and "defaultMode" not in native_claude.get("permissions", {})
+            and load_json(native_project / ".claude" / "settings.json").get("permissions", {}).get("defaultMode") == "acceptEdits"
             and native_codex.get("foreign", {}).get("keep") is True
             and native_codex.get("model") == "foreign-model"
             and native_codex.get("approval_policy") == "on-request"

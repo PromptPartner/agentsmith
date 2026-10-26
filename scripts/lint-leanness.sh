@@ -82,7 +82,16 @@ for FILE in "${FILES[@]}"; do
 done
 
 mismatch=false
-if $COMPARE_MANAGED; then
+managed_meta() { grep -m1 -F '<!-- Generated. Profiles: ' "$1"; }
+if $COMPARE_MANAGED && sed -n '/<!-- BEGIN AGENTSMITH/,/<!-- END AGENTSMITH/p' CLAUDE.md | grep -qx '@AGENTS.md'; then
+  # A project CLAUDE.md imports AGENTS.md: one rulebook, so only the generator metadata must agree.
+  if [ "$(managed_meta CLAUDE.md)" = "$(managed_meta AGENTS.md)" ]; then
+    printf '%smanaged rules%s  CLAUDE.md imports AGENTS.md\n' "$GREEN" "$RESET"
+  else
+    mismatch=true
+    printf '%s  WARN: CLAUDE.md and AGENTS.md name different profiles.%s Re-run setup.\n' "$YELLOW" "$RESET"
+  fi
+elif $COMPARE_MANAGED; then
   if diff -q \
     <(sed -n '/<!-- BEGIN AGENTSMITH/,/<!-- END AGENTSMITH/p' CLAUDE.md) \
     <(sed -n '/<!-- BEGIN AGENTSMITH/,/<!-- END AGENTSMITH/p' AGENTS.md) >/dev/null; then

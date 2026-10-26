@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -161,6 +162,7 @@ class WorkGraphStatusTests(unittest.TestCase):
 
     def test_child_exit_before_state_is_terminal_and_retains_peer_failures(self) -> None:
         wrapper = Path(self.temporary.name) / "early-exit-graph.py"
+        probe_done = Path(self.temporary.name) / "probe-done"
         child = Path(self.temporary.name) / "failed-controller.py"
         child.write_text("import sys\nprint('RunError: unsupported fixture host', file=sys.stderr)\nraise SystemExit(2)\n")
         wrapper.write_text(
@@ -168,15 +170,30 @@ class WorkGraphStatusTests(unittest.TestCase):
             + "sys.path.insert(0, " + repr(str(ROOT)) + ")\n"
             + "import agentsmith, work_graph\n"
             + "work_graph._controller_source = lambda: Path(" + repr(str(child)) + ")\n"
+            + "import os, time\n"
+            + "real_probe = work_graph._preflight_verifier\n"
+            + "def timed_probe(contract):\n"
+            + "    time.sleep(float(os.environ.get('AGENTSMITH_TEST_SLOW_PROBE') or 0))\n"
+            + "    real_probe(contract)\n"
+            + "    Path(" + repr(str(probe_done)) + ").write_text('done')\n"
+            + "work_graph._preflight_verifier = timed_probe\n"
             + "raise SystemExit(agentsmith.run())\n"
         )
         command = [sys.executable, str(wrapper), "graph", "start", "--graph",
                    ".harness/work-graph.json", "--target", str(self.repo), "--json"]
+        # The 10 s window starts after the graph's one verifier probe, which runs before any
+        # child and can be slow on Windows; it measures only the wait after the children exit.
+        graph = subprocess.Popen(command, cwd=self.repo, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: graph.poll() is None and graph.kill())
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline and not probe_done.exists() and graph.poll() is None:
+            time.sleep(0.05)
         try:
-            result = subprocess.run(command, cwd=self.repo, capture_output=True, text=True,
-                                    check=False, timeout=10)
+            stdout, stderr = graph.communicate(timeout=10)
         except subprocess.TimeoutExpired:
             self.fail("graph waited after both children exited without durable state")
+        result = subprocess.CompletedProcess(command, graph.returncode, stdout, stderr)
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         report = json.loads(result.stdout)
         self.assertEqual(report["status"], "failed")
