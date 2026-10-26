@@ -131,7 +131,6 @@ fix immediately; "I'll remember it" is how things get lost. The team's record is
 and it is the single source of truth. Posting there is a write to someone's live system, so it
 follows the consent rule (core/10), not your discretion — **writes are NOT authorized** — draft the entry and surface it for the operator to post; never create or comment on items yourself. Offer once; if they say yes, that's durable for this session. Either way the defect
 is captured before you move on: consent governs *where* it lands, never *whether* it's recorded.
-See `docs/14-project-tracker-guide.md` for the tool-agnostic conventions.
 
 **8. No live secrets in any tracked file. Ever.** No passwords, API keys, tokens, connection
 strings, install fingerprints, or any other live credential in any file that is committed,
@@ -245,8 +244,8 @@ looks (the tracker comment, the PR description, the summary).
 A fresh session has **zero** memory of this one; the handoff is the only bridge. When you wind
 down — the operator says "wrap up," context is filling, or a phase closed — run the handoff
 **without being asked**: safe state first (commit or stash), then the durable note, then a
-paste-ready kickoff block. The protocol lives in the **`handoff` skill**: run `/handoff` (or
-`./scripts/handoff.sh [item-id]`).
+paste-ready kickoff block. The protocol lives in the **`handoff` skill**: run `/handoff`, or
+`agentsmith handoff [name]` to scaffold the note with the Git facts filled in.
 
 
 <!-- CORE · system-evolution mindset · universal · this is what makes the harness compound -->
@@ -263,17 +262,15 @@ you stumble, fix the system, not just the symptom. The triggers:
 Then, *after* fixing the immediate thing, **propose the harness change** that makes that class of
 mistake less likely next time. Small, specific, traceable to the incident.
 
-- **Keep a durable feedback record** under `docs/feedback/` — run `/new-feedback` (or
-  `./scripts/new-feedback.sh "symptom"`). The `new-feedback` skill carries the five-stage template
-  and the harness-review checkpoint (`docs/feedback/README.md`).
+- **Keep a durable feedback record** under `docs/feedback/` — run `/new-feedback`, or
+  `agentsmith new-feedback <symptom>` for the five-stage template.
 - **Prefer the deterministic fix over the reminder, and prove it** (R2): a harness edit isn't done
   until a check — a verify phase, a guard test, a lint, or a hook where hooks are enabled — fails if
   the mistake recurs. Until that guard exists, the change is a draft, not a fix.
 - **Respect the context load.** This assembled file is paid for on every turn. Specialized
   knowledge belongs behind a pointer — a skill, a template, a `docs/` page — that loads only when
   needed. Before a line earns a place here, apply the **no-op test**: delete it; does behaviour
-  change? Measure with `scripts/lint-leanness.sh`. Writing anything an agent reads →
-  `/writing-rules`.
+  change? Writing anything an agent reads → `/writing-rules`.
 
 
 ---
@@ -303,7 +300,7 @@ button and see it break, you haven't verified it.
 
 **UI work:** if the project has a UI, `DESIGN.md` at the root is its design system. Read it before
 changing UI and update it in the same unit when you add or restyle a component; if it is missing
-or still `[TODO]`, establish one first (`docs/11-designing-uis.md`).
+or still `[TODO]`, establish one first from `.harness/templates/design-system.md`.
 
 ### Quality gates
 Before calling code done, tick each — "deferred: reason" is allowed, silence is not:
@@ -321,8 +318,8 @@ Before calling code done, tick each — "deferred: reason" is allowed, silence i
 - [ ] a defect is recorded for anything found-but-not-fixed (R7)
 
 **Before merge, risky diffs get a second, independent pass** — a different model or reviewer that
-*tests* (writes or runs tests, reproduces the bug), not only reads. A checker that measures beats
-one that only reads (`docs/03-verify-means-evidence.md`). Skill suggestions: `skills/RECOMMENDED.md`.
+*tests* (writes or runs tests, reproduces the bug), not only reads. Skill suggestions:
+[AgentSmith's skill map](https://github.com/PromptPartner/agentsmith/blob/master/skills/RECOMMENDED.md).
 
 ### Addendum to the STOP table
 

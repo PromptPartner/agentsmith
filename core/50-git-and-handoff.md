@@ -34,5 +34,5 @@ looks (the tracker comment, the PR description, the summary).
 A fresh session has **zero** memory of this one; the handoff is the only bridge. When you wind
 down — the operator says "wrap up," context is filling, or a phase closed — run the handoff
 **without being asked**: safe state first (commit or stash), then the durable note, then a
-paste-ready kickoff block. The protocol lives in the **`handoff` skill**: run `/handoff` (or
-`./scripts/handoff.sh [item-id]`).
+paste-ready kickoff block. The protocol lives in the **`handoff` skill**: run `/handoff`, or
+`agentsmith handoff [name]` to scaffold the note with the Git facts filled in.

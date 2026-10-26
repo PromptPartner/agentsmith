@@ -21,7 +21,7 @@ button and see it break, you haven't verified it.
 
 **UI work:** if the project has a UI, `DESIGN.md` at the root is its design system. Read it before
 changing UI and update it in the same unit when you add or restyle a component; if it is missing
-or still `[TODO]`, establish one first (`docs/11-designing-uis.md`).
+or still `[TODO]`, establish one first from `.harness/templates/design-system.md`.
 
 ### Quality gates
 Before calling code done, tick each — "deferred: reason" is allowed, silence is not:
@@ -39,8 +39,8 @@ Before calling code done, tick each — "deferred: reason" is allowed, silence i
 - [ ] a defect is recorded for anything found-but-not-fixed (R7)
 
 **Before merge, risky diffs get a second, independent pass** — a different model or reviewer that
-*tests* (writes or runs tests, reproduces the bug), not only reads. A checker that measures beats
-one that only reads (`docs/03-verify-means-evidence.md`). Skill suggestions: `skills/RECOMMENDED.md`.
+*tests* (writes or runs tests, reproduces the bug), not only reads. Skill suggestions:
+[AgentSmith's skill map](https://github.com/PromptPartner/agentsmith/blob/master/skills/RECOMMENDED.md).
 
 ### Addendum to the STOP table
 

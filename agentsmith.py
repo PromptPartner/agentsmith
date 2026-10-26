@@ -4316,7 +4316,7 @@ STATIC_CONTEXT_MAX_TOKENS = 7800
 
 # Installed helper runtimes intentionally do not duplicate source core/profile trees, so they
 # report this figure. scripts/test-assemble.sh keeps it within 10% of the live source estimate.
-INSTRUCTION_TOKENS_FALLBACK = 5180
+INSTRUCTION_TOKENS_FALLBACK = 5140
 
 
 def estimate_instruction_tokens() -> int:

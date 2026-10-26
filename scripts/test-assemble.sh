@@ -190,6 +190,31 @@ else
   bad "STATIC_CONTEXT_MAX_* in agentsmith.py differ from lint-leanness.sh defaults"
 fi
 
+# Shipped rules are read inside the user's project, which has no docs/, scripts/, skills/ or
+# templates/ from this repository (templates arrive as .harness/templates/). A rule that cites
+# one of those files points the agent at nothing. Directories (trailing /) are locations the
+# rules ask a project to keep, so they are allowed.
+if ROOT_DIR="$ROOT_DIR" python3 - <<'PY'
+import os, re, sys
+from pathlib import Path
+root = Path(os.environ["ROOT_DIR"])
+offenders = []
+for source in sorted([*(root / "core").glob("*.md"), *(root / "profiles").glob("*.md")]):
+    for number, line in enumerate(source.read_text(encoding="utf-8").splitlines(), 1):
+        for cited in re.findall(r"`\.?/?((?:docs|scripts|skills|templates)/[^`\s]*[^/`\s])[^`]*`", line):
+            # <placeholder> paths name a location the project keeps, not a shipped file.
+            if re.search(r"\.[A-Za-z0-9]+$", cited) and "<" not in cited:
+                offenders.append(f"{source.relative_to(root)}:{number}: {cited}")
+for offender in offenders:
+    print(offender)
+sys.exit(1 if offenders else 0)
+PY
+then
+  ok "core/ and profiles/ cite only files an installed project has"
+else
+  bad "core/ or profiles/ cite repository-only files (see list above)"
+fi
+
 # Installed runtimes have no core/ tree and report a fixed token figure; keep it honest.
 if ROOT_DIR="$ROOT_DIR" python3 - <<'PY'
 import os, sys
