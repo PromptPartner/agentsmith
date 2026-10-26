@@ -97,6 +97,12 @@ def native_environment(
 
 
 def usage_metrics(stdout: str) -> tuple[float, int]:
+    """Return the run's total (cost in USD, tokens) from a native client's JSON output.
+
+    Codex reports usage once per turn, so a run costs the sum of its turns. Claude's final
+    `result` message already totals the session, so when one is present it is the only source:
+    adding the per-message usage that precedes it would count every token twice.
+    """
     values: list[Any] = []
     try:
         values.append(json.loads(stdout))
@@ -106,30 +112,32 @@ def usage_metrics(stdout: str) -> tuple[float, int]:
                 values.append(json.loads(line))
             except json.JSONDecodeError:
                 continue
-    costs: list[float] = []
-    token_blocks: list[int] = []
+    events = [item for value in values for item in (value if isinstance(value, list) else [value])]
+    results = [event for event in events if isinstance(event, dict) and event.get("type") == "result"]
+    token_keys = ("input_tokens", "output_tokens", "cached_input_tokens", "reasoning_tokens")
 
-    def walk(value: Any) -> None:
+    def measure(value: Any) -> tuple[float, int]:
+        # The outermost usage block counts once; nested breakdowns inside it are not added again.
         if isinstance(value, dict):
             cost = value.get("total_cost_usd")
-            if isinstance(cost, (int, float)):
-                costs.append(float(cost))
+            cost = float(cost) if isinstance(cost, (int, float)) else 0.0
             tokens = sum(
-                int(value.get(key, 0))
-                for key in ("input_tokens", "output_tokens", "cached_input_tokens", "reasoning_tokens")
-                if isinstance(value.get(key, 0), (int, float))
+                int(value[key]) for key in token_keys if isinstance(value.get(key), (int, float))
             )
             if tokens:
-                token_blocks.append(tokens)
+                return cost, tokens
             for child in value.values():
-                walk(child)
-        elif isinstance(value, list):
-            for child in value:
-                walk(child)
+                child_cost, child_tokens = measure(child)
+                cost += child_cost
+                tokens += child_tokens
+            return cost, tokens
+        if isinstance(value, list):
+            measured = [measure(child) for child in value]
+            return sum(item[0] for item in measured), sum(item[1] for item in measured)
+        return 0.0, 0
 
-    for value in values:
-        walk(value)
-    return max(costs, default=0.0), max(token_blocks, default=0)
+    measured = [measure(event) for event in (results or events)]
+    return sum(item[0] for item in measured), sum(item[1] for item in measured)
 
 
 def nested_object(value: Any, required: Iterable[str]) -> dict[str, Any] | None:

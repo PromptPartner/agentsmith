@@ -379,6 +379,27 @@ class EvaluateTests(unittest.TestCase):
             with native_environment("codex", source):
                 self.fail("non-subscription Codex authentication must not launch")
 
+    def test_usage_metrics_sum_every_turn_without_double_counting_a_final_summary(self) -> None:
+        from native_launcher import usage_metrics
+
+        # Codex reports usage once per turn; a multi-turn run costs the sum, not its largest turn.
+        codex = "\n".join(json.dumps(event) for event in (
+            {"type": "thread.started"},
+            {"type": "turn.completed", "usage": {"input_tokens": 7, "output_tokens": 3}},
+            {"type": "turn.completed", "usage": {"input_tokens": 5, "cached_input_tokens": 4, "output_tokens": 1}},
+        ))
+        self.assertEqual(usage_metrics(codex), (0.0, 20))
+        # Claude's result message already totals the session; per-message usage must not add to it.
+        claude = json.dumps([
+            {"type": "assistant", "message": {"usage": {"input_tokens": 60, "output_tokens": 20}}},
+            {"type": "assistant", "message": {"usage": {"input_tokens": 40, "output_tokens": 30}}},
+            {"type": "result", "total_cost_usd": 0.3,
+             "usage": {"input_tokens": 100, "output_tokens": 50, "iterations": [{"input_tokens": 100}]}},
+        ])
+        self.assertEqual(usage_metrics(claude), (0.3, 150))
+        self.assertEqual(usage_metrics(json.dumps({"type": "result", "total_cost_usd": 0.25})), (0.25, 0))
+        self.assertEqual(usage_metrics("not json"), (0.0, 0))
+
     def test_schema_declares_v2_and_all_required_evidence_fields(self) -> None:
         schema = json.loads((ROOT / "compatibility" / "evaluations" / "schema.json").read_text(encoding="utf-8"))
         self.assertEqual(schema["properties"]["schema_version"]["const"], 2)
