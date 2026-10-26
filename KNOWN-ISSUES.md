@@ -805,3 +805,7 @@ global selections needs its own design because update replays the record.
 - [x] 2026-10-26 — Independent review: `status --all-terminal` printed a traceback and exited 1
   when a run state, graph state or lock held invalid UTF-8. It now reports that state as
   undetermined (exit 2); a test with `\xff` in each of the four files errored before and passes.
+- [x] 2026-10-26 — Independent review: `status --all-terminal` failed open. A dangling
+  `state.json` link, a file where `agentsmith-runs` should be, or a dead lock with no state
+  exited 0 ("terminal"). It now accepts only the shapes and statuses the controller writes and
+  answers 2 for anything else; ten such cases exited 0 or 1 before and exit 2 after.

@@ -112,7 +112,7 @@ then lost or must be redone. `status --all-terminal` is a read-only guard with t
 |---|---|---|
 | `0` | every run and graph in this repository is terminal (or none exists) | go ahead |
 | `1` | a run or graph is live, or stopped without finishing; each is named | wait, `stop`, or `resume` it first |
-| `2` | a state or lock file cannot be read, so it cannot tell | stop and inspect; treat as live |
+| `2` | it cannot prove every run and graph is terminal: a file is unreadable, not where or what the controller writes, or has a status it does not know | stop and inspect; treat as live |
 
 Chain it in front of every Git metadata write, so the write runs only on exit 0:
 
@@ -120,8 +120,10 @@ Chain it in front of every Git metadata write, so the write runs only on exit 0:
 python3 .agentsmith/autonomous-run.py status --all-terminal && git worktree remove <path>
 ```
 
-`accepted`, `escalated` and `interrupted` runs and `completed`, `failed`, `stopped` and `blocked`
-graphs count as terminal once no controller or role process for them is live.
+Only `accepted`, `escalated` and `interrupted` runs and `completed`, `failed`, `stopped` and
+`blocked` graphs count as terminal, once no controller or role process for them is live. A run
+folder that holds files but no state (for example a lock left by a start that crashed) is
+undetermined: inspect it and remove it by hand before the guard can answer 0.
 
 Codex receives the manifest objective and remaining native goal token budget. Claude receives only
 the remaining run-wide USD allowance. The controller accumulates usage reported by both CLIs and

@@ -265,6 +265,69 @@ class AutonomousStateTests(unittest.TestCase):
                 (repo / relative).write_bytes(payload)
                 self.assertEqual(self.guard_exit(repo), 2)
 
+    def test_live_run_guard_fails_closed_unless_it_can_prove_every_state_terminal(self) -> None:
+        def run_dir(repo: Path, name: str = "a") -> Path:
+            directory = repo / ".git/agentsmith-runs" / name
+            directory.mkdir(parents=True)
+            return directory
+
+        def dangling_state(repo: Path) -> None:
+            (run_dir(repo) / "state.json").symlink_to(repo / "absent.json")
+
+        def runs_root_is_a_file(repo: Path) -> None:
+            (repo / ".git/agentsmith-runs").write_text("not a directory", encoding="utf-8")
+
+        def graphs_root_is_a_file(repo: Path) -> None:
+            (repo / ".git/agentsmith-graphs").write_text("not a directory", encoding="utf-8")
+
+        def dead_lock_without_state(repo: Path) -> None:
+            (run_dir(repo) / "controller.lock").write_text(
+                json.dumps({"pid": 99999999, "run_id": "a", "token": "stale"}), encoding="utf-8")
+
+        def files_without_state(repo: Path) -> None:
+            (run_dir(repo) / "STOP").write_text("requested_at=now\n", encoding="utf-8")
+
+        def run_dir_is_a_symlink(repo: Path) -> None:
+            root = repo / ".git/agentsmith-runs"
+            root.mkdir(parents=True)
+            target = repo / "elsewhere"
+            target.mkdir()
+            (target / "state.json").write_text(json.dumps({"status": "accepted"}), encoding="utf-8")
+            (root / "a").symlink_to(target)
+
+        def unknown_run_status(repo: Path) -> None:
+            (run_dir(repo) / "state.json").write_text(json.dumps({"status": "finished?"}), encoding="utf-8")
+
+        def unknown_graph_status(repo: Path) -> None:
+            directory = repo / ".git/agentsmith-graphs/g"
+            directory.mkdir(parents=True)
+            (directory / "state.json").write_text(json.dumps({"status": "paused"}), encoding="utf-8")
+
+        def state_is_not_an_object(repo: Path) -> None:
+            (run_dir(repo) / "state.json").write_text("[]", encoding="utf-8")
+
+        def unexpected_root_file(repo: Path) -> None:
+            root = repo / ".git/agentsmith-runs"
+            root.mkdir(parents=True)
+            (root / "state.json").write_text(json.dumps({"status": "making"}), encoding="utf-8")
+
+        for case in (dangling_state, runs_root_is_a_file, graphs_root_is_a_file, dead_lock_without_state,
+                     files_without_state, run_dir_is_a_symlink, unknown_run_status, unknown_graph_status,
+                     state_is_not_an_object, unexpected_root_file):
+            with self.subTest(case=case.__name__):
+                repo = self.guard_repository()
+                case(repo)
+                self.assertEqual(self.guard_exit(repo), 2)
+        # Shapes the controller itself leaves behind stay provably terminal.
+        repo = self.guard_repository()
+        root = repo / ".git/agentsmith-runs"
+        (root / "git-phases").mkdir(parents=True)
+        (root / "graph-stop" / "g").mkdir(parents=True)
+        (root / "coordination.lock").write_text("{}", encoding="utf-8")
+        (root / "empty").mkdir()
+        (run_dir(repo, "done") / "state.json").write_text(json.dumps({"status": "escalated"}), encoding="utf-8")
+        self.assertEqual(self.guard_exit(repo), 0)
+
     def test_kill_switch_in_main_checkout_pauses_linked_worktrees(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith pause ") as temporary:
             repo = Path(temporary).resolve() / "main"

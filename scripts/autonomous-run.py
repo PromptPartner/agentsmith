@@ -2092,30 +2092,61 @@ def start(args: argparse.Namespace) -> int:
 
 
 TERMINAL_RUN_STATUSES = {"accepted", "escalated", "interrupted"}
+UNFINISHED_RUN_STATUSES = {"prepared", "making", "checking", "retrying", "resuming"}
 TERMINAL_GRAPH_STATUSES = {"completed", "failed", "stopped", "blocked"}
+UNFINISHED_GRAPH_STATUSES = {"prepared", "running"}
+# What the controller keeps beside run folders in agentsmith-runs.
+RUN_ROOT_FILES = {"coordination.lock"}
+RUN_ROOT_FOLDERS = {"git-phases", "graph-stop"}
+
+
+def _real_directory(path: Path) -> bool:
+    return path.is_dir() and not path.is_symlink()
+
+
+def _real_file(path: Path) -> bool:
+    return path.is_file() and not path.is_symlink()
 
 
 def live_work(repo: Path) -> tuple[list[str], list[str]]:
     """Read-only scan of every run and graph sharing this repository's Git metadata.
 
     Returns (live, undetermined). Linked worktrees share refs and worktree administration, so
-    a `git worktree remove` or branch delete anywhere can break a run that is not terminal."""
+    a `git worktree remove` or branch delete anywhere can break a run that is not terminal.
+    Only shapes the controller writes and statuses it knows count; anything else is
+    undetermined, because the guard must prove "terminal", not assume it."""
     live: list[str] = []
     unknown: list[str] = []
     common = resolved_git_path(repo, "--git-common-dir")
+    for root in (common / "agentsmith-runs", common / "agentsmith-graphs"):
+        if (root.exists() or root.is_symlink()) and not _real_directory(root):
+            unknown.append(f"{root.name}: not a plain folder")
     runs = common / "agentsmith-runs"
-    for run_dir in sorted(runs.iterdir() if runs.is_dir() else []):
-        if not run_dir.is_dir() or run_dir.name in {"git-phases", "graph-stop"}:
+    for entry in sorted(runs.iterdir() if _real_directory(runs) else []):
+        name = entry.name
+        if name in RUN_ROOT_FILES and _real_file(entry):
             continue
-        name = run_dir.name
+        if name in RUN_ROOT_FOLDERS and _real_directory(entry):
+            continue
+        if not _real_directory(entry):
+            unknown.append(f"run {name}: not a plain run folder")
+            continue
         try:
-            owner = read_lock(run_dir)
+            lock = entry / "controller.lock"
+            if lock.is_symlink():
+                raise RunError("lifecycle lock is a symbolic link")
+            owner = read_lock(entry)
             owner_live = owner is not None and process_is_live(owner["pid"])
-            if not (run_dir / "state.json").exists():
+            state_file = entry / "state.json"
+            if not state_file.exists() and not state_file.is_symlink():
                 if owner_live:
                     live.append(f"run {name}: starting (controller {owner['pid']})")
+                elif any(entry.iterdir()):
+                    unknown.append(f"run {name}: files but no state; inspect it")
                 continue
-            state = load_json(run_dir / "state.json")
+            if not _real_file(state_file):
+                raise RunError("state.json is not a regular file")
+            state = load_json(state_file)
         except (OSError, ValueError, RunError) as exc:  # ValueError: undecodable text
             unknown.append(f"run {name}: cannot read its state or lock: {exc}")
             continue
@@ -2124,28 +2155,42 @@ def live_work(repo: Path) -> tuple[list[str], list[str]]:
             live.append(f"run {name}: {status} (controller {owner['pid']} is live)")
         elif state.get("active_pid") and process_is_live(state["active_pid"]):
             live.append(f"run {name}: {status} (role process {state['active_pid']} is live)")
-        elif status not in TERMINAL_RUN_STATUSES:
+        elif status in UNFINISHED_RUN_STATUSES:
             live.append(f"run {name}: {status} with no live controller; resume or inspect it first")
+        elif status not in TERMINAL_RUN_STATUSES:
+            unknown.append(f"run {name}: unrecognized status {status!r}")
     graphs = common / "agentsmith-graphs"
-    for graph_dir in sorted(graphs.iterdir() if graphs.is_dir() else []):
-        if not graph_dir.is_dir():
+    for entry in sorted(graphs.iterdir() if _real_directory(graphs) else []):
+        name = entry.name
+        if not _real_directory(entry):
+            unknown.append(f"graph {name}: not a plain graph folder")
             continue
-        name = graph_dir.name
         try:
             owner = None
-            if (graph_dir / "LOCK").exists():
-                owner = json.loads(read_text(graph_dir / "LOCK"))
+            lock = entry / "LOCK"
+            if lock.exists() or lock.is_symlink():
+                if not _real_file(lock):
+                    raise RunError("LOCK is not a regular file")
+                owner = json.loads(read_text(lock))
                 if not isinstance(owner, dict) or not isinstance(owner.get("pid"), int):
                     raise RunError("malformed graph lock owner")
-            state = load_json(graph_dir / "state.json")
+            state_file = entry / "state.json"
+            if not state_file.exists() and not state_file.is_symlink() and owner is None \
+                    and not any(entry.iterdir()):
+                continue
+            if not _real_file(state_file):
+                raise RunError("state.json is missing or not a regular file")
+            state = load_json(state_file)
         except (OSError, ValueError, RunError) as exc:  # ValueError: undecodable text or JSON
             unknown.append(f"graph {name}: cannot read its state or lock: {exc}")
             continue
         status = state.get("status")
         if owner is not None and process_is_live(owner["pid"]):
             live.append(f"graph {name}: {status} (controller {owner['pid']} is live)")
-        elif status not in TERMINAL_GRAPH_STATUSES:
+        elif status in UNFINISHED_GRAPH_STATUSES:
             live.append(f"graph {name}: {status} with no live controller; resume or inspect it first")
+        elif status not in TERMINAL_GRAPH_STATUSES:
+            unknown.append(f"graph {name}: unrecognized status {status!r}")
     return live, unknown
 
 
