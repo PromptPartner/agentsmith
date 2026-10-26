@@ -620,12 +620,23 @@ def remove_managed_markdown(path: Path, *, dry_run: bool) -> None:
         say(f"DRY RUN — would remove managed instructions from {path}")
         return
     backup(path)
-    begin, end = markers
-    remaining = re.sub(re.escape(begin) + r".*?" + re.escape(end), "", text, count=1, flags=re.S).strip()
-    if remaining:
-        atomic_write(path, remaining + "\n")
+    # Work on bytes so the user's text survives exactly, line endings included. Install wrote the
+    # block with one line break before it (when text preceded it) and one after; remove those too.
+    raw = path.read_bytes()
+    newline = b"\r\n" if b"\r\n" in raw else b"\n"
+    begin, end = (marker.encode("utf-8") for marker in markers)
+    start = raw.find(begin)
+    finish = raw.find(end, start) + len(end)
+    before, after = raw[:start], raw[finish:]
+    if after.startswith(newline):
+        after = after[len(newline):]
+    if before.endswith(newline):
+        before = before[:-len(newline)]
+    remaining = before + after
+    if not remaining:
+        path.unlink()  # the file held nothing but the block
     else:
-        path.unlink()
+        atomic_write_bytes(path, remaining, mode=stat.S_IMODE(path.stat().st_mode))
     ok(f"removed managed instructions from {path}")
 
 
@@ -6185,8 +6196,9 @@ def render_profile_switch_document(path: Path, block: str, *, force: bool = Fals
         if count != 1:
             raise CliError(f"Managed instruction reconciliation refused malformed markers in {path}")
     elif text and not force:
-        separator = "" if text.endswith(newline * 2) else newline if text.endswith(newline) else newline * 2
-        rendered = text + separator + replacement + newline
+        # Exactly one line break before and after the block, whatever the text ends with, so
+        # uninstall can remove precisely what install added and restore the original bytes.
+        rendered = text + newline + replacement + newline
     else:
         rendered = replacement + newline
     return old, rendered.encode("utf-8")

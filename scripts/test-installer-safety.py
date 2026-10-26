@@ -376,6 +376,34 @@ class RulebookTests(InstallerFixture):
         self.assertNotIn(self.CORE_HEADING, claude)
         self.assertIn("@AGENTS.md", claude.splitlines())
 
+    def test_uninstall_keeps_every_byte_outside_the_managed_block(self) -> None:
+        # Review reproducer: CRLF became LF, edge whitespace was stripped and a final LF was added.
+        for newline in (b"\n", b"\r\n"):
+            with self.subTest(newline=newline):
+                project = self.root / f"project {len(newline)}"
+                project.mkdir()
+                initial = b" \t" + newline + b"  # User rules  " + newline + b"keep my spaces  " + newline + newline + b" \t"
+                for name in ("AGENTS.md", "CLAUDE.md"):
+                    (project / name).write_bytes(initial)
+                self.install_project(project)
+                suffix = b" \t" + newline + b"  USER SUFFIX  " + newline + b"\t "
+                for name in ("AGENTS.md", "CLAUDE.md"):
+                    path = project / name
+                    path.write_bytes(path.read_bytes() + suffix)
+                self.install_project(project)  # a rerun must keep both sides too
+                self.assert_ok(self.run_core("install", "--target", str(project), "--agent", "claude", "--uninstall"))
+                for name in ("AGENTS.md", "CLAUDE.md"):
+                    # The user's bytes come back exactly; only the block and the two line breaks
+                    # the install placed around it are gone.
+                    self.assertEqual((project / name).read_bytes(), initial + suffix, name)
+
+    def test_uninstall_removes_an_instruction_file_it_created(self) -> None:
+        project = self.root / "project"
+        self.install_project(project)
+        self.assert_ok(self.run_core("install", "--target", str(project), "--agent", "claude,codex", "--uninstall"))
+        self.assertFalse((project / "AGENTS.md").exists())
+        self.assertFalse((project / "CLAUDE.md").exists())
+
     def test_global_claude_rules_stay_complete(self) -> None:
         self.assert_ok(self.run_core("install", "--global", "--agent", "claude", "--assemble-only"))
         self.assertIn(self.CORE_HEADING, (self.home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8"))

@@ -860,3 +860,10 @@ global selections needs its own design because update replays the record.
   settings and hooks, `.mcp.json`, Gemini settings, Codex `config.toml`); uninstall deletes an
   emptied file only when that record names it and otherwise leaves `{}`. State from earlier
   releases has no record and keeps the old behaviour. Two new tests failed before and pass after.
+- [x] 2026-10-26 — Same review: uninstall changed the user's bytes in `AGENTS.md` and `CLAUDE.md`
+  outside the managed block (CRLF became LF, leading and trailing whitespace was stripped, a final
+  LF was added). Uninstall now works on bytes and removes only the block plus the one line break
+  install put on each side of it; install now always adds exactly one line break before an
+  appended block, so the removal is exact. The user's text before and after the block, including
+  CRLF and edge whitespace, comes back byte for byte. The new test failed before (LF and CRLF) and
+  passes after; the public proof's existing-config lifecycle is unchanged.
