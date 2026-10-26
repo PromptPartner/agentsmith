@@ -4510,6 +4510,25 @@ def loaded_rule_files(agent_id: str, target: Path) -> list[Path] | None:
     return None
 
 
+def claude_plugin_enabled(plugin: str, target: Path) -> bool:
+    """Resolve Claude Code's enabledPlugins ("name@marketplace": bool) for one plugin name.
+
+    Precedence (code.claude.com/docs/en/settings-reference#enabledplugins, 2026-10-26): local
+    .claude/settings.local.json over project .claude/settings.json over ~/.claude/settings.json.
+    """
+    resolved: dict[str, bool] = {}
+    for path in (home_dir() / ".claude" / "settings.json", target / ".claude" / "settings.json",
+                 target / ".claude" / "settings.local.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+        except (OSError, json.JSONDecodeError):
+            continue
+        plugins = data.get("enabledPlugins") if isinstance(data, dict) else None
+        if isinstance(plugins, dict):
+            resolved.update({key: value for key, value in plugins.items() if isinstance(value, bool)})
+    return any(value for key, value in resolved.items() if key.split("@", 1)[0] == plugin)
+
+
 def owned_instruction_file(path: Path, project_root: Path) -> bool:
     """True when the file belongs to this project or to a current install.
 
@@ -4573,6 +4592,17 @@ def inspect_instructions(agent_id: str, agent: dict[str, Any], target: Path) -> 
                 "uninstall does not touch it.",
             )
         )
+    if agent_id == "claude" and not claude_plugin_enabled("superpowers", target):
+        for source in loaded_records:
+            text = Path(source["path"]).read_text(encoding="utf-8", errors="replace") if source["exists"] else ""
+            named = sorted(set(re.findall(r"superpowers:[a-z0-9-]+", text)))
+            if named:
+                warnings.append(doctor_warning(
+                    "superpowers-not-enabled",
+                    f"{source['path']} names {', '.join(named[:4])}{' and more' if len(named) > 4 else ''}, "
+                    "but the superpowers plugin is not enabled in Claude Code's settings.",
+                    "Enable it with /plugin, or accept that the rule falls back to doing the step by hand.",
+                ))
     canonical = project_root / "AGENTS.md"
     if agent_id == "claude" and canonical.is_file() and managed_block(canonical.read_text(encoding="utf-8", errors="replace")):
         generated = project_root / "CLAUDE.md"

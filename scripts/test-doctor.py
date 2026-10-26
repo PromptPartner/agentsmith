@@ -301,6 +301,27 @@ class DoctorTests(unittest.TestCase):
         self.assertIn("templates/missing-guide.md", handoff)
         self.assertNotIn(".harness/runs", handoff, "a placeholder path is created at run time")
 
+    def test_superpowers_skills_named_without_the_plugin_are_reported(self) -> None:
+        project = self.root / "superpowers project"
+        (project / ".claude").mkdir(parents=True)
+        (project / "CLAUDE.md").write_text("Use `superpowers:brainstorming` before building.\n", encoding="utf-8")
+        _, missing = self.doctor(project, "claude")
+        warning = next(w for w in missing["claude"]["warnings"] if w["code"] == "superpowers-not-enabled")
+        self.assertIn("superpowers:brainstorming", warning["message"])
+        settings = Path(self.env["HOME"]) / ".claude" / "settings.json"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text(json.dumps({"enabledPlugins": {"superpowers@claude-plugins-official": True}}), encoding="utf-8")
+        _, enabled = self.doctor(project, "claude")
+        self.assertNotIn("superpowers-not-enabled", self.warning_codes(enabled["claude"]))
+        # Local settings override user settings, so a local opt-out disables it again.
+        (project / ".claude" / "settings.local.json").write_text(
+            json.dumps({"enabledPlugins": {"superpowers@claude-plugins-official": False}}), encoding="utf-8"
+        )
+        _, disabled = self.doctor(project, "claude")
+        self.assertIn("superpowers-not-enabled", self.warning_codes(disabled["claude"]))
+        _, codex = self.doctor(project, "codex")
+        self.assertNotIn("superpowers-not-enabled", self.warning_codes(codex["codex"]))
+
     def test_trusted_native_install_reports_actual_owned_surfaces(self) -> None:
         project = self.root / "owned project ü"
         project.mkdir()
