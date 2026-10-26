@@ -4343,9 +4343,12 @@ def git_hooks_location(target: Path) -> tuple[Path, Path] | None:
     lines = result.stdout.splitlines()
     if result.returncode or len(lines) != 2:
         return None
-    hooks, common = (Path(line.strip()) for line in lines)
-    hooks = hooks if hooks.is_absolute() else target / hooks
-    common = common if common.is_absolute() else target / common
+    # normpath collapses ".." left in Git's answer and turns Git for Windows' forward slashes into
+    # native separators, so the containment comparison sees one spelling per folder.
+    hooks, common = (
+        Path(os.path.normpath(path if path.is_absolute() else target / path))
+        for path in (Path(line.strip()) for line in lines)
+    )
     try:
         hooks.relative_to(target)
         return hooks, target

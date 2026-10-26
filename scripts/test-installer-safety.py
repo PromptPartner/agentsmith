@@ -8,7 +8,9 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import contextlib
 import importlib.util
+import io
 import tempfile
 import unittest
 from unittest import mock
@@ -283,11 +285,34 @@ class ContainmentTests(InstallerFixture):
         self.git("-C", str(main), "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qm", "init")
         worktree = self.root / "worktree"
         self.git("-C", str(main), "worktree", "add", "-q", str(worktree))
-        self.assert_ok(self.run_core(
+        result = self.run_core(
             "install", "--target", str(worktree), "--agent", "codex", "--profile", "general-admin",
             "--assemble-only", "--with-hooks",
-        ))
-        self.assertTrue((main / ".git" / "hooks" / "pre-commit").is_file())
+        )
+        self.assert_ok(result)
+        located = subprocess.run(
+            ["git", "-C", str(worktree), "rev-parse", "--git-path", "hooks", "--git-common-dir"],
+            text=True, capture_output=True, check=False,
+        )
+        self.assertTrue(
+            (main / ".git" / "hooks" / "pre-commit").is_file(),
+            f"git reported {located.stdout!r}; install said:\n{result.stdout}{result.stderr}",
+        )
+
+    def test_git_hooks_location_normalises_paths_git_leaves_unresolved(self) -> None:
+        # Git can report a worktree's common folder through its "commondir" file without collapsing
+        # "..", and Git for Windows writes forward slashes; both must name the main checkout.
+        spec = importlib.util.spec_from_file_location("agentsmith_hooks_probe", CORE)
+        core = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(core)
+        main_git = self.root / "main" / ".git"
+        worktree = self.root / "worktree"
+        unresolved = (main_git / "worktrees" / "worktree").as_posix() + "/../.."
+        reply = subprocess.CompletedProcess([], 0, stdout=f"{unresolved}/hooks\n{unresolved}\n", stderr="")
+        with mock.patch.object(core.shutil, "which", return_value="git"), \
+                mock.patch.object(core.subprocess, "run", return_value=reply):
+            hooks, root = core.git_hooks_location(worktree)
+        self.assertEqual((hooks, root), (main_git / "hooks", main_git))
 
     def test_user_level_status_line_link_is_refused_before_any_write(self) -> None:
         # Review reproducer: the base helper name is taken, so the install picks "-1", a link outside.
@@ -566,8 +591,7 @@ class RaceTests(InstallerFixture):
     def install_in_process(self, core, project: Path, *extra: str) -> Exception | None:
         arguments = ["install", "--target", str(project), "--agent", "claude", "--profile", "general-admin", *extra]
         with mock.patch.dict(os.environ, self.env, clear=True), \
-                mock.patch("sys.stdout", new_callable=lambda: open(os.devnull, "w")), \
-                mock.patch("sys.stderr", new_callable=lambda: open(os.devnull, "w")):
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             try:
                 core.cmd_install(core.parser().parse_args(arguments))
             except Exception as exc:  # the refusal is the expected outcome
