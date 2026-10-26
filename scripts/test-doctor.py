@@ -199,6 +199,64 @@ class DoctorTests(unittest.TestCase):
             [True, False],
         )
 
+    def test_claude_duplicate_core_above_the_git_root_is_reported(self) -> None:
+        # Claude Code loads CLAUDE.md from every ancestor, not only from the Git root down.
+        outer = self.root / "outer workspace"
+        inner = outer / "inner repo"
+        self.assertEqual(self.install(outer, "--agent", "claude", "--profile", "software-dev", "--assemble-only").returncode, 0)
+        self.assertEqual(self.install(inner, "--agent", "claude", "--profile", "software-dev", "--assemble-only").returncode, 0)
+        subprocess.run(["git", "-C", str(inner), "init", "-q"], check=True)
+        _, payload = self.doctor(inner, "claude")
+        agent = payload["claude"]
+        self.assertIn("duplicate-managed-core", self.warning_codes(agent))
+        loaded = [Path(path) for path in agent["instructions"]["loaded_files"]]
+        self.assertIn((outer / "CLAUDE.md").resolve(), loaded)
+        self.assertIn((inner / "CLAUDE.md").resolve(), loaded)
+        message = next(w["message"] for w in agent["warnings"] if w["code"] == "duplicate-managed-core")
+        self.assertIn("Claude Code", message)
+        self.assertIn(str((outer / "CLAUDE.md").resolve()), message)
+        self.assertNotIn("legacy-managed-block", self.warning_codes(agent), "both copies belong to a current install")
+        # Codex reads from the Git root down, so the outer copy is outside its chain.
+        _, codex_payload = self.doctor(inner, "codex")
+        self.assertNotIn("duplicate-managed-core", self.warning_codes(codex_payload["codex"]))
+        self.assertNotIn(str((outer / "AGENTS.md").resolve()), codex_payload["codex"]["instructions"]["loaded_files"])
+
+    def test_legacy_home_agents_block_is_reported_only_for_the_tool_that_loads_it(self) -> None:
+        donor = self.root / "donor"
+        self.assertEqual(self.install(donor, "--agent", "codex", "--profile", "general-admin", "--assemble-only").returncode, 0)
+        home = Path(self.env["HOME"])
+        home.mkdir(parents=True, exist_ok=True)
+        legacy = home / "AGENTS.md"
+        legacy.write_text((donor / "AGENTS.md").read_text(encoding="utf-8"), encoding="utf-8")
+        repo = home / "work" / "repo"
+        repo.mkdir(parents=True)
+        subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+        _, claude_payload = self.doctor(repo, "claude")
+        warning = next(w for w in claude_payload["claude"]["warnings"] if w["code"] == "legacy-managed-block")
+        self.assertIn(str(legacy.resolve()), warning["message"])
+        self.assertIn("Claude Code", warning["message"])
+        _, codex_payload = self.doctor(repo, "codex")
+        self.assertNotIn("legacy-managed-block", self.warning_codes(codex_payload["codex"]))
+        # A clone carries the project's rules without the untracked install record; that is not legacy.
+        (repo / "AGENTS.md").write_text((donor / "AGENTS.md").read_text(encoding="utf-8"), encoding="utf-8")
+        _, clone_payload = self.doctor(repo, "codex")
+        self.assertNotIn("legacy-managed-block", self.warning_codes(clone_payload["codex"]))
+        # A CLAUDE.md in the folder chain stops Claude Code from reading AGENTS.md at all.
+        (repo / "CLAUDE.md").write_text("# Project notes\n", encoding="utf-8")
+        _, quiet = self.doctor(repo, "claude")
+        self.assertNotIn("legacy-managed-block", self.warning_codes(quiet["claude"]))
+        self.assertNotIn(str(legacy.resolve()), quiet["claude"]["instructions"]["loaded_files"])
+
+    def test_codex_override_file_replaces_agents_md(self) -> None:
+        repo = self.root / "override repo"
+        self.assertEqual(self.install(repo, "--agent", "codex", "--profile", "general-admin", "--assemble-only").returncode, 0)
+        subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+        (repo / "AGENTS.override.md").write_text("# Local override\n", encoding="utf-8")
+        _, payload = self.doctor(repo, "codex")
+        loaded = payload["codex"]["instructions"]["loaded_files"]
+        self.assertIn(str((repo / "AGENTS.override.md").resolve()), loaded)
+        self.assertNotIn(str((repo / "AGENTS.md").resolve()), loaded)
+
     def test_trusted_native_install_reports_actual_owned_surfaces(self) -> None:
         project = self.root / "owned project ü"
         project.mkdir()

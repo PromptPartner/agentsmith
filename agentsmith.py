@@ -4471,6 +4471,59 @@ def instruction_chain(agent: dict[str, Any], target: Path) -> tuple[list[dict[st
     return sources, project_root
 
 
+TOOL_NAMES = {"claude": "Claude Code", "codex": "Codex"}
+
+
+def loaded_rule_files(agent_id: str, target: Path) -> list[Path] | None:
+    """Return the instruction files a native client really loads from `target`, in load order.
+
+    Each client has its own discovery rule (checked against the vendors' docs, 2026-10-25):
+    - Claude Code reads ~/.claude/CLAUDE.md, then CLAUDE.md, .claude/CLAUDE.md and CLAUDE.local.md
+      from the working directory and every ancestor up to, not including, the filesystem root.
+      It reads AGENTS.md and .claude/AGENTS.md (same walk) only when none of those three exists in
+      the working directory or any ancestor; ~/.claude/CLAUDE.md does not count for that test.
+    - Codex reads $CODEX_HOME/AGENTS.override.md, else $CODEX_HOME/AGENTS.md, then one file per
+      folder from the Git root down to the working directory: AGENTS.override.md, else AGENTS.md.
+      So ~/AGENTS.md is outside its chain for a repository below home.
+    Other clients return None and keep the registry-declared chain.
+    """
+    resolved = target.resolve()
+    if agent_id == "claude":
+        user = (home_dir() / ".claude" / "CLAUDE.md").resolve()
+        folders = [folder for folder in reversed((resolved, *resolved.parents)) if folder.parent != folder]
+
+        def found(names: tuple[str, ...]) -> list[Path]:
+            files = [(folder / name).resolve() for folder in folders for name in names]
+            return [path for path in dict.fromkeys(files) if path.is_file() and path != user]
+
+        project = found(("CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md"))
+        return ([user] if user.is_file() else []) + (project or found(("AGENTS.md", ".claude/AGENTS.md")))
+    if agent_id == "codex":
+        loaded = [path for path in (codex_home() / "AGENTS.override.md", codex_home() / "AGENTS.md") if path.is_file()][:1]
+        root = doctor_project_root(resolved)
+        folders = [resolved] if root not in (resolved, *resolved.parents) else [
+            folder for folder in reversed((resolved, *resolved.parents)) if folder == root or root in folder.parents
+        ]
+        for folder in folders:
+            loaded += [path for path in (folder / "AGENTS.override.md", folder / "AGENTS.md") if path.is_file()][:1]
+        return [path.resolve() for path in loaded]
+    return None
+
+
+def owned_instruction_file(path: Path, project_root: Path) -> bool:
+    """True when the file belongs to this project or to a current install.
+
+    That is a user-level rules file an install writes, any file inside this project (a clone may
+    lack the untracked install record), or the rules of another project-scope install.
+    """
+    resolved = path.resolve()
+    global_files = {candidate.resolve() for candidate in map(global_instruction_path, GLOBAL_INSTRUCTION_TARGETS) if candidate}
+    if resolved in global_files or project_root.resolve() in resolved.parents:
+        return True
+    installation = load_state(resolved.parent).get("installation")
+    return resolved.name in {"AGENTS.md", "CLAUDE.md"} and isinstance(installation, dict) and installation.get("scope") == "project"
+
+
 def inspect_instructions(agent_id: str, agent: dict[str, Any], target: Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
     sources, project_root = instruction_chain(agent, target)
     warnings: list[dict[str, str]] = []
@@ -4484,16 +4537,40 @@ def inspect_instructions(agent_id: str, agent: dict[str, Any], target: Path) -> 
                 "Re-run install for this target after preserving any foreign content.",
             )
         )
-    full_cores = [source for source in existing if source["generated_core"] is True]
+    loaded = loaded_rule_files(agent_id, target)
+    loaded_records = [instruction_source(path, "loaded") for path in loaded] if loaded is not None else existing
+    full_cores = [source for source in loaded_records if source["generated_core"] is True]
     duplicate_tokens = max(0, sum(source["core_tokens"] for source in full_cores) - max(
         (source["core_tokens"] for source in full_cores), default=0
     ))
+    tool = TOOL_NAMES.get(agent_id, agent_id)
     if len(full_cores) > 1:
         warnings.append(
             doctor_warning(
                 "duplicate-managed-core",
-                "Global and project instruction sources both contain the full managed core.",
+                f"{tool} loads the full managed core from {len(full_cores)} files: "
+                + ", ".join(source["path"] for source in full_cores) + ".",
                 "If collaborators can rely on the global layer, reinstall the project with --profile-only; keep the full project copy when self-containment is intentional.",
+            )
+        )
+    for source in loaded_records:
+        text = Path(source["path"]).read_text(encoding="utf-8", errors="replace") if source["exists"] else ""
+        old_marker = LEGACY_BEGIN in text or OLDER_BEGIN in text
+        if not (old_marker or (source["managed_status"] != "unmanaged" and source["exists"])):
+            continue
+        if source["managed_status"] == "missing" or (
+            not old_marker and owned_instruction_file(Path(source["path"]), project_root)
+        ):
+            continue
+        why = (" Claude Code reads AGENTS.md here only because no CLAUDE.md exists in this folder or above it."
+               if agent_id == "claude" and Path(source["path"]).name == "AGENTS.md" else "")
+        warnings.append(
+            doctor_warning(
+                "legacy-managed-block",
+                f"{tool} loads {source['path']}, which holds an AgentSmith block outside this project that no "
+                f"current install owns (for example, one left by an earlier setup.sh-era install).{why}",
+                "Keep the rules through a current install instead, then delete the block from that file by hand; "
+                "uninstall does not touch it.",
             )
         )
     canonical = project_root / "AGENTS.md"
@@ -4529,6 +4606,7 @@ def inspect_instructions(agent_id: str, agent: dict[str, Any], target: Path) -> 
         "sources": sources,
         "combined_tokens": sum(source["tokens"] for source in existing),
         "duplicate_tokens": duplicate_tokens,
+        "loaded_files": [source["path"] for source in loaded_records if source["exists"]],
     }, warnings
 
 

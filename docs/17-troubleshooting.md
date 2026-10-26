@@ -176,8 +176,11 @@ claim *after* the last destructive step, not after the one that preserved it) is
 
 **"The rules don't seem to apply in my tool."** Run `agentsmith doctor --agent <id>` and inspect
 the resolved global/project/nested source chain separately from safety, skills, MCP, hooks, and
-runtime ownership. A `duplicate-managed-core` warning means both global and project sources carry
-the universal core; `--profile-only` removes that duplication on a future install, but keep the
+runtime ownership. A `duplicate-managed-core` warning means one tool loads the universal core from
+more than one file. Doctor models each tool's own discovery rule: Claude Code reads `CLAUDE.md`
+files from the folder and every folder above it (and `AGENTS.md` only when no `CLAUDE.md` exists
+anywhere in that chain); Codex reads from the Git root down. `instructions.loaded_files` in
+`doctor --json` lists what each tool loads. `--profile-only` removes that duplication on a future install, but keep the
 full project copy when collaborators need self-contained rules. Project `AGENTS.md` is canonical;
 Claude gets a generated `CLAUDE.md`, while configured adapters must still point to it. Web surfaces
 do not gain local hooks merely by reading instructions. See
@@ -190,6 +193,8 @@ cannot be quoted as the shipped behaviour.
 | Code | Means | What to do |
 |---|---|---|
 | `runtime-file-modified` (strict) | An installed runtime file no longer matches the hash install recorded. Hooks, verify receipts and runs come from edited code. | Re-run install or the reviewed update. |
+| `duplicate-managed-core` | One tool loads the full core from two or more files, so it reads every rule twice. | Reinstall the project with `--profile-only`, or remove the extra copy. |
+| `legacy-managed-block` | A tool loads an AgentSmith block outside this project that no current install owns, such as a `~/AGENTS.md` from an old setup.sh install. | Keep the rules through a current install, then delete the block by hand. |
 | `hook-unused-30-days` | An installed hook did not fire in 30 days ([firing log](../hooks/README.md#firing-log--track-every-workaround-delete-it-when-it-stops-firing)). | Advisory: consider removing it; a safety gate may rightly never block. |
 
 **"`agentsmith evaluate` refuses to call the client."** Real model calls require all three pieces:
