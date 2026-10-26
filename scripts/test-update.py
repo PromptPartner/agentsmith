@@ -2531,26 +2531,30 @@ class UpdateCheckTests(unittest.TestCase):
 class RootTranslationTests(unittest.TestCase):
     def test_a_path_shared_by_two_roots_translates_the_same_way_every_run(self) -> None:
         # A global plan's target root is HOME itself. Live text must map to the shadow HOME, and
-        # must not depend on set order: plan and apply translate in different processes.
+        # must not depend on set order: plan and apply translate in different processes. The roots
+        # are real absolute paths for this platform (drive letter and separators on Windows), as
+        # update_roots() produces; a POSIX literal is not absolute on Windows and is never translated.
+        base = Path(tempfile.gettempdir()) / "agentsmith update ü"
+        live, shadow_target, shadow_home = base / "home", base / "shadow target", base / "shadow home"
+        text = json.dumps({"file": str(live / ".claude" / "agentsmith-statusline.py")})
+        expected = json.dumps({"file": str(shadow_home / ".claude" / "agentsmith-statusline.py")})
         probe = (
-            "import json, sys\n"
+            "import sys\n"
             f"sys.path.insert(0, {str(ROOT)!r})\n"
             "import agentsmith\n"
-            "live = '/tmp/agentsmith update \\u00fc/home'\n"
-            "text = json.dumps({'file': live + '/.claude/agentsmith-statusline.py'})\n"
+            f"text, live = {text!r}, {str(live)!r}\n"
             "print(agentsmith.translate_root_paths(text.encode(), {'target': live, 'home': live},\n"
-            "    {'target': '/shadow/target', 'home': '/shadow/home'}).decode())\n"
+            f"    {{'target': {str(shadow_target)!r}, 'home': {str(shadow_home)!r}}}).decode())\n"
         )
         outputs = set()
         for seed in range(12):
             result = subprocess.run(
-                [sys.executable, "-c", probe], text=True, capture_output=True, check=False,
-                env={**os.environ, "PYTHONHASHSEED": str(seed)},
+                [sys.executable, "-c", probe], text=True, encoding="utf-8", capture_output=True, check=False,
+                env={**os.environ, "PYTHONHASHSEED": str(seed), "PYTHONIOENCODING": "utf-8"},
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             outputs.add(result.stdout.strip())
-        self.assertEqual(outputs, {json.dumps({"file": "/shadow/home/.claude/agentsmith-statusline.py"})})
-
+        self.assertEqual(outputs, {expected})
 
 if __name__ == "__main__":
     unittest.main()
