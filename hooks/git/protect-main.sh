@@ -3,21 +3,31 @@
 # Protected branches default to "main master"; override with PROTECTED_BRANCHES.
 # Bypass a single commit with: git commit --no-verify  (use sparingly).
 set -euo pipefail
-# Firing log: one line per block in <repo>/.agentsmith/logs/hook-events.jsonl, so `agentsmith
-# doctor` can name a guardrail that stopped firing. No commit text; a logging failure never blocks.
+# Firing log: append one line per block to <repo>/.agentsmith/logs/hook-events.jsonl, so
+# `agentsmith doctor` can name a guardrail that stopped firing. A cloned repository controls these
+# paths, so this only appends to a regular file it can see is not a link, never rotates (Python
+# hooks do; here appends stop at 128 KiB) and never lets a logging failure change the exit code.
 log_firing() {
-  local dir log
-  dir="$(git rev-parse --show-toplevel 2>/dev/null)/.agentsmith" || return 0
-  [ -d "$dir" ] && [ ! -L "$dir/logs" ] || return 0
-  mkdir -p "$dir/logs" 2>/dev/null || return 0
-  [ -e "$dir/logs/.gitignore" ] || printf '*\n' >"$dir/logs/.gitignore" 2>/dev/null || true
-  log="$dir/logs/hook-events.jsonl"
-  [ ! -L "$log" ] || return 0
-  printf '{"ts":"%s","hook":"%s","event":"%s","outcome":"blocked"}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" >>"$log" 2>/dev/null || return 0
-  if [ "$(wc -c <"$log" 2>/dev/null || echo 0)" -gt 65536 ]; then
-    { tail -c 32768 "$log" | sed '1d' >"$log.tmp" && mv -f "$log.tmp" "$log"; } 2>/dev/null || rm -f "$log.tmp"
+  local root dir log size
+  root="$(git rev-parse --show-toplevel 2>/dev/null)" || return 0
+  dir="$root/.agentsmith/logs"
+  log="$dir/hook-events.jsonl"
+  [ -d "$root/.agentsmith" ] && [ ! -L "$root/.agentsmith" ] || return 0
+  if [ ! -e "$dir" ] && [ ! -L "$dir" ]; then
+    mkdir "$dir" 2>/dev/null || return 0
+    ( set -o noclobber; printf '*\n' >"$dir/.gitignore" ) 2>/dev/null || true
   fi
+  [ -d "$dir" ] && [ ! -L "$dir" ] || return 0
+  if [ -e "$log" ] || [ -L "$log" ]; then
+    [ -f "$log" ] && [ ! -L "$log" ] || return 0
+    size="$(wc -c <"$log" 2>/dev/null)" || return 0
+    [ "${size:-0}" -lt 131072 ] || return 0
+  fi
+  # One short O_APPEND write per event keeps concurrent lines whole. The subshell ignores
+  # SIGXFSZ, so a full disk only fails the write.
+  ( trap '' XFSZ
+    printf '{"ts":"%s","hook":"%s","event":"%s","outcome":"blocked"}\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" >>"$log" ) 2>/dev/null || true
   return 0
 }
 branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"

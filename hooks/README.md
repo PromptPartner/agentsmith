@@ -204,8 +204,11 @@ context). A hook run that does nothing writes nothing.
 - **What:** `{"ts", "hook", "event", "outcome"}` only, for example
   `{"ts":"2026-10-26T09:00:00Z","hook":"handoff-on-keyword","event":"UserPromptSubmit","outcome":"nudged"}`.
   No prompt text, file paths, commit messages or secrets.
-- **Size:** once the log passes 64 KiB, it keeps its newest half.
-- **Failure:** a log that cannot be written is skipped; the hook still runs and returns as before.
+- **Size:** once the log passes 64 KiB, the next Python hook keeps its newest half. The shell
+  guardrails only append, and stop appending at 128 KiB.
+- **Failure and safety:** a log that cannot be written is skipped; the hook still runs and returns
+  as before, even on a full disk. A cloned repository controls `.agentsmith/`, so the hooks write
+  only to a regular file and never through a symbolic link, FIFO or other special file.
 
 `agentsmith doctor` prints the firings per hook for the last 30 days and warns
 (`hook-unused-30-days`, advisory) about an installed hook that did not fire in that window, once

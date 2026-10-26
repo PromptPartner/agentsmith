@@ -950,6 +950,89 @@ class HookFiringLogTests(unittest.TestCase):
         self.assertEqual([item["hook"] for item in self.events()], ["protect-main", "conventional-commit"])
 
 
+    def shell_guardrail(self, timeout: float = 10, **options) -> subprocess.CompletedProcess[str]:
+        """Run the commit-message guardrail on a bad subject inside the fixture repository."""
+        if not (self.project / ".git").exists():
+            subprocess.run(["git", "-C", str(self.project), "init", "-q"], check=True)
+        message = self.root / "message"
+        if not message.exists():  # written once: parallel runs must not see a half-written file
+            message.write_text("bad subject\n", encoding="utf-8")
+        return subprocess.run(["bash", str(ROOT / "hooks" / "git" / "conventional-commit.sh"), str(message)],
+                              cwd=self.project, env=self.env, text=True, capture_output=True, check=False,
+                              timeout=timeout, **options)
+
+    @unittest.skipIf(os.name == "nt" or not shutil.which("bash") or not shutil.which("git"), "POSIX Git hook")
+    def test_shell_log_never_writes_through_links(self) -> None:
+        # A cloned repository controls .agentsmith/, so every planted link must be refused.
+        logs = self.log.parent
+        logs.mkdir(parents=True)
+        line = json.dumps({"ts": "2026-01-01T00:00:00Z", "hook": "x", "event": "e", "outcome": "blocked"}) + "\n"
+        self.log.write_text(line * 3000, encoding="utf-8")
+        victim = self.root / "valuable.txt"
+        victim.write_text("DO NOT OVERWRITE", encoding="utf-8")
+        (logs / "hook-events.jsonl.tmp").symlink_to(victim)
+        self.assertEqual(self.shell_guardrail().returncode, 1)
+        self.assertEqual(victim.read_text(encoding="utf-8"), "DO NOT OVERWRITE")
+        self.assertFalse(self.log.is_symlink())
+        shutil.rmtree(logs)
+        logs.mkdir()
+        outside = self.root / "outside-ignore"
+        (logs / ".gitignore").symlink_to(outside)
+        self.assertEqual(self.shell_guardrail().returncode, 1)
+        self.assertFalse(outside.exists(), "a dangling .gitignore link was followed")
+        shutil.rmtree(logs)
+        logs.mkdir()
+        self.log.symlink_to(victim)
+        self.assertEqual(self.shell_guardrail().returncode, 1)
+        self.assertEqual(victim.read_text(encoding="utf-8"), "DO NOT OVERWRITE")
+        shutil.rmtree(logs)
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        logs.symlink_to(elsewhere, target_is_directory=True)
+        self.assertEqual(self.shell_guardrail().returncode, 1)
+        self.assertEqual(list(elsewhere.iterdir()), [])
+
+    @unittest.skipIf(os.name == "nt" or not shutil.which("bash") or not shutil.which("git"), "POSIX Git hook")
+    def test_shell_log_skips_a_fifo_and_stays_bounded(self) -> None:
+        self.log.parent.mkdir(parents=True)
+        os.mkfifo(self.log)
+        try:
+            self.assertEqual(self.shell_guardrail(timeout=5).returncode, 1)
+        except subprocess.TimeoutExpired:
+            self.fail("the shell hook blocked on a FIFO at the log path")
+        self.log.unlink()
+        line = json.dumps({"ts": "2026-01-01T00:00:00Z", "hook": "x", "event": "e", "outcome": "blocked"}) + "\n"
+        self.log.write_text(line * 3000, encoding="utf-8")
+        size = self.log.stat().st_size
+        self.assertEqual(self.shell_guardrail().returncode, 1)
+        self.assertEqual(self.log.stat().st_size, size, "shell hooks append only below the size cap")
+
+    @unittest.skipIf(os.name == "nt" or not shutil.which("bash") or not shutil.which("git"), "POSIX Git hook")
+    def test_concurrent_shell_firings_keep_every_line_whole(self) -> None:
+        import concurrent.futures
+        # Start past the old 64 KiB rotation point: parallel rotation used to tear lines.
+        subprocess.run(["git", "-C", str(self.project), "init", "-q"], check=True)
+        self.log.parent.mkdir(parents=True)
+        line = json.dumps({"ts": "2026-01-01T00:00:00Z", "hook": "x", "event": "e", "outcome": "blocked"}) + "\n"
+        self.log.write_text(line * 1100, encoding="utf-8")
+        with concurrent.futures.ThreadPoolExecutor(16) as pool:
+            codes = set(pool.map(lambda _: self.shell_guardrail().returncode, range(60)))
+        self.assertEqual(codes, {1})
+        lines = self.log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 1160)
+        self.assertEqual(sum(json.loads(line)["hook"] == "conventional-commit" for line in lines), 60)
+
+    @unittest.skipIf(os.name == "nt" or not shutil.which("bash") or not shutil.which("git"), "POSIX Git hook")
+    def test_a_full_disk_never_changes_the_guardrail_result(self) -> None:
+        import resource
+
+        def no_file_growth() -> None:
+            resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))
+
+        self.log.parent.mkdir(parents=True)
+        self.assertEqual(self.shell_guardrail(preexec_fn=no_file_growth).returncode, 1)
+
+
 def dt_now_iso() -> str:
     import datetime
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
