@@ -196,7 +196,8 @@ Wayfinder spec flow remains available to every work type.
 **Kill switch.** While the file `.harness/AUTONOMY_PAUSED` exists, in the checkout you run from
 or in the main checkout, `prepare`, `start` and `resume` refuse, and so do `agentsmith graph
 start` and `graph resume`. The refusal names the file. A run that is already live keeps running;
-use `stop <id>` to end it. Delete the file to allow new work again. Leave it untracked: graph
+use `stop <id>` to end it. Delete the file to allow new work again. The name matches ignoring
+case (`autonomy_paused` also pauses) on every filesystem, so the rule does not depend on the disk. Leave it untracked: graph
 validation ignores exactly this path, so `graph status` still works while autonomy is paused.
 
 `status <id>` reads controller state from the repository's git-common directory. `start` and

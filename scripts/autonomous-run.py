@@ -133,16 +133,23 @@ PAUSE_MARKER = ".harness/AUTONOMY_PAUSED"
 def assert_autonomy_not_paused(repo: Path) -> None:
     """The operator's repository-wide kill switch: while the marker exists in this checkout or
     in the main checkout, no run is prepared, started or resumed. A live run keeps running;
-    `stop <id>` ends it."""
+    `stop <id>` ends it. Any entry in `.harness/` named AUTONOMY_PAUSED ignoring case counts,
+    so the result does not depend on whether the filesystem ignores case."""
     roots = [repo]
     common = resolved_git_path(repo, "--git-common-dir")
     if common.name == ".git" and common.parent != repo:
         roots.append(common.parent)
+    wanted = Path(PAUSE_MARKER).name.casefold()
     for root in roots:
-        marker = root / PAUSE_MARKER
-        if marker.exists() or marker.is_symlink():
-            raise RunError(f"autonomy is paused by {marker}; remove it to allow new work "
-                           "(live runs are not stopped; use stop <id>)")
+        folder = root / Path(PAUSE_MARKER).parent
+        try:
+            names = os.listdir(folder) if folder.is_dir() else []
+        except OSError as exc:
+            raise RunError(f"cannot tell whether autonomy is paused: {folder}: {exc}") from exc
+        for name in names:
+            if name.casefold() == wanted:
+                raise RunError(f"autonomy is paused by {folder / name}; remove it to allow new work "
+                               "(live runs are not stopped; use stop <id>)")
 
 
 def repo_root(path: Path) -> Path:

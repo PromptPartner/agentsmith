@@ -364,6 +364,19 @@ class AutonomousStateTests(unittest.TestCase):
                             "commit", "-qm", "research"], check=True)
             CONTROLLER.validate_manifest(manifest, repo)
 
+    def test_kill_switch_marker_name_matches_ignoring_case_on_every_filesystem(self) -> None:
+        for name in ("autonomy_paused", "Autonomy_Paused"):
+            with self.subTest(name=name):
+                repo = self.guard_repository()
+                (repo / ".harness").mkdir()
+                (repo / ".harness" / name).touch()
+                with self.assertRaisesRegex(CONTROLLER.RunError, f"autonomy is paused by .*{name}"):
+                    CONTROLLER.assert_autonomy_not_paused(repo)
+        repo = self.guard_repository()
+        (repo / ".harness").mkdir()
+        (repo / ".harness" / "AUTONOMY_PAUSED.md").touch()
+        CONTROLLER.assert_autonomy_not_paused(repo)
+
     def test_kill_switch_in_main_checkout_pauses_linked_worktrees(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith pause ") as temporary:
             repo = Path(temporary).resolve() / "main"

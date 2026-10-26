@@ -297,6 +297,15 @@ class GraphDispatchTests(unittest.TestCase):
         self.assertFalse((self.repo / ".git/agentsmith-graphs/dispatch-fixture").exists())
         self.assertFalse((self.fake_client.parent / "starts.log").exists())
 
+    def test_any_case_of_the_pause_marker_pauses_start_and_keeps_status_readable(self) -> None:
+        (self.repo / ".harness/autonomy_paused").write_text("paused\n", encoding="utf-8")
+        status = self.invoke("status", diagnose_unexpected=False)
+        self.assertEqual(status.returncode, 0, status.stdout + status.stderr)
+        started = self.invoke("start", diagnose_unexpected=False)
+        self.assertNotEqual(started.returncode, 0)
+        self.assertIn("autonomy is paused", started.stdout + started.stderr)
+        self.assertFalse((self.fake_client.parent / "starts.log").exists())
+
     def test_parallel_roots_and_dependent_checkpoint(self) -> None:
         # Overlap is only observable while a maker still runs when its sibling starts. The 1 s default
         # was shorter than the dispatch gap on a loaded Windows runner, so give each maker 4 s.

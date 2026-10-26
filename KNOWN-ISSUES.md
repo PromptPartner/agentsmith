@@ -817,3 +817,8 @@ global selections needs its own design because update replays the record.
   satisfied `prepare` and `start`, but the run's worktree lacked it and failed `check-specs`.
   `start` and `prepare` now require each cited file in the run's base commit and `check-specs`
   requires it tracked; a test with ignored files passed `start` before and is refused after.
+- [x] 2026-10-26 — Independent review: on a case-insensitive filesystem `.harness/autonomy_paused`
+  paused runs, but graph `validate`/`status` then refused a "dirty" repository; on a
+  case-sensitive one it would not pause at all. The marker name now matches ignoring case on
+  every filesystem, graph validation ignores every case of it, and the refusal names the real
+  file; graph status exited 2 before and 0 after.

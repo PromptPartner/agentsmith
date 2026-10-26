@@ -149,7 +149,8 @@ def _topological_order(nodes: dict[str, dict[str, Any]], declared: list[str]) ->
 def load_contract(target: str | Path, graph_path: str) -> dict[str, Any]:
     repo = repository(target)
     # The operator's kill switch is deliberately untracked; status stays readable while paused.
-    if git(repo, "status", "--porcelain", "--", ".", ":(exclude).harness/AUTONOMY_PAUSED"):
+    # The controller matches the marker name ignoring case, so this exclusion does too.
+    if git(repo, "status", "--porcelain", "--", ".", ":(exclude,icase).harness/AUTONOMY_PAUSED"):
         raise GraphError("graph validation requires a clean committed repository")
     commit = git(repo, "rev-parse", "HEAD^{commit}")
     graph_bytes = committed_bytes(repo, commit, graph_path, label="graph")
