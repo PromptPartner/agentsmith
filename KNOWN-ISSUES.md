@@ -776,3 +776,63 @@ installation's root. Uninstall leaves Pi's file in place when the global record 
 Codex, so a later global uninstall leaves Pi's file in place and update no longer manages it. The
 record cannot prove ownership of Claude, Codex, or OpenCode files for the same reason. Merging
 global selections needs its own design because update replays the record.
+
+## Doctor signals, hook log, evaluation cost and CLI surface (2026-10-26)
+
+### DOCTOR: duplicate rules above the Git root and in `~/AGENTS.md` were invisible (fixed)
+
+2026-10-26 — doctor walked one chain for every tool (registry global file, then Git root down), so
+it missed a full core in a `CLAUDE.md` above the Git root, and it could not see that Claude Code
+loads a stale `~/AGENTS.md` block in any folder with no `CLAUDE.md` above it. Evidence: in an
+operator worktree, doctor now reports `legacy-managed-block` for `~/AGENTS.md` (Claude Code only)
+and the core loaded three times. Fixed with per-tool discovery (`loaded_rule_files`), tested in
+`test-doctor.py`.
+
+### DOCTOR: runtime files were checked for presence only (fixed)
+
+2026-10-26 — an edited `.agentsmith/work_graph.py` passed `doctor --strict`. Install now records
+`runtime_files` hashes; doctor reports `runtime-file-modified` and fails `--strict`
+(`test_strict_doctor_detects_an_edited_runtime_file`).
+
+### EVALUATION: usage kept the largest turn instead of the sum (fixed)
+
+2026-10-26 — `native_launcher.usage_metrics` returned `(0.0, 10)` for two Codex turns of 10 tokens
+each, so evaluation and autonomous-run budgets undercounted. Now sums per event without
+double-counting Claude's final `result` total (`test_usage_metrics_sum_every_turn_...`).
+
+### HANDOFF: `scripts/handoff.sh` died outside a Git repository (fixed)
+
+2026-10-26 — under `pipefail`, `git status | wc -l` exited 128 in a non-git folder and no note
+was written. Fixed; `test-scaffolds.py` runs the script in a non-git fixture.
+
+### SKILLS: the verify skill cites a file no install ships (open)
+
+2026-10-26 — `skills/verify/SKILL.md` tells the agent to read `.harness/verify.conf.example`, which
+only the source repository has. Doctor's new `skill-path-missing` reports it on every fresh
+`--with-skills` install. Fix belongs to the skill wording (drop or reword the line).
+
+### DOCTOR: a global hook looks stale from a project (open)
+
+2026-10-26 — after `install --global --with-ui-design-hook` (throwaway HOME), `doctor --target
+<project>` reports hooks `stale` and `stale-managed-command`, because `inspect_hooks` expects every
+managed hook command to use the project's runtime, while a global hook correctly uses
+`~/.agentsmith/agentsmith.py`.
+
+### DOCTOR: `status` still uses the old duplicate check (open)
+
+2026-10-26 — `agentsmith status` marks duplicates from the registry chain, not from the per-tool
+discovery rule that doctor now uses, so the two commands can disagree about an ancestor
+`CLAUDE.md` or `~/AGENTS.md`. Move `status_instruction_chain` to `loaded_rule_files`.
+
+### DOCTOR: Codex discovery limits are not modelled (open)
+
+2026-10-26 — doctor's Codex chain ignores `project_doc_fallback_filenames` and the
+`project_doc_max_bytes` cap (default 32 KiB), so a long `AGENTS.md` that Codex truncates is
+reported as fully loaded.
+
+### DOCTOR: an output-rewriting hook does not fail `--strict` (open, by design for now)
+
+2026-10-26 — `output-rewriting-hook` (for example `rtk hook claude`) stays a warning under
+`--strict`, because `update apply` runs `doctor --strict` in the operator's environment as its
+post-check and would roll back every update for an rtk user. A strict failure needs the update
+post-check to exclude environment findings first.
