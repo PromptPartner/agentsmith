@@ -59,7 +59,7 @@ recorded somewhere durable and greppable, not just in a vanished session.
 
 ## Set the placeholder
 
-`setup.sh` writes your choice into `CLAUDE.md` as `{{TRACKER}}`. If you skip it, the assembled
+`agentsmith install` writes your choice into the managed rulebook (`AGENTS.md`, and `CLAUDE.md` for Claude) as `{{TRACKER}}`. If you skip it, the assembled
 file says "track work in your project's tracker (or KNOWN-ISSUES.md)".
 
 ## Grant (or withhold) write access
@@ -67,8 +67,8 @@ file says "track work in your project's tracker (or KNOWN-ISSUES.md)".
 Separate flag, deliberate choice:
 
 ```bash
-./setup.sh --tracker linear                            # ask-first (default)
-./setup.sh --tracker linear --tracker-writes allowed   # the agent may file/comment itself
+agentsmith install --tracker linear                            # ask-first (default)
+agentsmith install --tracker linear --tracker-writes allowed   # the agent may file/comment itself
 ```
 
 | | `ask` (default) | `allowed` |

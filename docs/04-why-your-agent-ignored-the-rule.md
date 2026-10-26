@@ -23,7 +23,7 @@ Rules live in **static context** — loaded and paid for on *every single turn*.
 (skills, docs, memory) loads only when a task needs it and is free until then. That asymmetry has
 a hard number in this harness: the assembled `CLAUDE.md` is budgeted at **480 lines / ~7,800
 tokens**. For where you actually stand, run the measurement rather than trusting a figure written
-down here — `scripts/lint-leanness.sh <file>` or `setup.sh --doctor`; `scripts/test-assemble.sh`
+down here — `scripts/lint-leanness.sh <file>`; `scripts/test-assemble.sh`
 gates it per profile on every CI run. (This paragraph used to quote a spend figure. It drifted, and
 a stale number is worse than none — a doc that caches a cheap lookup rots.)
 The budget runs close to full by design: every line earned its place, and stacking two large
@@ -76,7 +76,7 @@ actually want is a hook.
 |---|---|
 | A secret nearly landed in a commit | Python `agentsmith secret-scan` as a pre-commit hook (`--with-hooks`) |
 | Work committed straight to main | `hooks/git/protect-main.sh` |
-| `CLAUDE.md` creeping past the budget | `scripts/lint-leanness.sh` / `setup.sh --doctor` |
+| `CLAUDE.md` creeping past the budget | `scripts/lint-leanness.sh` (gated per profile by `scripts/test-assemble.sh`) |
 | "Done" claimed, checks not run | `agentsmith verify` — the gate is executable, not a promise |
 | Anything project-specific that must never recur | a phase you add to `.harness/verify.conf` |
 

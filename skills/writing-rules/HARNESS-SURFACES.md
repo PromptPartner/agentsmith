@@ -22,7 +22,7 @@ some condition fires? Only the first answer earns `core/`.
 
 ## Before adding a line to `core/`
 
-1. **Check the budget** — `bash scripts/lint-leanness.sh <assembled-file>` (or `setup.sh --doctor`).
+1. **Check the budget** — `bash scripts/lint-leanness.sh <assembled-file>`.
    Never quote a budget figure from memory or from a doc; the numbers drift and stale numbers have
    already misled once. Run the command.
 2. **Apply the no-op test** (`SKILL.md`). A `core/` line that doesn't change behaviour is the most
