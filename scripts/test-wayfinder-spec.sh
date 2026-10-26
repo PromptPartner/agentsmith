@@ -145,6 +145,30 @@ for route in direct grill wayfinder; do
   else bad "pipeline: route $route drifted between the doc and the skill"; fi
 done
 
+# One goal text for Claude Code /goal and Codex goals: both cap a goal at 4,000 characters, so it
+# points at the pipeline instead of restating it, and "done" is evidence printed in the chat.
+GOAL="$ROOT_DIR/templates/goal.md"
+goal_text="$(awk '/^```text$/{inside=1; next} /^```$/{inside=0} inside' "$GOAL" 2>/dev/null)"
+goal_chars="$(printf '%s' "$goal_text" | python3 -c 'import sys; print(len(sys.stdin.read()))')"
+if [ -n "$goal_text" ] && [ "$goal_chars" -lt 4000 ]; then
+  ok "goal: one goal text of $goal_chars characters, under the 4,000 limit"
+else bad "goal: goal text missing or $goal_chars characters"; fi
+for phrase in \
+  'the `wayfinder` skill' \
+  'check-specs docs/specs/<slug>.md' \
+  'printed both commands and their full output in this conversation' \
+  'recorded under "Needs operator"' \
+  'counts as done for this goal' \
+  'Never set `status: accepted` yourself' \
+  'Claude Code: stop after <turns> turns' \
+  'Codex: this goal has a token budget of <tokens>'; do
+  if printf '%s' "$goal_text" | grep -qF -- "$phrase"; then ok "goal: carries — $phrase"
+  else bad "goal: missing — $phrase"; fi
+done
+if printf '%s' "$goal_text" | grep -qE 'Goal.*Research.*Shape.*Route.*Spec review.*Accept'; then
+  ok 'goal: names the stage order without restating each stage'
+else bad 'goal: stage order missing'; fi
+
 if has "$TEMPLATE" '## Decision-ticket drafts' && has "$TEMPLATE" '## Implementation-ticket drafts'; then
   ok 'template: decision and implementation tickets are separate artifacts'
 else
