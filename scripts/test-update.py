@@ -1215,6 +1215,11 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
         state = json.loads((target / ".agentsmith" / "state.json").read_text(encoding="utf-8"))
         self.assertEqual(state["installation"]["safety"], {"claude": "container", "codex": "container"})
+        # A project install keeps Claude's mode in the project, before and after the update.
+        project_settings = json.loads((target / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        self.assertEqual(project_settings["permissions"]["defaultMode"], "acceptEdits")
+        home_settings = json.loads((home / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        self.assertNotIn("permissions", home_settings)
 
     def test_assemble_only_migration_requires_unambiguous_native_ownership(self) -> None:
         self.commit_and_tag(NEXT_VERSION)

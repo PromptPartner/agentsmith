@@ -1669,6 +1669,14 @@ def copy_runtime(target: Path, *, dry_run: bool) -> Path:
     return destination
 
 
+def claude_settings_root(target: Path, global_mode: bool) -> Path:
+    """Where Claude's managed default mode lives: user settings for --global, else the project's.
+
+    A project install must not change the mode of every other project, so it writes the shared
+    project file <target>/.claude/settings.json that Claude Code documents for team settings."""
+    return home_dir() if global_mode else target
+
+
 def claude_permission_mode(path: Path) -> tuple[dict[str, Any], Any]:
     """Return Claude settings and their permissions.defaultMode (None when absent)."""
     if not path.exists():
@@ -1742,11 +1750,12 @@ def remove_claude_permission_mode(path: Path, state_root: Path, *, dry_run: bool
 def install_native_config(target: Path, agents: list[str], args: argparse.Namespace) -> None:
     selected_mcp = mcp_source(csv(args.with_mcp))
     prior_safety = getattr(args, "prior_managed_safety", {})
+    claude_root = claude_settings_root(target, args.global_mode)
     for agent_id in agents:
         prior = prior_safety.get(agent_id)
         if prior in {"trusted", "container"} and args.safety == "cautious":
             destination = (
-                home_dir() / ".claude" / "settings.json"
+                claude_root / ".claude" / "settings.json"
                 if agent_id == "claude"
                 else codex_home() / "config.toml"
             )
@@ -1762,7 +1771,7 @@ def install_native_config(target: Path, agents: list[str], args: argparse.Namesp
                 )
     if "claude" in agents and not args.assemble_only:
         write_claude_permission_mode(
-            home_dir() / ".claude" / "settings.json", home_dir(),
+            claude_root / ".claude" / "settings.json", claude_root,
             NATIVE_SAFETY[args.safety]["claude"]["defaultMode"], dry_run=args.dry_run,
         )
     if "codex" in agents and not args.assemble_only:
@@ -1773,16 +1782,21 @@ def install_native_config(target: Path, agents: list[str], args: argparse.Namesp
     if not args.assemble_only:
         install_default_statuslines(agents, target, args.global_mode, dry_run=args.dry_run)
     if not args.assemble_only and not args.dry_run:
-        state = load_state(home_dir())
-        native_safety = state.get("native_safety", {})
-        if not isinstance(native_safety, dict):
-            native_safety = {}
-        # Only Claude and Codex have a safety setting; earlier releases recorded every agent.
-        native_safety = {key: value for key, value in native_safety.items() if key in {"claude", "codex"}}
-        for agent_id in agents:
-            if agent_id in {"claude", "codex"}:
+        # Record each mode beside the settings it governs: Codex's config is always user-level,
+        # Claude's is project-level for a project install.
+        roots = [(home_dir(), {"codex"} | ({"claude"} if args.global_mode else set()))]
+        if not args.global_mode and "claude" in agents:
+            roots.append((target, {"claude"}))
+        for state_root, owned in roots:
+            selected = [agent_id for agent_id in agents if agent_id in owned]
+            native_safety = load_state(state_root).get("native_safety", {})
+            if not isinstance(native_safety, dict):
+                native_safety = {}
+            # Only Claude and Codex have a safety setting; earlier releases recorded every agent.
+            native_safety = {key: value for key, value in native_safety.items() if key in {"claude", "codex"}}
+            for agent_id in selected:
                 native_safety[agent_id] = args.safety
-        record_state(home_dir(), "native_safety", native_safety, dry_run=False)
+            record_state(state_root, "native_safety", native_safety, dry_run=False)
     if selected_mcp and not args.global_mode:
         if "claude" in agents:
             mcp_path = target / ".mcp.json"
@@ -2414,11 +2428,13 @@ def installation_fingerprints(
         for agent_id in installation["agents"]:
             if agent_id in adapters:
                 add("target", adapters[agent_id])
-        if "memory_startup" in installation.get("capabilities", {}):
-            if "claude" in installation["agents"]:
-                add("target", ".claude/settings.json")
-            if "codex" in installation["agents"]:
-                add("target", ".codex/hooks.json")
+        project_claude_settings = "claude" in installation["agents"] and (
+            not installation["assemble_only"] or "memory_startup" in installation.get("capabilities", {})
+        )
+        if project_claude_settings:
+            add("target", ".claude/settings.json")
+        if "memory_startup" in installation.get("capabilities", {}) and "codex" in installation["agents"]:
+            add("target", ".codex/hooks.json")
         if installation["capabilities"].get("mcp"):
             if "claude" in installation["agents"]:
                 add("target", ".mcp.json")
@@ -3069,9 +3085,12 @@ def allowed_update_path(root_name: str, relative: str, installation: dict[str, A
             ".gemini/settings.json", ".continue/rules/agentsmith.md", ".mcp.json", ".codex/config.toml",
             *RUNTIME_FILES, ".agentsmith/autonomous-run.py", ".agentsmith/state.json",
         }
+        if not installation or "claude" in installation["agents"] and (
+            not installation.get("assemble_only") or "memory_startup" in installation.get("capabilities", {})
+        ):
+            # Project hooks and, since 0.5.0, a project install's Claude default mode.
+            exact.add(".claude/settings.json")
         if not installation or "memory_startup" in installation.get("capabilities", {}):
-            if not installation or "claude" in installation["agents"]:
-                exact.add(".claude/settings.json")
             if not installation or "codex" in installation["agents"]:
                 exact.add(".codex/hooks.json")
         prefixes = (".harness/templates/", ".agents/skills/", ".claude/skills/")
@@ -3430,7 +3449,8 @@ def validate_post_update_health(plan: dict[str, Any]) -> None:
 
     if not installation["assemble_only"]:
         for agent_id, expected_safety in installation["safety"].items():
-            if inspect_safety(agent_id, expected=expected_safety)["state"] != expected_safety:
+            claude_root = target if plan["scope"] == "project" else None
+            if inspect_safety(agent_id, expected=expected_safety, claude_root=claude_root)["state"] != expected_safety:
                 raise CliError(f"Post-update health check failed: native safety does not match the manifest for {agent_id}")
 
     if "effects" in installed and installed["effects"] != capability_effects(installation["capabilities"]):
@@ -4144,6 +4164,7 @@ def uninstall(args: argparse.Namespace, agents: list[str], target: Path) -> int:
         remove_owned_hooks(codex_home() / "hooks.json", dry_run=args.dry_run)
         if "claude" in agents:
             remove_owned_hooks(target / ".claude/settings.json", dry_run=args.dry_run, hook_name="memory-startup")
+            remove_claude_permission_mode(target / ".claude" / "settings.json", target, dry_run=args.dry_run)
         if "codex" in agents:
             remove_owned_hooks(target / ".codex/hooks.json", dry_run=args.dry_run, hook_name="memory-startup")
     else:
@@ -4222,6 +4243,13 @@ def cmd_install(args: argparse.Namespace) -> int:
         return uninstall(args, agents, target)
     if not profiles and not args.global_mode:
         raise CliError("Pick a profile with --profile <name[,name]> or use --global")
+    if not args.global_mode and "claude" in agents and not args.assemble_only and args.safety == "trusted":
+        raise CliError(
+            "--safety trusted cannot apply to Claude in a project install: Claude Code ignores "
+            "permissions.defaultMode bypassPermissions in project settings. Use --safety cautious for this "
+            "project, set trusted mode for your user with 'install --global --safety trusted', or start "
+            "Claude with --permission-mode bypassPermissions."
+        )
     prior_installation = load_state(home_dir() if args.global_mode else target).get("installation", {})
     if not isinstance(prior_installation, dict):
         raise CliError("Malformed installation selection; inspect state before reinstalling")
@@ -4257,6 +4285,11 @@ def cmd_install(args: argparse.Namespace) -> int:
     ownership_safety = load_state(home_dir()).get("native_safety", {})
     if not isinstance(ownership_safety, dict):
         ownership_safety = {}
+    if not args.global_mode:
+        project_safety = load_state(target).get("native_safety", {})
+        ownership_safety = {
+            key: value for key, value in ownership_safety.items() if key != "claude"
+        } | ({"claude": project_safety["claude"]} if isinstance(project_safety, dict) and "claude" in project_safety else {})
     prior_managed_safety: dict[str, str] = {
         agent_id: value
         for agent_id, value in ownership_safety.items()
@@ -4266,7 +4299,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         path.exists() and managed_markers(path.read_text(encoding="utf-8", errors="replace"))
         for path in (*canonical, *generated)
     )
-    if had_managed_instructions and "claude" in agents and "claude" not in prior_managed_safety:
+    if args.global_mode and had_managed_instructions and "claude" in agents and "claude" not in prior_managed_safety:
         claude_path = home_dir() / ".claude" / "settings.json"
         try:
             claude_data = json.loads(claude_path.read_text(encoding="utf-8")) if claude_path.exists() else {}
@@ -4961,10 +4994,22 @@ def inspect_runtime(agent: dict[str, Any], target: Path) -> dict[str, Any]:
     }
 
 
-def inspect_safety(agent_id: str, expected: str | None = None) -> dict[str, Any]:
-    """Name the safety mode the native settings show; `expected` decides between modes that share them."""
+def inspect_safety(agent_id: str, expected: str | None = None, claude_root: Path | None = None) -> dict[str, Any]:
+    """Name the safety mode the native settings show; `expected` decides between modes that share them.
+
+    `claude_root` is a project directory: its shared settings win over the user settings when they
+    set a mode, as in Claude Code's own precedence. None reads only the user settings."""
     if agent_id == "claude":
         path = home_dir() / ".claude" / "settings.json"
+        project = claude_root / ".claude" / "settings.json" if claude_root is not None else None
+        if project is not None and project.is_file():
+            try:
+                project_data = json.loads(project.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                return {"state": "malformed", "path": str(project), "values": {}}
+            permissions = project_data.get("permissions") if isinstance(project_data, dict) else None
+            if isinstance(permissions, dict) and "defaultMode" in permissions:
+                path = project
         if not path.exists():
             return {"state": "missing", "path": str(path), "values": {}}
         try:
@@ -5024,7 +5069,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         global_installation = load_state(home_dir()).get("installation", {})
         global_installation = global_installation if isinstance(global_installation, dict) else {}
         recorded_safety = {**global_installation.get("safety", {}), **installation.get("safety", {})}
-        safety = inspect_safety(agent_id, expected=recorded_safety.get(agent_id))
+        safety = inspect_safety(agent_id, expected=recorded_safety.get(agent_id),
+                                claude_root=target if installation.get("scope") == "project" else None)
         capabilities = {
             "instructions": instructions,
             "skills": skills,

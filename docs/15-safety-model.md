@@ -64,8 +64,16 @@ Choose with `--safety cautious|trusted|container`. The wizard offers `container`
 the default, only when it detects a container. `agentsmith doctor` reports the active mode and
 warns when cautious Codex runs inside a container.
 
-The settings live in `~/.claude/settings.json` (`permissions.defaultMode`) and
-`$CODEX_HOME/config.toml` (default `~/.codex`). To leave them exactly as they are — for example
+Where the settings live depends on the install scope. Codex's mode is always in
+`$CODEX_HOME/config.toml` (default `~/.codex`). Claude's mode (`permissions.defaultMode`) is in
+`~/.claude/settings.json` for a `--global` install. A project install writes it to the project's
+shared `.claude/settings.json` instead, so it never changes your mode in other projects. Commit that
+file if the team should share the mode; a person can override it in `.claude/settings.local.json`.
+Claude Code ignores `bypassPermissions` in project settings, so a project install refuses
+`--safety trusted` for Claude: set trusted mode for your user with `install --global --safety trusted`,
+or start one session with `claude --permission-mode bypassPermissions`.
+
+To leave the settings exactly as they are — for example
 when a container image already sets them on purpose — install with `--assemble-only`: AgentSmith
 then writes instructions only and does not touch Claude or Codex permissions, Codex
 `config.toml`, or statuslines.

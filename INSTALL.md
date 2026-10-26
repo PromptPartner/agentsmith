@@ -143,7 +143,7 @@ Updates touch managed blocks and recorded files only. Existing files are backed 
 
 ## Safety and experience
 
-`cautious` is the default. Claude uses edit approval and Codex uses approval on request in its workspace sandbox. `trusted` is an explicit opt-in for a repository and machine you fully control. Inside Docker or a similar container, use `container`: approvals stay on, and the container replaces the Codex sandbox that cannot start there. To leave Claude's and Codex's own settings untouched, install with `--assemble-only`. See [Safety modes](docs/15-safety-model.md#safety-modes).
+`cautious` is the default. Claude uses edit approval and Codex uses approval on request in its workspace sandbox. A project install writes Claude's mode to the project's `.claude/settings.json`, never to your user settings. `trusted` is an explicit opt-in for a repository and machine you fully control; for Claude it needs a `--global` install, because Claude Code ignores `bypassPermissions` in project settings. Inside Docker or a similar container, use `container`: approvals stay on, and the container replaces the Codex sandbox that cannot start there. To leave Claude's and Codex's own settings untouched, install with `--assemble-only`. See [Safety modes](docs/15-safety-model.md#safety-modes).
 
 The wizard asks about experience in the relevant domain instead of assigning one universal skill level. Choose the closest starting point and adjust the generated operator text later if needed. This affects explanations and confirmation detail; it does not weaken safety or verification rules.
 

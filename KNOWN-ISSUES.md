@@ -45,9 +45,19 @@ been authorized, so the entries are kept here.
   archives and `SHA256SUMS` for each `v*` tag (`RELEASING.md`). Downloads appear with the next
   tagged release. macOS and Windows platform code signing remains open.
 
-- [ ] Project-scoped install writes Claude's user-global `permissions.defaultMode` through
+- [x] Project-scoped install writes Claude's user-global `permissions.defaultMode` through
   `install_native_config()`; the default `--safety cautious` therefore changes the user's global
-  mode to `acceptEdits` from a project operation.
+  mode to `acceptEdits` from a project operation. Fixed 2026-10-26: a project install writes the
+  mode to the project's shared `.claude/settings.json` (Claude Code's documented team settings
+  file) and refuses `--safety trusted` for Claude, which Claude Code ignores in project settings.
+  `test-installer-safety.py` and the update round trip in `test-update.py` failed before and pass
+  after; `test-agent-conformance.py` had asserted the defect and now asserts the fix.
+- [ ] 2026-10-26 — A project install still writes user-level files: Codex's safety keys in
+  `$CODEX_HOME/config.toml`, the Claude status line and the handoff and UI hooks in
+  `~/.claude/settings.json`, and the Codex hooks in `$CODEX_HOME/hooks.json`. Project uninstall also
+  removes every AgentSmith hook from those user files, including hooks a global install added.
+  Codex reads a project `.codex/config.toml` only for trusted projects, so moving its safety keys
+  needs its own design.
 - [ ] Project install appends a generated block to an existing unmarked `CLAUDE.md` and also adds
   `AGENTS.md`, leaving two authoritative instruction rulebooks in one repository.
 - [ ] A contained symlink added inside an AgentSmith-owned `.claude/skills` adapter is detected by

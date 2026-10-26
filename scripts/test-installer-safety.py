@@ -93,6 +93,40 @@ class InstallerSafetyTests(unittest.TestCase):
         self.assertEqual(self.default_mode(), "bypassPermissions")
         self.assertIn("changed since install", result.stderr)
 
+    # A project install must never change the user's settings for every other project.
+    def test_project_install_writes_claude_mode_to_project_settings_only(self) -> None:
+        original = self.write_settings({"theme": "dark"})
+        project = self.root / "project"
+        project.mkdir()
+        self.assert_ok(self.run_core(
+            "install", "--agent", "claude", "--profile", "general-admin", "--target", str(project),
+        ))
+        home_data = json.loads(self.claude_settings.read_text(encoding="utf-8"))
+        self.assertNotIn("permissions", home_data, "project install changed the user-global default mode")
+        project_settings = project / ".claude" / "settings.json"
+        project_data = json.loads(project_settings.read_text(encoding="utf-8"))
+        self.assertEqual(project_data["permissions"]["defaultMode"], "acceptEdits")
+        doctor = self.run_core("doctor", "--agent", "claude", "--target", str(project), "--json")
+        self.assert_ok(doctor)
+        safety = json.loads(doctor.stdout)["claude"]["safety"]
+        self.assertEqual((safety["state"], Path(safety["path"])), ("cautious", project_settings))
+        self.assert_ok(self.run_core("install", "--agent", "claude", "--uninstall", "--target", str(project)))
+        self.assertFalse(project_settings.exists(), "uninstall kept the project settings file it created")
+        self.assertNotIn("permissions", json.loads(self.claude_settings.read_text(encoding="utf-8")))
+        self.assertEqual(json.loads(self.claude_settings.read_bytes()), json.loads(original))
+
+    def test_project_trusted_claude_is_refused_before_any_write(self) -> None:
+        project = self.root / "project"
+        project.mkdir()
+        result = self.run_core(
+            "install", "--agent", "claude", "--profile", "general-admin", "--safety", "trusted",
+            "--target", str(project),
+        )
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("bypassPermissions", result.stdout + result.stderr)
+        self.assertEqual(list(project.iterdir()), [])
+        self.assertFalse(self.claude_settings.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
