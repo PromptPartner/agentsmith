@@ -841,4 +841,10 @@ global selections needs its own design because update replays the record.
   the graph process and left its children holding the repository. A simulated 16 s probe
   reproduced the same assertion on macOS. The fixture now starts its 15 s budget after the probe,
   prints probe timing on failure, and stops the children in cleanup. Open until a native rerun
-  passes with the timing printed.
+  passes with the timing printed. PR run `40339849693` then failed the sibling
+  `test_stop_then_resume_preserves_partial_work_and_limits` ("child maker did not start") the
+  same way, so every wait timed from `graph start` now goes through one helper: in the dispatch
+  tests `wait_after_graph_probe` and `start_graph_in_background` (cleanup stops the children);
+  in `test-work-graph-status.py` the child-exit test's 10 s window starts after the probe. With
+  `AGENTSMITH_TEST_SLOW_PROBE=16`, one dispatch test and one status test failed before and both
+  modules pass after.
