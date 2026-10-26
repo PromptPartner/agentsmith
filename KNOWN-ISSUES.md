@@ -805,12 +805,6 @@ double-counting Claude's final `result` total (`test_usage_metrics_sum_every_tur
 2026-10-26 — under `pipefail`, `git status | wc -l` exited 128 in a non-git folder and no note
 was written. Fixed; `test-scaffolds.py` runs the script in a non-git fixture.
 
-### SKILLS: the verify skill cites a file no install ships (open)
-
-2026-10-26 — `skills/verify/SKILL.md` tells the agent to read `.harness/verify.conf.example`, which
-only the source repository has. Doctor's new `skill-path-missing` reports it on every fresh
-`--with-skills` install. Fix belongs to the skill wording (drop or reword the line).
-
 ### DOCTOR: a global hook looks stale from a project (open)
 
 2026-10-26 — after `install --global --with-ui-design-hook` (throwaway HOME), `doctor --target
