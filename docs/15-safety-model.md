@@ -83,6 +83,13 @@ default mode that was there before the install, keeps a mode you changed after t
 never deletes a settings file that AgentSmith did not create. After an `--assemble-only` install,
 uninstall leaves your Claude settings unchanged.
 
+Before its first write, install checks every file and folder it will create or replace. If one of
+them is, sits under, or contains a symbolic link that leads outside its root, the install stops and
+writes nothing. The root is the project folder for a project install, and your home folder or the
+agent's configured folder (such as `CODEX_HOME`) for `--global`. A link that stays inside the root,
+such as `~/.claude` pointing to a dotfiles folder in your home, is allowed. AgentSmith replaces a
+linked file with a regular file; it never writes through the link.
+
 ## Behavioral safety evaluation
 
 `agentsmith evaluate` exercises the safety contract against installed Claude Code and Codex

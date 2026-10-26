@@ -16,7 +16,9 @@ ROOT = Path(__file__).resolve().parent.parent
 CORE = ROOT / "agentsmith.py"
 
 
-class InstallerSafetyTests(unittest.TestCase):
+class InstallerFixture(unittest.TestCase):
+    """An isolated HOME and CODEX_HOME so no fixture can reach the operator's real settings."""
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="agentsmith installer ü ")
         self.root = Path(self.temporary.name).resolve()
@@ -60,6 +62,8 @@ class InstallerSafetyTests(unittest.TestCase):
         data = json.loads(self.claude_settings.read_text(encoding="utf-8"))
         return data.get("permissions", {}).get("defaultMode", "<absent>")
 
+
+class OwnershipTests(InstallerFixture):
     # #50a: uninstall must remove only what the install record says AgentSmith wrote.
     def test_global_uninstall_after_assemble_only_keeps_user_settings_byte_identical(self) -> None:
         original = self.write_settings({"permissions": {"defaultMode": "acceptEdits"}})
@@ -126,6 +130,115 @@ class InstallerSafetyTests(unittest.TestCase):
         self.assertIn("bypassPermissions", result.stdout + result.stderr)
         self.assertEqual(list(project.iterdir()), [])
         self.assertFalse(self.claude_settings.exists())
+
+
+class ContainmentTests(InstallerFixture):
+    """#50b: one preflight refuses an escaping link before the first write; no write goes through a link."""
+
+    def link(self, link: Path, destination: Path, *, directory: bool) -> None:
+        link.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            link.symlink_to(destination, target_is_directory=directory)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symbolic links unavailable: {exc}")
+
+    def snapshot(self, root: Path) -> dict[str, bytes]:
+        return {
+            path.relative_to(root).as_posix(): path.read_bytes()
+            for path in sorted(root.rglob("*")) if path.is_file() and not path.is_symlink()
+        }
+
+    def assert_refused_before_writes(self, result, project: Path, outside: Path, before: dict) -> None:
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("symbolic link", result.stdout + result.stderr)
+        self.assertFalse((project / "AGENTS.md").exists(), "instructions were written before the refusal")
+        self.assertFalse((project / "CLAUDE.md").exists(), "instructions were written before the refusal")
+        self.assertEqual(self.snapshot(outside), before, "a write reached the link's destination")
+        self.assertFalse((self.home / ".agentsmith").exists(), "user-level state was written before the refusal")
+
+    def test_project_links_out_of_the_target_are_refused_before_any_write(self) -> None:
+        cases = {
+            ".harness": ("--agent", "claude", "--profile", "general-admin"),
+            ".agentsmith": ("--agent", "claude", "--profile", "general-admin"),
+            ".claude": ("--agent", "claude", "--profile", "general-admin"),
+            ".gemini": ("--agent", "gemini-cli", "--profile", "general-admin"),
+            ".continue": ("--agent", "continue", "--profile", "general-admin"),
+            "docs": ("--agent", "codex", "--profile", "general-admin"),
+            ".codex": ("--agent", "codex", "--profile", "general-admin", "--with-mcp", "context7"),
+        }
+        for name, arguments in cases.items():
+            with self.subTest(link=name):
+                project = self.root / f"project {name}"
+                outside = self.root / f"outside {name}"
+                outside.mkdir()
+                (outside / "sentinel.txt").write_text("keep\n", encoding="utf-8")
+                self.link(project / name, outside, directory=True)
+                before = self.snapshot(outside)
+                result = self.run_core("install", "--target", str(project), *arguments)
+                self.assert_refused_before_writes(result, project, outside, before)
+
+    def test_runtime_file_link_out_of_the_target_is_refused(self) -> None:
+        # KNOWN-ISSUES 2026-10-05: copy_runtime() copied through per-file links.
+        project = self.root / "project"
+        outside = self.root / "outside"
+        outside.mkdir()
+        victim = outside / "victim.py"
+        victim.write_text("keep\n", encoding="utf-8")
+        self.link(project / ".agentsmith" / "evaluate.py", victim, directory=False)
+        before = self.snapshot(outside)
+        result = self.run_core("install", "--target", str(project), "--agent", "codex", "--profile", "general-admin")
+        self.assert_refused_before_writes(result, project, outside, before)
+
+    def test_dangling_link_out_of_the_target_is_refused(self) -> None:
+        project = self.root / "project"
+        outside = self.root / "outside"
+        outside.mkdir()
+        self.link(project / "CLAUDE.md", outside / "not-yet-created.md", directory=False)
+        result = self.run_core("install", "--target", str(project), "--agent", "claude", "--profile", "general-admin")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertFalse((project / "AGENTS.md").exists())
+
+    def test_contained_links_are_replaced_not_written_through(self) -> None:
+        project = self.root / "project"
+        project.mkdir()
+        notes = project / "notes.md"
+        notes.write_text("my notes\n", encoding="utf-8")
+        self.link(project / "CLAUDE.md", Path("notes.md"), directory=False)
+        self.link(project / ".agentsmith" / "evaluate.py", Path("..") / "notes.md", directory=False)
+        result = self.run_core("install", "--target", str(project), "--agent", "claude", "--profile", "general-admin")
+        self.assert_ok(result)
+        self.assertEqual(notes.read_text(encoding="utf-8"), "my notes\n")
+        for path in (project / "CLAUDE.md", project / ".agentsmith" / "evaluate.py"):
+            self.assertFalse(path.is_symlink(), path)
+            self.assertTrue(path.is_file(), path)
+
+    def test_global_link_out_of_home_is_refused_before_any_write(self) -> None:
+        outside = self.root / "shared claude"
+        outside.mkdir()
+        self.link(self.home / ".claude", outside, directory=True)
+        result = self.run_core("install", "--global", "--agent", "claude")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("symbolic link", result.stdout + result.stderr)
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertFalse((self.home / ".agentsmith").exists())
+
+    def test_global_link_out_of_codex_home_is_refused_before_any_write(self) -> None:
+        self.codex_home.mkdir()
+        outside = self.root / "outside rules.md"
+        outside.write_text("keep\n", encoding="utf-8")
+        self.link(self.codex_home / "AGENTS.md", outside, directory=False)
+        result = self.run_core("install", "--global", "--agent", "claude,codex")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertEqual(outside.read_text(encoding="utf-8"), "keep\n")
+        self.assertFalse((self.home / ".claude" / "CLAUDE.md").exists(), "Claude's rules were written first")
+
+    def test_global_link_inside_home_is_allowed(self) -> None:
+        dotfiles = self.home / "dotfiles" / "claude"
+        dotfiles.mkdir(parents=True)
+        self.link(self.home / ".claude", dotfiles, directory=True)
+        self.assert_ok(self.run_core("install", "--global", "--agent", "claude", "--assemble-only"))
+        self.assertTrue((dotfiles / "CLAUDE.md").is_file())
 
 
 if __name__ == "__main__":

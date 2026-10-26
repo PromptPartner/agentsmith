@@ -481,10 +481,12 @@ been authorized, so the entries are kept here.
   symlink and could overwrite a file outside the project. Software-development scaffolding now
   rejects symbolic links in either autonomous payload path before runtime/template writes.
   Four real-install regression variants cover payload files and parent directories.
-- [ ] 2026-10-05 — Other runtime payload copies in `copy_runtime()` still use `shutil.copy2`
+- [x] 2026-10-05 — Other runtime payload copies in `copy_runtime()` still use `shutil.copy2`
   without checking every destination component. The new autonomous payload guard protects its
   own files and their parents; existing links at other individual runtime filenames need a
-  separate installer containment fix.
+  separate installer containment fix. Fixed 2026-10-26 by the install containment preflight
+  (#50b below); runtime files are now copied by atomic replacement, so a link inside the project
+  is replaced, not written through. `test-installer-safety.py` failed before and passes after.
 
 - [x] 2026-10-05 — A child preflight refusal before run-state creation left the graph waiting
   indefinitely with a dispatched node still reported as ready. Graph dispatch now persists
@@ -797,3 +799,12 @@ global selections needs its own design because update replays the record.
   whether it created the file; uninstall restores that value only if the mode is unchanged and never
   deletes a file it did not create. `scripts/test-installer-safety.py` failed before the fix (file
   deleted, earlier mode lost) and passes after.
+- [x] 2026-10-26 — GitHub issue #50b: a `.harness` or `.agentsmith` link out of the target was
+  refused (exit 2) only after `AGENTS.md` and `CLAUDE.md` were written, and for profiles other than
+  `software-dev` it was not refused at all. Adapter files, `docs/`, project and user-level native
+  config, runtime files and global rules files had no link check. One preflight now lists every
+  destination of the install and refuses before the first write when any of them is, sits under, or
+  contains a link (dangling or not) that resolves outside its root. Every low-level writer also
+  checks the active roots, and runtime, template and design-system copies replace a linked file
+  instead of writing through it. `test-installer-safety.py` (project, runtime-file, dangling,
+  contained and global cases) failed before and passes after.

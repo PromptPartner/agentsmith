@@ -31,7 +31,7 @@ import textwrap
 import threading
 import time
 import tomllib
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 import urllib.error
 import urllib.request
 
@@ -337,20 +337,97 @@ def resolve_central_runtime(runtime_record: dict[str, Any]) -> Path:
     return Path(command)
 
 
+# Roots an install may write in. While set, every low-level writer refuses a destination that
+# resolves outside them: defence in depth behind the install preflight.
+WRITE_ROOTS: tuple[Path, ...] | None = None
+
+
+@contextlib.contextmanager
+def contained_writes(roots: Iterable[Path]) -> Iterator[None]:
+    global WRITE_ROOTS
+    prior = WRITE_ROOTS
+    WRITE_ROOTS = tuple(dict.fromkeys(root.resolve() for root in roots))
+    try:
+        yield
+    finally:
+        WRITE_ROOTS = prior
+
+
+def guard_write(path: Path) -> Path:
+    """Refuse a write whose destination resolves, through any link, outside the active roots."""
+    if WRITE_ROOTS is not None:
+        resolved = path.resolve(strict=False)
+        if not any(resolved == root or resolved.is_relative_to(root) for root in WRITE_ROOTS):
+            raise CliError(
+                f"Refused to write {path}: a symbolic link makes it resolve outside the install roots ({resolved})"
+            )
+    return path
+
+
+def contained_link_problem(root: Path, path: Path) -> str | None:
+    """Explain why `path` is unsafe to write under `root`, or return None.
+
+    Unsafe means the path is, sits under, or contains a symbolic link (dangling or not) that
+    resolves outside the root. Links that stay inside the root are allowed: writers replace a
+    linked file instead of writing through it."""
+    resolved_root = root.resolve()
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        try:
+            relative = path.relative_to(resolved_root)
+        except ValueError:
+            return f"{path} is outside its root {root}"
+    if ".." in relative.parts:
+        return f"{path} escapes its root {root}"
+    current = resolved_root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink() and not current.resolve(strict=False).is_relative_to(resolved_root):
+            return f"symbolic link {current} resolves outside {root}"
+    if not path.resolve(strict=False).is_relative_to(resolved_root):
+        return f"{path} resolves outside {root} through a symbolic link"
+    return None
+
+
+def containment_preflight(destinations: Iterable[tuple[Path, Path]]) -> None:
+    """Refuse the whole install before its first write when any destination escapes its root."""
+    problems = list(dict.fromkeys(
+        problem for root, path in destinations
+        if (problem := contained_link_problem(root, path)) is not None
+    ))
+    if problems:
+        raise CliError(
+            "Install refused before writing anything: " + "; ".join(problems)
+            + ". Remove or repoint the link, or choose another target."
+        )
+
+
+def contained_copy(source: Path, destination: Path) -> None:
+    """Copy bytes and permission bits by atomic replacement, so a linked destination is replaced, not followed."""
+    atomic_write_bytes(destination, source.read_bytes(), stat.S_IMODE(source.stat().st_mode))
+
+
+def contained_mkdir(path: Path) -> None:
+    guard_write(path).mkdir(parents=True, exist_ok=True)
+
+
 def backup(path: Path) -> Path | None:
     if not path.exists() or not path.is_file():
         return None
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     candidate = path.with_name(f"{path.name}.bak.{stamp}")
     counter = 0
-    while candidate.exists():
+    # lexists: a dangling link at the candidate name must not receive the copy.
+    while os.path.lexists(candidate):
         counter += 1
         candidate = path.with_name(f"{path.name}.bak.{stamp}.{counter}")
-    shutil.copy2(path, candidate)
+    shutil.copy2(path, guard_write(candidate))
     return candidate
 
 
 def atomic_write(path: Path, content: str) -> None:
+    guard_write(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     newline = "\r\n" if path.exists() and "\r\n" in path.read_text(encoding="utf-8", errors="replace") else "\n"
     content = content.replace("\r\n", "\n").replace("\n", newline)
@@ -377,6 +454,7 @@ def replace_with_retry(source: Path, destination: Path) -> None:
 
 
 def atomic_write_bytes(path: Path, content: bytes, mode: int | None = None) -> None:
+    guard_write(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("wb", dir=path.parent, delete=False) as handle:
         handle.write(content)
@@ -1495,6 +1573,7 @@ def install_skills(target: Path, agents: list[str], *, force: bool, dry_run: boo
         }
 
     def replace_directory(source: Path, destination: Path) -> None:
+        guard_write(destination.parent)
         if destination.is_symlink():
             destination.unlink()
         elif destination.is_dir():
@@ -1511,7 +1590,7 @@ def install_skills(target: Path, agents: list[str], *, force: bool, dry_run: boo
     if dry_run:
         say(f"DRY RUN — would reconcile canonical skills in {canonical}")
     else:
-        canonical.mkdir(parents=True, exist_ok=True)
+        contained_mkdir(canonical)
         for source in sources:
             destination = canonical / source.name
             recorded = recorded_skill(source.name)
@@ -1543,7 +1622,7 @@ def install_skills(target: Path, agents: list[str], *, force: bool, dry_run: boo
         if dry_run:
             say(f"DRY RUN — would regenerate owned Claude skill adapters in {adapter}")
         else:
-            adapter.mkdir(parents=True, exist_ok=True)
+            contained_mkdir(adapter)
             for name in sorted(owned_names):
                 source = canonical / name
                 if not source.is_dir():
@@ -1618,25 +1697,22 @@ def copy_runtime(target: Path, *, dry_run: bool) -> Path:
     demo_source = demo_template_path()
     destination = target / ".agentsmith" / "agentsmith.py"
     if not dry_run:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(ROOT / "agentsmith.py", destination)
+        # contained_copy replaces a linked destination instead of writing through it.
+        contained_copy(ROOT / "agentsmith.py", destination)
         config_destination = destination.parent / "config"
-        config_destination.mkdir(parents=True, exist_ok=True)
         for source in (REGISTRY_PATH, PROFILE_CATALOG_PATH, WIZARD_LOCALES_PATH):
-            shutil.copy2(source, config_destination / source.name)
+            contained_copy(source, config_destination / source.name)
         for helper_name in ("native_launcher.py", "evaluate.py", "work_graph.py",
                             "windows_verifier_sandbox.py", "project_memory.py", "config_audit.py"):
             helper_source = ROOT / helper_name
             if helper_source.exists():
-                shutil.copy2(helper_source, destination.parent / helper_name)
+                contained_copy(helper_source, destination.parent / helper_name)
         demo_destination = destination.parent / "templates" / "first-loop"
         for relative in DEMO_TEMPLATE_FILES:
             source = demo_source / relative
             if not source.is_file() or source.is_symlink():
                 raise CliError(f"Bundled first-loop template file is missing or unsafe: {source}")
-            copied = demo_destination / relative
-            copied.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, copied)
+            contained_copy(source, demo_destination / relative)
         posix_launcher = destination.parent / "agentsmith"
         windows_launcher = destination.parent / "agentsmith.cmd"
         atomic_write(posix_launcher, textwrap.dedent("""\
@@ -3759,7 +3835,7 @@ def scaffold_design_system(target: Path, source: str | None, *, dry_run: bool) -
         return
     validate_design_system_source(source)
     destination = target / "DESIGN.md"
-    if destination.exists():
+    if os.path.lexists(destination):
         ok("DESIGN.md already present; left unchanged")
         return
     if dry_run:
@@ -3778,7 +3854,7 @@ def scaffold_design_system(target: Path, source: str | None, *, dry_run: bool) -
             return
         except (OSError, UnicodeError, urllib.error.URLError, CliError) as exc:
             warn(f"could not fetch catalog:{slug} ({exc}); using the bundled template")
-    shutil.copy2(ROOT / "templates" / "design-system.md", destination)
+    contained_copy(ROOT / "templates" / "design-system.md", destination)
     if source == "generate":
         ok("added DESIGN.md template; generate its contents with the project's approved design workflow")
     else:
@@ -3940,11 +4016,13 @@ def install_git_hooks(target: Path, runtime: Path, *, dry_run: bool) -> None:
         say(f"DRY RUN — would install {hooks / 'pre-commit'}")
         return
     path = hooks / "pre-commit"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists() and " hook git-pre-commit" not in path.read_text(encoding="utf-8", errors="replace"):
-        warn(f"foreign pre-commit hook preserved; add Agentsmith manually: {path}")
-        return
-    atomic_write(path, command)
+    # Git chooses the hooks folder; a linked worktree keeps it in the main checkout, outside the target.
+    with contained_writes([*(WRITE_ROOTS or ()), hooks]):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and " hook git-pre-commit" not in path.read_text(encoding="utf-8", errors="replace"):
+            warn(f"foreign pre-commit hook preserved; add Agentsmith manually: {path}")
+            return
+        atomic_write(path, command)
     path.chmod(path.stat().st_mode | 0o111)
     ok(f"installed native-Python git hook {path}")
 
@@ -3953,9 +4031,6 @@ def scaffold_project(target: Path, profiles: list[str], agents: list[str], args:
     if args.dry_run:
         say(f"DRY RUN — would scaffold cross-platform helpers under {target / '.agentsmith'}")
         return
-    if "software-dev" in profiles:
-        for relative in AUTONOMOUS_PAYLOADS:
-            safe_update_path(target, relative)
     for path in (
         target / ".agentsmith",
         target / "docs/research/_archive",
@@ -3963,14 +4038,14 @@ def scaffold_project(target: Path, profiles: list[str], agents: list[str], args:
         target / ".harness/handoffs",
         target / ".planning",
     ):
-        path.mkdir(parents=True, exist_ok=True)
+        contained_mkdir(path)
     copy_runtime(target, dry_run=False)
     templates = target / ".harness" / "templates"
-    templates.mkdir(parents=True, exist_ok=True)
+    contained_mkdir(templates)
     for source in (ROOT / "templates").glob("*.md"):
         destination = templates / source.name
-        if not destination.exists():
-            shutil.copy2(source, destination)
+        if not os.path.lexists(destination):
+            contained_copy(source, destination)
     conf = target / ".harness" / "verify.conf"
     if not conf.exists():
         chunks = [f"# Generated for profile(s): {','.join(profiles)}", "# Commands run with the native OS shell.", ""]
@@ -3985,13 +4060,13 @@ def scaffold_project(target: Path, profiles: list[str], agents: list[str], args:
         if not template.is_file() or template.is_symlink():
             raise CliError(f"Bundled autonomous manifest template is missing or unsafe: {template}")
         template_destination = templates / template.name
-        if not template_destination.exists():
-            shutil.copy2(template, template_destination)
+        if not os.path.lexists(template_destination):
+            contained_copy(template, template_destination)
         source = ROOT / "scripts" / "autonomous-run.py"
         destination = target / ".agentsmith" / "autonomous-run.py"
         if not source.is_file() or source.is_symlink():
             raise CliError(f"Bundled autonomous controller is missing or unsafe: {source}")
-        shutil.copy2(source, destination)
+        contained_copy(source, destination)
 
 
 def instruction_paths(target: Path, agents: list[str], global_mode: bool) -> tuple[list[Path], list[Path]]:
@@ -4191,6 +4266,57 @@ def uninstall(args: argparse.Namespace, agents: list[str], target: Path) -> int:
     return 0
 
 
+def install_destinations(target: Path, agents: list[str], profiles: list[str], args: argparse.Namespace) -> list[tuple[Path, Path]]:
+    """Every path this install may create or replace, each paired with the root it must stay inside.
+
+    A path listed here that the run does not write costs nothing; a path the run writes but this
+    list misses is caught later by guard_write, after earlier writes, so keep the list complete."""
+    home = home_dir()
+    hooks = bool(args.with_handoff_hooks or args.with_ui_design_hook or args.with_memory_startup or args.with_hooks)
+    native = not args.assemble_only
+    paths: list[tuple[Path, Path]] = []
+
+    def add(root: Path, *relatives: str) -> None:
+        paths.extend((root, root / relative) for relative in relatives)
+
+    if args.global_mode:
+        roots = {**global_roots(), **({"pi_home": absolute_pi_home()} if "pi" in agents else {})}
+        for agent_id, path in global_instruction_destinations(agents).items():
+            paths.append((roots[GLOBAL_INSTRUCTION_TARGETS[agent_id][0]], path))
+        add(home, ".agentsmith/state.json")
+        install_root = home
+    else:
+        add(target, "AGENTS.md", ".agentsmith/state.json", ".harness/verify.conf", ".harness/handoffs",
+            ".planning", "docs/research/_archive", "docs/feedback/_archive")
+        add(target, *(f".harness/templates/{source.name}" for source in (ROOT / "templates").glob("*.md")))
+        if "claude" in agents:
+            add(target, "CLAUDE.md", ".claude/settings.json", ".mcp.json")
+        if "codex" in agents:
+            add(target, ".codex/config.toml", ".codex/hooks.json")
+        adapters = {"gemini-cli": ".gemini/settings.json", "aider": ".aider.conf.yml",
+                    "continue": ".continue/rules/agentsmith.md", "goose": ".goosehints"}
+        add(target, *(adapters[agent_id] for agent_id in agents if agent_id in adapters))
+        if "software-dev" in profiles:
+            add(target, *AUTONOMOUS_PAYLOADS)
+        if args.design_system and args.design_system != "skip":
+            add(target, "DESIGN.md")
+        install_root = target
+    if not getattr(sys, "frozen", False) and (not args.global_mode or hooks):
+        add(install_root, *RUNTIME_FILES)
+    if args.with_skills:
+        names = [source.name for source in sorted((ROOT / "skills").iterdir()) if (source / "SKILL.md").is_file()]
+        add(install_root, *(f".agents/skills/{name}" for name in names))
+        if "claude" in agents:
+            add(install_root, *(f".claude/skills/{name}" for name in names))
+    if native or hooks:
+        add(home, ".agentsmith/state.json")
+        if "claude" in agents:
+            add(home, ".claude/settings.json", ".claude/agentsmith-statusline.py", ".claude/agentsmith-statusline.ps1")
+        if "codex" in agents:
+            add(codex_home(), "config.toml", "hooks.json")
+    return paths
+
+
 def cmd_install(args: argparse.Namespace) -> int:
     agents = resolve_agents(args.agent, args.platform)
     if args.self_update:
@@ -4240,7 +4366,9 @@ def cmd_install(args: argparse.Namespace) -> int:
         profiles = [detect_profile(target)]
         say(f"auto-detected profile: {profiles[0]}")
     if args.uninstall:
-        return uninstall(args, agents, target)
+        roots = [root for root in global_roots().values() if root.is_absolute()]
+        with contained_writes([*roots, *([] if args.global_mode else [target])]):
+            return uninstall(args, agents, target)
     if not profiles and not args.global_mode:
         raise CliError("Pick a profile with --profile <name[,name]> or use --global")
     if not args.global_mode and "claude" in agents and not args.assemble_only and args.safety == "trusted":
@@ -4324,28 +4452,36 @@ def cmd_install(args: argparse.Namespace) -> int:
     if args.export_instructions:
         print(block)
         return 0
-    for path in canonical:
-        reconcile_markdown(path, block, force=args.force, dry_run=args.dry_run)
-    for path in generated:
-        # Claude's copy is generated from canonical source, never independently assembled.
-        reconcile_markdown(path, block, force=args.force, dry_run=args.dry_run)
-    if not args.global_mode:
-        install_adapters(target, agents, dry_run=args.dry_run)
-        scaffold_project(target, profiles, agents, args)
-        scaffold_design_system(target, args.design_system, dry_run=args.dry_run)
-    install_native_config(target, agents, args)
-    install_claude_plugin_packs(agents, args.with_plugins, dry_run=args.dry_run)
-    installed_skill_directories: list[Path] = []
-    if args.with_skills:
-        skill_root = home_dir() if args.global_mode else target
-        installed_skill_directories = install_skills(
-            skill_root, agents, force=args.force, dry_run=args.dry_run
-        )
-        record_state(skill_root, "skills_installed", True, dry_run=args.dry_run)
-    install_hooks(target, agents, args)
-    record_installation_manifest(target, agents, profiles, args, recovery, installed_skill_directories)
-    ok(f"installed for {', '.join(written_agents) or 'no selected agent'}; canonical project instructions: AGENTS.md")
-    return 0
+    # One containment check before the first write: a half install is worse than a refusal.
+    destinations = install_destinations(target, agents, profiles, args)
+    containment_preflight(destinations)
+    if "software-dev" in profiles and not args.global_mode:
+        # The autonomous payloads refuse even a link that stays inside the project.
+        for relative in AUTONOMOUS_PAYLOADS:
+            safe_update_path(target, relative)
+    with contained_writes(root for root, _ in destinations):
+        for path in canonical:
+            reconcile_markdown(path, block, force=args.force, dry_run=args.dry_run)
+        for path in generated:
+            # Claude's copy is generated from canonical source, never independently assembled.
+            reconcile_markdown(path, block, force=args.force, dry_run=args.dry_run)
+        if not args.global_mode:
+            install_adapters(target, agents, dry_run=args.dry_run)
+            scaffold_project(target, profiles, agents, args)
+            scaffold_design_system(target, args.design_system, dry_run=args.dry_run)
+        install_native_config(target, agents, args)
+        install_claude_plugin_packs(agents, args.with_plugins, dry_run=args.dry_run)
+        installed_skill_directories: list[Path] = []
+        if args.with_skills:
+            skill_root = home_dir() if args.global_mode else target
+            installed_skill_directories = install_skills(
+                skill_root, agents, force=args.force, dry_run=args.dry_run
+            )
+            record_state(skill_root, "skills_installed", True, dry_run=args.dry_run)
+        install_hooks(target, agents, args)
+        record_installation_manifest(target, agents, profiles, args, recovery, installed_skill_directories)
+        ok(f"installed for {', '.join(written_agents) or 'no selected agent'}; canonical project instructions: AGENTS.md")
+        return 0
 
 
 def cmd_agents_list(args: argparse.Namespace) -> int:
