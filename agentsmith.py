@@ -4161,14 +4161,37 @@ def install_hooks(target: Path, agents: list[str], args: argparse.Namespace) -> 
         warn("--with-hooks is project-scoped and was ignored with --global")
 
 
+def git_hooks_location(target: Path) -> tuple[Path, Path] | None:
+    """Git's hooks folder for the target and the root it must stay in, or None outside a repository.
+
+    The root is the target itself or the repository's common Git folder: a linked worktree keeps
+    its hooks in the main checkout. A core.hooksPath elsewhere (for example a shared folder that
+    every repository uses) is outside both, so the install refuses it instead of writing there."""
+    if not shutil.which("git"):
+        return None
+    result = subprocess.run(
+        ["git", "-C", str(target), "rev-parse", "--git-path", "hooks", "--git-common-dir"],
+        text=True, capture_output=True, check=False,
+    )
+    lines = result.stdout.splitlines()
+    if result.returncode or len(lines) != 2:
+        return None
+    hooks, common = (Path(line.strip()) for line in lines)
+    hooks = hooks if hooks.is_absolute() else target / hooks
+    common = common if common.is_absolute() else target / common
+    try:
+        hooks.relative_to(target)
+        return hooks, target
+    except ValueError:
+        return hooks, common
+
+
 def install_git_hooks(target: Path, runtime: Path, *, dry_run: bool) -> None:
-    git_hooks = subprocess.run(["git", "-C", str(target), "rev-parse", "--git-path", "hooks"], text=True, capture_output=True)
-    if git_hooks.returncode:
+    location = git_hooks_location(target)
+    if location is None:
         warn("--with-hooks skipped: target is not a git repository")
         return
-    hooks = Path(git_hooks.stdout.strip())
-    if not hooks.is_absolute():
-        hooks = target / hooks
+    hooks, hooks_root = location
     # Git supplies its own POSIX launcher on Windows; no separately installed Git Bash/WSL is
     # required. The hook delegates immediately to the exact interpreter that ran setup.
     invocation = runtime_command(runtime, "hook", "git-pre-commit")
@@ -4178,7 +4201,7 @@ def install_git_hooks(target: Path, runtime: Path, *, dry_run: bool) -> None:
         return
     path = hooks / "pre-commit"
     # Git chooses the hooks folder; a linked worktree keeps it in the main checkout, outside the target.
-    with contained_writes([*(WRITE_ROOTS or ()), hooks]):
+    with contained_writes([*(WRITE_ROOTS or ()), hooks_root]):
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists() and " hook git-pre-commit" not in path.read_text(encoding="utf-8", errors="replace"):
             warn(f"foreign pre-commit hook preserved; add Agentsmith manually: {path}")
@@ -4463,6 +4486,9 @@ def install_destinations(target: Path, agents: list[str], profiles: list[str], a
             add(target, *AUTONOMOUS_PAYLOADS)
         if args.design_system and args.design_system != "skip":
             add(target, "DESIGN.md")
+        if args.with_hooks and (location := git_hooks_location(target)) is not None:
+            hooks, hooks_root = location
+            paths.append((hooks_root, hooks / "pre-commit"))
         install_root = target
     if not getattr(sys, "frozen", False) and (not args.global_mode or hooks):
         add(install_root, *RUNTIME_FILES)

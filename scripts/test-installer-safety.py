@@ -213,6 +213,46 @@ class ContainmentTests(InstallerFixture):
             self.assertFalse(path.is_symlink(), path)
             self.assertTrue(path.is_file(), path)
 
+    def git(self, *arguments: str) -> None:
+        subprocess.run(["git", *arguments], check=True, capture_output=True, env={**self.env, "GIT_CONFIG_GLOBAL": os.devnull})
+
+    def test_git_hooks_outside_the_repository_are_refused_before_any_write(self) -> None:
+        for case in ("hooks link", "core.hooksPath"):
+            with self.subTest(case=case):
+                project = self.root / f"project {case}"
+                outside = self.root / f"outside {case}"
+                outside.mkdir()
+                self.git("init", "-q", str(project))
+                if case == "hooks link":
+                    hooks = project / ".git" / "hooks"
+                    for child in hooks.iterdir():
+                        child.unlink()
+                    hooks.rmdir()
+                    self.link(hooks, outside, directory=True)
+                else:
+                    self.git("-C", str(project), "config", "core.hooksPath", str(outside))
+                result = self.run_core(
+                    "install", "--target", str(project), "--agent", "codex", "--profile", "general-admin",
+                    "--assemble-only", "--with-hooks",
+                )
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertEqual(list(outside.iterdir()), [], "a hook was written outside the repository")
+                self.assertFalse((project / "AGENTS.md").exists(), "instructions were written before the refusal")
+
+    def test_git_hook_of_a_linked_worktree_is_allowed(self) -> None:
+        main = self.root / "main"
+        self.git("init", "-q", str(main))
+        (main / "README.md").write_text("x\n", encoding="utf-8")
+        self.git("-C", str(main), "add", "README.md")
+        self.git("-C", str(main), "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qm", "init")
+        worktree = self.root / "worktree"
+        self.git("-C", str(main), "worktree", "add", "-q", str(worktree))
+        self.assert_ok(self.run_core(
+            "install", "--target", str(worktree), "--agent", "codex", "--profile", "general-admin",
+            "--assemble-only", "--with-hooks",
+        ))
+        self.assertTrue((main / ".git" / "hooks" / "pre-commit").is_file())
+
     def test_global_link_out_of_home_is_refused_before_any_write(self) -> None:
         outside = self.root / "shared claude"
         outside.mkdir()

@@ -821,3 +821,9 @@ global selections needs its own design because update replays the record.
   filter. `--list` with an empty result still exits 0 with a warning, because a listing asserts
   nothing. `EmptyVerificationTests` in `test-verify-receipts.py` failed 5 of 5 before and pass
   after.
+- [x] 2026-10-26 — Independent review (Codex) of the containment preflight: with `--with-hooks`, a
+  `.git/hooks` link out of the repository, or a `core.hooksPath` outside it, still received the
+  pre-commit hook, because the hook path was not in the preflight. The preflight now asks Git for
+  the hooks folder and refuses one that resolves outside the target or the repository's common Git
+  folder (a linked worktree keeps its hooks in the main checkout, which stays allowed). The review's
+  reproducer and two new tests failed before and pass after.
