@@ -5350,7 +5350,10 @@ def workspace_findings(target: Path, *, worktree_limit: int = WORKTREE_LIMIT,
 
 def hook_firing_counts(target: Path) -> tuple[dict[str, int], list[str]]:
     """Count hook firings in the last HOOK_LOG_WINDOW_DAYS from the project and user logs."""
-    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=HOOK_LOG_WINDOW_DAYS)
+    now = dt.datetime.now(dt.timezone.utc)
+    cutoff = now - dt.timedelta(days=HOOK_LOG_WINDOW_DAYS)
+    # Allow a little clock skew; a later time is a broken clock or a planted line, not a firing.
+    latest = now + dt.timedelta(minutes=5)
     counts: dict[str, int] = {}
     paths: list[str] = []
     for root in dict.fromkeys((target.resolve() / ".agentsmith", home_dir().resolve() / ".agentsmith")):
@@ -5369,7 +5372,7 @@ def hook_firing_counts(target: Path) -> tuple[dict[str, int], list[str]]:
                 hook = event["hook"]
             except (ValueError, KeyError, TypeError):
                 continue
-            if isinstance(hook, str) and re.fullmatch(r"[a-z0-9-]{1,64}", hook) and when >= cutoff:
+            if isinstance(hook, str) and re.fullmatch(r"[a-z0-9-]{1,64}", hook) and cutoff <= when <= latest:
                 counts[hook] = counts.get(hook, 0) + 1
     return dict(sorted(counts.items())), paths
 

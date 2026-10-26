@@ -892,7 +892,9 @@ class HookFiringLogTests(unittest.TestCase):
         self.log.parent.mkdir(parents=True)
         self.log.write_text(
             json.dumps({"ts": old, "hook": "context-budget-nudge", "event": "Stop", "outcome": "blocked"}) + "\n"
-            + json.dumps({"ts": recent, "hook": "handoff-on-keyword", "event": "UserPromptSubmit", "outcome": "nudged"}) + "\n",
+            + json.dumps({"ts": recent, "hook": "handoff-on-keyword", "event": "UserPromptSubmit", "outcome": "nudged"}) + "\n"
+            # A future time is a broken clock or a planted line; it must not hide an unused hook.
+            + json.dumps({"ts": "2999-01-01T00:00:00Z", "hook": "context-budget-nudge", "event": "Stop", "outcome": "blocked"}) + "\n",
             encoding="utf-8",
         )
         # Pretend the install is older than the window, so silence means the hook is not firing.
