@@ -5304,7 +5304,8 @@ def feedback_findings(target: Path) -> list[dict[str, str]]:
             "harness-review-overdue",
             f"{len(since)} feedback record(s) since the last harness review "
             f"({reviewed.isoformat() if reviewed else 'none recorded'}).",
-            f"Run the harness-review checkpoint in {readme} and date its last line.",
+            f"Run the harness review, then record it as `_Last harness review: YYYY-MM-DD_` in {readme}"
+            + ("." if readme.is_file() else " (a missing file counts as never reviewed; `agentsmith new-feedback` creates it)."),
         ))
     return findings
 
@@ -8050,6 +8051,20 @@ def cmd_scaffold(kind: str, args: argparse.Namespace) -> int:
 
             ## 5. Non-regression validation
             """)
+        # Doctor reads the review date from this guide, which no install ships; start it on first use.
+        guide = directory / "README.md"
+        if not args.dry_run and not guide.exists() and not guide.is_symlink():
+            directory.mkdir(parents=True, exist_ok=True)
+            guide.write_text(textwrap.dedent("""\
+                # Feedback records
+
+                One record per harness lesson: evidence, failure mechanism, bounded edit, named surface,
+                non-regression check. Review them on a regular cadence: land or close each open record,
+                check that every applied record's Surface still holds, then date the line below
+                (`YYYY-MM-DD`). `agentsmith doctor` reads it.
+
+                _Last harness review: (none yet)_
+                """), encoding="utf-8")
     else:
         directory = root / "docs" / "research"
         name = f"{slug(args.name)}.md"

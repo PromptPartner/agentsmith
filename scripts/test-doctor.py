@@ -415,6 +415,20 @@ class DoctorTests(unittest.TestCase):
         _, layered = self.doctor(project, "codex")
         self.assertNotIn("profile-only-core-missing", self.warning_codes(layered["codex"]))
 
+    def test_feedback_without_a_review_guide_counts_as_never_reviewed(self) -> None:
+        import datetime
+        # A project install ships no docs/feedback/README.md; the records alone must still be judged.
+        project = self.root / "no guide"
+        feedback = project / "docs" / "feedback"
+        feedback.mkdir(parents=True)
+        old = (datetime.date.today() - datetime.timedelta(days=90)).isoformat()
+        (feedback / "0001-old.md").write_text(f"- **Date:** {old}\n- **Status:** applied\n", encoding="utf-8")
+        result, payload = self.doctor(project, "codex")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        warning = next(w for w in payload["codex"]["warnings"] if w["code"] == "harness-review-overdue")
+        self.assertIn("none recorded", warning["message"])
+        self.assertIn("_Last harness review:", warning["recommendation"])
+
     def test_applied_feedback_whose_surface_is_gone_is_reported(self) -> None:
         import datetime
         project = self.root / "surface project"

@@ -57,7 +57,7 @@ class ScaffoldTests(unittest.TestCase):
                                     indent=2), encoding="utf-8")
 
     def only_file(self, folder: str) -> str:
-        [path] = sorted((self.project / folder).glob("*.md"))
+        [path] = sorted(path for path in (self.project / folder).glob("*.md") if path.name != "README.md")
         text = path.read_text(encoding="utf-8")
         path.unlink()
         return text
@@ -103,6 +103,14 @@ class ScaffoldTests(unittest.TestCase):
         self.record_hooks(True)
         for source, text in self.feedback_texts().items():
             self.assertIn("This install runs hooks", text, source)
+
+    def test_first_feedback_record_creates_the_review_line_doctor_reads(self) -> None:
+        self.assertEqual(self.cli("new-feedback", "first lesson").returncode, 0)
+        readme = self.project / "docs" / "feedback" / "README.md"
+        self.assertRegex(readme.read_text(encoding="utf-8"), r"(?m)^_Last harness review: ")
+        readme.write_text("# Own guide\n_Last harness review: 2026-01-01_\n", encoding="utf-8")
+        self.assertEqual(self.cli("new-feedback", "second lesson").returncode, 0)
+        self.assertEqual(readme.read_text(encoding="utf-8"), "# Own guide\n_Last harness review: 2026-01-01_\n")
 
     def test_feedback_guide_names_the_current_doctor_command(self) -> None:
         guide = (ROOT / "docs" / "feedback" / "README.md").read_text(encoding="utf-8")
