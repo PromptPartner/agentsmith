@@ -57,6 +57,18 @@ class DurableCheckpointTests(unittest.TestCase):
         self.assertIn("count-based", skill)
         self.assertNotIn("search returned no visible match", (ROOT / "core" / "40-subagents-and-tools.md").read_text(encoding="utf-8").casefold())
 
+    def test_verify_skill_says_which_output_counts_as_proof(self) -> None:
+        # The verify skill loads at the moment a result is about to be quoted as proof, so the
+        # three rules that kept producing wrong "green" claims live there, not in core/.
+        skill = (ROOT / "skills" / "verify" / "SKILL.md").read_text(encoding="utf-8")
+        for phrase in (
+            "output-rewriting",          # a token-saving hook can hide or summarise real output
+            "untruncated",               # truncated search output is not proof of absence
+            "pending == 0 and failing == 0",  # what "CI is green" means
+            "head SHA",
+        ):
+            self.assertIn(phrase, skill)
+
         with tempfile.TemporaryDirectory(prefix="agentsmith generated checkpoint ") as temporary:
             target = Path(temporary) / "project"
             target.mkdir()

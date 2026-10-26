@@ -13,7 +13,7 @@ first thing rationalized away under pressure ("surely that doesn't apply here").
 story attached — *"never X; last time, Y broke and it cost us Z"* — carries its own justification
 to exactly the situations where it matters. Reasons travel; rules don't.
 
-There's a budget argument too, and it's not soft: static context is capped (~600 lines / 10k
+There's a budget argument too, and it's not soft: static context is capped (~480 lines / 7.8k
 tokens — see [`04-why-your-agent-ignored-the-rule.md`](04-why-your-agent-ignored-the-rule.md)), so
 every copied rule you don't actually need crowds out an earned rule you do.
 
