@@ -871,3 +871,7 @@ global selections needs its own design because update replays the record.
   uninstall, because a missing key and a null value were recorded the same way. The record now
   keeps whether the mode and the `permissions` object existed. The new test failed before and
   passes after.
+- [x] 2026-10-26 — Same review: a project profile that is a named pipe made `install` hang (the
+  read waited for a writer). The profile is now opened with `O_NONBLOCK` and refused unless it is a
+  regular file; on Windows the path check requires a regular file before opening. The review's
+  reproducer timed out before and now exits 2; a new test failed (hung) before and passes after.

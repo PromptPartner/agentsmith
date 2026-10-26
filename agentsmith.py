@@ -727,7 +727,9 @@ def read_project_profile(target: Path, name: str) -> str:
             directories.append(os.open(target, flags))
             for part in PROJECT_PROFILE_DIRECTORY:
                 directories.append(os.open(part, flags, dir_fd=directories[-1]))
-            descriptor = os.open(f"{name}.md", os.O_RDONLY | no_follow, dir_fd=directories[-1])
+            # O_NONBLOCK: opening a named pipe for reading would otherwise wait for a writer forever.
+            file_flags = os.O_RDONLY | no_follow | getattr(os, "O_NONBLOCK", 0)
+            descriptor = os.open(f"{name}.md", file_flags, dir_fd=directories[-1])
         else:
             # Windows has no directory descriptors: refuse any link or junction on the way, then
             # pin the opened file by identity so a swap after the check is detected.
@@ -737,6 +739,8 @@ def read_project_profile(target: Path, name: str) -> str:
                 details = os.lstat(current)
                 if stat.S_ISLNK(details.st_mode) or getattr(details, "st_file_attributes", 0) & 0x400:
                     raise CliError(f"Project profile {display} refused: {current} is a link")
+            if not stat.S_ISREG(details.st_mode):
+                raise CliError(f"Project profile {display} is not a regular file")
             descriptor = os.open(current, os.O_RDONLY | getattr(os, "O_BINARY", 0))
             opened = os.fstat(descriptor)
             if (opened.st_dev, opened.st_ino) != (details.st_dev, details.st_ino):

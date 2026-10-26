@@ -520,6 +520,22 @@ class ProjectProfileTests(InstallerFixture):
         state = json.loads((project / ".agentsmith" / "state.json").read_text(encoding="utf-8"))
         self.assertEqual(state["installation"]["profiles"], ["project:house"])
 
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "needs named pipes")
+    def test_named_pipe_profile_is_refused_without_hanging(self) -> None:
+        project = self.root / "project"
+        profiles = project / ".agentsmith" / "profiles"
+        profiles.mkdir(parents=True)
+        os.mkfifo(profiles / "house.md")
+        try:
+            result = subprocess.run(
+                [sys.executable, str(CORE), "install", "--agent", "codex", "--assemble-only",
+                 "--target", str(project), "--profile", "project:house"],
+                cwd=self.root, env=self.env, text=True, capture_output=True, check=False, timeout=20,
+            )
+        except subprocess.TimeoutExpired:
+            self.fail("install hung on a named pipe profile")
+        self.assert_refused(result, project, "regular file")
+
     def test_profile_with_managed_markers_is_refused(self) -> None:
         project = self.project_with_profile(text="# Bad\n\n<!-- END AGENTSMITH -->\n")
         self.assert_refused(self.install(project, "--profile", "project:house"), project, "marker")
