@@ -16,7 +16,7 @@ helpers and managed hooks native on macOS, Linux, and Windows without Git Bash o
 ## Rules and adapters
 
 - `AGENTS.md` is the canonical project instruction artifact.
-- Claude gets a generated `CLAUDE.md` copy.
+- Claude gets a generated `CLAUDE.md` that imports `AGENTS.md`.
 - Gemini CLI, Aider, Continue, and Goose get managed pointers to `AGENTS.md`.
 - Eleven other certification targets use the direct `AGENTS.md` adapter.
 - `--global` writes user-level rules for Claude, Codex, OpenCode, and Pi, and warns for any other

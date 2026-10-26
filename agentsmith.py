@@ -605,6 +605,30 @@ def build_instructions(args: argparse.Namespace, profiles: list[str], include_co
     return re.sub(r"\{\{([A-Z_]+)\}\}", r"[TODO: set \1]", rendered)
 
 
+CLAUDE_IMPORT_LINE = "@AGENTS.md"
+
+
+def claude_import_block(block: str) -> str:
+    """Claude's project block: the canonical block's metadata plus an import of AGENTS.md.
+
+    Claude Code reads AGENTS.md only when no CLAUDE.md exists in the folder chain, and an existing
+    CLAUDE.md would otherwise need a second full copy of the rules. The documented @AGENTS.md
+    import (code.claude.com/docs/en/memory) keeps AGENTS.md the one rulebook in a project."""
+    metadata = next((line for line in block.splitlines() if line.startswith("<!-- Generated. Profiles: ")), None)
+    if metadata is None:
+        raise CliError("Managed instruction block has no generator metadata")
+    return "\n".join((
+        BEGIN, metadata,
+        "<!-- Claude Code loads the project rules from AGENTS.md through the import below. -->",
+        "", CLAUDE_IMPORT_LINE, END,
+    ))
+
+
+def project_instruction_block(path: Path, target: Path, block: str) -> str:
+    """The block a project instruction file carries: the full rules, or Claude's import."""
+    return claude_import_block(block) if path == target / "CLAUDE.md" else block
+
+
 def merge_json(path: Path, mutation: Any, *, dry_run: bool) -> None:
     if dry_run:
         say(f"DRY RUN — would reconcile {path}")
@@ -3811,7 +3835,10 @@ def reassemble_managed_targets(args: argparse.Namespace) -> None:
         if missing:
             warn(f"{path}: updated harness no longer contains profile(s) {', '.join(missing)}; skipped")
             continue
-        block = build_instructions(args, profiles, metadata.group(2) == "true", recover_identity([path]))
+        identity_sources = [target / "AGENTS.md", path] if path in project_candidates else [path]
+        block = build_instructions(args, profiles, metadata.group(2) == "true", recover_identity(identity_sources))
+        if path in project_candidates:
+            block = project_instruction_block(path, target, block)
         reconcile_markdown(path, block, force=False, dry_run=False)
         refreshed += 1
     if refreshed:
@@ -4463,8 +4490,9 @@ def cmd_install(args: argparse.Namespace) -> int:
         for path in canonical:
             reconcile_markdown(path, block, force=args.force, dry_run=args.dry_run)
         for path in generated:
-            # Claude's copy is generated from canonical source, never independently assembled.
-            reconcile_markdown(path, block, force=args.force, dry_run=args.dry_run)
+            # Claude's project copy imports canonical AGENTS.md; its global file is the full block.
+            claude_block = block if args.global_mode else project_instruction_block(path, target, block)
+            reconcile_markdown(path, claude_block, force=args.force, dry_run=args.dry_run)
         if not args.global_mode:
             install_adapters(target, agents, dry_run=args.dry_run)
             scaffold_project(target, profiles, agents, args)
@@ -4651,6 +4679,13 @@ def instruction_source(path: Path, scope: str) -> dict[str, Any]:
         return record
     record["profiles"] = [] if metadata.group(1) == "none" else metadata.group(1).split(",")
     record["generated_core"] = metadata.group(2) == "true"
+    imported = path.parent / "AGENTS.md"
+    if CLAUDE_IMPORT_LINE in block.splitlines() and imported.is_file():
+        # Claude loads the imported rulebook with this file, so its cost counts here.
+        imported_text = imported.read_text(encoding="utf-8", errors="replace")
+        record["tokens"] += max(1, len(imported_text) // 4)
+        with contextlib.suppress(CliError):
+            block = managed_block(imported_text) or block
     if record["generated_core"]:
         core = re.split(r"\n---\n\n# Work-Type Profile\(s\):", block, maxsplit=1)[0]
         record["core_tokens"] = max(1, len(core) // 4)
@@ -4725,7 +4760,12 @@ def inspect_instructions(agent_id: str, agent: dict[str, Any], target: Path) -> 
             generated_record = instruction_source(generated, "project")
             canonical_meta = (canonical_record["generated_core"], canonical_record["profiles"])
             generated_meta = (generated_record["generated_core"], generated_record["profiles"])
-            if canonical_meta != generated_meta or managed_block(canonical.read_text(encoding="utf-8")) != managed_block(generated.read_text(encoding="utf-8")):
+            canonical_block = managed_block(canonical.read_text(encoding="utf-8"))
+            generated_block = managed_block(generated.read_text(encoding="utf-8"))
+            expected_blocks = {canonical_block}
+            with contextlib.suppress(CliError):
+                expected_blocks.add(claude_import_block(canonical_block))
+            if canonical_meta != generated_meta or generated_block not in expected_blocks:
                 warnings.append(
                     doctor_warning(
                         "conflicting-generator-metadata",
@@ -5875,7 +5915,10 @@ def cmd_profiles_switch(args: argparse.Namespace) -> int:
             f"Profile stack exceeds the static-context budget ({line_count} lines, ~{token_estimate} tokens); "
             "switch between dominant profiles instead of stacking them"
         )
-    rendered = [(path, *render_profile_switch_document(path, block)) for path in destinations]
+    rendered = [
+        (path, *render_profile_switch_document(path, project_instruction_block(path, target, block)))
+        for path in destinations
+    ]
     verification = build_verification_plan(target)
     config = safe_update_path(target, ".harness/verify.conf")
     gaps = [name.replace("_", " ") for name, cell in verification["coverage"].items() if cell["state"] != "configured"]

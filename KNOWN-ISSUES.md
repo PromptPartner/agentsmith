@@ -58,8 +58,12 @@ been authorized, so the entries are kept here.
   removes every AgentSmith hook from those user files, including hooks a global install added.
   Codex reads a project `.codex/config.toml` only for trusted projects, so moving its safety keys
   needs its own design.
-- [ ] Project install appends a generated block to an existing unmarked `CLAUDE.md` and also adds
-  `AGENTS.md`, leaving two authoritative instruction rulebooks in one repository.
+- [x] Project install appends a generated block to an existing unmarked `CLAUDE.md` and also adds
+  `AGENTS.md`, leaving two authoritative instruction rulebooks in one repository. Fixed 2026-10-26:
+  the project `CLAUDE.md` block now holds only the generator metadata and Claude Code's documented
+  `@AGENTS.md` import, so `AGENTS.md` is the one rulebook; text already in `CLAUDE.md` stays above
+  the block. Global `~/.claude/CLAUDE.md` keeps the full block. `RulebookTests` in
+  `test-installer-safety.py` failed before and pass after.
 - [ ] A contained symlink added inside an AgentSmith-owned `.claude/skills` adapter is detected by
   strict Doctor and repaired by ordinary reinstall, but staged update fails closed because plan
   receipts cannot yet authenticate deletion and exact rollback restoration of symlink metadata.

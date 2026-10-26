@@ -130,7 +130,7 @@ agentsmith profiles switch --target /path/to/project --profile software-dev
 
 ## What AgentSmith manages
 
-`AGENTS.md` is the canonical project instruction file. Claude also receives a generated `CLAUDE.md`. Selected clients receive small adapters that point to `AGENTS.md`; AgentSmith does not maintain independent copies.
+`AGENTS.md` is the canonical project instruction file. Claude also receives a generated `CLAUDE.md` whose managed block imports `AGENTS.md` (`@AGENTS.md`), so the project has one rulebook; text you already had in `CLAUDE.md` stays above the block. Selected clients receive small adapters that point to `AGENTS.md`; AgentSmith does not maintain independent copies.
 
 New project setups also receive:
 

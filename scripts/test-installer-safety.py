@@ -241,5 +241,61 @@ class ContainmentTests(InstallerFixture):
         self.assertTrue((dotfiles / "CLAUDE.md").is_file())
 
 
+class RulebookTests(InstallerFixture):
+    """A project carries one managed rulebook: AGENTS.md. Claude's CLAUDE.md imports it."""
+
+    CORE_HEADING = "## The Principle Rules"
+
+    def install_project(self, project: Path, *arguments: str) -> None:
+        project.mkdir(exist_ok=True)
+        self.assert_ok(self.run_core(
+            "install", "--agent", "claude,codex", "--profile", "general-admin", "--assemble-only",
+            "--target", str(project), *arguments,
+        ))
+
+    def test_claude_copy_imports_agents_md_instead_of_a_second_rulebook(self) -> None:
+        project = self.root / "project"
+        self.install_project(project)
+        agents = (project / "AGENTS.md").read_text(encoding="utf-8")
+        claude = (project / "CLAUDE.md").read_text(encoding="utf-8")
+        self.assertIn(self.CORE_HEADING, agents)
+        self.assertNotIn(self.CORE_HEADING, claude)
+        self.assertIn("@AGENTS.md", claude.splitlines())
+        self.assertIn("Generated. Profiles: general-admin. core=true.", claude)
+
+    def test_existing_unmarked_claude_md_keeps_its_text_and_gains_only_the_import(self) -> None:
+        project = self.root / "project"
+        project.mkdir()
+        own = "# Team notes\n\nRun make test before every commit.\n"
+        (project / "CLAUDE.md").write_text(own, encoding="utf-8")
+        self.install_project(project)
+        claude = (project / "CLAUDE.md").read_text(encoding="utf-8")
+        self.assertTrue(claude.startswith(own))
+        self.assertNotIn(self.CORE_HEADING, claude)
+        self.assertIn("@AGENTS.md", claude.splitlines())
+        combined = claude + (project / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertEqual(combined.count(self.CORE_HEADING), 1, "two managed rulebooks in one project")
+
+    def test_rerun_doctor_and_profile_switch_keep_the_import(self) -> None:
+        project = self.root / "project"
+        self.install_project(project)
+        before = {name: (project / name).read_bytes() for name in ("AGENTS.md", "CLAUDE.md")}
+        self.install_project(project)
+        self.assertEqual({name: (project / name).read_bytes() for name in before}, before, "rerun is not idempotent")
+        doctor = self.run_core("doctor", "--agent", "claude", "--target", str(project), "--json")
+        self.assert_ok(doctor)
+        codes = {warning["code"] for warning in json.loads(doctor.stdout)["claude"]["warnings"]}
+        self.assertNotIn("conflicting-generator-metadata", codes)
+        self.assert_ok(self.run_core("profiles", "switch", "--target", str(project), "--profile", "software-dev"))
+        claude = (project / "CLAUDE.md").read_text(encoding="utf-8")
+        self.assertIn("Generated. Profiles: software-dev. core=true.", claude)
+        self.assertNotIn(self.CORE_HEADING, claude)
+        self.assertIn("@AGENTS.md", claude.splitlines())
+
+    def test_global_claude_rules_stay_complete(self) -> None:
+        self.assert_ok(self.run_core("install", "--global", "--agent", "claude", "--assemble-only"))
+        self.assertIn(self.CORE_HEADING, (self.home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main()

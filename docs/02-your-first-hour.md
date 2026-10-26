@@ -12,7 +12,7 @@ updates the selected coding agent's user settings in `~/.claude` or `CODEX_HOME`
 
 ```
 AGENTS.md                        main generated instruction file (tour below)
-CLAUDE.md                        generated copy when Claude is selected
+CLAUDE.md                        imports AGENTS.md when Claude is selected
 .harness/verify.conf             your project's definition of "shippable" (starts as a stub)
 .harness/templates/              plan, handoff, research, progress-log, quality-gate templates
 .claude/settings.local.json.example   Claude project safety example (when Claude is selected)

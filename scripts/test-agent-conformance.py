@@ -440,8 +440,10 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
         results.check(install.returncode == 0, "all-agent assembly succeeds in a Unicode path", install.stdout[-500:])
         results.check(canonical.is_file() and not canonical.is_symlink(), "all-agent assembly writes a real canonical AGENTS.md")
         results.check(
-            claude_copy.is_file() and canonical.is_file() and claude_copy.read_bytes() == canonical.read_bytes(),
-            "Claude receives an equivalent generated copy",
+            claude_copy.is_file() and canonical.is_file()
+            and "@AGENTS.md" in claude_copy.read_text(encoding="utf-8").splitlines()
+            and "## The Principle Rules" not in claude_copy.read_text(encoding="utf-8"),
+            "Claude receives a generated CLAUDE.md that imports canonical AGENTS.md",
         )
         project_cli = project / ".agentsmith" / "agentsmith"
         windows_cli = project / ".agentsmith" / "agentsmith.cmd"
@@ -905,8 +907,8 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
             native_install.returncode == 0
             and (native_project / "AGENTS.md").is_file()
             and (native_project / "CLAUDE.md").is_file()
-            and (native_project / "AGENTS.md").read_bytes() == (native_project / "CLAUDE.md").read_bytes(),
-            "native install generates canonical and equivalent instruction files",
+            and "@AGENTS.md" in (native_project / "CLAUDE.md").read_text(encoding="utf-8").splitlines(),
+            "native install generates canonical AGENTS.md and a CLAUDE.md that imports it",
             native_install.stdout[-500:],
         )
         results.check(installed_skills, "native skill install preserves foreign skills and installs managed skills")
