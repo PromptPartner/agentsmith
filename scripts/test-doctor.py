@@ -413,6 +413,37 @@ class DoctorTests(unittest.TestCase):
         _, layered = self.doctor(project, "codex")
         self.assertNotIn("profile-only-core-missing", self.warning_codes(layered["codex"]))
 
+    def test_applied_feedback_whose_surface_is_gone_is_reported(self) -> None:
+        import datetime
+        project = self.root / "surface project"
+        feedback = project / "docs" / "feedback"
+        feedback.mkdir(parents=True)
+        (project / ".harness").mkdir()
+        (project / ".harness" / "verify.conf").write_text("lint :: ruff check .\n", encoding="utf-8")
+        (project / "rules.md").write_text("Rule A: always verify.\n", encoding="utf-8")
+        today = datetime.date.today().isoformat()
+
+        def record(number: str, surface: str, status: str = "applied") -> None:
+            (feedback / f"{number}-record.md").write_text(
+                f"# Feedback {number}\n\n- **Date:** {today}\n- **Status:** {status}\n- **Surface:** {surface}\n",
+                encoding="utf-8",
+            )
+
+        record("0001", "file: rules.md | text: Rule A: always verify.")
+        record("0002", "verify: lint")
+        record("0003", "<!-- file: <path> | text: <literal line it must keep>  or  verify: <phase name> -->")
+        record("0004", "verify: gone-phase", status="open")
+        _, intact = self.doctor(project, "codex")
+        self.assertNotIn("feedback-surface-missing", self.warning_codes(intact["codex"]))
+        (project / "rules.md").write_text("Rule A was reworded.\n", encoding="utf-8")
+        (project / ".harness" / "verify.conf").write_text("test :: pytest\n", encoding="utf-8")
+        _, gone = self.doctor(project, "codex")
+        warning = next(w for w in gone["codex"]["warnings"] if w["code"] == "feedback-surface-missing")
+        self.assertIn("0001-record.md", warning["message"])
+        self.assertIn("0002-record.md", warning["message"])
+        self.assertNotIn("0003", warning["message"])
+        self.assertNotIn("0004", warning["message"], "only applied records promise a surface")
+
     def test_trusted_native_install_reports_actual_owned_surfaces(self) -> None:
         project = self.root / "owned project ü"
         project.mkdir()

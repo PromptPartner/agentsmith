@@ -200,6 +200,7 @@ cannot be quoted as the shipped behaviour.
 | `superpowers-not-enabled` | A rules file Claude Code loads names `superpowers:*` skills, but `enabledPlugins` (user, project or local settings) does not enable the superpowers plugin. | Enable it with `/plugin`, or know that the rule falls back to doing the step by hand. |
 | `managed-block-behind-default-branch` | The default branch has a newer managed block in `AGENTS.md` or `CLAUDE.md` than this branch, and this branch did not change it. Skipped without Git or a default branch. | Merge or rebase onto the default branch, or re-run install. |
 | `feedback-open-too-long` | A `docs/feedback/NNNN-*.md` record has stayed `Status: open` for more than 30 days. | Land its edit and mark it `applied`, or mark it `wont-fix` with a reason. |
+| `feedback-surface-missing` | An `applied` feedback record's `Surface:` line names a file, a literal line or a verify phase that is gone, so the fix it records no longer holds. | Restore the surface, or reopen the record. |
 | `harness-review-overdue` | Ten or more feedback records, or more than 60 days, since the dated `_Last harness review:` line in `docs/feedback/README.md`. | Run the harness-review checkpoint and date that line. |
 | `stale-worktrees` | Git still lists worktrees whose folders are gone (`prunable`). | Check nothing unmerged lives only there, then `git worktree prune`. |
 | `many-worktrees` | More than 10 linked worktrees. | Remove worktrees of merged or abandoned work. |

@@ -5228,6 +5228,29 @@ HARNESS_REVIEW_DAYS = 60
 HARNESS_REVIEW_RECORDS = 10
 
 
+def feedback_surface_problem(root: Path, surface: str) -> str:
+    """Why a feedback record's Surface no longer holds, or "" when it holds or names nothing checkable.
+
+    Grammar: `file: <path> | text: <literal line>` (the text part is optional) or `verify: <phase>`.
+    """
+    value = re.sub(r"<!--.*?-->", "", surface).strip()
+    phase = re.fullmatch(r"verify:\s*(\S+)", value)
+    if phase:
+        config = root / ".harness" / "verify.conf"
+        text = config.read_text(encoding="utf-8", errors="replace") if config.is_file() else ""
+        found = re.search(rf"(?m)^\s*{re.escape(phase.group(1))}\s*::", text)
+        return "" if found else f"verify phase {phase.group(1)} is gone"
+    named = re.fullmatch(r"file:\s*([^|]+?)\s*(?:\|\s*text:\s*(.+))?", value)
+    if not named:
+        return ""
+    path = root / named.group(1)
+    if not path.is_file():
+        return f"{named.group(1)} is gone"
+    if named.group(2) and named.group(2).strip() not in path.read_text(encoding="utf-8", errors="replace"):
+        return f"{named.group(1)} no longer contains the recorded text"
+    return ""
+
+
 def feedback_findings(target: Path) -> list[dict[str, str]]:
     """Feedback records left open too long, and a harness review that is overdue (docs/feedback/README.md)."""
     folder = doctor_project_root(target) / "docs" / "feedback"
@@ -5243,6 +5266,7 @@ def feedback_findings(target: Path) -> list[dict[str, str]]:
             return None
 
     records: list[tuple[str, dt.date | None, str]] = []
+    gone: list[str] = []
     for path in sorted(folder.glob("[0-9][0-9][0-9][0-9]-*.md")):
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
@@ -5250,7 +5274,18 @@ def feedback_findings(target: Path) -> list[dict[str, str]]:
             continue
         status = re.search(r"\*\*Status:\*\*\s*([a-z-]+)", text)
         records.append((path.name, date_in(text, r"\*\*Date:\*\*\s*(\d{4}-\d{2}-\d{2})"), status.group(1) if status else ""))
+        if status and status.group(1) == "applied":
+            surface = re.search(r"(?m)^- \*\*Surface:\*\*(.*)$", text)
+            problem = feedback_surface_problem(folder.parent.parent, surface.group(1) if surface else "")
+            if problem:
+                gone.append(f"{path.name} ({problem})")
     findings = []
+    if gone:
+        findings.append(doctor_warning(
+            "feedback-surface-missing",
+            "Applied feedback records whose named surface is gone: " + "; ".join(gone),
+            "Restore the rule, file or verify phase, or reopen the record: the fix it describes no longer holds.",
+        ))
     stale = [name for name, date, status in records
              if status == "open" and date and (today - date).days > FEEDBACK_OPEN_DAYS]
     if stale:
@@ -7915,6 +7950,13 @@ def cmd_resume(args: argparse.Namespace) -> int:
     return 0
 
 
+FEEDBACK_SURFACE_ADVICE = {
+    True: "This install runs hooks, so a hook or a verify phase is the strongest surface.",
+    False: "This install does not run hooks, so use a verify phase or a lint check, not a hook.",
+    None: "Prefer a verify phase or a lint check; use a hook only where the client runs hooks.",
+}
+
+
 def cmd_scaffold(kind: str, args: argparse.Namespace) -> int:
     root = Path(args.target or os.getcwd()).resolve()
     today = dt.date.today().isoformat()
@@ -7978,6 +8020,13 @@ def cmd_scaffold(kind: str, args: argparse.Namespace) -> int:
         existing = [int(m.group(1)) for p in directory.glob("[0-9][0-9][0-9][0-9]-*.md") if (m := re.match(r"(\d{4})-", p.name))]
         number = max(existing, default=0) + 1
         name = f"{number:04d}-{slug(args.name)}.md"
+        # Advise a surface this install can actually run: a hook only where hooks are installed.
+        recorded = [state.get("installation", {}).get("capabilities", {}).get("hooks")
+                    for state in (load_state(root), load_state(home_dir()))
+                    if isinstance(state.get("installation"), dict)
+                    and isinstance(state["installation"].get("capabilities"), dict)]
+        hooks = next((value for value in recorded if isinstance(value, bool)), None)
+        advice = FEEDBACK_SURFACE_ADVICE[hooks]
         source = textwrap.dedent(f"""\
             # Feedback {number:04d}: {args.name}
 
@@ -7986,6 +8035,7 @@ def cmd_scaffold(kind: str, args: argparse.Namespace) -> int:
 
             - **Date:** {today}
             - **Status:** open
+            - **Surface:** <!-- file: <path> | text: <literal line it must keep>  or  verify: <phase name> -->
             - **Cost:**
 
             ## 1. Evidence / symptom
@@ -7995,6 +8045,8 @@ def cmd_scaffold(kind: str, args: argparse.Namespace) -> int:
             ## 3. Bounded edit
 
             ## 4. Named surface
+
+            <!-- {advice} Record it on the Surface line so doctor can check it stays in place. -->
 
             ## 5. Non-regression validation
             """)
