@@ -4506,7 +4506,13 @@ def install_destinations(target: Path, agents: list[str], profiles: list[str], a
     if native or hooks:
         add(home, ".agentsmith/state.json")
         if "claude" in agents:
-            add(home, ".claude/settings.json", ".claude/agentsmith-statusline.py", ".claude/agentsmith-statusline.ps1")
+            add(home, ".claude/settings.json")
+            # The helper name is chosen at write time (a taken name moves on to "-1"), so ask the
+            # same code which files it would write.
+            ownership = load_state(home).get("native_statuslines", {})
+            prior = ownership.get("claude") if isinstance(ownership, dict) else None
+            _, helpers = claude_statusline_installation(prior if isinstance(prior, dict) else None)
+            paths.extend((home, helper) for helper, _ in helpers)
         if "codex" in agents:
             add(codex_home(), "config.toml", "hooks.json")
     return paths

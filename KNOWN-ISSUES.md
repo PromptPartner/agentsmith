@@ -827,6 +827,12 @@ global selections needs its own design because update replays the record.
   the hooks folder and refuses one that resolves outside the target or the repository's common Git
   folder (a linked worktree keeps its hooks in the main checkout, which stays allowed). The review's
   reproducer and two new tests failed before and pass after.
+- [x] 2026-10-26 — Same review: the preflight listed only the default status-line helper names, but
+  the install picks `agentsmith-statusline-1.py` (and so on) when the default name is taken. A link
+  at that name out of HOME was refused only by the write guard, after `AGENTS.md`, `CLAUDE.md` and
+  `.claude/settings.json` were written. The preflight now asks the status-line code for the exact
+  helper files it will write. The reproducer (`rc 2 AGENTS_written True`) now reports
+  `AGENTS_written False`; a new test failed before and passes after.
 - [x] 2026-10-26 — Found while fixing the status-line preflight: the updater's root translation
   missed paths in JSON written with ASCII escapes (`\u00fc` for `ü`, as Python's default
   `json.dumps` writes). A staged install then saw the live HOME's status-line helper path in the

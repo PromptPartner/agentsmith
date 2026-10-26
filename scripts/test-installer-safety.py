@@ -253,6 +253,21 @@ class ContainmentTests(InstallerFixture):
         ))
         self.assertTrue((main / ".git" / "hooks" / "pre-commit").is_file())
 
+    def test_user_level_status_line_link_is_refused_before_any_write(self) -> None:
+        # Review reproducer: the base helper name is taken, so the install picks "-1", a link outside.
+        project = self.root / "project"
+        project.mkdir()
+        outside = self.root / "outside"
+        outside.mkdir()
+        claude = self.home / ".claude"
+        claude.mkdir()
+        (claude / "agentsmith-statusline.py").write_text("# the user's own helper\n", encoding="utf-8")
+        self.link(claude / "agentsmith-statusline-1.py", outside / "victim", directory=False)
+        result = self.run_core("install", "--target", str(project), "--agent", "claude", "--profile", "general-admin")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertFalse((project / "AGENTS.md").exists(), "instructions were written before the refusal")
+
     def test_global_link_out_of_home_is_refused_before_any_write(self) -> None:
         outside = self.root / "shared claude"
         outside.mkdir()
