@@ -376,6 +376,28 @@ class DoctorTests(unittest.TestCase):
         self.assertNotIn("harness-review-overdue", self.warning_codes(reviewed["codex"]))
         self.assertIn("feedback-open-too-long", self.warning_codes(reviewed["codex"]))
 
+    def test_prunable_worktrees_many_worktrees_and_low_disk_are_reported(self) -> None:
+        repo = self.root / "worktree repo"
+        repo.mkdir()
+        self.git(repo, "init", "-q", "-b", "master")
+        self.git(repo, "commit", "-q", "--allow-empty", "--no-verify", "-m", "chore: start")
+        for name in ("one", "gone"):
+            self.git(repo, "worktree", "add", "-q", "-b", name, str(self.root / f"wt {name}"))
+        import shutil as shell_tools
+        shell_tools.rmtree(self.root / "wt gone")
+        _, payload = self.doctor(repo, "codex")
+        stale = next(w for w in payload["codex"]["warnings"] if w["code"] == "stale-worktrees")
+        self.assertIn("wt gone", stale["message"])
+        self.assertIn("git worktree prune", stale["recommendation"])
+        core = load_core()
+        with unittest.mock.patch.dict(os.environ, {"HOME": self.env["HOME"]}):
+            many = core.workspace_findings(repo, worktree_limit=1)
+            self.assertIn("many-worktrees", {item["code"] for item in many})
+            usage = core.shutil.disk_usage(repo)._replace(free=1024 ** 3)
+            with unittest.mock.patch.object(core.shutil, "disk_usage", return_value=usage):
+                low = core.workspace_findings(repo)
+        self.assertIn("low-disk-space", {item["code"] for item in low})
+
     def test_trusted_native_install_reports_actual_owned_surfaces(self) -> None:
         project = self.root / "owned project ü"
         project.mkdir()

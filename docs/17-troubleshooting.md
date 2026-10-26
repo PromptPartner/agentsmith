@@ -201,6 +201,9 @@ cannot be quoted as the shipped behaviour.
 | `managed-block-behind-default-branch` | The default branch has a newer managed block in `AGENTS.md` or `CLAUDE.md` than this branch, and this branch did not change it. Skipped without Git or a default branch. | Merge or rebase onto the default branch, or re-run install. |
 | `feedback-open-too-long` | A `docs/feedback/NNNN-*.md` record has stayed `Status: open` for more than 30 days. | Land its edit and mark it `applied`, or mark it `wont-fix` with a reason. |
 | `harness-review-overdue` | Ten or more feedback records, or more than 60 days, since the dated `_Last harness review:` line in `docs/feedback/README.md`. | Run the harness-review checkpoint and date that line. |
+| `stale-worktrees` | Git still lists worktrees whose folders are gone (`prunable`). | Check nothing unmerged lives only there, then `git worktree prune`. |
+| `many-worktrees` | More than 10 linked worktrees. | Remove worktrees of merged or abandoned work. |
+| `low-disk-space` | Less than 5 GiB free on the target's disk. | Free space before long runs. |
 | `hook-unused-30-days` | An installed hook did not fire in 30 days ([firing log](../hooks/README.md#firing-log--track-every-workaround-delete-it-when-it-stops-firing)). | Advisory: consider removing it; a safety gate may rightly never block. |
 
 **"`agentsmith evaluate` refuses to call the client."** Real model calls require all three pieces:

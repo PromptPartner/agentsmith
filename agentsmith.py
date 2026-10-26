@@ -5244,6 +5244,44 @@ def feedback_findings(target: Path) -> list[dict[str, str]]:
     return findings
 
 
+WORKTREE_LIMIT = 10
+DISK_FREE_MIN_BYTES = 5 * 1024 ** 3
+
+
+def workspace_findings(target: Path, *, worktree_limit: int = WORKTREE_LIMIT,
+                       free_min: int = DISK_FREE_MIN_BYTES) -> list[dict[str, str]]:
+    """Stale or many Git worktrees, and low free disk: the slow failures of parallel agent work."""
+    findings = []
+    listing = git_text(target, "worktree", "list", "--porcelain")
+    if listing:
+        entries = [block.splitlines() for block in listing.strip().split("\n\n") if block.strip()]
+        paths = [next((line[9:] for line in entry if line.startswith("worktree ")), "") for entry in entries]
+        prunable = [path for path, entry in zip(paths, entries) if any(line.startswith("prunable") for line in entry)]
+        if prunable:
+            findings.append(doctor_warning(
+                "stale-worktrees",
+                "Git still lists worktrees whose folders are gone: " + ", ".join(prunable),
+                "Check that nothing unmerged lives only there, then run `git worktree prune`.",
+            ))
+        if len(entries) - 1 > worktree_limit:
+            findings.append(doctor_warning(
+                "many-worktrees",
+                f"This repository has {len(entries) - 1} linked worktrees (more than {worktree_limit}).",
+                "Remove the worktrees of merged or abandoned work; each one holds disk and stale state.",
+            ))
+    try:
+        free = shutil.disk_usage(target).free
+    except OSError:
+        free = None
+    if free is not None and free < free_min:
+        findings.append(doctor_warning(
+            "low-disk-space",
+            f"Only {free / 1024 ** 3:.1f} GiB is free on the disk that holds {target}.",
+            "Free space before long runs: builds, worktrees and logs fail midway when the disk fills.",
+        ))
+    return findings
+
+
 def hook_firing_counts(target: Path) -> tuple[dict[str, int], list[str]]:
     """Count hook firings in the last HOOK_LOG_WINDOW_DAYS from the project and user logs."""
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=HOOK_LOG_WINDOW_DAYS)
@@ -5302,7 +5340,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     unhealthy = False
     firing_counts, firing_logs = hook_firing_counts(target)
     # Findings about the project, not one agent; every agent's report carries them.
-    project_findings = managed_block_behind_default(target) + feedback_findings(target)
+    project_findings = managed_block_behind_default(target) + feedback_findings(target) + workspace_findings(target)
     for agent_id in selected:
         agent = rows[agent_id]
         instructions, warnings = inspect_instructions(agent_id, agent, target)
