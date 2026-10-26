@@ -2038,7 +2038,7 @@ def claude_settings_root(target: Path, global_mode: bool) -> Path:
 
 
 def claude_permission_mode(path: Path) -> tuple[dict[str, Any], Any]:
-    """Return Claude settings and their permissions.defaultMode (None when absent)."""
+    """Return Claude settings and their permissions.defaultMode (None when absent or null)."""
     if not path.exists():
         return {}, None
     try:
@@ -2053,12 +2053,17 @@ def claude_permission_mode(path: Path) -> tuple[dict[str, Any], Any]:
 
 def write_claude_permission_mode(path: Path, state_root: Path, mode: str, *, dry_run: bool) -> None:
     """Set Claude's default mode and record what it replaced, so uninstall can put it back."""
-    _, current = claude_permission_mode(path)
+    data, current = claude_permission_mode(path)
     record = load_state(state_root).get(CLAUDE_MODE_RECORD)
     if isinstance(record, dict) and record.get("value") == current:
         prior, created = record.get("prior"), bool(record.get("created"))
+        shape = {key: record[key] for key in ("prior_present", "permissions_present") if key in record}
     else:
         prior, created = current, not path.exists()
+        permissions = data.get("permissions")
+        # A missing key and an explicit null are different settings; uninstall restores either.
+        shape = {"prior_present": isinstance(permissions, dict) and "defaultMode" in permissions,
+                 "permissions_present": "permissions" in data}
 
     def claude_settings(data: dict[str, Any]) -> None:
         permissions = data.setdefault("permissions", {})
@@ -2067,7 +2072,8 @@ def write_claude_permission_mode(path: Path, state_root: Path, mode: str, *, dry
         permissions["defaultMode"] = mode
 
     merge_json(path, claude_settings, dry_run=dry_run, state_root=state_root)
-    record_state(state_root, CLAUDE_MODE_RECORD, {"value": mode, "prior": prior, "created": created}, dry_run=dry_run)
+    record_state(state_root, CLAUDE_MODE_RECORD, {"value": mode, "prior": prior, "created": created, **shape},
+                 dry_run=dry_run)
 
 
 def remove_claude_permission_mode(path: Path, state_root: Path, *, dry_run: bool) -> None:
@@ -2077,23 +2083,26 @@ def remove_claude_permission_mode(path: Path, state_root: Path, *, dry_run: bool
     legacy = state.get("native_safety", {}).get("claude") if isinstance(state.get("native_safety"), dict) else None
     if isinstance(record, dict) and isinstance(record.get("value"), str):
         written, prior, created = record["value"], record.get("prior"), bool(record.get("created"))
+        prior_present = bool(record.get("prior_present", prior is not None))
+        permissions_present = bool(record.get("permissions_present", prior_present))
     elif legacy in SAFETY_MODES:
         # Releases before 0.5.0 recorded only the mode, not what it replaced or whether the file existed.
         written, prior, created = NATIVE_SAFETY[legacy]["claude"]["defaultMode"], None, False
+        prior_present = permissions_present = False
     else:
         return
     if path.is_file():
         data, current = claude_permission_mode(path)
         if current != written:
             warn(f"Claude's default mode in {path} changed since install ({current!r}); preserved")
-        elif prior != written:
+        elif prior != written or not prior_present:
             permissions = data["permissions"]
-            if prior is None:
-                permissions.pop("defaultMode", None)
-                if not permissions:
-                    data.pop("permissions", None)
-            else:
+            if prior_present:
                 permissions["defaultMode"] = prior
+            else:
+                permissions.pop("defaultMode", None)
+                if not permissions and not permissions_present:
+                    data.pop("permissions", None)
             if dry_run:
                 say(f"DRY RUN — would restore Claude's default mode in {path}")
                 return

@@ -89,6 +89,13 @@ class OwnershipTests(InstallerFixture):
         self.assert_ok(self.run_core("install", "--global", "--uninstall", "--agent", "claude"))
         self.assertEqual(self.default_mode(), "plan")
 
+    def test_global_uninstall_restores_an_explicit_null_mode(self) -> None:
+        self.write_settings({"permissions": {"defaultMode": None}})
+        self.assert_ok(self.run_core("install", "--global", "--agent", "claude", "--profile", "general-admin"))
+        self.assert_ok(self.run_core("install", "--global", "--uninstall", "--agent", "claude"))
+        data = json.loads(self.claude_settings.read_text(encoding="utf-8"))
+        self.assertEqual(data, {"permissions": {"defaultMode": None}})
+
     def test_global_uninstall_preserves_a_mode_the_user_changed_after_install(self) -> None:
         self.assert_ok(self.run_core("install", "--global", "--agent", "claude", "--profile", "general-admin"))
         data = json.loads(self.claude_settings.read_text(encoding="utf-8"))

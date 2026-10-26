@@ -867,3 +867,7 @@ global selections needs its own design because update replays the record.
   appended block, so the removal is exact. The user's text before and after the block, including
   CRLF and edge whitespace, comes back byte for byte. The new test failed before (LF and CRLF) and
   passes after; the public proof's existing-config lifecycle is unchanged.
+- [x] 2026-10-26 — Same review: an explicit `"defaultMode": null` became `{}` after install and
+  uninstall, because a missing key and a null value were recorded the same way. The record now
+  keeps whether the mode and the `permissions` object existed. The new test failed before and
+  passes after.
