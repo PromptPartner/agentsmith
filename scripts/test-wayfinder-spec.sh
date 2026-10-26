@@ -124,6 +124,25 @@ for case in \
     bad "guard: stayed green or wrong reason for: $expected"; cat "$FIX/out"
   fi
 done
+# The schema line decides whether the fields are required, so it must not be dodged by YAML shape.
+# Any schema key that is not exactly 2 refuses; only a spec with no schema key at all is legacy.
+for case in \
+  'research is missing|schema:\n  2' \
+  "repeats the key 'schema'|schema: 2\nschema:" \
+  "unsupported schema 'two'|schema: two" \
+  "unsupported schema ''|schema:"; do
+  expected="${case%%|*}"; schema_lines="${case#*|}"
+  printf -- "---\n${schema_lines}\nstatus: accepted\ndecision_ticket: DEC-1\naccepted_by: Test Operator\naccepted_at: 2026-10-26\n---\n# Spec\n" > "$FIX/docs/specs/item.md"
+  if [ "$(check)" = 1 ] && grep -qF "$expected" "$FIX/out"; then
+    ok "guard: red for schema shape — $expected"
+  else
+    bad "guard: schema shape passed or wrong reason — $expected"; cat "$FIX/out"
+  fi
+done
+write_spec accepted 's#^route:.*#route: >-#' '/^route:/a\
+  direct — one bug with a reproduction'
+[ "$(check)" = 0 ] && ok 'guard: a folded multi-line route is read' || { bad 'guard: folded route not read'; cat "$FIX/out"; }
+
 write_spec draft '/^research:/d'
 [ "$(check)" = 0 ] && ok 'guard: a draft is not checked in the repository scan' || bad 'guard: scan checked a draft'
 [ "$(check docs/specs/item.md)" = 1 ] && ok 'guard: a named draft is checked, so a goal cannot finish early' || bad 'guard: named draft passed'

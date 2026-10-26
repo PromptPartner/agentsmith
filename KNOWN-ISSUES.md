@@ -809,3 +809,7 @@ global selections needs its own design because update replays the record.
   `state.json` link, a file where `agentsmith-runs` should be, or a dead lock with no state
   exited 0 ("terminal"). It now accepts only the shapes and statuses the controller writes and
   answers 2 for anything else; ten such cases exited 0 or 1 before and exit 2 after.
+- [x] 2026-10-26 — Independent review: an accepted spec with `schema:` and `2` on the next line
+  (valid YAML), a repeated or a blank `schema` key, and no pipeline fields passed `check-specs`
+  as legacy. Indented lines now continue their key, repeated keys are refused, and any `schema`
+  key other than exactly 2 is refused; three such fixtures passed before and fail after.

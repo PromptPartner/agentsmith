@@ -580,13 +580,25 @@ def frontmatter(text: str) -> dict[str, str]:
     end = text.find("\n---\n", 4)
     if end < 0:
         raise RunError("spec frontmatter is not closed")
+    # Flat `key: value` pairs. An indented line continues the previous key, as in YAML
+    # (`schema:` then `  2`, or a folded `route: >-`), and a repeated key is refused, so a
+    # gate field cannot be hidden by its YAML shape.
     values: dict[str, str] = {}
+    key = None
     for raw in text[4:end].splitlines():
-        if not raw.strip() or raw.lstrip().startswith("#") or ":" not in raw:
+        if not raw.strip() or raw.lstrip().startswith("#"):
             continue
-        key, value = raw.split(":", 1)
-        values[key.strip()] = value.strip().strip('"\'')
-    return values
+        if raw[:1] in (" ", "\t") and key is not None:
+            values[key] = " ".join(part for part in (values[key], raw.strip()) if part)
+            continue
+        if ":" not in raw:
+            key = None
+            continue
+        key, value = (part.strip() for part in raw.split(":", 1))
+        if key in values:
+            raise RunError(f"spec front matter repeats the key {key!r}")
+        values[key] = "" if value in {">", ">-", ">+", "|", "|-", "|+"} else value
+    return {name: value.strip().strip('"\'') for name, value in values.items()}
 
 
 ROUTE = re.compile(r"(direct|grill|wayfinder)\b[\s\-—–:;,(]*(.*)")
@@ -595,11 +607,12 @@ ROUTE = re.compile(r"(direct|grill|wayfinder)\b[\s\-—–:;,(]*(.*)")
 def spec_pipeline_problems(repo: Path, meta: dict[str, str]) -> list[str]:
     """What a schema-2 spec lacks of the development pipeline's artifacts.
 
-    A spec without `schema:` predates the pipeline fields and is not checked, so specs accepted
-    before they existed keep working; the template declares `schema: 2`."""
-    schema = meta.get("schema", "")
-    if not schema:
+    A spec with no `schema` key at all predates the pipeline fields and is not checked, so specs
+    accepted before they existed keep working; the template declares `schema: 2`. Any schema
+    value other than 2, blank included, is refused rather than treated as legacy."""
+    if "schema" not in meta:
         return []
+    schema = meta["schema"]
     if schema != "2":
         return [f"unsupported schema {schema!r}; this controller reads schema 2"]
     problems = []
@@ -648,7 +661,7 @@ def check_specs(args: argparse.Namespace) -> int:
         if problems:
             print(f"FAIL {shown}: " + "; ".join(problems))
             failed = True
-        elif not meta.get("schema"):
+        elif "schema" not in meta:
             print(f"ok   {shown}: legacy spec without schema: 2; pipeline fields not checked")
         else:
             waiting = "" if status == "accepted" else " (waiting for operator acceptance)"

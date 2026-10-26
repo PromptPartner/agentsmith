@@ -7,8 +7,9 @@ only explicit operator acceptance advances it to `accepted` and fills `accepted_
 A spec from the current template declares `schema: 2` and must name its `research` note, its
 `route` with a reason, and its `reviewer_receipt`. `python3 .agentsmith/autonomous-run.py
 check-specs` fails while an accepted schema-2 spec lacks one of them or points at a missing
-file, and `autonomous-run` refuses such a spec. A spec without `schema:` was accepted before
-these fields existed and is not checked.
+file, and `autonomous-run` refuses such a spec. Only a spec with no `schema` key at all counts
+as accepted before these fields existed and is not checked; any other schema value, a blank one
+included, is refused, and so is a front matter key that appears twice.
 
 The spec records decisions. Implementation proceeds through new, separately scoped tracker items;
 the active tracker-write consent policy governs creating, commenting on, or closing those items.
