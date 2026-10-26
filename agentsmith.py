@@ -36,7 +36,7 @@ import urllib.error
 import urllib.request
 
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 OFFICIAL_REMOTE = "https://github.com/PromptPartner/agentsmith.git"
 ROOT = Path(__file__).resolve().parent
 REGISTRY_PATH = ROOT / "config" / "agents.json"

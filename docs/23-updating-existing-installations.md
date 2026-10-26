@@ -6,7 +6,42 @@ the existing installation, and keep planning separate from applying.
 
 ## Current release and legacy blockers
 
-The current stable release is `v0.4.0`.
+The current stable release is `v0.5.0`.
+
+`v0.5.0` makes the always-loaded rules about 40% shorter. It drops generic coding advice that
+current models follow unprompted, and keeps consent, secrets, identity, authority and the trust
+gates. The static-context budget falls to 480 lines / ~7,800 tokens. It also does these things:
+- fixes #50: uninstall restores only what AgentSmith wrote, and install refuses, before writing
+  anything, a destination that leads out of its folder through a link;
+- adds project-owned profiles (`project:<name>`);
+- `agentsmith doctor` now reports rules that cannot take effect. Examples: a rulebook loaded
+  twice, a skill that cites a missing file, a plugin named but not enabled, and a shell hook
+  that rewrites command output;
+- logs when each shipped hook fires;
+- the evaluation reports cost next to quality;
+- adds guards for unattended runs: a repository kill switch, a sandbox preflight, a live-run
+  check before Git metadata changes, and a spec check that requires research and review.
+
+Behaviour changes:
+- A project install keeps Claude's permission mode in the project's `.claude/settings.json`,
+  never in your user settings.
+  - It refuses `--safety trusted` for Claude, because Claude Code ignores `bypassPermissions` in
+    project settings. An existing project install made with `--safety trusted` for Claude stops at
+    `update plan` with that message, before any file changes.
+  - Set trusted mode for your user with `install --global --safety trusted`, or choose
+    another mode.
+  - `v0.4.0` project installs also wrote Claude's mode into your user settings
+    (`~/.claude/settings.json`) and did not record the value they replaced. The update cannot
+    restore it, so check `permissions.defaultMode` there.
+- A project `CLAUDE.md` now carries a short managed block that imports `@AGENTS.md`, instead of a
+  second full copy of the rules. Your own text outside the managed block is kept exactly.
+- `agentsmith verify` fails when it ran no phase, for example `--only` with a filter that matches
+  nothing. Before, it reported "all 0 phases passed".
+- `prepare` for an autonomous run refuses blank or placeholder role models.
+- An accepted spec that declares `schema: 2` must name its research, route and review receipt.
+  Specs without a `schema` key are unchanged.
+- Internal commands keep working but no longer appear in `agentsmith --help`. Evaluation results
+  use schema v3.
 
 `v0.4.0` adds `install --answers` and `agentsmith wizard schema --json` for setup from another
 program, a `container` safety mode for Docker-style containers, user-level rules for OpenCode and
@@ -49,7 +84,7 @@ installation fingerprints. This ownership defect is fixed in `v0.2.4`.
 `v0.2.4` can still preserve a stale AgentSmith-owned `.claude/skills` adapter when its canonical
 `.agents/skills` source changes. Claude discovers the stale adapter, while strict Doctor can report
 it as healthy. This ownership defect is fixed in `v0.2.5`.
-Use `v0.4.0` for the complete legacy global update chain: foreign skill contents are preserved and
+Use `v0.5.0` for the complete legacy global update chain: foreign skill contents are preserved and
 ignored, canonical customizations are retained and mirrored to Claude, and symlinks escaping an
 owned inventory root remain rejected.
 
@@ -83,7 +118,7 @@ installation that does not have one yet.
 ```bash
 AGENTSMITH_BOOTSTRAP_DIR="$(mktemp -d)"
 
-git clone --depth 1 --branch v0.4.0 \
+git clone --depth 1 --branch v0.5.0 \
   https://github.com/PromptPartner/agentsmith.git \
   "$AGENTSMITH_BOOTSTRAP_DIR"
 
@@ -91,7 +126,7 @@ git -C "$AGENTSMITH_BOOTSTRAP_DIR" rev-parse HEAD
 git -C "$AGENTSMITH_BOOTSTRAP_DIR" describe --tags --exact-match
 ```
 
-The final command must print `v0.4.0`. This proves the bootstrap is the immutable release tag rather
+The final command must print `v0.5.0`. This proves the bootstrap is the immutable release tag rather
 than an unreviewed branch checkout.
 
 ## Update one project installation
@@ -101,13 +136,13 @@ but does not modify the target.
 
 ```bash
 AGENTSMITH_TARGET="/absolute/path/to/project"
-AGENTSMITH_PLAN="/tmp/agentsmith-project-name-v0.4.0-plan.json"
+AGENTSMITH_PLAN="/tmp/agentsmith-project-name-v0.5.0-plan.json"
 
 git -C "$AGENTSMITH_TARGET" status --short
 
 python3 "$AGENTSMITH_BOOTSTRAP_DIR/agentsmith.py" update plan \
   --target "$AGENTSMITH_TARGET" \
-  --version v0.4.0 \
+  --version v0.5.0 \
   --save "$AGENTSMITH_PLAN"
 
 python3 -m json.tool "$AGENTSMITH_PLAN" | less
@@ -141,11 +176,11 @@ python3 "$AGENTSMITH_TARGET/.agentsmith/agentsmith.py" doctor \
 Global scope is separate from every project scope. Create and inspect its own plan:
 
 ```bash
-AGENTSMITH_PLAN="/tmp/agentsmith-global-v0.4.0-plan.json"
+AGENTSMITH_PLAN="/tmp/agentsmith-global-v0.5.0-plan.json"
 
 python3 "$AGENTSMITH_BOOTSTRAP_DIR/agentsmith.py" update plan \
   --global \
-  --version v0.4.0 \
+  --version v0.5.0 \
   --save "$AGENTSMITH_PLAN"
 
 python3 -m json.tool "$AGENTSMITH_PLAN" | less

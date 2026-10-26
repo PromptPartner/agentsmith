@@ -21,7 +21,7 @@ sha256sum -c --ignore-missing SHA256SUMS       # Linux
 On Windows, run `Get-FileHash agentsmith-windows-x86_64.zip` in PowerShell and compare the hash with that
 file's line in `SHA256SUMS` (letter case does not matter). With the GitHub CLI you can also confirm that
 this repository's release workflow built the file from the release tag:
-`gh attestation verify <file> --repo PromptPartner/agentsmith --signer-workflow PromptPartner/agentsmith/.github/workflows/standalone.yml --source-ref refs/tags/<version>`, where `<version>` is the release tag, for example `v0.4.0`. Do not run a file that fails either check.
+`gh attestation verify <file> --repo PromptPartner/agentsmith --signer-workflow PromptPartner/agentsmith/.github/workflows/standalone.yml --source-ref refs/tags/<version>`, where `<version>` is the release tag, for example `v0.5.0`. Do not run a file that fails either check.
 
 If the latest release has no downloads yet, use the [source installation](#source-installation-for-contributors)
 described below.
