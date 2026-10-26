@@ -46,7 +46,8 @@ security boundary for mutually untrusted makers.
 Size budgets per run. Class the work by the lines it should change (S up to about 350, M up to
 about 800, L up to about 2,500; split anything larger), cap at the highest usage measured for an
 accepted run of that class plus at least 20% headroom, and write the class, the measurement and
-who set it in `limits.budget_rationale`. A run stops at the first report over a cap, even by 1%.
+who set it in `limits.budget_rationale`. A run stops at the first report over a cap, even by 1%; a
+finished maker's candidate is checkpointed first, so `resume` can verify and check it.
 Keep `max_attempts` at 3.
 
 ## Start and supervise

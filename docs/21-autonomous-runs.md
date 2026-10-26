@@ -122,6 +122,12 @@ number:
 4. Write the reason in `limits.budget_rationale`: the size class, the measurement it rests on,
    and who set it. `status` prints it, so a later reader knows who authorized the limit.
 
+When a maker finishes but its report crosses a cap, the controller first keeps its receipt and
+candidate checkpoint, then escalates. `resume` then verifies and checks that same candidate
+instead of starting a new maker. Each cap stops only the runtime that spends it: a Claude
+checker can still check a candidate whose Codex maker used up the Codex cap, while a Codex
+checker would be refused.
+
 The template default of 2,500,000 Codex tokens is a starting point for one small change, not a
 measurement; until you have your own numbers, run one attended small run first. Keep
 `max_attempts` at 3: the token and USD caps bound spend, and fewer attempts only turn

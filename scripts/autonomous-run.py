@@ -71,6 +71,14 @@ class RunError(RuntimeError):
     pass
 
 
+class BudgetExceeded(RunError):
+    """A role crossed a run-wide cap; a finished role's receipt is kept as evidence."""
+
+    def __init__(self, message: str, receipt: dict[str, Any] | None) -> None:
+        super().__init__(message)
+        self.receipt = receipt
+
+
 class RunInterrupted(RuntimeError):
     """Operator cancellation must bypass handlers for invalid run or peer state."""
 
@@ -1601,20 +1609,34 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
         if isinstance(error, subprocess.TimeoutExpired):
             raise RunError(f'{role} exceeded wall-clock budget') from error
         raise error
+    # Each cap is checked after a role that spends it; the launch checks above refuse a role
+    # whose own runtime has nothing left.
+    over_budget = None
     max_cost = float(manifest["limits"].get("claude_max_usd", 0))
-    if max_cost and state["claude_cost_usd"] > max_cost:
-        raise RunError("Claude run-wide USD budget exceeded")
+    if runtime == "claude" and max_cost and state["claude_cost_usd"] > max_cost:
+        over_budget = "Claude run-wide USD budget exceeded"
     max_tokens = int(manifest["limits"].get("codex_goal_tokens", 0))
-    if max_tokens and state["codex_tokens_used"] > max_tokens:
-        raise RunError("Codex run-wide token budget exceeded")
+    if runtime == "codex" and max_tokens and state["codex_tokens_used"] > max_tokens:
+        over_budget = "Codex run-wide token budget exceeded"
+    receipt = None
+    if not result.returncode:
+        # Keep a finished role's receipt before enforcing a cap it crossed on the way.
+        try:
+            receipt = parse_receipt(receipt_path, stdout)
+        except RunError:
+            if over_budget is None:
+                raise
+        if receipt is not None:
+            write_json(run_dir / f"attempt-{state['attempt']}-{role}-receipt.json", receipt)
+            event(state, "role_completed", role=role, status=receipt["status"], attempt=state["attempt"])
+    if over_budget:
+        raise BudgetExceeded(over_budget, receipt)
     if result.returncode:
         if state.get("status") == "interrupted":
             raise RunInterrupted("stopped by operator")
         raise_if_stopped(run_dir)
         raise RunError(f"{runtime} {role} exited {result.returncode}: {stderr[-500:].strip()}")
-    receipt = parse_receipt(receipt_path, stdout)
-    write_json(run_dir / f"attempt-{state['attempt']}-{role}-receipt.json", receipt)
-    event(state, "role_completed", role=role, status=receipt["status"], attempt=state["attempt"])
+    assert receipt is not None
     return receipt
 
 
@@ -1729,6 +1751,14 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
                     after_meta = git_metadata(worktree, known_peers=before_meta["registered_peers"])
                 validate_git_transition(worktree, before_meta, after_meta, state["branch"],
                                         before_head, after_head)
+            if isinstance(maker_error, BudgetExceeded) and maker_error.receipt is not None:
+                # The maker finished but crossed a cap: checkpoint its candidate before the
+                # escalation, so resume can verify and check it instead of discarding it.
+                state['maker_receipt'] = maker_error.receipt
+                state['candidate_commit'] = after_head
+                state['stage'] = 'validating'
+                save_state(state, 'candidate_checkpointed', stage='validating',
+                           attempt=state['attempt'], reason=str(maker_error))
             if maker_error:
                 raise maker_error
             state['maker_receipt'] = maker

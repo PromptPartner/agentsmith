@@ -943,6 +943,38 @@ if (cd "$repo" && invoke "$repo" accept resume checker-half-removed >../resume-o
 else bad 'resume escalated over a half-removed checker'; cat "$repo/../resume-err"; fi
 assert 'resume removes the leftover checker entry' test ! -e "$checker_entry"
 
+echo 'autonomous-run — budget overshoot keeps the finished candidate'
+repo="$(new_repo overbudget)"; make_fake "$repo/../fake"; manifest "$repo" overbudget
+python3 - "$repo/.harness/runs/overbudget.json" <<'PY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); v = json.loads(p.read_text())
+v['limits']['codex_goal_tokens'] = 5  # the fake Codex maker reports 10 tokens
+p.write_text(json.dumps(v, indent=2) + '\n')
+PY
+git -C "$repo" add . && git -C "$repo" commit -qm 'test: maker overshoots its token cap'
+if (cd "$repo" && invoke "$repo" accept start .harness/runs/overbudget.json >../out 2>../err); then
+  bad 'run over its token cap was accepted'
+else ok 'a maker over its token cap escalates'; fi
+assert 'overshoot escalation names the cap' grep -q 'Codex run-wide token budget exceeded' "$repo/../err"
+assert 'overshoot keeps the maker receipt and candidate checkpoint' python3 - "$repo/.git/agentsmith-runs/overbudget" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1]); state = json.load(open(root / 'state.json'))
+assert state['status'] == 'escalated' and state['stage'] == 'validating', (state['status'], state['stage'])
+assert state['maker_receipt']['status'] == 'completed'
+assert state['candidate_commit'] == state['maker_receipt']['commit']
+assert json.load(open(root / 'attempt-1-maker-receipt.json')) == state['maker_receipt']
+PY
+if (cd "$repo" && invoke "$repo" accept resume overbudget >../resume-out 2>../resume-err); then
+  ok 'resume verifies and checks the retained candidate'
+else bad 'retained over-budget candidate did not resume'; cat "$repo/../resume-err"; fi
+assert 'resume accepts the retained candidate without a second maker' python3 - "$repo/.git/agentsmith-runs/overbudget/state.json" <<'PY'
+import json, sys
+state = json.load(open(sys.argv[1]))
+assert state['status'] == 'accepted' and state['attempt'] == 1
+assert state['accepted_commit'] == state['candidate_commit']
+assert state['codex_tokens_used'] == 10
+PY
+
 echo 'autonomous-run — sandbox preflight before any run artifact'
 repo="$(new_repo preflight)"; make_fake "$repo/../fake"; manifest "$repo" preflight
 if [ "$(uname -s)" = Darwin ]; then
