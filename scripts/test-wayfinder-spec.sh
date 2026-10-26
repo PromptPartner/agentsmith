@@ -75,7 +75,13 @@ for phrase in \
   'separately tracked implementation ticket' \
   'when writes are unauthorized' \
   'A connected or named tracker grants no write permission' \
-  'Resolve one decision per session'; do
+  'resolve one decision per session with the operator' \
+  'never answered by an agent: put it under "Needs operator"' \
+  'It blocks only those; the rest of the map moves on.' \
+  'When unsure, take the heavier route.' \
+  'A list of bugs is a numbered checklist of `direct` items' \
+  'The usual successor is `autonomous-run`' \
+  'Accept: the operator only.'; do
   has "$SKILL" "$phrase" \
     && ok "skill: guarded — $phrase" \
     || bad "skill: missing guard — $phrase"
@@ -125,6 +131,19 @@ write_spec accepted '/^schema:/d' '/^research:/d' '/^route:/d' '/^reviewer_recei
 if [ "$(check)" = 0 ] && grep -q 'legacy spec' "$FIX/out"; then
   ok 'guard: a spec accepted before schema 2 passes and says it is legacy'
 else bad 'guard: legacy spec failed or was not reported'; cat "$FIX/out"; fi
+
+# The skill is what an installed project sees; the doc explains it. They must not drift apart.
+PIPELINE_DOC="$ROOT_DIR/docs/28-development-pipeline.md"
+for term in Goal Research Shape Route 'Spec review' Accept Implement Prove Land; do
+  if grep -qF "**$term**" "$PIPELINE_DOC" && grep -qE "^[0-8]\. $term:" "$SKILL"; then
+    ok "pipeline: stage $term is in the doc and the skill"
+  else bad "pipeline: stage $term drifted between the doc and the skill"; fi
+done
+for route in direct grill wayfinder; do
+  if grep -qF "| \`$route\` |" "$PIPELINE_DOC" && grep -qF -- "- \`$route\`:" "$SKILL"; then
+    ok "pipeline: route $route is in the doc and the skill"
+  else bad "pipeline: route $route drifted between the doc and the skill"; fi
+done
 
 if has "$TEMPLATE" '## Decision-ticket drafts' && has "$TEMPLATE" '## Implementation-ticket drafts'; then
   ok 'template: decision and implementation tickets are separate artifacts'
