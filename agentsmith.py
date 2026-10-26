@@ -91,6 +91,8 @@ NATIVE_SAFETY = {
 }
 # State key recording the Claude default mode AgentSmith wrote and the value it replaced.
 CLAUDE_MODE_RECORD = "claude_permission_mode"
+# State key listing the configuration files AgentSmith created, so uninstall deletes only those.
+CREATED_RECORD = "created_files"
 CODE_PROFILES = {"software-dev", "devops-setup"}
 DEMO_TEMPLATE_FILES = (
     ".harness/verify.conf",
@@ -843,10 +845,39 @@ def project_instruction_block(path: Path, target: Path, block: str) -> str:
     return claude_import_block(block) if path == target / "CLAUDE.md" else block
 
 
-def merge_json(path: Path, mutation: Any, *, dry_run: bool) -> None:
+def note_created(path: Path, state_root: Path, *, dry_run: bool) -> None:
+    """Record, before the first write, whether AgentSmith creates `path`.
+
+    The record always exists after an install, so uninstall can tell a file it created from a
+    file the user had before, even when both end up empty."""
+    if dry_run:
+        return
+    created = load_state(state_root).get(CREATED_RECORD)
+    known = created if isinstance(created, list) else []
+    updated = [*known, str(path)] if not os.path.lexists(path) and str(path) not in known else known
+    if updated is not created:
+        record_state(state_root, CREATED_RECORD, updated, dry_run=False)
+
+
+def remove_emptied_file(path: Path, state_root: Path | None, empty: str) -> None:
+    """Delete a configuration file that uninstall emptied, but only if AgentSmith created it."""
+    created = load_state(state_root).get(CREATED_RECORD) if state_root is not None else None
+    if not isinstance(created, list):
+        path.unlink()  # state written before 0.5.0 has no creation record; keep that behaviour
+        return
+    if str(path) in created:
+        path.unlink()
+        record_state(state_root, CREATED_RECORD, [item for item in created if item != str(path)], dry_run=False)
+    else:
+        atomic_write(path, empty)
+
+
+def merge_json(path: Path, mutation: Any, *, dry_run: bool, state_root: Path | None = None) -> None:
     if dry_run:
         say(f"DRY RUN — would reconcile {path}")
         return
+    if state_root is not None:
+        note_created(path, state_root, dry_run=False)
     original = path.read_text(encoding="utf-8") if path.exists() else ""
     try:
         data = json.loads(original) if original.strip() else {}
@@ -968,7 +999,7 @@ def install_default_statuslines(
     def activate(current: dict[str, Any]) -> None:
         current["statusLine"] = value
 
-    merge_json(settings_path, activate, dry_run=False)
+    merge_json(settings_path, activate, dry_run=False, state_root=home_dir())
     owners = prior.get("owners", []) if isinstance(prior, dict) else []
     if not isinstance(owners, list):
         owners = []
@@ -1029,7 +1060,7 @@ def remove_default_statuslines(
             if data:
                 atomic_write(settings_path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
             else:
-                settings_path.unlink()
+                remove_emptied_file(settings_path, home_dir(), "{}\n")
 
     files = prior.get("files", {})
     if isinstance(files, dict) and (owned_value_active or "statusLine" not in data):
@@ -1729,7 +1760,9 @@ def toml_value(value: Any) -> str:
     raise TypeError(type(value).__name__)
 
 
-def reconcile_codex_toml(path: Path, safety: str | None, mcp: dict[str, Any], *, dry_run: bool) -> None:
+def reconcile_codex_toml(
+    path: Path, safety: str | None, mcp: dict[str, Any], *, dry_run: bool, state_root: Path | None = None
+) -> None:
     old = path.read_text(encoding="utf-8") if path.exists() else ""
     managed_pattern = re.compile(rf"(?ms)^\s*{re.escape(TEXT_BEGIN)}\n.*?^{re.escape(TEXT_END)}\s*\n?")
     old_match = managed_pattern.search(old)
@@ -1776,6 +1809,8 @@ def reconcile_codex_toml(path: Path, safety: str | None, mcp: dict[str, Any], *,
         tomllib.loads(rendered)
     except Exception as exc:
         raise CliError(f"Refusing to write invalid generated TOML {path}: {exc}") from exc
+    if state_root is not None:
+        note_created(path, state_root, dry_run=False)
     if old:
         backup(path)
     atomic_write(path, rendered)
@@ -1891,7 +1926,7 @@ def install_adapters(target: Path, agents: list[str], *, dry_run: bool) -> None:
             if isinstance(current, str):
                 current = [current]
             context["fileName"] = list(dict.fromkeys([*current, "AGENTS.md"]))
-        merge_json(gemini_path, gemini, dry_run=dry_run)
+        merge_json(gemini_path, gemini, dry_run=dry_run, state_root=target)
         prior_owned = load_state(target).get("gemini_context_added", False)
         record_state(target, "gemini_context_added", prior_owned or "AGENTS.md" not in existing_names, dry_run=dry_run)
     if "aider" in agents:
@@ -2020,7 +2055,7 @@ def write_claude_permission_mode(path: Path, state_root: Path, mode: str, *, dry
             raise CliError("Refusing to replace non-object Claude permissions configuration")
         permissions["defaultMode"] = mode
 
-    merge_json(path, claude_settings, dry_run=dry_run)
+    merge_json(path, claude_settings, dry_run=dry_run, state_root=state_root)
     record_state(state_root, CLAUDE_MODE_RECORD, {"value": mode, "prior": prior, "created": created}, dry_run=dry_run)
 
 
@@ -2092,7 +2127,7 @@ def install_native_config(target: Path, agents: list[str], args: argparse.Namesp
         if args.safety == "container" and not detect_container():
             warn("WARNING: --safety container turns off the Codex sandbox, but no container was detected; "
                  "on this machine Codex would run commands without a sandbox")
-        reconcile_codex_toml(codex_home() / "config.toml", args.safety, {}, dry_run=args.dry_run)
+        reconcile_codex_toml(codex_home() / "config.toml", args.safety, {}, dry_run=args.dry_run, state_root=home_dir())
     if not args.assemble_only:
         install_default_statuslines(agents, target, args.global_mode, dry_run=args.dry_run)
     if not args.assemble_only and not args.dry_run:
@@ -2124,12 +2159,12 @@ def install_native_config(target: Path, agents: list[str], args: argparse.Namesp
                 servers = data.setdefault("mcpServers", {})
                 for name, value in selected_mcp.items():
                     servers.setdefault(name, value)
-            merge_json(mcp_path, claude_mcp, dry_run=args.dry_run)
+            merge_json(mcp_path, claude_mcp, dry_run=args.dry_run, state_root=target)
             prior_state = load_state(target).get("claude_mcp_added", [])
             added = sorted(set(prior_state) | {name for name in selected_mcp if name not in existing_servers})
             record_state(target, "claude_mcp_added", added, dry_run=args.dry_run)
         if "codex" in agents:
-            reconcile_codex_toml(target / ".codex" / "config.toml", None, selected_mcp, dry_run=args.dry_run)
+            reconcile_codex_toml(target / ".codex" / "config.toml", None, selected_mcp, dry_run=args.dry_run, state_root=target)
 
 
 def install_claude_plugin_packs(agents: list[str], requested: str | None, *, dry_run: bool) -> None:
@@ -2398,7 +2433,7 @@ def checkout_planned_release(remote: str, release: dict[str, str], destination: 
 def validate_installation_manifest(state: dict[str, Any]) -> dict[str, Any]:
     allowed_state = {
         "schema_version", "installation", "gemini_context_added", "native_statuslines",
-        "native_safety", "claude_mcp_added", "skills_installed", "update_policy", CLAUDE_MODE_RECORD,
+        "native_safety", "claude_mcp_added", "skills_installed", "update_policy", CLAUDE_MODE_RECORD, CREATED_RECORD,
     }
     unknown_state = sorted(set(state) - allowed_state)
     if unknown_state:
@@ -4233,7 +4268,8 @@ def install_hooks(target: Path, agents: list[str], args: argparse.Namespace) -> 
     if getattr(args, "without_memory_startup", False):
         for agent_id, path in startup_paths:
             if agent_id in agents:
-                remove_owned_hooks(path, dry_run=args.dry_run, hook_name="memory-startup")
+                remove_owned_hooks(path, dry_run=args.dry_run, hook_name="memory-startup",
+                                   state_root=home_dir() if args.global_mode else target)
     if not (args.with_handoff_hooks or args.with_ui_design_hook or args.with_hooks or args.with_memory_startup):
         return
     runtime = copy_runtime(home_dir() if args.global_mode else target, dry_run=args.dry_run)
@@ -4242,22 +4278,22 @@ def install_hooks(target: Path, agents: list[str], args: argparse.Namespace) -> 
             if agent_id in agents:
                 def startup_hook(data: dict[str, Any]) -> None:
                     append_unique_hook(data, "SessionStart", runtime_command(runtime, "hook", "memory-startup", "--memory-scope", "global" if args.global_mode else "project"), "^(startup|resume)$")
-                merge_json(path, startup_hook, dry_run=args.dry_run)
+                merge_json(path, startup_hook, dry_run=args.dry_run, state_root=home_dir() if args.global_mode else target)
     if args.with_handoff_hooks and "claude" in agents:
         def claude(data: dict[str, Any]) -> None:
             append_unique_hook(data, "UserPromptSubmit", runtime_command(runtime, "hook", "handoff-on-keyword"))
             append_unique_hook(data, "Stop", runtime_command(runtime, "hook", "context-budget-nudge"))
-        merge_json(home_dir() / ".claude" / "settings.json", claude, dry_run=args.dry_run)
+        merge_json(home_dir() / ".claude" / "settings.json", claude, dry_run=args.dry_run, state_root=home_dir())
     if args.with_handoff_hooks and "codex" in agents:
         def codex(data: dict[str, Any]) -> None:
             append_unique_hook(data, "UserPromptSubmit", runtime_command(runtime, "hook", "handoff-on-keyword"))
-        merge_json(codex_home() / "hooks.json", codex, dry_run=args.dry_run)
+        merge_json(codex_home() / "hooks.json", codex, dry_run=args.dry_run, state_root=home_dir())
     if args.with_ui_design_hook:
         for agent, path in (("claude", home_dir() / ".claude" / "settings.json"), ("codex", codex_home() / "hooks.json")):
             if agent in agents:
                 def ui(data: dict[str, Any]) -> None:
                     append_unique_hook(data, "PreToolUse", runtime_command(runtime, "hook", "ui-design-reminder"), "^(Edit|Write|apply_patch)$")
-                merge_json(path, ui, dry_run=args.dry_run)
+                merge_json(path, ui, dry_run=args.dry_run, state_root=home_dir())
     if args.with_hooks and not args.global_mode:
         install_git_hooks(target, runtime, dry_run=args.dry_run)
     elif args.with_hooks:
@@ -4366,7 +4402,7 @@ def instruction_paths(target: Path, agents: list[str], global_mode: bool) -> tup
     return canonical, generated
 
 
-def remove_owned_text_block(path: Path, *, dry_run: bool) -> None:
+def remove_owned_text_block(path: Path, *, dry_run: bool, state_root: Path | None = None) -> None:
     if not path.exists():
         return
     old = path.read_text(encoding="utf-8")
@@ -4382,10 +4418,12 @@ def remove_owned_text_block(path: Path, *, dry_run: bool) -> None:
     if rendered.strip():
         atomic_write(path, rendered)
     else:
-        path.unlink()
+        remove_emptied_file(path, state_root, "")
 
 
-def remove_owned_hooks(path: Path, *, dry_run: bool, hook_name: str | None = None) -> None:
+def remove_owned_hooks(
+    path: Path, *, dry_run: bool, hook_name: str | None = None, state_root: Path | None = None
+) -> None:
     if not path.exists():
         return
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -4417,7 +4455,7 @@ def remove_owned_hooks(path: Path, *, dry_run: bool, hook_name: str | None = Non
     if data:
         atomic_write(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
     else:
-        path.unlink()
+        remove_emptied_file(path, state_root, "{}\n")
 
 
 def remove_owned_skills(
@@ -4498,7 +4536,7 @@ def uninstall(args: argparse.Namespace, agents: list[str], target: Path) -> int:
                 if data:
                     atomic_write(gemini_path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
                 else:
-                    gemini_path.unlink()
+                    remove_emptied_file(gemini_path, target, "{}\n")
         for path in (target / ".continue/rules/agentsmith.md", target / ".goosehints", target / ".aider.conf.yml"):
             if path.exists():
                 if args.dry_run:
@@ -4509,7 +4547,7 @@ def uninstall(args: argparse.Namespace, agents: list[str], target: Path) -> int:
                     if text: atomic_write(path, text + "\n")
                     else: path.unlink()
         if "codex" in agents:
-            remove_owned_text_block(target / ".codex" / "config.toml", dry_run=args.dry_run)
+            remove_owned_text_block(target / ".codex" / "config.toml", dry_run=args.dry_run, state_root=target)
         if "claude" in agents:
             mcp_path = target / ".mcp.json"
             owned_names = ownership.get("claude_mcp_added", [])
@@ -4523,17 +4561,19 @@ def uninstall(args: argparse.Namespace, agents: list[str], target: Path) -> int:
                 if not args.dry_run:
                     backup(mcp_path)
                     if data: atomic_write(mcp_path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-                    else: mcp_path.unlink()
-        remove_owned_hooks(home_dir() / ".claude" / "settings.json", dry_run=args.dry_run)
-        remove_owned_hooks(codex_home() / "hooks.json", dry_run=args.dry_run)
+                    else: remove_emptied_file(mcp_path, target, "{}\n")
+        remove_owned_hooks(home_dir() / ".claude" / "settings.json", dry_run=args.dry_run, state_root=home_dir())
+        remove_owned_hooks(codex_home() / "hooks.json", dry_run=args.dry_run, state_root=home_dir())
         if "claude" in agents:
-            remove_owned_hooks(target / ".claude/settings.json", dry_run=args.dry_run, hook_name="memory-startup")
+            remove_owned_hooks(target / ".claude/settings.json", dry_run=args.dry_run, hook_name="memory-startup",
+                               state_root=target)
             remove_claude_permission_mode(target / ".claude" / "settings.json", target, dry_run=args.dry_run)
         if "codex" in agents:
-            remove_owned_hooks(target / ".codex/hooks.json", dry_run=args.dry_run, hook_name="memory-startup")
+            remove_owned_hooks(target / ".codex/hooks.json", dry_run=args.dry_run, hook_name="memory-startup",
+                               state_root=target)
     else:
         if "codex" in agents:
-            remove_owned_text_block(codex_home() / "config.toml", dry_run=args.dry_run)
+            remove_owned_text_block(codex_home() / "config.toml", dry_run=args.dry_run, state_root=home_dir())
         if "claude" in agents:
             remove_claude_permission_mode(home_dir() / ".claude" / "settings.json", home_dir(), dry_run=args.dry_run)
     if ownership.get("skills_installed"):
@@ -4542,9 +4582,11 @@ def uninstall(args: argparse.Namespace, agents: list[str], target: Path) -> int:
         )
     if args.global_mode:
         if "claude" in agents:
-            remove_owned_hooks(home_dir() / ".claude/settings.json", dry_run=args.dry_run, hook_name="memory-startup")
+            remove_owned_hooks(home_dir() / ".claude/settings.json", dry_run=args.dry_run, hook_name="memory-startup",
+                               state_root=home_dir())
         if "codex" in agents:
-            remove_owned_hooks(codex_home() / "hooks.json", dry_run=args.dry_run, hook_name="memory-startup")
+            remove_owned_hooks(codex_home() / "hooks.json", dry_run=args.dry_run, hook_name="memory-startup",
+                               state_root=home_dir())
     manifest_root = home_dir() if args.global_mode else target
     prior = load_state(manifest_root).get("installation", {})
     if isinstance(prior, dict) and "memory_startup" in prior.get("capabilities", {}):

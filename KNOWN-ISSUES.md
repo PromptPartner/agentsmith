@@ -852,3 +852,11 @@ global selections needs its own design because update replays the record.
   the `chmod` that makes the launcher and the Git hook executable still act by path after the
   check. The preflight and the path guard still refuse anything that is already a link when they
   look.
+- [x] 2026-10-26 — Same review: uninstall deleted a user-created `~/.claude/settings.json` holding
+  only `{}` when it removed the last AgentSmith hook or status line from it (after
+  `install --global --agent claude --with-memory-startup`, or after a project install that added the
+  status line). The #50a record covered only the default mode. Install now records which
+  configuration files it created (`created_files` in the state beside them: Claude and Codex
+  settings and hooks, `.mcp.json`, Gemini settings, Codex `config.toml`); uninstall deletes an
+  emptied file only when that record names it and otherwise leaves `{}`. State from earlier
+  releases has no record and keeps the old behaviour. Two new tests failed before and pass after.

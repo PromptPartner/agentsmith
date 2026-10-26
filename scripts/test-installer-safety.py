@@ -99,6 +99,33 @@ class OwnershipTests(InstallerFixture):
         self.assertEqual(self.default_mode(), "bypassPermissions")
         self.assertIn("changed since install", result.stderr)
 
+    def test_uninstall_keeps_an_empty_settings_file_the_user_created(self) -> None:
+        # Review reproducers: the last removed hook or status line deleted the user's own "{}".
+        cases = {
+            "global memory hook": (("install", "--global", "--agent", "claude", "--with-memory-startup"),
+                                   ("install", "--global", "--agent", "claude", "--uninstall")),
+            "project status line": (("install", "--agent", "claude", "--profile", "general-admin", "--target", "{project}"),
+                                    ("install", "--agent", "claude", "--uninstall", "--target", "{project}")),
+        }
+        for label, (install, uninstall) in cases.items():
+            with self.subTest(case=label):
+                project = self.root / f"project {label}"
+                project.mkdir()
+                self.write_settings({})
+                for arguments in (install, uninstall):
+                    self.assert_ok(self.run_core(*(value.format(project=project) for value in arguments)))
+                self.assertTrue(self.claude_settings.is_file(), "a user-created settings file was deleted")
+                self.assertEqual(json.loads(self.claude_settings.read_text(encoding="utf-8")), {})
+                self.claude_settings.unlink()
+                for state in (self.home / ".agentsmith" / "state.json",):
+                    state.unlink(missing_ok=True)
+
+    def test_uninstall_removes_a_settings_file_agentsmith_created(self) -> None:
+        self.assert_ok(self.run_core("install", "--global", "--agent", "claude", "--with-memory-startup"))
+        self.assertTrue(self.claude_settings.is_file())
+        self.assert_ok(self.run_core("install", "--global", "--agent", "claude", "--uninstall"))
+        self.assertFalse(self.claude_settings.exists())
+
     # A project install must never change the user's settings for every other project.
     def test_project_install_writes_claude_mode_to_project_settings_only(self) -> None:
         original = self.write_settings({"theme": "dark"})
