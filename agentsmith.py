@@ -570,7 +570,126 @@ def detect_profile(target: Path) -> str:
     return "general-admin"
 
 
-def build_instructions(args: argparse.Namespace, profiles: list[str], include_core: bool, recovery: dict[str, str]) -> str:
+PROFILE_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+PROJECT_PROFILE_DIRECTORY = (".agentsmith", "profiles")
+PROJECT_PROFILE_MAX_BYTES = 256 * 1024
+
+
+def project_profile_relative(name: str) -> str:
+    return "/".join((*PROJECT_PROFILE_DIRECTORY, f"{name}.md"))
+
+
+def project_profile_paths(installation: dict[str, Any]) -> set[str]:
+    """Target-relative paths of the project profiles an installation records."""
+    return {
+        project_profile_relative(profile.removeprefix("project:"))
+        for profile in installation.get("profiles", [])
+        if isinstance(profile, str) and profile.startswith("project:")
+    }
+
+
+def parse_profile_selector(selector: str) -> tuple[str | None, str]:
+    """Split a --profile value into (kind, name); kind is builtin, project, or None for a bare name."""
+    kind, separator, name = selector.partition(":")
+    if not separator:
+        kind, name = None, selector
+    elif kind not in {"builtin", "project"}:
+        raise CliError(f"Profile selector {selector!r} is not valid; use NAME, builtin:NAME, or project:NAME")
+    if not PROFILE_NAME.fullmatch(name):
+        raise CliError(
+            f"Profile name {name!r} in {selector!r} is not a plain identifier "
+            "(lower-case letters, digits, '-' and '_', starting with a letter or digit)"
+        )
+    return kind, name
+
+
+def read_project_profile(target: Path, name: str) -> str:
+    """Read <target>/.agentsmith/profiles/<name>.md without following any link; regular files only."""
+    relative = project_profile_relative(name)
+    display = f"project:{name} ({relative})"
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    directory_flag = getattr(os, "O_DIRECTORY", 0)
+    descriptor = -1
+    directories: list[int] = []
+    try:
+        if no_follow and directory_flag and os.open in os.supports_dir_fd:
+            flags = os.O_RDONLY | directory_flag | no_follow
+            directories.append(os.open(target, flags))
+            for part in PROJECT_PROFILE_DIRECTORY:
+                directories.append(os.open(part, flags, dir_fd=directories[-1]))
+            descriptor = os.open(f"{name}.md", os.O_RDONLY | no_follow, dir_fd=directories[-1])
+        else:
+            # Windows has no directory descriptors: refuse any link or junction on the way, then
+            # pin the opened file by identity so a swap after the check is detected.
+            current = target
+            for part in (*PROJECT_PROFILE_DIRECTORY, f"{name}.md"):
+                current = current / part
+                details = os.lstat(current)
+                if stat.S_ISLNK(details.st_mode) or getattr(details, "st_file_attributes", 0) & 0x400:
+                    raise CliError(f"Project profile {display} refused: {current} is a link")
+            descriptor = os.open(current, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+            opened = os.fstat(descriptor)
+            if (opened.st_dev, opened.st_ino) != (details.st_dev, details.st_ino):
+                raise CliError(f"Project profile {display} changed while it was opened")
+        details = os.fstat(descriptor)
+        if not stat.S_ISREG(details.st_mode):
+            raise CliError(f"Project profile {display} is not a regular file")
+        if details.st_size > PROJECT_PROFILE_MAX_BYTES:
+            raise CliError(f"Project profile {display} is larger than {PROJECT_PROFILE_MAX_BYTES} bytes")
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = -1
+            payload = handle.read(PROJECT_PROFILE_MAX_BYTES + 1)
+    except FileNotFoundError as exc:
+        raise CliError(f"No project profile {display}: create {target / relative} or pick a built-in profile") from exc
+    except OSError as exc:
+        # ELOOP / ENOTDIR come from a link where a folder or file was expected.
+        raise CliError(f"Project profile {display} refused: {exc.strerror or exc} (links and non-regular files are not read)") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        for opened_directory in reversed(directories):
+            os.close(opened_directory)
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise CliError(f"Project profile {display} is not UTF-8 text") from exc
+    if any(marker in text for marker in (BEGIN, END, LEGACY_BEGIN, OLDER_BEGIN, OLDER_END, "<!-- BEGIN AGENTSMITH", "<!-- END AGENTSMITH")):
+        raise CliError(f"Project profile {display} contains an AgentSmith managed-block marker; remove it")
+    return text
+
+
+def resolve_profiles(selectors: list[str], target: Path | None) -> list[tuple[str, str]]:
+    """Resolve --profile selectors to (recorded selector, source text).
+
+    A bare name prefers the built-in profile, so existing installs never change meaning; it falls
+    back to the project profile only when no built-in has that name. Built-ins are recorded by bare
+    name and project profiles as project:NAME, so a later built-in cannot silently take over."""
+    resolved: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for selector in selectors:
+        kind, name = parse_profile_selector(selector)
+        builtin = ROOT / "profiles" / f"{name}.md"
+        if kind == "project" or (kind is None and not builtin.is_file() and target is not None
+                                 and os.path.lexists(target.joinpath(*PROJECT_PROFILE_DIRECTORY, f"{name}.md"))):
+            if target is None:
+                raise CliError(f"Profile {selector!r} is project-owned; --global installs accept built-in profiles only")
+            recorded, text = f"project:{name}", read_project_profile(target, name)
+        else:
+            if not builtin.is_file():
+                available = ", ".join(path.stem for path in sorted((ROOT / "profiles").glob("*.md")))
+                raise CliError(f"No such profile '{selector}'. Available: {available}; or add .agentsmith/profiles/{name}.md and use project:{name}")
+            recorded, text = name, builtin.read_text(encoding="utf-8")
+        if recorded in seen:
+            raise CliError(f"Profile {recorded} is selected more than once (from {selector!r})")
+        seen.add(recorded)
+        resolved.append((recorded, text))
+    return resolved
+
+
+def build_instructions(
+    args: argparse.Namespace, profiles: list[str], include_core: bool, recovery: dict[str, str],
+    target: Path | None = None,
+) -> str:
     operator_name = args.operator_name or recovery.get("operator_name") or "the project lead"
     operator_role = args.operator_role or recovery.get("operator_role") or "owner / decision-maker"
     operator_bio = args.operator_bio or recovery.get("operator_bio") or (
@@ -579,18 +698,16 @@ def build_instructions(args: argparse.Namespace, profiles: list[str], include_co
     )
     tracker = args.tracker or recovery.get("tracker") or "your project's tracker (or a KNOWN-ISSUES.md at the repo root)"
     tracker_writes = args.tracker_writes or recovery.get("tracker_writes") or "ask"
+    resolved = resolve_profiles(profiles, target)
+    profiles = [selector for selector, _ in resolved]
     parts = [BEGIN, f"<!-- Generated. Profiles: {','.join(profiles) or 'none'}. core={str(include_core).lower()}. Edit core/ or profiles/, then re-run setup. -->", ""]
     if include_core:
         for source in sorted((ROOT / "core").glob("*.md")):
             parts.extend((source.read_text(encoding="utf-8").rstrip(), "", ""))
     if profiles:
         parts.extend(("---", "", f"# Work-Type Profile(s): {','.join(profiles)}", ""))
-        for profile in profiles:
-            source = ROOT / "profiles" / f"{profile}.md"
-            if not source.exists():
-                available = ", ".join(p.stem for p in sorted((ROOT / "profiles").glob("*.md")))
-                raise CliError(f"No such profile '{profile}'. Available: {available}")
-            parts.extend((source.read_text(encoding="utf-8").rstrip(), "", ""))
+        for _, text in resolved:
+            parts.extend((text.rstrip(), "", ""))
     parts.append(END)
     replacements = {
         "OPERATOR_NAME": operator_name,
@@ -2231,6 +2348,10 @@ def validate_installation_manifest(state: dict[str, Any]) -> dict[str, Any]:
         or len(profiles) != len(set(profiles))
     ):
         raise CliError("Installation manifest profiles field must contain unique profile names")
+    for profile in profiles:
+        kind, name = parse_profile_selector(profile)
+        if kind == "builtin" or (kind == "project" and installation["scope"] != "project"):
+            raise CliError(f"Installation manifest profile {profile!r} is not a recorded selector for this scope")
     for name in ("source", "safety", "operator", "tracker", "capabilities"):
         if not isinstance(installation[name], dict):
             raise CliError(f"Installation manifest {name} field must be an object")
@@ -2517,6 +2638,8 @@ def installation_fingerprints(
         for relative in (
             "AGENTS.md", "CLAUDE.md", *RUNTIME_FILES, ".agentsmith/autonomous-run.py", ".agentsmith/state.json",
             ".harness/templates", ".harness/verify.conf",
+            # A project profile is an input to the staged install, so the plan authenticates it.
+            *sorted(project_profile_paths(installation)),
         ):
             add("target", relative)
         adapters = {
@@ -3193,6 +3316,10 @@ def allowed_update_path(root_name: str, relative: str, installation: dict[str, A
         if not installation or "memory_startup" in installation.get("capabilities", {}):
             if not installation or "codex" in installation["agents"]:
                 exact.add(".codex/hooks.json")
+        if installation:
+            exact |= project_profile_paths(installation)
+        elif re.fullmatch(r"\.agentsmith/profiles/[a-z0-9][a-z0-9_-]{0,63}\.md", relative):
+            return True
         prefixes = (".harness/templates/", ".agents/skills/", ".claude/skills/")
         return relative in exact or relative.startswith(prefixes)
     if root_name == "home":
@@ -3310,6 +3437,7 @@ def stage_planned_update(
             )
     refresh_translated_statusline_hashes(plan, translated_files)
     proposed: list[tuple[str, str, bytes | None, int | None]] = []
+    owned_by_project = project_profile_paths(plan["installation"]) if plan["scope"] == "project" else set()
     for root_name, files in translated_files.items():
         for relative, (content, mode) in files.items():
             actual = safe_update_path(Path(plan["roots"][root_name]), relative)
@@ -3317,6 +3445,8 @@ def stage_planned_update(
                 raise CliError(f"Update refused to replace non-file path {actual}")
             current = actual.read_bytes() if actual.is_file() else None
             current_mode = actual.stat().st_mode & 0o777 if actual.is_file() else None
+            if root_name == "target" and relative in owned_by_project and (current, current_mode) != (content, mode):
+                raise CliError(f"Release attempted to change the project-owned profile {relative}")
             if current != content or current_mode != mode:
                 proposed.append((root_name, relative, content, mode))
     staged_paths = {
@@ -3831,12 +3961,16 @@ def reassemble_managed_targets(args: argparse.Namespace) -> None:
             warn(f"{path}: managed block has no generator metadata; rerun install with an explicit profile")
             continue
         profiles = [] if metadata.group(1) == "none" else metadata.group(1).split(",")
-        missing = [profile for profile in profiles if not (ROOT / "profiles" / f"{profile}.md").exists()]
-        if missing:
-            warn(f"{path}: updated harness no longer contains profile(s) {', '.join(missing)}; skipped")
+        profile_target = target if path in project_candidates else None
+        try:
+            resolve_profiles(profiles, profile_target)
+        except CliError as exc:
+            warn(f"{path}: profile(s) {', '.join(profiles)} cannot be assembled ({exc}); skipped")
             continue
         identity_sources = [target / "AGENTS.md", path] if path in project_candidates else [path]
-        block = build_instructions(args, profiles, metadata.group(2) == "true", recover_identity(identity_sources))
+        block = build_instructions(
+            args, profiles, metadata.group(2) == "true", recover_identity(identity_sources), profile_target
+        )
         if path in project_candidates:
             block = project_instruction_block(path, target, block)
         reconcile_markdown(path, block, force=False, dry_run=False)
@@ -4077,6 +4211,8 @@ def scaffold_project(target: Path, profiles: list[str], agents: list[str], args:
     if not conf.exists():
         chunks = [f"# Generated for profile(s): {','.join(profiles)}", "# Commands run with the native OS shell.", ""]
         for profile in profiles:
+            if profile.startswith("project:"):
+                continue  # a project profile states its own gates; no bundled preset applies
             preset = ROOT / "config" / "verify-presets" / f"{profile}.conf"
             if preset.exists():
                 chunks.append(preset.read_text(encoding="utf-8").rstrip())
@@ -4398,6 +4534,10 @@ def cmd_install(args: argparse.Namespace) -> int:
             return uninstall(args, agents, target)
     if not profiles and not args.global_mode:
         raise CliError("Pick a profile with --profile <name[,name]> or use --global")
+    # Resolve and record each selector once, before any write: built-ins by bare name, project
+    # profiles as project:NAME. A global install has no project, so it accepts built-ins only.
+    profile_target = None if args.global_mode else target
+    profiles = [selector for selector, _ in resolve_profiles(profiles, profile_target)]
     if not args.global_mode and "claude" in agents and not args.assemble_only and args.safety == "trusted":
         raise CliError(
             "--safety trusted cannot apply to Claude in a project install: Claude Code ignores "
@@ -4475,7 +4615,7 @@ def cmd_install(args: argparse.Namespace) -> int:
             prior_managed_safety["codex"] = "container"
     args.prior_managed_safety = prior_managed_safety
     recovery = recover_identity([*canonical, *generated])
-    block = build_instructions(args, profiles, not args.profile_only, recovery)
+    block = build_instructions(args, profiles, not args.profile_only, recovery, profile_target)
     if args.export_instructions:
         print(block)
         return 0
@@ -5364,9 +5504,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             )
             for source in instruction_state["sources"]:
                 fingerprint = source["sha256"][:12] if source["sha256"] else "-"
+                profiles = ",".join(source["profiles"]) or "-"
                 print(
                     f"    {source['scope']:<7} {source['managed_status']:<9} core={source['generated_core']} "
-                    f"tokens={source['tokens']} sha256={fingerprint} path={source['path']}"
+                    f"profiles={profiles} tokens={source['tokens']} sha256={fingerprint} path={source['path']}"
                 )
             for warning in capabilities["warnings"]:
                 suffix = f" Fix: {warning['recommendation']}" if warning["recommendation"] else ""
@@ -5402,6 +5543,8 @@ def profile_catalog() -> list[dict[str, Any]]:
 
 
 def profile_purpose(name: str) -> str:
+    if name.startswith("project:"):
+        return f"Project-owned profile in {project_profile_relative(name.removeprefix('project:'))}."
     match = next((item for item in profile_catalog() if item["name"] == name), None)
     return match["purpose"] if match else "Profile source is unavailable; inspect the installation metadata."
 
@@ -5717,8 +5860,35 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def project_profile_catalog(target: Path) -> list[dict[str, Any]]:
+    """The project's own profiles, named by selector. Links and odd names are skipped, never read."""
+    directory = target.joinpath(*PROJECT_PROFILE_DIRECTORY)
+    if contained_link_problem(target, directory) or not directory.is_dir() or directory.is_symlink():
+        return []
+    result = []
+    for path in sorted(directory.glob("*.md")):
+        if path.is_symlink() or not path.is_file() or not PROFILE_NAME.fullmatch(path.stem):
+            continue
+        result.append({
+            "name": f"project:{path.stem}",
+            "kind": "project",
+            "purpose": profile_purpose(f"project:{path.stem}"),
+            "examples": [],
+            "verification_focus": "the gates written in the profile",
+            "not_for": "other projects; it lives in this repository",
+            "work_types": ["project-owned"],
+            "verification_preset": "profile-defined manual gates",
+        })
+    return result
+
+
 def cmd_profiles_list(args: argparse.Namespace) -> int:
     profiles = profile_catalog()
+    if getattr(args, "target", None):
+        profiles = sorted(
+            [*profiles, *project_profile_catalog(Path(args.target).expanduser().resolve())],
+            key=lambda profile: profile["name"],
+        )
     if args.json:
         payload = {
             "schema_version": 1,
@@ -5731,7 +5901,8 @@ def cmd_profiles_list(args: argparse.Namespace) -> int:
         return 0
     for profile in profiles:
         print(f"{profile['name']} ({profile['kind']}): {profile['purpose']}")
-        print(f"  Examples: {', '.join(profile['examples'])}")
+        if profile["examples"]:
+            print(f"  Examples: {', '.join(profile['examples'])}")
         print(f"  Verification focus: {profile['verification_focus']}")
         print(f"  Not for: {profile['not_for']}")
     return 0
@@ -5879,10 +6050,7 @@ def cmd_profiles_switch(args: argparse.Namespace) -> int:
         raise CliError("Profile switch requires --profile NAME[,NAME...]")
     if len(profiles) != len(set(profiles)):
         raise CliError("Profile switch profile names must be unique")
-    available = {item["name"] for item in profile_catalog()}
-    missing = [name for name in profiles if name not in available]
-    if missing:
-        raise CliError(f"Unknown profile(s): {', '.join(missing)}. Run 'agentsmith profiles list'.")
+    profiles = [selector for selector, _ in resolve_profiles(profiles, target)]
     agents = installation.get("agents", [])
     if not isinstance(agents, list) or not agents or any(agent not in AGENT_IDS for agent in agents):
         raise CliError("Project installation manifest has no valid managed agent selection")
@@ -5907,6 +6075,7 @@ def cmd_profiles_switch(args: argparse.Namespace) -> int:
         profiles,
         bool(installation.get("include_core", True)),
         recovery,
+        target,
     )
     line_count = len(block.splitlines())
     token_estimate = len(block) // 4
@@ -8229,7 +8398,11 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
 def add_common_install_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--agent", action="append", help="agent ID/group; repeatable or comma-separated")
     parser.add_argument("--platform", choices=("claude", "codex", "both"), help="deprecated alias for --agent")
-    parser.add_argument("--profile", action="append")
+    parser.add_argument(
+        "--profile", action="append",
+        help="NAME, builtin:NAME, or project:NAME (a project's own .agentsmith/profiles/NAME.md); "
+             "a bare NAME prefers the built-in profile",
+    )
     parser.add_argument("--target")
     parser.add_argument("--global", dest="global_mode", action="store_true")
     parser.add_argument("--profile-only", action="store_true")
@@ -8332,6 +8505,7 @@ def parser() -> argparse.ArgumentParser:
     profile_sub = profiles.add_subparsers(dest="profiles_command", required=True)
     profile_list = profile_sub.add_parser("list", help="list available work profiles")
     profile_list.add_argument("--json", action="store_true")
+    profile_list.add_argument("--target", help="also list this project's own profiles (.agentsmith/profiles)")
     profile_recommend = profile_sub.add_parser("recommend", help="recommend profiles from repository evidence")
     profile_recommend.add_argument("--target")
     profile_recommend.add_argument("--json", action="store_true")

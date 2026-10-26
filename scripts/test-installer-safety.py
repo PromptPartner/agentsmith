@@ -297,5 +297,127 @@ class RulebookTests(InstallerFixture):
         self.assertIn(self.CORE_HEADING, (self.home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8"))
 
 
+class ProjectProfileTests(InstallerFixture):
+    """Project-owned profiles: .agentsmith/profiles/<name>.md, chosen with project:<name>."""
+
+    PROFILE = "# Profile: house style\n\nEvery change names the ticket it closes. HOUSE_RULE_SENTINEL\n"
+
+    def project_with_profile(self, name: str = "house", text: str | None = None) -> Path:
+        project = self.root / "project"
+        profile = project / ".agentsmith" / "profiles" / f"{name}.md"
+        profile.parent.mkdir(parents=True, exist_ok=True)
+        profile.write_text(self.PROFILE if text is None else text, encoding="utf-8")
+        return project
+
+    def install(self, project: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+        return self.run_core("install", "--agent", "codex", "--assemble-only", "--target", str(project), *arguments)
+
+    def test_project_selector_assembles_the_project_profile(self) -> None:
+        project = self.project_with_profile()
+        self.assert_ok(self.install(project, "--profile", "software-dev,project:house"))
+        agents = (project / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn("HOUSE_RULE_SENTINEL", agents)
+        self.assertIn("Generated. Profiles: software-dev,project:house. core=true.", agents)
+        state = json.loads((project / ".agentsmith" / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["installation"]["profiles"], ["software-dev", "project:house"])
+
+    def test_bare_name_prefers_the_builtin_profile(self) -> None:
+        project = self.project_with_profile("software-dev", "# Shadow\n\nPROJECT_SHADOW_SENTINEL\n")
+        self.assert_ok(self.install(project, "--profile", "software-dev"))
+        agents = (project / "AGENTS.md").read_text(encoding="utf-8")
+        self.assertNotIn("PROJECT_SHADOW_SENTINEL", agents)
+        self.assertIn("Generated. Profiles: software-dev. core=true.", agents)
+        self.assert_ok(self.install(project, "--profile", "project:software-dev"))
+        self.assertIn("PROJECT_SHADOW_SENTINEL", (project / "AGENTS.md").read_text(encoding="utf-8"))
+
+    def test_bare_name_without_builtin_resolves_to_the_project_profile(self) -> None:
+        project = self.project_with_profile()
+        self.assert_ok(self.install(project, "--profile", "house"))
+        state = json.loads((project / ".agentsmith" / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["installation"]["profiles"], ["project:house"])
+
+    def assert_refused(self, result: subprocess.CompletedProcess[str], project: Path, needle: str) -> None:
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn(needle.casefold(), (result.stdout + result.stderr).casefold())
+        self.assertFalse((project / "AGENTS.md").exists(), "instructions were written before the refusal")
+
+    def test_global_install_refuses_project_profiles(self) -> None:
+        result = self.run_core("install", "--global", "--agent", "codex", "--assemble-only", "--profile", "project:house")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("--global", result.stdout + result.stderr)
+        self.assertFalse((self.codex_home / "AGENTS.md").exists())
+
+    def test_names_that_are_not_plain_identifiers_are_refused(self) -> None:
+        project = self.project_with_profile()
+        for selector in ("project:../house", "project:house.md", "project:", "project:Ho use", "project:a/b",
+                         "builtin:../x", "other:house", "project:.hidden"):
+            with self.subTest(selector=selector):
+                self.assert_refused(self.install(project, "--profile", selector), project, "profile")
+
+    def test_duplicate_selectors_are_refused(self) -> None:
+        project = self.project_with_profile()
+        for selectors in ("project:house,house", "software-dev,builtin:software-dev", "project:house,project:house"):
+            with self.subTest(selectors=selectors):
+                self.assert_refused(self.install(project, "--profile", selectors), project, "more than once")
+
+    def test_missing_project_profile_is_refused(self) -> None:
+        project = self.root / "project"
+        project.mkdir()
+        self.assert_refused(self.install(project, "--profile", "project:absent"), project, "project:absent")
+
+    def test_linked_or_irregular_profiles_are_refused(self) -> None:
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "house.md").write_text(self.PROFILE, encoding="utf-8")
+        cases = {
+            "file link": lambda project: (project / ".agentsmith" / "profiles" / "house.md").symlink_to(outside / "house.md"),
+            "folder link": lambda project: (project / ".agentsmith" / "profiles").symlink_to(outside, target_is_directory=True),
+            "state folder link": lambda project: (project / ".agentsmith").symlink_to(outside, target_is_directory=True),
+            "directory": lambda project: (project / ".agentsmith" / "profiles" / "house.md").mkdir(),
+        }
+        for label, make in cases.items():
+            with self.subTest(case=label):
+                project = self.root / f"project {label}"
+                profiles = project / ".agentsmith" / "profiles"
+                if label == "state folder link":
+                    project.mkdir()
+                elif label == "folder link":
+                    profiles.parent.mkdir(parents=True)
+                else:
+                    profiles.mkdir(parents=True)
+                try:
+                    make(project)
+                except (OSError, NotImplementedError) as exc:
+                    self.skipTest(f"symbolic links unavailable: {exc}")
+                result = self.install(project, "--profile", "project:house")
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertFalse((project / "AGENTS.md").exists())
+
+    def test_profile_switch_accepts_selectors(self) -> None:
+        project = self.project_with_profile()
+        self.assert_ok(self.install(project, "--profile", "builtin:general-admin"))
+        self.assert_ok(self.run_core("profiles", "switch", "--target", str(project), "--profile", "project:house"))
+        self.assertIn("HOUSE_RULE_SENTINEL", (project / "AGENTS.md").read_text(encoding="utf-8"))
+        state = json.loads((project / ".agentsmith" / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["installation"]["profiles"], ["project:house"])
+
+    def test_profile_with_managed_markers_is_refused(self) -> None:
+        project = self.project_with_profile(text="# Bad\n\n<!-- END AGENTSMITH -->\n")
+        self.assert_refused(self.install(project, "--profile", "project:house"), project, "marker")
+
+    def test_status_and_doctor_show_the_selector(self) -> None:
+        project = self.project_with_profile()
+        self.assert_ok(self.install(project, "--profile", "project:house"))
+        status = self.run_core("status", "--target", str(project), "--json")
+        self.assert_ok(status)
+        self.assertEqual([item["name"] for item in json.loads(status.stdout)["active_profiles"]], ["project:house"])
+        doctor = self.run_core("doctor", "--agent", "codex", "--target", str(project))
+        self.assert_ok(doctor)
+        self.assertIn("project:house", doctor.stdout)
+        listed = self.run_core("profiles", "list", "--target", str(project), "--json")
+        self.assert_ok(listed)
+        self.assertIn("project:house", [item["name"] for item in json.loads(listed.stdout)["profiles"]])
+
+
 if __name__ == "__main__":
     unittest.main()

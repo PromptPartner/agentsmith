@@ -119,7 +119,7 @@ agentsmith profiles list
 agentsmith profiles recommend --target /path/to/project
 ```
 
-One primary profile is the norm. `autonomous-loops` is a modifier for unattended work. The [profile guide](docs/07-how-to-pick-a-profile.md) describes every profile, examples, close calls, stacking, and safe switching.
+One primary profile is the norm. `autonomous-loops` is a modifier for unattended work. A project can also define its own profile in `.agentsmith/profiles/NAME.md` and select it with `--profile project:NAME`. The [profile guide](docs/07-how-to-pick-a-profile.md) describes every profile, examples, close calls, stacking, and safe switching.
 
 For an existing installation, preview a profile change before applying it:
 
