@@ -72,6 +72,7 @@ make_fake() {
     '  git add src/change.txt forbidden.txt 2>/dev/null || git add src/change.txt' \
     '  if [ "$mode" = amend-history ]; then git commit --amend --no-edit >/dev/null' \
     '  else git commit -m "test(run): fake maker checkpoint" >/dev/null; fi' \
+    '  if [ "$mode" = commit-then-wait ]; then sleep 20; fi' \
     '  if [ "$mode" = extra-ref ]; then git branch escaped-ref; fi' \
     '  if [ "$mode" = config-mutation ]; then git config --local agentsmith.escape true; fi' \
     '  if [ "$mode" = hook-mutation ]; then mkdir -p "$(git rev-parse --git-common-dir)/hooks"; printf bad > "$(git rev-parse --git-common-dir)/hooks/escaped"; fi' \
@@ -1023,6 +1024,24 @@ printf 'not json' > "$graphs/g/LOCK"
 assert 'guard exits 2 when a graph lock cannot be read' test "$(guard)" = 2
 rm -r "$graphs/g"
 assert 'guard exits 0 again after cleanup' test "$(guard)" = 0
+
+echo 'autonomous-run — stop after the maker committed but before its receipt'
+repo="$(new_repo late-stop)"; make_fake "$repo/../fake"; manifest "$repo" late-stop
+(cd "$repo" && invoke "$repo" commit-then-wait start .harness/runs/late-stop.json >../out 2>../err) & runner=$!
+base_head="$(git -C "$repo" rev-parse HEAD)"
+for _ in {1..100}; do
+  [ -d "$repo-late-stop" ] && [ "$(git -C "$repo-late-stop" rev-parse HEAD 2>/dev/null)" != "$base_head" ] && break
+  sleep 0.1
+done
+assert 'fixture maker committed before the stop' test "$(git -C "$repo-late-stop" rev-parse HEAD)" != "$base_head"
+(cd "$repo" && python3 "$repo/../fake/controller.py" stop late-stop >/dev/null 2>&1)
+wait "$runner" 2>/dev/null || true
+late_head="$(git -C "$repo-late-stop" rev-parse HEAD)"
+if (cd "$repo" && invoke "$repo" accept resume late-stop >../late-out 2>../late-err); then
+  bad 'resume replayed a maker whose commit has no receipt'
+else ok 'resume stops for operator review when a stopped maker left a commit without a receipt'; fi
+assert 'late-stop refusal says why' grep -q 'unfinished maker advanced HEAD without a validated receipt' "$repo/../late-err"
+assert 'late-stop refusal keeps the commit for review' test "$(git -C "$repo-late-stop" rev-parse HEAD)" = "$late_head"
 
 echo 'autonomous-run — repository kill switch'
 repo="$(new_repo paused)"; make_fake "$repo/../fake"; manifest "$repo" paused; manifest "$repo" paused-next

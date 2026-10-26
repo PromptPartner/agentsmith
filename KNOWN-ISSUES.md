@@ -170,6 +170,12 @@ been authorized, so the entries are kept here.
   worktree with nothing new to commit. A local graph stop/resume test exposed this under heavy
   concurrent verification. The fixture now holds the maker before commit to test a deterministic
   mid-maker stop; the late-stop reconciliation path still needs a bounded controller fix.
+  Re-checked 2026-10-26: resume no longer replays the maker. It refuses with "unfinished maker
+  advanced HEAD without a validated receipt; operator review required" and keeps the commit;
+  `test-autonomous-run.sh` "stop after the maker committed but before its receipt" pins this.
+  Automatic recovery was not added: the stop ended the maker before it wrote a receipt, so the
+  controller cannot tell finished work from half-done work, and accepting or discarding the
+  commit on its own would not be safe. Open until an operator-facing recovery path is designed.
 ## Resolved during W2-06
 
 - [x] 2026-09-21 — Windows AppContainer ACL grants initially left inherited ACE drift after
