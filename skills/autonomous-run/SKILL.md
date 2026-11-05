@@ -73,7 +73,10 @@ anything, `start` runs one trivial sandboxed command per role and one through th
 sandbox; if the host cannot run them, it refuses and names the role and reason.
 
 Existing baseline tests, the accepted spec, runtime launchers, and verification policy are protected
-even with broad maker scope, and moving or renaming one of them counts as changing it. A moved
+even with broad maker scope, and moving or renaming one of them counts as changing it. So are agent
+instructions at any depth (`AGENTS.md`, `AGENTS.override.md`, `CLAUDE.md`, `CLAUDE.local.md`,
+`GEMINI.md`, and `.claude/`, `.codex/`, `.agents/`, `.cursor/` folders), because the checker loads
+them from the candidate; if a task needs one changed, the operator commits that change first. A moved
 file counts as two changed paths, the old one and the new one; both must be inside the allowed
 scope. Add custom acceptance inputs via `verify.protected_paths`; changing
 protected inputs requires separate operator review outside this run. New regression tests remain

@@ -3,6 +3,15 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [x] 2026-11-05 — An autonomous-run maker could add or edit agent instruction files (`AGENTS.md`,
+  `CLAUDE.md`, `.claude/` settings, skills and hooks, `.codex/`, `.agents/`, `GEMINI.md`,
+  `.cursor/`) at any depth, and the checker's client then loaded them from the candidate
+  worktree. That is instruction injection into the judge. With the v0.5.0 controller, a fake maker
+  that wrote `src/CLAUDE.md` inside its `src/**` scope reached an accepted run. These paths are now
+  controller policy at any depth and ignoring case; scope cannot allow them.
+  `test_agent_instruction_files_are_protected_at_any_depth` (22 paths) and the
+  `nested-instructions` fake-client case in `scripts/test-autonomous-run.sh` failed before the
+  change and pass after.
 - [ ] 2026-10-20 — Native Windows `test_deleted_git_lock_does_not_fail_acl_cleanup` failed once
   with `verifier did not start` in verify run `39429936983`, attempt 1, job
   `compatibility (windows-latest)`, on master `d56a0d5`. Attempt 2 on the same commit passed, and

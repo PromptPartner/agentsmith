@@ -51,6 +51,19 @@ may be added. Include additional project acceptance inputs
 as globs in `verify.protected_paths` in the reviewed manifest. Protected changes require separate
 operator review outside this run; the controller has no self-approval override.
 
+Agent instructions are protected in the same way, because the checker runs in a worktree at the
+candidate commit and its client loads them from there. A maker that edits them would write
+instructions for its own judge. The rule covers a file named `AGENTS.md`, `AGENTS.override.md`,
+`CLAUDE.md`, `CLAUDE.local.md` or `GEMINI.md`, and anything inside a `.claude/`, `.codex/`,
+`.agents/` or `.cursor/` folder (settings, hooks, skills, subagents, rules). It applies at any
+depth, not only at the root: Claude Code loads a nested `CLAUDE.md` when it reads files in that
+folder, and it finds nested `.claude/skills`. Names match ignoring case, because macOS and Windows
+open `claude.md` when a client asks for `CLAUDE.md`. Adding, editing, deleting and moving all
+count. If a task really needs one of these files changed, for example documentation that happens
+to be named `AGENTS.md`, make that change yourself in a reviewed commit, then start the run from
+that commit. Neither `scope.allowed_paths` nor any other manifest field can allow it: the operator
+approves scope, and scope must not be able to widen what a maker may tell its checker.
+
 Controller verification writes the raw exit code and stdout/stderr to `attempt-N-verify.txt` and
 an adjacent JSON receipt. That receipt binds the candidate and base commits, spec and manifest
 hashes, verification policy and configuration hashes, controller/launcher hashes, output hash,

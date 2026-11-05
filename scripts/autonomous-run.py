@@ -981,25 +981,44 @@ VERIFICATION_POLICY_PATHS = (
 BASELINE_TEST_PATHS = ("test_*.py", "*_test.py", "tests/**", "test/**",
                        "**/tests/**", "**/test/**", "**/test_*.py", "**/*_test.py",
                        "*.test.*", "*.spec.*", "*_test.go", "*_spec.rb", "scripts/test-*")
+# Instructions and configuration that Claude Code, Codex and other agent clients load from the
+# checkout. The checker runs in a worktree at the candidate commit, so a maker that edits these
+# writes instructions for its own judge. They count at any depth: Claude Code loads a nested
+# CLAUDE.md when it reads files in that folder, and discovers nested `.claude/skills`. Names match
+# ignoring case, because macOS and Windows open `claude.md` when a client asks for `CLAUDE.md`.
+AGENT_INSTRUCTION_FILES = frozenset({"agents.md", "agents.override.md", "claude.md",
+                                     "claude.local.md", "gemini.md"})
+AGENT_CONFIGURATION_FOLDERS = frozenset({".claude", ".codex", ".agents", ".cursor"})
+
+
+def agent_instruction_path(path: str) -> bool:
+    parts = path.casefold().split("/")
+    return parts[-1] in AGENT_INSTRUCTION_FILES or any(part in AGENT_CONFIGURATION_FOLDERS for part in parts)
 
 
 def validate_verification_changes(worktree: Path, base: str, head: str,
                                   manifest: dict[str, Any]) -> None:
-    """Reject policy edits and edits/deletions of the approved baseline checks."""
+    """Reject policy edits, agent-instruction edits, and edits/deletions of the approved
+    baseline checks. Operator-approved scope cannot widen any of these."""
     extra = manifest.get("verify", {}).get("protected_paths", [])
     if not isinstance(extra, list) or any(not isinstance(path, str) or not path for path in extra):
         raise RunError("verify.protected_paths must be an array of nonempty path globs")
     baseline = set(git_paths(worktree, "ls-tree", "-r", "--name-only", base))
     protected = []
+    instructions = []
     for path in git_paths(worktree, "diff", "--name-only", "--no-renames", base, head):
         patterns = (*VERIFICATION_POLICY_PATHS, *extra)
         if path in baseline:
             patterns += BASELINE_TEST_PATHS
-        if path == manifest.get("spec_path") or any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns):
+        if agent_instruction_path(path):
+            instructions.append(path)
+        elif path == manifest.get("spec_path") or any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns):
             protected.append(path)
-    if protected:
+    if protected or instructions:
+        detail = ([shown_paths(protected)] if protected else []) + (
+            ["agent instructions: " + shown_paths(instructions)] if instructions else [])
         raise RunError("maker changed protected verification inputs; separate operator review required: "
-                       + shown_paths(protected))
+                       + "; ".join(detail))
 
 
 def verification_binding(state: dict[str, Any], manifest: dict[str, Any], head: str) -> dict[str, Any]:
