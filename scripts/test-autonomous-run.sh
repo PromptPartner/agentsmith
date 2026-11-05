@@ -29,6 +29,7 @@ make_fake() {
     'fake_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"' \
     'mode="$(cat "$fake_root/mode" 2>/dev/null || printf accept)"' \
     'args=("$@")' \
+    'printf "%s\n" "${args[*]}" >> "$fake_root/argv.log"' \
     'for ((i=0; i<${#args[@]}; i++)); do' \
     '  if [ "${args[$i]}" = "-o" ]; then receipt="${args[$((i+1))]}"; fi' \
     'done' \
@@ -301,6 +302,9 @@ s = json.load(open(sys.argv[1]))
 assert s['codex_tokens_used'] == 10
 assert s['claude_cost_usd'] == 0.25
 PY
+
+assert 'capped Claude role receives the remaining USD allowance' grep -q -- '--max-budget-usd 20' "$repo/../fake/argv.log"
+assert 'capped Codex maker receives its goal token budget' grep -q 'token budget 2500000' "$repo/../fake/argv.log"
 
 assert 'verification receipt binds the accepted candidate and raw evidence' python3 - "$repo/.git/agentsmith-runs/success/state.json" <<'PYTEST'
 import hashlib, json, pathlib, sys
@@ -983,6 +987,37 @@ assert state['status'] == 'accepted' and state['attempt'] == 1
 assert state['accepted_commit'] == state['candidate_commit']
 assert state['codex_tokens_used'] == 10
 PY
+
+echo 'autonomous-run — budgets are explicit or the run does not start'
+repo="$(new_repo zero-budget)"; make_fake "$repo/../fake"; manifest "$repo" zero-budget
+python3 - "$repo/.harness/runs/zero-budget.json" <<'PY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); v = json.loads(p.read_text())
+v['limits']['codex_goal_tokens'] = 0  # once meant "no cap"
+p.write_text(json.dumps(v, indent=2) + '\n')
+PY
+git -C "$repo" add . && git -C "$repo" commit -qm 'test: zero token cap'
+if (cd "$repo" && invoke "$repo" accept start .harness/runs/zero-budget.json >../out 2>../err); then
+  bad 'a zero token cap ran as an unlimited run'
+else ok 'a zero token cap refuses at start'; fi
+assert 'zero-cap refusal names the field and the explicit choice' grep -q 'limits.codex_goal_tokens must be .*"unbounded"' "$repo/../err"
+assert 'zero-cap refusal creates no branch' bash -c "! git -C '$repo' show-ref --verify --quiet refs/heads/agentsmith/zero-budget"
+assert 'zero-cap refusal creates no state' test ! -e "$repo/.git/agentsmith-runs/zero-budget/state.json"
+
+repo="$(new_repo unbounded-budget)"; make_fake "$repo/../fake"; manifest "$repo" unbounded-budget
+python3 - "$repo/.harness/runs/unbounded-budget.json" <<'PY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); v = json.loads(p.read_text())
+v['limits'].update(codex_goal_tokens='unbounded', claude_max_usd='unbounded',
+                   budget_rationale='calibration run, no token or USD cap; set by Test Operator')
+p.write_text(json.dumps(v, indent=2) + '\n')
+PY
+git -C "$repo" add . && git -C "$repo" commit -qm 'test: explicit unbounded budget'
+if (cd "$repo" && invoke "$repo" accept start .harness/runs/unbounded-budget.json >../out 2>../err); then
+  ok 'an explicit, explained unbounded budget runs to acceptance'
+else bad 'explicit unbounded budget did not run'; sed -n '1,20p' "$repo/../err"; fi
+assert 'unbounded Claude role gets no client USD cap' bash -c "! grep -q -- '--max-budget-usd' '$repo/../fake/argv.log'"
+assert 'unbounded Codex maker gets no goal token budget' bash -c "! grep -q 'token budget' '$repo/../fake/argv.log'"
 
 echo 'autonomous-run — sandbox preflight before any run artifact'
 repo="$(new_repo preflight)"; make_fake "$repo/../fake"; manifest "$repo" preflight

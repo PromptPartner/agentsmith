@@ -138,12 +138,30 @@ Only `accepted`, `escalated` and `interrupted` runs and `completed`, `failed`, `
 folder that holds files but no state (for example a lock left by a start that crashed) is
 undetermined: inspect it and remove it by hand before the guard can answer 0.
 
-Codex receives the manifest objective and remaining native goal token budget. Claude receives only
-the remaining run-wide USD allowance. The controller accumulates usage reported by both CLIs and
-its persisted state remains authoritative, so resume cannot reset time or reported spend. Codex's
-CLI has no controller-enforced hard token switch; its native goal is the in-runtime cap, and the
-controller stops after reported usage crosses the manifest ceiling. Calibrate that limit in an
-attended run before treating it as a precise cost control.
+Every budget is explicit. `limits.wall_minutes` must be a positive whole number of minutes, and
+`limits.max_attempts` a whole number from 1 to 3. Each runtime that a role uses needs its own
+cap: `limits.codex_goal_tokens` (a positive whole number of tokens) when a role runs Codex, and
+`limits.claude_max_usd` (a positive number of US dollars) when a role runs Claude. A zero, a
+negative number, text, or a missing cap refuses at `prepare`, `start` and `resume`; in v0.5.0 and
+earlier, zero or a missing cap meant "no cap", so update older manifests before you start them.
+To run without a token or USD cap, write the string `"unbounded"` for that cap and say who chose
+it and why in `limits.budget_rationale`; without that text the controller refuses. The wall clock
+has no unbounded choice, because it is the one cap that stops every role while it runs. A work
+graph is stricter: each child needs numeric caps for both runtimes.
+
+Where each cap is enforced:
+
+| Cap | Before a role | While a role runs | After a role |
+|---|---|---|---|
+| `wall_minutes` | refuses when no time is left | the controller ends the role's process group at the deadline | the run escalates |
+| `claude_max_usd` | refuses a Claude role when nothing is left | Claude Code stops at the remaining allowance (`--max-budget-usd`) | escalates when reported spend is over the cap |
+| `codex_goal_tokens` | refuses a Codex role when nothing is left | not enforced: `codex exec` documents no hard token switch, and the goal budget in the maker prompt is advisory | escalates when reported tokens are over the cap |
+
+So a Codex role can overshoot its cap once, by whatever it spends in that one role, before the
+controller stops the run. The controller accumulates usage reported by both CLIs and its persisted
+state remains authoritative, so resume cannot reset time or reported spend. Calibrate the Codex
+limit in an attended run before treating it as a precise cost control, and bound a single Codex
+role with `wall_minutes`.
 
 ### Sizing the budget
 

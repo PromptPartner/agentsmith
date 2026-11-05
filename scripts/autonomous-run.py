@@ -14,6 +14,7 @@ import fnmatch
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import re
 import signal
@@ -781,6 +782,69 @@ def unset_role_settings(manifest: dict[str, Any]) -> list[str]:
     return unset
 
 
+UNBOUNDED = "unbounded"
+# The cap each runtime spends, and the type its value must have.
+RUNTIME_BUDGETS = {"codex": ("codex_goal_tokens", "a positive whole number of tokens"),
+                   "claude": ("claude_max_usd", "a positive number of US dollars")}
+
+
+def positive_number(value: Any, *, whole: bool) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    if whole and not isinstance(value, int):
+        return False
+    return math.isfinite(value) and value > 0
+
+
+def validate_budgets(manifest: dict[str, Any]) -> None:
+    """Every budget is explicit. A zero or missing cap once meant "no cap"; now it refuses, and
+    only the string "unbounded" with a written `budget_rationale` removes a token or USD cap.
+    The wall clock has no unbounded choice: it is the cap enforced inside every role."""
+    limits = manifest.get("limits")
+    if not isinstance(limits, dict):
+        raise RunError("limits must be a JSON object")
+    attempts = limits.get("max_attempts")
+    if not positive_number(attempts, whole=True) or attempts > 3:
+        raise RunError("limits.max_attempts must be between 1 and 3")
+    if not positive_number(limits.get("wall_minutes"), whole=True):
+        raise RunError("limits.wall_minutes must be a positive whole number of minutes")
+    rationale = limits.get("budget_rationale", "")
+    if not isinstance(rationale, str):
+        raise RunError("limits.budget_rationale must be text: the size class, the usage it rests on, and who set it")
+    runtimes = {role.get("runtime") for role in manifest.get("roles", {}).values() if isinstance(role, dict)}
+    for runtime, (field, kind) in RUNTIME_BUDGETS.items():
+        if runtime not in runtimes:
+            continue
+        value = limits.get(field)
+        if value == UNBOUNDED:
+            if not rationale.strip():
+                raise RunError(f"limits.{field} is unbounded; write who chose that and why in "
+                               "limits.budget_rationale")
+        elif not positive_number(value, whole=field == "codex_goal_tokens"):
+            raise RunError(f"limits.{field} must be {kind}, or \"{UNBOUNDED}\" with a written "
+                           "limits.budget_rationale; zero or a missing value no longer means no cap")
+
+
+def budget_cap(limits: dict[str, Any], field: str) -> float | None:
+    """The validated cap, or None for an explicit unbounded choice."""
+    value = limits.get(field)
+    if value == UNBOUNDED:
+        return None
+    if not positive_number(value, whole=False):
+        raise RunError(f"limits.{field} is not a validated budget")  # fail closed, never "no cap"
+    return float(value)
+
+
+def budget_overrun(state: dict[str, Any], manifest: dict[str, Any], runtime: str) -> str | None:
+    """Name the run-wide cap a finished role of this runtime crossed, if any."""
+    cap = budget_cap(manifest["limits"], RUNTIME_BUDGETS[runtime][0])
+    if runtime == "claude" and cap is not None and float(state.get("claude_cost_usd", 0.0)) > cap:
+        return "Claude run-wide USD budget exceeded"
+    if runtime == "codex" and cap is not None and int(state.get("codex_tokens_used", 0)) > cap:
+        return "Codex run-wide token budget exceeded"
+    return None
+
+
 def validate_manifest(manifest: dict[str, Any], repo: Path) -> tuple[Path, str]:
     required = ["schema_version", "run_id", "spec_path", "implementation_ticket", "base_ref",
                 "roles", "scope", "verify", "limits", "git", "external_writes"]
@@ -811,13 +875,7 @@ def validate_manifest(manifest: dict[str, Any], repo: Path) -> tuple[Path, str]:
     verify_config = manifest["verify"]
     if not isinstance(verify_config, dict) or not isinstance(verify_config.get("command"), str) or not verify_config["command"].strip():
         raise RunError("verify.command must name a required verification command")
-    limits = manifest["limits"]
-    if not 1 <= int(limits.get("max_attempts", 0)) <= 3:
-        raise RunError("limits.max_attempts must be between 1 and 3")
-    if int(limits.get("wall_minutes", 0)) <= 0:
-        raise RunError("limits.wall_minutes must be positive")
-    if "budget_rationale" in limits and not isinstance(limits["budget_rationale"], str):
-        raise RunError("limits.budget_rationale must be text: the size class, the usage it rests on, and who set it")
+    validate_budgets(manifest)
     spec_rel = Path(str(manifest["spec_path"]))
     if spec_rel.is_absolute() or ".." in spec_rel.parts or spec_rel.parts[:2] != ("docs", "specs"):
         raise RunError("spec_path must be a repository-relative path under docs/specs/")
@@ -940,6 +998,7 @@ def prepare(args: argparse.Namespace) -> int:
     if unset:
         raise RunError(f"{', '.join(unset)} are blank or placeholders; pass --maker-model and "
                        "--checker-model, or fill them in the template, before prepare writes a manifest")
+    validate_budgets(manifest)
     output = Path(args.output or f".harness/runs/{args.run_id}.json")
     output = output if output.is_absolute() else repo / output
     if output.exists() and not args.force:
@@ -1710,9 +1769,12 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
     common_git = state_root(Path(state["repo"])).parent
     maker_write_dirs = [common_git, resolved_git_path(worktree, '--git-dir')] if role == 'maker' else []
     protected = trusted_paths(state)
+    cap = budget_cap(manifest["limits"], RUNTIME_BUDGETS[runtime][0])
     if runtime == "codex":
-        token_budget = int(manifest["limits"].get("codex_goal_tokens", 0))
-        if token_budget and int(state.get("codex_tokens_used", 0)) >= token_budget:
+        # Codex has no documented hard token switch for `codex exec`, so this cap is enforced
+        # here, before each Codex role, and after it (`budget_overrun`); the goal budget in the
+        # maker prompt is advisory.
+        if cap is not None and int(state.get("codex_tokens_used", 0)) >= cap:
             raise RunError("Codex run-wide token budget exhausted")
         cmd = build_native_command(
             "codex", prompt, worktree, schema_path, receipt_path,
@@ -1729,15 +1791,15 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
                 protected_write_paths=protected,
             ),
         )
-        budget = float(manifest["limits"].get("claude_max_usd", 0))
-        remaining_budget = budget - float(state.get("claude_cost_usd", 0.0))
-        if budget and remaining_budget <= 0:
+        # Claude Code enforces the remaining allowance inside the role (`--max-budget-usd`).
+        remaining_budget = None if cap is None else cap - float(state.get("claude_cost_usd", 0.0))
+        if remaining_budget is not None and remaining_budget <= 0:
             raise RunError("Claude run-wide USD budget exhausted")
         cmd = build_native_command(
             "claude", prompt, worktree, schema_path, receipt_path, settings_path=settings_path,
             extra_write_dirs=maker_write_dirs, read_only=role == "checker",
             model=str(role_cfg.get("model", "")), effort=str(role_cfg.get("effort", "")),
-            claude_max_usd=max(0.0, remaining_budget),
+            claude_max_usd=remaining_budget or 0.0,
         )
     event(state, "role_started", role=role, runtime=runtime, attempt=state["attempt"])
     prefix = f"attempt-{state['attempt']}-{role}"
@@ -1756,13 +1818,7 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
         raise error
     # Each cap is checked after a role that spends it; the launch checks above refuse a role
     # whose own runtime has nothing left.
-    over_budget = None
-    max_cost = float(manifest["limits"].get("claude_max_usd", 0))
-    if runtime == "claude" and max_cost and state["claude_cost_usd"] > max_cost:
-        over_budget = "Claude run-wide USD budget exceeded"
-    max_tokens = int(manifest["limits"].get("codex_goal_tokens", 0))
-    if runtime == "codex" and max_tokens and state["codex_tokens_used"] > max_tokens:
-        over_budget = "Codex run-wide token budget exceeded"
+    over_budget = budget_overrun(state, manifest, runtime)
     receipt = None
     if not result.returncode:
         # Keep a finished role's receipt before enforcing a cap it crossed on the way.
@@ -1801,10 +1857,11 @@ A moved file counts twice: list the old path and the new path.
 """
     if role == "maker":
         feedback = f"\nThe prior checker rejected the attempt:\n{json.dumps(prior, indent=2)}\n" if prior else ""
-        goal_budget = int(manifest["limits"].get("codex_goal_tokens", 0)) - int(state.get("codex_tokens_used", 0))
+        codex_maker = manifest["roles"]["maker"]["runtime"] == "codex"
+        cap = budget_cap(manifest["limits"], "codex_goal_tokens") if codex_maker else None
+        goal_budget = 0 if cap is None else int(cap) - int(state.get("codex_tokens_used", 0))
         goal = (f"If your runtime exposes the native goal tool, create a goal for this exact ticket with token budget "
-                f"{goal_budget}; the manifest remains authoritative.\n") if (
-                    manifest["roles"]["maker"]["runtime"] == "codex" and goal_budget > 0) else ""
+                f"{goal_budget}; the manifest remains authoritative.\n") if goal_budget > 0 else ""
         return common + goal + f"""Implement the smallest complete change, run {manifest['verify']['command']},
 and make atomic local commits only. Leave the worktree clean. HEAD must advance beyond {base}.
 Use status completed or blocked; do not mark your own work accepted.{feedback}"""

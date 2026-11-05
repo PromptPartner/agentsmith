@@ -153,6 +153,98 @@ class AutonomousStateTests(unittest.TestCase):
                 with self.assertRaisesRegex(CONTROLLER.RunError, "limits.budget_rationale must be text"):
                     CONTROLLER.validate_manifest(manifest, ROOT)
 
+    def budget_manifest(self, maker: str = "codex", checker: str = "claude") -> dict[str, Any]:
+        manifest = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
+        manifest.update(run_id="budget", spec_path="docs/specs/task.md", implementation_ticket="IMP-1")
+        manifest["roles"]["maker"].update(runtime=maker, model="maker-x")
+        manifest["roles"]["checker"].update(runtime=checker, model="checker-y")
+        return manifest
+
+    def test_missing_or_zero_budget_refuses_instead_of_meaning_no_cap(self) -> None:
+        # A zero or missing cap used to switch the cap off; now it refuses, and only an explicit,
+        # explained "unbounded" removes a token or USD cap.
+        cases = [("codex_goal_tokens", value) for value in (None, 0, -5, 1.5, True, "", "2500000", "none")]
+        cases += [("claude_max_usd", value) for value in (None, 0, 0.0, -1, float("nan"), float("inf"),
+                                                           False, "20", "unlimited")]
+        cases += [("wall_minutes", value) for value in (None, 0, -1, True, "abc", 2.5)]
+        for field, value in cases:
+            with self.subTest(field=field, value=value):
+                manifest = self.budget_manifest()
+                if value is None:
+                    manifest["limits"].pop(field)
+                else:
+                    manifest["limits"][field] = value
+                with self.assertRaisesRegex(CONTROLLER.RunError, rf"limits\.{field} must be"):
+                    CONTROLLER.validate_manifest(manifest, ROOT)
+
+    def test_unbounded_budget_must_be_explicit_and_explained(self) -> None:
+        for field in ("codex_goal_tokens", "claude_max_usd"):
+            with self.subTest(field=field):
+                manifest = self.budget_manifest()
+                manifest["limits"][field] = "unbounded"
+                for rationale in ("", "  "):
+                    manifest["limits"]["budget_rationale"] = rationale
+                    with self.assertRaisesRegex(CONTROLLER.RunError,
+                                                rf"limits\.{field} is unbounded.*budget_rationale"):
+                        CONTROLLER.validate_manifest(manifest, ROOT)
+                manifest["limits"]["budget_rationale"] = "size M; no cap while calibrating; set by Test Operator"
+                self.assert_budget_accepted(manifest)
+        # The wall clock is the one cap enforced inside every role, so it has no unbounded choice.
+        manifest = self.budget_manifest()
+        manifest["limits"].update(wall_minutes="unbounded", budget_rationale="no deadline")
+        with self.assertRaisesRegex(CONTROLLER.RunError, r"limits\.wall_minutes must be"):
+            CONTROLLER.validate_manifest(manifest, ROOT)
+
+    def assert_budget_accepted(self, manifest: dict[str, Any]) -> None:
+        # Budgets pass when validation reaches the next gate: this fixture has no committed spec.
+        with self.assertRaisesRegex(CONTROLLER.RunError, "accepted spec must be committed at base_ref"):
+            CONTROLLER.validate_manifest(manifest, ROOT)
+
+    def test_a_cap_is_required_only_for_a_runtime_some_role_uses(self) -> None:
+        manifest = self.budget_manifest(maker="claude", checker="claude")
+        manifest["limits"].pop("codex_goal_tokens")
+        self.assert_budget_accepted(manifest)
+        manifest["limits"]["claude_max_usd"] = 0
+        with self.assertRaisesRegex(CONTROLLER.RunError, r"limits\.claude_max_usd must be"):
+            CONTROLLER.validate_manifest(manifest, ROOT)
+        manifest = self.budget_manifest(maker="codex", checker="codex")
+        manifest["limits"].pop("claude_max_usd")
+        self.assert_budget_accepted(manifest)
+
+    def test_prepare_refuses_a_template_without_budgets(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith prepare budget ") as temporary:
+            repo = Path(temporary).resolve()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            template = repo / "template.json"
+            value = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
+            value["limits"]["codex_goal_tokens"] = 0
+            template.write_text(json.dumps(value), encoding="utf-8")
+            args = CONTROLLER.parser().parse_args([
+                "prepare", "--run-id", "draft", "--spec", "docs/specs/task.md", "--ticket", "TASK-1",
+                "--template", str(template), "--maker-model", "maker-x", "--checker-model", "checker-y"])
+            with mock.patch.object(CONTROLLER.Path, "cwd", return_value=repo):
+                with self.assertRaisesRegex(CONTROLLER.RunError, r"limits\.codex_goal_tokens must be"):
+                    CONTROLLER.prepare(args)
+            self.assertFalse((repo / ".harness/runs/draft.json").exists())
+
+    def test_unbounded_caps_launch_without_a_client_cap_or_goal_budget(self) -> None:
+        manifest = self.budget_manifest(maker="codex", checker="claude")
+        manifest["limits"].update(codex_goal_tokens="unbounded", claude_max_usd="unbounded",
+                                  budget_rationale="calibration run; set by Test Operator")
+        state = {"run_id": "budget", "base_head": "a" * 40, "codex_tokens_used": 10 ** 9,
+                 "claude_cost_usd": 10 ** 6}
+        prompt = CONTROLLER.role_prompt(state, manifest, "maker")
+        self.assertNotIn("token budget", prompt)
+        self.assertIsNone(CONTROLLER.budget_cap(manifest["limits"], "codex_goal_tokens"))
+        self.assertIsNone(CONTROLLER.budget_cap(manifest["limits"], "claude_max_usd"))
+        self.assertIsNone(CONTROLLER.budget_overrun(state, manifest, "codex"))
+        self.assertIsNone(CONTROLLER.budget_overrun(state, manifest, "claude"))
+        manifest["limits"].update(codex_goal_tokens=100, claude_max_usd=5)
+        self.assertEqual(CONTROLLER.budget_overrun(state, manifest, "codex"),
+                         "Codex run-wide token budget exceeded")
+        self.assertEqual(CONTROLLER.budget_overrun(state, manifest, "claude"),
+                         "Claude run-wide USD budget exceeded")
+
     def preflight_manifest(self) -> dict[str, Any]:
         manifest = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
         manifest["roles"]["maker"].update(runtime="codex", model="maker-x")
@@ -504,7 +596,8 @@ class AutonomousStateTests(unittest.TestCase):
             state = {'repo': str(repo), 'worktree': str(workspace), 'state_path': str(trusted/'state.json'),
                      'manifest_path': str(repo/'manifest.json'), 'spec_path': 'spec.md',
                      'attempt': 1, 'deadline_epoch': time.time()+30}
-            manifest = {'roles': {'maker': {'runtime': 'codex', 'model': 'fixture', 'effort': 'high'}}, 'limits': {}}
+            manifest = {'roles': {'maker': {'runtime': 'codex', 'model': 'fixture', 'effort': 'high'}},
+                        'limits': {'codex_goal_tokens': 1000}}
             class Observed(Exception):
                 pass
             with mock.patch.object(CONTROLLER, 'build_native_command', side_effect=Observed) as launch:
@@ -665,7 +758,7 @@ class AutonomousStateTests(unittest.TestCase):
                  "attempt": 1, "deadline_epoch": time.time() + 30,
                  "manifest_path": str(ROOT / 'manifest.json'), "spec_path": 'spec.md'}
         manifest = {"roles": {"checker": {"runtime": "codex", "model": "fixture", "effort": "high"}},
-                    "limits": {}}
+                    "limits": {"codex_goal_tokens": 1000}}
         class LaunchObserved(Exception):
             pass
         with (mock.patch.object(CONTROLLER, "write_json"),

@@ -53,7 +53,9 @@ about 800, L up to about 2,500; split anything larger), cap at the highest usage
 accepted run of that class plus at least 20% headroom, and write the class, the measurement and
 who set it in `limits.budget_rationale`. A run stops at the first report over a cap, even by 1%; a
 finished maker's candidate is checkpointed first, so `resume` can verify and check it.
-Keep `max_attempts` at 3.
+Keep `max_attempts` at 3. Every runtime a role uses needs its cap (`codex_goal_tokens`,
+`claude_max_usd`); zero or a missing cap refuses at `prepare` and `start`. Only the operator may
+choose `"unbounded"` instead, and only with `budget_rationale` saying who chose it and why.
 
 ## Start and supervise
 

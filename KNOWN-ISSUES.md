@@ -3,6 +3,25 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [x] 2026-11-05 — Autonomous-run budgets failed open: `codex_goal_tokens` or `claude_max_usd` set
+  to 0 or left out meant "no cap", and validation checked only attempts and wall time. With the
+  v0.5.0 controller, a fake-client run with `codex_goal_tokens: 0` ran to acceptance. Now each
+  runtime a role uses needs a positive cap, or the string `"unbounded"` with a written
+  `budget_rationale`; anything else refuses at `prepare`, `start` and `resume`, and a cap that
+  reaches a launch unvalidated fails closed. Red first: 22 refusal cases in
+  `test_missing_or_zero_budget_refuses_instead_of_meaning_no_cap` and the zero-budget and
+  unbounded-budget fake-client cases.
+- [ ] 2026-11-05 — The Codex token cap is not enforced while a Codex role runs. `codex exec`
+  documents no hard token switch (checked against learn.chatgpt.com non-interactive mode on
+  2026-11-05), and it reports usage in `turn.completed` only when the turn ends. The controller
+  refuses a Codex role when the cap is used up and escalates after a role that crossed it, so one
+  role can overshoot once; `wall_minutes` bounds that role. Revisit when Codex documents an
+  enforced budget.
+- [ ] 2026-11-05 — Unverified: Codex token accounting may count cached input twice.
+  `usage_metrics` adds `input_tokens` and `cached_input_tokens`; if Codex reports cached input as
+  part of `input_tokens`, as the OpenAI API does, the total is too high and a cap stops early
+  (fails closed). It also reads `reasoning_tokens`, while the Codex docs name the field
+  `reasoning_output_tokens`. Confirm against a native Codex usage record before changing it.
 - [x] 2026-11-05 — An autonomous-run maker could add or edit agent instruction files (`AGENTS.md`,
   `CLAUDE.md`, `.claude/` settings, skills and hooks, `.codex/`, `.agents/`, `GEMINI.md`,
   `.cursor/`) at any depth, and the checker's client then loaded them from the candidate
