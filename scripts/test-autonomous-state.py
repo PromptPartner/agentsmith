@@ -558,6 +558,111 @@ class AutonomousStateTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(manifest.read_text(), 'original')
 
+    def test_each_verifier_gets_a_private_home_temp_and_cache(self) -> None:
+        # A maker can write the shared temporary folders and the fixed verifier home. Tools keep
+        # caches and startup files there (pip, npm, uv, Go, Cargo, `.gitconfig`, Python user site),
+        # so content planted there would run inside a later verifier.
+        sandboxed = (CONTROLLER.sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").exists()) or (
+            CONTROLLER.sys.platform.startswith("linux") and shutil.which("bwrap"))
+        if not sandboxed:
+            self.skipTest("needs the macOS or Linux verifier sandbox")
+        shared_temp = Path(os.environ.get("TMPDIR") or "/tmp")
+        planted = [shared_temp / f"agentsmith-planted-{os.getpid()}",
+                   Path("/tmp/agentsmith-verifier-home/.cache/agentsmith-planted")]
+        try:
+            for path in planted:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("planted by a maker\n", encoding="utf-8")
+            seen: list[dict[str, str]] = []
+            for _ in range(2):
+                with tempfile.TemporaryDirectory(prefix="agentsmith private verifier ") as temporary:
+                    repo = Path(temporary).resolve() / "candidate"
+                    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+                    command = (
+                        f'test ! -e "$TMPDIR/{planted[0].name}" && test ! -e "$HOME/.cache/agentsmith-planted"'
+                        ' && mkdir -p "$XDG_CACHE_HOME" && printf x > "$XDG_CACHE_HOME/written"'
+                        ' && printf x > "$TMPDIR/written" && printf x > "$HOME/written"'
+                        ' && printf "%s\\n%s\\n%s\\n" "$HOME" "$TMPDIR" "$XDG_CACHE_HOME"')
+                    result = CONTROLLER.sandboxed_verify(command, repo, 30, CONTROLLER.verifier_env())
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    home, temp, cache = result.stdout.splitlines()
+                    seen.append({"home": home, "temp": temp, "cache": cache})
+            self.assertNotEqual(seen[0]["home"], seen[1]["home"], "each verifier needs its own home")
+            self.assertNotEqual(seen[0]["temp"], seen[1]["temp"], "each verifier needs its own temp")
+            for paths in seen:
+                self.assertNotEqual(paths["home"], "/tmp/agentsmith-verifier-home")
+                self.assertNotEqual(Path(paths["temp"]).resolve(), shared_temp.resolve())
+                for value in paths.values():
+                    self.assertFalse(Path(value).exists(), f"{value} outlived its verifier")
+        finally:
+            for path in planted:
+                path.unlink(missing_ok=True)
+
+    def test_linux_verifier_binds_its_private_folder_writable(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith verifier private bind ") as temporary:
+            repo = Path(temporary) / "repo"
+            common = repo / ".git"
+            common.mkdir(parents=True)
+            with (
+                mock.patch.object(CONTROLLER.sys, "platform", "linux"),
+                mock.patch.object(CONTROLLER.shutil, "which", return_value="/usr/bin/bwrap"),
+                mock.patch.object(CONTROLLER, "resolved_git_path", return_value=common),
+                mock.patch.object(CONTROLLER, "verifier_process",
+                                  return_value=subprocess.CompletedProcess([], 0, "", "")) as run,
+            ):
+                CONTROLLER.sandboxed_verify("true", repo, 10, CONTROLLER.verifier_env())
+            args, environment = run.call_args.args[0], run.call_args.args[3]
+            private = Path(environment["HOME"]).parent
+            self.assertTrue(Path(environment["TMPDIR"]).is_relative_to(private))
+            self.assertTrue(Path(environment["XDG_CACHE_HOME"]).is_relative_to(private))
+            bind = next(index for index in range(len(args) - 2)
+                        if args[index:index + 3] == ["--bind", str(private), str(private)])
+            remount = next(index for index in range(len(args) - 1)
+                           if args[index:index + 2] == ["--remount-ro", "/tmp"])
+            self.assertLess(remount, bind)
+
+    def test_checker_gets_fresh_temp_and_cache_folders_and_the_maker_keeps_its_own(self) -> None:
+        # Claude's sandboxed shell uses `$CLAUDE_CODE_TMPDIR/claude-<uid>`, by default one folder
+        # per user that every role shares; Codex and tools use `$TMPDIR` and `$XDG_CACHE_HOME`.
+        observed: dict[str, dict[str, str]] = {}
+
+        class Observed(Exception):
+            pass
+
+        def capture(_command, _cwd, _timeout, env, state, prefix):
+            observed[prefix.rsplit("-", 1)[-1]] = dict(env)
+            for key in ("TMPDIR", "XDG_CACHE_HOME", "CLAUDE_CODE_TMPDIR"):
+                if key in env and prefix.endswith("checker"):
+                    self.assertTrue(Path(env[key]).is_dir(), f"{key} must exist while the role runs")
+            raise Observed
+
+        with tempfile.TemporaryDirectory(prefix="agentsmith checker scratch ") as temporary:
+            root = Path(temporary).resolve()
+            state = {"worktree": str(root), "repo": str(root), "state_path": str(root / "run/state.json"),
+                     "attempt": 1, "deadline_epoch": time.time() + 30,
+                     "manifest_path": str(root / "manifest.json"), "spec_path": "spec.md"}
+            (root / "run").mkdir()
+            manifest = {"roles": {role: {"runtime": "claude", "model": "fixture", "effort": "high"}
+                                  for role in ("maker", "checker")},
+                        "limits": {"claude_max_usd": 5}}
+            shared = {"TMPDIR": "/tmp/shared-by-every-role", "XDG_CACHE_HOME": "/tmp/shared-cache",
+                      "PATH": os.environ.get("PATH", "")}
+            with mock.patch.dict(os.environ, shared, clear=True), \
+                    mock.patch.object(CONTROLLER, "state_root", return_value=root / "runs"), \
+                    mock.patch.object(CONTROLLER, "resolved_git_path", return_value=root / ".git"), \
+                    mock.patch.object(CONTROLLER, "effective_autocrlf", return_value="false"), \
+                    mock.patch.object(CONTROLLER, "build_native_command", return_value=["true"]), \
+                    mock.patch.object(CONTROLLER, "supervised_process", side_effect=capture):
+                for role in ("maker", "checker"):
+                    with self.assertRaises(Observed):
+                        CONTROLLER.launch_role(state, manifest, role, role)
+        maker, checker = observed["maker"], observed["checker"]
+        self.assertEqual(maker["TMPDIR"], "/tmp/shared-by-every-role")
+        for key in ("TMPDIR", "XDG_CACHE_HOME", "CLAUDE_CODE_TMPDIR"):
+            self.assertNotIn(checker[key], ("/tmp/shared-by-every-role", "/tmp/shared-cache"), key)
+            self.assertFalse(Path(checker[key]).exists(), f"{key} outlived the checker")
+        self.assertLess(len(checker["CLAUDE_CODE_TMPDIR"]), 64, "a long path makes Claude fall back")
+
     def test_orphaned_group_is_live_even_after_its_leader_exits(self) -> None:
         if os.name == 'nt':
             self.skipTest('POSIX process group probe')

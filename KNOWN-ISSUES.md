@@ -3,6 +3,20 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [x] 2026-11-05 — Autonomous-run roles shared writable temporary and cache folders. Every
+  verifier used the fixed home `/tmp/agentsmith-verifier-home` and the controller's `TMPDIR`, and
+  every checker inherited the maker's `TMPDIR`, `XDG_CACHE_HOME` and Claude Code's per-user
+  sandbox folder `/tmp/claude-<uid>`. A maker could plant a cache entry, `.gitconfig` or Python
+  `.pth` file that a later verifier or checker ran (the cross-talk Simon Willison reported on
+  2026-10-01). With the v0.5.0 controller, a fake maker's planted files were visible to the
+  verifier (exit 1) and to the checker. Each verifier now gets a private `HOME`, `TMPDIR` and XDG
+  folders, and each checker a private `TMPDIR`, `XDG_CACHE_HOME` and `CLAUDE_CODE_TMPDIR`, all
+  removed afterwards. `test_each_verifier_gets_a_private_home_temp_and_cache`,
+  `test_checker_gets_fresh_temp_and_cache_folders_and_the_maker_keeps_its_own`, the Linux bind
+  test and the `plant-cache` fake-client case failed before and pass after. A native Codex 0.165.0
+  `codex sandbox` probe with the checker profile read the fresh `TMPDIR` and could not write it.
+  Still open: the Claude checker setting is not qualified with the native client; the macOS
+  verifier can still write `/tmp`; a detached process from a role can still find a fresh folder.
 - [x] 2026-11-05 — An autonomous run could record `accepted` for a commit that the run branch no
   longer pointed at. Nothing compared the branch with the checked commit at acceptance, and a
   commit made during verification was invisible to the checker's Git snapshot, which is taken

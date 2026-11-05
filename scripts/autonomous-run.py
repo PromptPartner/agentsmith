@@ -1404,13 +1404,46 @@ def validate_git_unchanged(before: dict[str, Any], after: dict[str, Any], actor:
             raise RunError(f"{actor} changed protected Git metadata: {key}")
 
 
+@contextlib.contextmanager
+def private_scratch(prefix: str):
+    """A fresh folder for one role or verifier, removed afterwards. It is short and under `/tmp`
+    where that exists: Claude Code falls back to a shared temporary folder when its override path
+    is long. A role's own detached process can still find it; see docs/21."""
+    root = Path("/tmp") if os.name != "nt" and Path("/tmp").is_dir() else None
+    with tempfile.TemporaryDirectory(prefix=prefix, dir=root, ignore_cleanup_errors=True) as folder:
+        yield Path(folder).resolve()
+
+
+def private_tool_environment(env: dict[str, str], scratch: Path, *, home: bool) -> dict[str, str]:
+    """Point the temporary, cache and (for the verifier) home folders that tools read at fresh
+    folders, so nothing a maker planted in a shared one runs in a later role."""
+    folders = {"TMPDIR": scratch / "tmp", "XDG_CACHE_HOME": scratch / "cache"}
+    if home:
+        base = scratch / "home"
+        folders.update(HOME=base, XDG_CONFIG_HOME=base / ".config",
+                       XDG_DATA_HOME=base / ".local/share", XDG_STATE_HOME=base / ".local/state")
+    for folder in folders.values():
+        folder.mkdir(parents=True, exist_ok=True)
+    return {**env, **{key: str(value) for key, value in folders.items()}}
+
+
 def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str],
                      *, state: dict[str, Any] | None = None) -> subprocess.CompletedProcess[str]:
-    """Run the human-approved verifier with no network and no writes outside its worktree."""
+    """Run the human-approved verifier with no network and no writes outside its worktree and a
+    private home, temporary and cache folder that exists only for this run of the verifier."""
     common = resolved_git_path(cwd, "--git-common-dir")
     if sys.platform == "win32":
+        # The Windows verifier points HOME, USERPROFILE, APPDATA, TEMP and TMP at the disposable
+        # worktree and LOCALAPPDATA at a temporary AppContainer profile, both private to it.
         from windows_verifier_sandbox import run_verifier
         return run_verifier(command, cwd, common, timeout, env)
+    with private_scratch("agentsmith-verify-") as scratch:
+        return posix_sandboxed_verify(command, cwd, common, timeout,
+                                      private_tool_environment(env, scratch, home=True), scratch, state)
+
+
+def posix_sandboxed_verify(command: str, cwd: Path, common: Path, timeout: int, env: dict[str, str],
+                           scratch: Path, state: dict[str, Any] | None) -> subprocess.CompletedProcess[str]:
     if sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").exists():
         escaped = str(cwd).replace('"', '\\"')
         escaped_common = str(common).replace('"', '\\"')
@@ -1424,8 +1457,10 @@ def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str],
             "(deny network*)",
             "(deny file-write*)",
             f'(deny file-read-data (require-all (subpath "{home}") '
-            f'(require-not (subpath "{escaped}")) (require-not (subpath "{escaped_common}"))))',
+            f'(require-not (subpath "{escaped}")) (require-not (subpath "{escaped_common}")) '
+            f'(require-not (subpath {json.dumps(str(scratch), ensure_ascii=False)}))))',
             f'(allow file-write* (subpath "{escaped}"))',
+            f'(allow file-write* (subpath {json.dumps(str(scratch), ensure_ascii=False)}))',
             '(allow file-write* (subpath "/tmp") (subpath "/private/tmp"))',
             '(allow file-write* (literal "/dev/null") (literal "/dev/dtracehelper"))',
             *[f'(deny file-write* (subpath {json.dumps(str(path.resolve()), ensure_ascii=False)}))'
@@ -1443,7 +1478,7 @@ def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str],
         if not home.is_relative_to(temporary):
             args += ["--tmpfs", str(home)]
         directories: set[Path] = set()
-        for target in (cwd.resolve(), common):
+        for target in (cwd.resolve(), common, scratch):
             for mount_root in (temporary, home):
                 if target.is_relative_to(mount_root):
                     current = mount_root
@@ -1456,7 +1491,7 @@ def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str],
         if not home.is_relative_to(temporary):
             args += ["--remount-ro", str(home)]
         args += ["--bind", str(cwd), str(cwd), "--ro-bind", str(common), str(common),
-                 "--dev", "/dev", "--proc", "/proc",
+                 "--bind", str(scratch), str(scratch), "--dev", "/dev", "--proc", "/proc",
                  "--chdir", str(cwd), "/bin/bash", "-c", command]
         return verifier_process(args, cwd, timeout, env, state)
     return subprocess.CompletedProcess([], 126, "", "no supported fail-closed verifier sandbox")
@@ -1530,10 +1565,11 @@ def parse_receipt(path: Path, stdout: str) -> dict[str, Any]:
 
 
 def verifier_env() -> dict[str, str]:
-    allowed = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "SHELL")
+    """The credential-free base. `sandboxed_verify` adds a private HOME, TMPDIR and XDG folders
+    for each run of the verifier; a fixed shared home let a maker plant caches and config there."""
+    allowed = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "SHELL")
     env = {key: os.environ[key] for key in allowed if key in os.environ}
-    env.update({"HOME": "/tmp/agentsmith-verifier-home", "CI": "1",
-                "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "/usr/bin/false"})
+    env.update({"CI": "1", "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "/usr/bin/false"})
     return env
 
 
@@ -1819,7 +1855,15 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
     prefix = f"attempt-{state['attempt']}-{role}"
     state['usage_pending'] = {'role': role, 'runtime': runtime, 'prefix': prefix}
     save_state(state)
-    with native_role_environment(runtime, worktree) as environment:
+    with contextlib.ExitStack() as stack:
+        environment = stack.enter_context(native_role_environment(runtime, worktree))
+        if role == "checker":
+            # The maker could write the shared temporary and cache folders, including the one
+            # Claude Code's sandboxed shell uses by default (`/tmp/claude-<uid>`).
+            scratch = stack.enter_context(private_scratch("agentsmith-check-"))
+            environment = private_tool_environment(environment, scratch, home=False)
+            (scratch / "c").mkdir()
+            environment["CLAUDE_CODE_TMPDIR"] = str(scratch / "c")
         result, error = supervised_process(cmd, worktree, timeout, environment, state, prefix)
     stdout, stderr = result.stdout, result.stderr
     write_json(run_dir / (prefix + '-exit.json'),

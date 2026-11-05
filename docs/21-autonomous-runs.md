@@ -201,6 +201,24 @@ runs with a credential-free environment, no network, no access to other home-dir
 and no writes outside the disposable worktree. Read-only Git metadata remains visible so Git-based
 checks work. macOS uses the built-in sandbox; Linux requires `bubblewrap`. On any other host—or
 Linux without `bwrap`—verification exits closed instead of silently running unrestricted.
+
+No temporary or cache folder is shared between the maker and a later role. Tools keep caches and
+startup files in the home, temporary and XDG folders (pip, npm, uv, Go, Cargo, Gradle, a
+`.gitconfig`, a Python user `site-packages`), and a maker can write the shared temporary folders.
+Content planted there would run inside the verifier, which is how one sandboxed role can reach
+another. So each run of the verifier gets its own `HOME`, `TMPDIR`, `XDG_CACHE_HOME`,
+`XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_STATE_HOME` in a new folder under `/tmp`, writable
+only by that verifier and removed afterwards. Before, the verifier used the fixed home
+`/tmp/agentsmith-verifier-home` and the controller's `TMPDIR`. Each checker gets a new `TMPDIR`,
+`XDG_CACHE_HOME` and `CLAUDE_CODE_TMPDIR` the same way; the last one matters because Claude Code's
+sandboxed shell otherwise uses one temporary folder per user, `/tmp/claude-<uid>`, for every
+role. The checker keeps its real `HOME`, which its client needs to sign in and which the maker's
+sandbox cannot write. The maker keeps its usual folders, so it can use the caches you already
+have. On Windows the verifier already runs with its home and temporary folders in the disposable
+worktree and a temporary AppContainer profile. Limits: these folders are fresh, not secret, so a
+process that a role left running in the background could still find one; the macOS verifier can
+still write `/tmp` itself; and the Claude checker setting is not yet qualified with the native
+client.
 Codex checkers use a named read-only filesystem profile with no additional write roots.
 Their native sandbox permission is distinct from the later mutation checks. Checkers inspect deterministic verifier
 evidence and may run read-only probes; checks needing output files run through the verifier.
