@@ -80,6 +80,14 @@ class BudgetExceeded(RunError):
         self.receipt = receipt
 
 
+class InfrastructureFailure(RunError):
+    """A role client failed for a known host, network or client reason before any receipt."""
+
+    def __init__(self, message: str, signature: str) -> None:
+        super().__init__(message)
+        self.signature = signature
+
+
 class RunInterrupted(RuntimeError):
     """Operator cancellation must bypass handlers for invalid run or peer state."""
 
@@ -1894,9 +1902,86 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
         if state.get("status") == "interrupted":
             raise RunInterrupted("stopped by operator")
         raise_if_stopped(run_dir)
+        signature = infrastructure_signature(result.returncode, stdout, stderr)
+        if signature is not None:
+            raise InfrastructureFailure(f"{runtime} {role} exited {result.returncode} before a receipt "
+                                        f"({signature})", signature)
         raise RunError(f"{runtime} {role} exited {result.returncode}: {stderr[-500:].strip()}")
     assert receipt is not None
     return receipt
+
+
+# Known infrastructure failures of a role client, matched only against the client's stderr and
+# its own error records (Codex `error`/`turn.failed` events, a Claude `result` with `is_error`),
+# never against model or tool output. Anything else is an ordinary failure. Keep this list short
+# and specific: a wrong match retries a role that should have stopped.
+INFRASTRUCTURE_FAILURES = (
+    ("sandbox-start", re.compile(r"sandbox_apply: Operation not permitted|^bwrap: ", re.MULTILINE)),
+    ("client-panic", re.compile(r"thread '[^']*' panicked at")),
+    ("network", re.compile(r"error sending request for url|stream disconnected before completion"
+                           r"|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|API Error: Connection error",
+                           re.IGNORECASE)),
+    ("authentication", re.compile(r"401 Unauthorized|Invalid API key|OAuth token has expired"
+                                  r"|Please run /login|refresh token (?:was|has been|is) (?:revoked|expired|invalid)",
+                                  re.IGNORECASE)),
+    ("overloaded", re.compile(r"429 Too Many Requests|rate_limit_error|overloaded_error"
+                              r"|API Error: 5\d\d", re.IGNORECASE)),
+)
+# The same signature twice in a row stops the run; so does this many failures in a row.
+MAX_INFRASTRUCTURE_STREAK = 3
+
+
+def client_error_text(stdout: str, stderr: str) -> str:
+    """The client's own error reports: stderr, plus error records from its JSON output."""
+    texts = [stderr]
+    for line in stdout.splitlines():
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        if record.get("type") in {"error", "turn.failed"} or (
+                record.get("type") == "result" and record.get("is_error") is True):
+            texts.append(json.dumps(record, ensure_ascii=False))
+    return "\n".join(texts)
+
+
+def infrastructure_signature(returncode: int, stdout: str, stderr: str) -> str | None:
+    if returncode < 0:
+        return f"client-killed-by-signal-{-returncode}"
+    text = client_error_text(stdout, stderr)
+    return next((name for name, pattern in INFRASTRUCTURE_FAILURES if pattern.search(text)), None)
+
+
+def launch_role_with_breaker(state: dict[str, Any], manifest: dict[str, Any], role: str, prompt: str,
+                             *, retry_problem: Any = None, **kwargs: Any) -> dict[str, Any]:
+    """Relaunch a role after a known infrastructure failure without spending an attempt. The
+    same failure twice in a row, or MAX_INFRASTRUCTURE_STREAK failures in a row, stop the run."""
+    while True:
+        try:
+            receipt = launch_role(state, manifest, role, prompt, **kwargs)
+        except InfrastructureFailure as failure:
+            streak = [*state.get("infrastructure_streak", []), failure.signature]
+            state["infrastructure_streak"] = streak
+            save_state(state, "infrastructure_failure", role=role, signature=failure.signature,
+                       attempt=state["attempt"])
+            if (len(streak) > 1 and streak[-1] == streak[-2]) or len(streak) >= MAX_INFRASTRUCTURE_STREAK:
+                state["infrastructure_stop"] = failure.signature
+                if role == "maker":
+                    # No maker finished, so resume reruns this attempt instead of starting the next.
+                    state["repeat_attempt"] = True
+                repeated = ("the same infrastructure failure twice in a row" if streak[-1] == streak[-2]
+                            else f"{len(streak)} infrastructure failures in a row")
+                raise RunError(f"{repeated} ({failure.signature}) in the {role}: {failure}; no attempt "
+                               "was spent; fix the host, network or client sign-in, then resume") from failure
+            problem = retry_problem() if retry_problem is not None else None
+            if problem:
+                raise RunError(f"{failure}; not relaunched because {problem}") from failure
+            continue
+        if state.pop("infrastructure_streak", None) is not None:
+            save_state(state)
+        return receipt
 
 
 def role_prompt(state: dict[str, Any], manifest: dict[str, Any], role: str,
@@ -1979,12 +2064,13 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
     worktree = Path(state["worktree"])
     max_attempts = int(manifest["limits"]["max_attempts"])
     prior = state.get("last_checker_receipt")
-    while state["attempt"] < max_attempts or pending_candidate(state):
+    while state["attempt"] < max_attempts or pending_candidate(state) or state.get("repeat_attempt"):
         raise_if_stopped(Path(state["state_path"]).parent)
         if remaining_seconds(state, manifest) <= 0:
             raise RunError("wall-clock budget exhausted")
         if not pending_candidate(state):
-            state["attempt"] += 1
+            if not state.pop("repeat_attempt", False):
+                state["attempt"] += 1
             state["status"] = "making"
             # Resume rejects a `making` checkpoint whose start differs from HEAD. Save this
             # attempt's start with it, so a stop while the attempt waits for its Git phase
@@ -2006,8 +2092,16 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
                 save_state(state)
                 maker_error: Exception | None = None
                 maker: dict[str, Any] | None = None
+                def maker_retry_problem() -> str | None:
+                    # Relaunch only from the same clean start; anything else needs a person.
+                    if git(worktree, "rev-parse", "HEAD") != before_head or not clean(worktree):
+                        return "the failed maker changed the worktree"
+                    return None
+
                 try:
-                    maker = launch_role(state, manifest, "maker", role_prompt(state, manifest, "maker", prior))
+                    maker = launch_role_with_breaker(state, manifest, "maker",
+                                                     role_prompt(state, manifest, "maker", prior),
+                                                     retry_problem=maker_retry_problem)
                 except Exception as exc:
                     maker_error = exc
                 after_head = git(worktree, "rev-parse", "HEAD")
@@ -2086,9 +2180,10 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             checker_error: Exception | None = None
             checker: dict[str, Any] | None = None
             try:
-                checker = launch_role(state, manifest, "checker",
-                                      role_prompt(state, manifest, "checker", verify_output=verify_output),
-                                      role_worktree=checker_worktree)
+                checker = launch_role_with_breaker(
+                    state, manifest, "checker",
+                    role_prompt(state, manifest, "checker", verify_output=verify_output),
+                    role_worktree=checker_worktree)
             except Exception as exc:
                 checker_error = exc
             validate_git_unchanged(
@@ -2570,6 +2665,9 @@ def resume(args: argparse.Namespace) -> int:
                 stop_file.unlink()
             state["status"] = "resuming"
             state["reason"] = None
+            # Resuming is the operator's answer to a stopped breaker: count afresh.
+            state.pop("infrastructure_streak", None)
+            state.pop("infrastructure_stop", None)
             state["resumed_epoch"] = time.time()
             state["scope"] = normalized_scope(manifest["scope"])
             state["controller_pid"] = os.getpid()

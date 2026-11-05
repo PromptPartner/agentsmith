@@ -40,6 +40,14 @@ make_fake() {
     '}' \
     'listed_paths() { git "$@" HEAD~1 HEAD | python3 -c "import json, sys; print(json.dumps(sys.stdin.buffer.read().decode().splitlines()))"; }' \
     'if [ "$mode" = malformed ]; then emit "{}"; exit 0; fi' \
+    'if [ "$mode" = infra-once ] || [ "$mode" = infra-always ] || [ "$mode" = crash-unknown ]; then' \
+    '  infra_count=0; [ -f "$fake_root/infra-count" ] && infra_count="$(<"$fake_root/infra-count")"' \
+    '  infra_count=$((infra_count+1)); printf "%s" "$infra_count" > "$fake_root/infra-count"' \
+    '  if [ "$mode" = crash-unknown ]; then echo "something the controller does not know" >&2; exit 1; fi' \
+    '  if [ "$mode" = infra-always ] || [ "$infra_count" -eq 1 ]; then' \
+    '    printf "%s\n" "{\"type\":\"error\",\"message\":\"stream disconnected before completion: error sending request for url (https://chatgpt.com/backend-api/codex/responses)\"}"; exit 1' \
+    '  fi' \
+    'fi' \
     'if [[ "$prompt" == *"independent checker"* ]]; then' \
     '  if [ -n "$receipt" ]; then for ((i=0; i<${#args[@]}; i++)); do if [ "${args[$i]}" = --sandbox ] && [ "${args[$((i+1))]}" != read-only ]; then exit 42; fi; done; fi' \
     '  if [ "$mode" = mutate-checker ]; then printf bad > src/checker.txt; fi' \
@@ -1050,6 +1058,64 @@ fi
 assert 'the maker did plant files in the shared folders' test -s "$repo/../fake/planted"
 assert 'the checker saw none of them' test ! -e "$repo/../fake/checker-saw-plant"
 while IFS= read -r planted_file; do rm -f "$planted_file"; done < "$repo/../fake/planted"
+
+echo 'autonomous-run — infrastructure failures and the circuit breaker'
+repo="$(new_repo infra-once)"; make_fake "$repo/../fake"; manifest "$repo" infra-once
+python3 - "$repo/.harness/runs/infra-once.json" <<'PY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); v = json.loads(p.read_text())
+v['limits']['max_attempts'] = 1
+p.write_text(json.dumps(v, indent=2) + '\n')
+PY
+git -C "$repo" add . && git -C "$repo" commit -qm 'test: one attempt only'
+if (cd "$repo" && invoke "$repo" infra-once start .harness/runs/infra-once.json >../out 2>../err); then
+  ok 'one network failure before a receipt does not use up the only attempt'
+else bad 'one infrastructure failure ended a one-attempt run'; sed -n '1,6p' "$repo/../err"; fi
+assert 'the infrastructure retry stayed in attempt 1 and is recorded' python3 - "$repo/.git/agentsmith-runs/infra-once" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1]); state = json.load(open(root / 'state.json'))
+events = [json.loads(line) for line in open(root / 'events.jsonl')]
+failures = [e for e in events if e['event'] == 'infrastructure_failure']
+assert state['status'] == 'accepted' and state['attempt'] == 1, (state['status'], state['attempt'])
+assert [e['signature'] for e in failures] == ['network'], failures
+assert 'infrastructure_streak' not in state
+PY
+
+repo="$(new_repo infra-always)"; make_fake "$repo/../fake"; manifest "$repo" infra-always
+python3 - "$repo/.harness/runs/infra-always.json" <<'PY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); v = json.loads(p.read_text())
+v['limits']['max_attempts'] = 1
+p.write_text(json.dumps(v, indent=2) + '\n')
+PY
+git -C "$repo" add . && git -C "$repo" commit -qm 'test: one attempt only'
+if (cd "$repo" && invoke "$repo" infra-always start .harness/runs/infra-always.json >../out 2>../err); then
+  bad 'a repeating infrastructure failure was accepted'
+else ok 'the same infrastructure failure twice in a row stops the run'; fi
+assert 'the stop names the failure and says no attempt was spent' grep -q 'same infrastructure failure twice in a row (network).*no attempt was spent' "$repo/../err"
+assert 'the breaker stops after two launches, not three attempts' test "$(cat "$repo/../fake/infra-count")" = 2
+assert 'the stopped run records the signature for the work graph' python3 - "$repo/.git/agentsmith-runs/infra-always/state.json" <<'PY'
+import json, sys
+state = json.load(open(sys.argv[1]))
+assert state['status'] == 'escalated' and state['attempt'] == 1, (state['status'], state['attempt'])
+assert state['infrastructure_stop'] == 'network', state.get('infrastructure_stop')
+PY
+if (cd "$repo" && invoke "$repo" accept resume infra-always >../resume-out 2>../resume-err); then
+  ok 'after the operator fixes the cause, resume reruns the same attempt'
+else bad 'resume after a breaker stop spent the only attempt'; sed -n '1,4p' "$repo/../resume-err"; fi
+assert 'the resumed run is accepted in attempt 1' python3 - "$repo/.git/agentsmith-runs/infra-always/state.json" <<'PY'
+import json, sys
+state = json.load(open(sys.argv[1]))
+assert (state['status'], state['attempt']) == ('accepted', 1), (state['status'], state['attempt'])
+assert 'infrastructure_stop' not in state and 'repeat_attempt' not in state
+PY
+
+repo="$(new_repo crash-unknown)"; make_fake "$repo/../fake"; manifest "$repo" crash-unknown
+if (cd "$repo" && invoke "$repo" crash-unknown start .harness/runs/crash-unknown.json >../out 2>../err); then
+  bad 'an unknown client failure was accepted'
+else ok 'an unknown client failure is an ordinary failure'; fi
+assert 'an unknown failure is not retried as infrastructure' test "$(cat "$repo/../fake/infra-count")" = 1
+assert 'an unknown failure records no infrastructure signature' bash -c "! grep -q infrastructure '$repo/.git/agentsmith-runs/crash-unknown/events.jsonl'"
 
 echo 'autonomous-run — budgets are explicit or the run does not start'
 repo="$(new_repo zero-budget)"; make_fake "$repo/../fake"; manifest "$repo" zero-budget

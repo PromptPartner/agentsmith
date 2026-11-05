@@ -663,6 +663,61 @@ class AutonomousStateTests(unittest.TestCase):
             self.assertFalse(Path(checker[key]).exists(), f"{key} outlived the checker")
         self.assertLess(len(checker["CLAUDE_CODE_TMPDIR"]), 64, "a long path makes Claude fall back")
 
+    def test_infrastructure_failures_come_from_a_known_list_and_never_from_model_output(self) -> None:
+        signature = CONTROLLER.infrastructure_signature
+        codex_error = json.dumps({"type": "error", "message": "stream disconnected before completion"})
+        claude_error = json.dumps({"type": "result", "is_error": True,
+                                   "result": "Invalid API key · Please run /login"})
+        self.assertEqual(signature(1, codex_error, ""), "network")
+        self.assertEqual(signature(1, claude_error, ""), "authentication")
+        self.assertEqual(signature(1, "", "bwrap: setting up uid map: Permission denied\n"), "sandbox-start")
+        self.assertEqual(signature(101, "", "thread 'main' panicked at src/main.rs:1:1"), "client-panic")
+        self.assertEqual(signature(-9, "", ""), "client-killed-by-signal-9")
+        # The same words in model or tool output are not the client's failure.
+        tool_output = json.dumps({"type": "item.completed", "item": {
+            "type": "command_execution", "aggregated_output": "HTTP 401 Unauthorized; ECONNREFUSED"}})
+        claude_ok = json.dumps({"type": "result", "is_error": False, "result": "fixed the 401 Unauthorized bug"})
+        for stdout in (tool_output, claude_ok, "error sending request for url (plain text)"):
+            with self.subTest(stdout=stdout[:40]):
+                self.assertIsNone(signature(1, stdout, ""))
+        self.assertIsNone(signature(1, "", "something the controller does not know"))
+
+    def test_circuit_breaker_bounds_relaunches_and_respects_a_changed_worktree(self) -> None:
+        receipt = {"status": "completed"}
+
+        def run_breaker(failures: list[str | None], **kwargs: Any) -> tuple[Any, list[str], dict[str, Any]]:
+            sequence = iter(failures)
+            launches: list[str] = []
+
+            def fake_launch(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+                failure = next(sequence)
+                launches.append(failure or "ok")
+                if failure:
+                    raise CONTROLLER.InfrastructureFailure(f"codex maker exited 1 ({failure})", failure)
+                return receipt
+
+            state = {"attempt": 1}
+            with mock.patch.object(CONTROLLER, "launch_role", side_effect=fake_launch), \
+                    mock.patch.object(CONTROLLER, "save_state"):
+                try:
+                    outcome: Any = CONTROLLER.launch_role_with_breaker(state, {}, "maker", "p", **kwargs)
+                except CONTROLLER.RunError as exc:
+                    outcome = exc
+            return outcome, launches, state
+
+        outcome, launches, state = run_breaker(["network", None])
+        self.assertIs(outcome, receipt)
+        self.assertNotIn("infrastructure_streak", state, "a success ends the streak")
+        outcome, launches, state = run_breaker(["network", "network", None])
+        self.assertIn("same infrastructure failure twice in a row (network)", str(outcome))
+        self.assertEqual((launches, state["infrastructure_stop"]), (["network", "network"], "network"))
+        outcome, launches, _ = run_breaker(["network", "overloaded", "network", None])
+        self.assertIn("3 infrastructure failures in a row (network)", str(outcome))
+        self.assertEqual(len(launches), 3)
+        outcome, launches, _ = run_breaker(["network", None], retry_problem=lambda: "the failed maker changed the worktree")
+        self.assertIn("not relaunched because the failed maker changed the worktree", str(outcome))
+        self.assertEqual(launches, ["network"])
+
     def test_orphaned_group_is_live_even_after_its_leader_exits(self) -> None:
         if os.name == 'nt':
             self.skipTest('POSIX process group probe')

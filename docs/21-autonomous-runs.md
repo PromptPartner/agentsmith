@@ -244,6 +244,31 @@ and supply an empty strict MCP configuration. The [Claude hook reference](https:
 documents the session override. Managed host policy remains part of the trusted native-client boundary;
 generated settings are offline evidence, not proof of native tool denial.
 
+### Infrastructure failures and the circuit breaker
+
+A role can fail for a reason that says nothing about the work: the client lost its network
+connection, its sign-in expired, the service was overloaded, its sandbox did not start, or the
+client crashed. When a role exits without a receipt and the failure matches a short, fixed list,
+the controller relaunches the same role in the same attempt, so the failure does not use up one
+of the three attempts. The list (`INFRASTRUCTURE_FAILURES` in the controller) is matched only
+against the client's standard error and its own error records (a Codex `error` or `turn.failed`
+event, a Claude `result` marked `is_error`), never against model or tool output. A client killed by
+a signal it did not get from the controller also counts. Anything not on the list is an ordinary
+failure and escalates as before.
+
+The breaker stops the run, as `escalated`, when the same failure happens twice in a row or after
+three infrastructure failures in a row. The message names the failure and says that no attempt
+was spent; the state records it as `infrastructure_stop`, and the events file has one
+`infrastructure_failure` event per failure. A maker is relaunched only from the same clean start:
+if the failed maker moved `HEAD` or left changes, the run escalates for review instead. Fix the
+cause, then `resume`; resuming starts the count again and reruns the same attempt, so the
+failure still costs no attempt. In a work graph, a child stopped this way
+halts new child launches (see [parallel work graphs](24-parallel-work-graphs.md)).
+
+Repeated permission denials inside a role do not stop it yet. Claude reports denials only in
+its final result unless the run streams events, and Codex documents no denial event, so the
+controller cannot count them while the role runs.
+
 ## Operations and recovery
 
 The controller and manifest template are scaffolded only for `software-dev` projects in v1; the

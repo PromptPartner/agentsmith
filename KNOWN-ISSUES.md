@@ -3,6 +3,20 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [x] 2026-11-05 — Autonomous runs had no circuit breaker for infrastructure failures. A role
+  client that lost its network or sign-in ended the whole run at once, and nothing told a work
+  graph to stop starting children on the same failing host. Now a known failure (a fixed list
+  matched against the client's own error output) relaunches the role without spending an attempt,
+  the same failure twice in a row stops the run with `infrastructure_stop`, `resume` reruns that
+  attempt, and a graph then starts no new child. Red first: the `infra-once` and `infra-always` fake-client cases and
+  `test_repeated_infrastructure_failure_stops_new_child_launches` (child `b` started after the
+  breaker stopped `a`) failed before and pass after; `crash-unknown` shows unknown failures are
+  unchanged.
+- [ ] 2026-11-05 — Repeated permission denials inside a role do not stop the role. Claude Code's
+  `json` output lists `permission_denials` only in the final result, and per-denial
+  `permission_denied` messages need `--output-format stream-json --verbose`, a launch change that
+  needs native qualification. Codex `exec --json` documents no denial event (checked
+  2026-11-05). Until then, the attempt cap and wall clock bound a role that keeps being denied.
 - [x] 2026-11-05 — Autonomous-run roles shared writable temporary and cache folders. Every
   verifier used the fixed home `/tmp/agentsmith-verifier-home` and the controller's `TMPDIR`, and
   every checker inherited the maker's `TMPDIR`, `XDG_CACHE_HOME` and Claude Code's per-user

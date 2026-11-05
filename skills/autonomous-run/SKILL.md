@@ -69,7 +69,10 @@ The controller creates an isolated local branch/worktree, launches a fresh maker
 receipt, scope and Git transition, then creates a disposable detached worktree for the sandboxed
 deterministic verifier and a fresh checker. A rejection becomes the next maker's input. Three
 failed attempts, invalid state, denied scope, immutable-deadline or reported-budget exhaustion,
-Git metadata drift, protected verification edits, or checker mutation escalates instead of widening authority. Verification
+Git metadata drift, protected verification edits, or checker mutation escalates instead of widening authority.
+A known infrastructure failure (network, sign-in, overload, sandbox start, client crash) relaunches
+the role without spending an attempt; the same failure twice in a row stops the run, and a work
+graph then starts no new child. Report the named failure; the operator fixes it and resumes. Verification
 fails closed unless macOS `sandbox-exec` or Linux `bubblewrap` is available. Before creating
 anything, `start` runs one trivial sandboxed command per role and one through the verifier
 sandbox; if the host cannot run them, it refuses and names the role and reason.
