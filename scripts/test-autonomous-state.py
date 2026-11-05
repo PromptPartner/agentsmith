@@ -1774,7 +1774,8 @@ class AutonomousStateTests(unittest.TestCase):
 
     def run_with_fake_roles(self, common: Path, *, max_attempts: int, checker_status: str,
                             stop_during_checker: bool = False,
-                            stop_maker_phase_wait_on_attempt: int = 0) -> tuple[int, dict[str, Any], list[str]]:
+                            stop_maker_phase_wait_on_attempt: int = 0,
+                            move_branch_after_verify: bool = False) -> tuple[int, dict[str, Any], list[str]]:
         """Drive the real attempt loop with Git and the roles replaced by fakes, so a stop can be
         delivered at an exact point of it."""
         directory = common / "controller"
@@ -1791,8 +1792,17 @@ class AutonomousStateTests(unittest.TestCase):
                     "scope": {"allowed_paths": ["a.txt"], "denied_paths": []},
                     "roles": {"maker": {"runtime": "claude"}, "checker": {"runtime": "claude"}}}
 
-        def fake_git(_repo: Path, *args: str, check: bool = True) -> str:
-            return head["value"] if args == ("rev-parse", "HEAD") else ""
+        def fake_git(repo: Path, *args: str, check: bool = True) -> str:
+            if args == ("rev-parse", "HEAD") or args[:2] == ("rev-parse", "--verify"):
+                # The disposable checker worktree stays at the candidate; the run's own worktree
+                # and branch follow `head`.
+                return head["value"] if Path(repo) == worktree else state["candidate_commit"]
+            return ""
+
+        def fake_verify(*_args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+            if move_branch_after_verify:
+                head["value"] = "f" * 40  # a late commit lands after the verifier ran
+            return verified
 
         @contextlib.contextmanager
         def fake_phase(_repo: Path, phase: str, **_kwargs: Any):
@@ -1810,7 +1820,8 @@ class AutonomousStateTests(unittest.TestCase):
                 if stop_during_checker:
                     # Not os.kill: on Windows it ends this process instead of calling the handler.
                     CONTROLLER.signal.raise_signal(CONTROLLER.signal.SIGTERM)
-            return {"status": status, "summary": role, "commit": head["value"],
+            return {"status": status, "summary": role,
+                    "commit": head["value"] if role == "maker" else state["candidate_commit"],
                     "changed_paths": ["a.txt"], "evidence": ["fake evidence"], "unresolved": [],
                     "next_state": ""}
 
@@ -1831,7 +1842,7 @@ class AutonomousStateTests(unittest.TestCase):
                 "verification_binding": lambda *_args: {},
                 "ignored_paths": lambda *_args: set(), "clean": lambda *_args: True,
                 "changed_paths": lambda *_args: ["a.txt"], "path_allowed": lambda *_args: True,
-                "sandboxed_verify": lambda *_args, **_kwargs: verified,
+                "sandboxed_verify": fake_verify,
                 "file_digest": lambda *_args: "0" * 64,
             }.items():
                 fakes.enter_context(mock.patch.object(CONTROLLER, name, side_effect=value))
@@ -1846,6 +1857,26 @@ class AutonomousStateTests(unittest.TestCase):
             outcome, durable, events = self.run_with_fake_roles(
                 Path(temporary), max_attempts=1, checker_status="accepted")
             self.assertEqual((outcome, durable["status"], events[-1]), (0, "accepted", "run_accepted"))
+
+    def test_a_commit_after_verification_refuses_acceptance(self) -> None:
+        # The checks passed at one commit; a run branch that moved afterwards would hand the
+        # operator unverified code under an "accepted" record.
+        with tempfile.TemporaryDirectory(prefix="agentsmith late commit ") as temporary:
+            outcome, durable, events = self.run_with_fake_roles(
+                Path(temporary), max_attempts=1, checker_status="accepted", move_branch_after_verify=True)
+            self.assertEqual((outcome, durable["status"]), (2, "escalated"))
+            self.assertNotIn("run_accepted", events)
+            self.assertNotIn("accepted_commit", durable)
+            self.assertIn("moved after its checks passed", durable["reason"])
+            self.assertIn("1" * 40, durable["reason"])
+            self.assertIn("f" * 40, durable["reason"])
+
+    def test_fake_roles_record_the_commit_their_checks_passed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith accepted binding ") as temporary:
+            _outcome, durable, _events = self.run_with_fake_roles(
+                Path(temporary), max_attempts=1, checker_status="accepted")
+            self.assertEqual(durable["accepted_commit"], "1" * 40)
+            self.assertEqual(durable["candidate_commit"], durable["accepted_commit"])
 
     def test_stop_before_the_acceptance_record_interrupts_the_run(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith stop before acceptance ") as temporary:

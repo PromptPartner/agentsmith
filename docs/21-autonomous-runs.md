@@ -73,6 +73,13 @@ to reject a change that is larger than the stated problem needs, and a red test 
 the wrong reason (a stub, an import error or an earlier gate instead of the bug's own failure
 message). Role exit codes are retained separately from structured receipts.
 
+Acceptance is bound to the exact commit the checks passed. Just before it records `accepted`,
+the controller confirms that the run branch and the run worktree's `HEAD` still point at that
+commit and that the worktree is clean. A commit that lands after the verifier started, for
+example from a process a role left running, refuses acceptance: the run escalates and names the
+checked commit and where the branch is now. `accepted_commit` in the run state, the
+`run_accepted` event and `candidate_commit` in the verification receipt all name that one commit.
+
 Trusted state stays in the controller's shared run directory. Each native role receives explicit
 write restrictions for that directory, the original contract, and the controller/launcher source
 folders. Codex uses a strict named filesystem permissions profile: the maker can write its

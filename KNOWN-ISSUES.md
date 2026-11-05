@@ -3,6 +3,14 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [x] 2026-11-05 — An autonomous run could record `accepted` for a commit that the run branch no
+  longer pointed at. Nothing compared the branch with the checked commit at acceptance, and a
+  commit made during verification was invisible to the checker's Git snapshot, which is taken
+  after the verifier. With the v0.5.0 controller, a fake maker's detached process committed while
+  the verifier ran and the run was accepted at the old commit. The controller now refuses
+  acceptance unless the branch, the worktree `HEAD` and a clean worktree all match the checked
+  commit. `test_a_commit_after_verification_refuses_acceptance` and the `late-commit` fake-client
+  case failed before the change and pass after.
 - [x] 2026-11-05 — Autonomous-run budgets failed open: `codex_goal_tokens` or `claude_max_usd` set
   to 0 or left out meant "no cap", and validation checked only attempts and wall time. With the
   v0.5.0 controller, a fake-client run with `codex_goal_tokens: 0` ran to acceptance. Now each

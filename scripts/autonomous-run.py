@@ -1100,6 +1100,20 @@ def verification_binding(state: dict[str, Any], manifest: dict[str, Any], head: 
     }
 
 
+def candidate_moved(worktree: Path, branch: str, commit: str) -> str | None:
+    """Why the run branch no longer shows exactly the commit its checks passed, if it does not.
+    A detached process left by a role, or anyone else, can commit after the verifier ran."""
+    head = git(worktree, "rev-parse", "HEAD", check=False)
+    tip = git(worktree, "rev-parse", "--verify", f"refs/heads/{branch}", check=False)
+    if head != commit or tip != commit:
+        return (f"candidate moved after its checks passed at {commit}: branch {branch} is at "
+                f"{tip or 'nothing'} and the run worktree at {head or 'nothing'}; operator review required")
+    if not clean(worktree):
+        return (f"run worktree changed after the checks passed at {commit}: it has uncommitted "
+                "changes; operator review required")
+    return None
+
+
 def acceptance_ready(verify_exit: int, checker: dict[str, Any]) -> bool:
     return (verify_exit == 0 and checker["status"] == "accepted"
             and any(item.strip() for item in checker["evidence"])
@@ -2052,6 +2066,9 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             proof["checker_status"] = checker["status"]
             write_json(proof_path, proof)
         if acceptance_ready(verify.returncode, checker):
+            moved = candidate_moved(worktree, state["branch"], checker_head)
+            if moved:
+                raise RunError(moved)
             # A stop that arrived before the acceptance record still interrupts the run.
             raise_if_stopped(Path(state["state_path"]).parent)
             state["status"] = "accepted"

@@ -75,6 +75,7 @@ make_fake() {
     '  if [ "$mode" = amend-history ]; then git commit --amend --no-edit >/dev/null' \
     '  else git commit -m "test(run): fake maker checkpoint" >/dev/null; fi' \
     '  if [ "$mode" = commit-then-wait ]; then sleep 20; fi' \
+    '  if [ "$mode" = late-commit ]; then python3 "$fake_root/late-commit.py" "$PWD"; fi' \
     '  if [ "$mode" = extra-ref ]; then git branch escaped-ref; fi' \
     '  if [ "$mode" = config-mutation ]; then git config --local agentsmith.escape true; fi' \
     '  if [ "$mode" = hook-mutation ]; then mkdir -p "$(git rev-parse --git-common-dir)/hooks"; printf bad > "$(git rev-parse --git-common-dir)/hooks/escaped"; fi' \
@@ -986,6 +987,42 @@ state = json.load(open(sys.argv[1]))
 assert state['status'] == 'accepted' and state['attempt'] == 1
 assert state['accepted_commit'] == state['candidate_commit']
 assert state['codex_tokens_used'] == 10
+PY
+
+echo 'autonomous-run — acceptance is bound to the commit the checks passed'
+repo="$(new_repo late-commit)"; make_fake "$repo/../fake"; manifest "$repo" late-commit
+# A process the maker detached outlives its process group and commits once verification starts.
+cat > "$repo/../fake/late-commit.py" <<'PY'
+import subprocess, sys, time
+from pathlib import Path
+if len(sys.argv) == 2:
+    subprocess.Popen([sys.executable, __file__, sys.argv[1], 'detached'], start_new_session=True,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    raise SystemExit(0)
+worktree = Path(sys.argv[1])
+checker = worktree.with_name(worktree.name + '-check-1')
+deadline = time.monotonic() + 60
+while not checker.exists() and time.monotonic() < deadline:
+    time.sleep(0.02)
+subprocess.run(['git', '-C', str(worktree), 'commit', '-q', '--allow-empty', '-m', 'late unverified commit'])
+Path(sys.argv[1] + '.late-done').write_text('done')
+PY
+python3 - "$repo/.harness/runs/late-commit.json" <<'PY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); v = json.loads(p.read_text())
+v['verify']['command'] = 'sleep 3 && test -f src/change.txt'
+p.write_text(json.dumps(v, indent=2) + '\n')
+PY
+git -C "$repo" add . && git -C "$repo" commit -qm 'test: slow verifier'
+if (cd "$repo" && invoke "$repo" late-commit start .harness/runs/late-commit.json >../out 2>../err); then
+  bad 'a run whose branch moved after verification was accepted'
+else ok 'a commit after verification refuses acceptance'; fi
+assert 'the late commit landed during verification' test -f "$repo-late-commit.late-done"
+assert 'refusal names the commit the checks passed' grep -q 'candidate moved after its checks passed at' "$repo/../err"
+assert 'refused run records no accepted commit' python3 - "$repo/.git/agentsmith-runs/late-commit/state.json" <<'PY'
+import json, sys
+state = json.load(open(sys.argv[1]))
+assert state['status'] == 'escalated' and 'accepted_commit' not in state, state.get('status')
 PY
 
 echo 'autonomous-run — budgets are explicit or the run does not start'
