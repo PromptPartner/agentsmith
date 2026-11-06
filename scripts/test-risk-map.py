@@ -252,6 +252,17 @@ class RangeTests(RepoCase):
         head = self.repo.commit({POLICY: self.base_policy}, "restore the policy")
         self.assertEqual(risk_map.classify_range(self.repo.root, base, head)["tier"], "C")
 
+    def test_policy_that_is_a_symlink_at_base_fails_closed(self) -> None:
+        # Git stores a symlink as a blob; its target text must not be read as the policy.
+        self.repo.commit({"docs/a.md": b"a\n"}, "docs")
+        link = subprocess.run(["git", "-C", str(self.repo.root), "hash-object", "-w", "--stdin"], input=b"other.json",
+                              capture_output=True, check=True).stdout.decode("ascii").strip()
+        self.repo.git("update-index", "--add", "--cacheinfo", f"120000,{link},{POLICY}")
+        base = self.repo.commit(message="policy as a link")
+        head = self.repo.commit({"docs/a.md": b"b\n"}, "docs")
+        with self.assertRaisesRegex(risk_map.PolicyError, "not a regular file"):
+            risk_map.classify_range(self.repo.root, base, head)
+
     def test_policy_absent_at_base_is_human(self) -> None:
         base = self.repo.commit({"docs/a.md": b"a\n"}, "base")
         head = self.repo.commit({POLICY: policy({"paths": ["**"], "tier": "A"}), "docs/a.md": b"b\n"}, "add policy")

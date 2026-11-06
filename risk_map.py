@@ -203,7 +203,8 @@ def classify_range(repo: Path, base: str, head: str) -> dict[str, Any]:
     data = None
     if listing:
         mode_type_id = listing.split(b"\t", 1)[0].split()
-        if len(mode_type_id) != 3 or mode_type_id[1] != b"blob":
+        # A symlink is a blob too (mode 120000); only a regular file is a policy.
+        if len(mode_type_id) != 3 or not mode_type_id[0].startswith(b"100") or mode_type_id[1] != b"blob":
             raise PolicyError(f"{POLICY_PATH} at the base commit is not a regular file")
         blob = mode_type_id[2].decode("ascii")
         data = _git(repo, "cat-file", "blob", blob)
