@@ -387,6 +387,43 @@ class RangeTests(RepoCase):
         self.assertEqual((report["tier"], report["paths"]), ("human", []))
 
 
+class HistoryTests(RepoCase):
+    """Pushing base..head publishes every commit in it, not only the endpoint diff."""
+
+    def test_a_floor_path_added_then_removed_still_counts(self) -> None:
+        base = self.base_with_policy()
+        self.repo.commit({"secrets/fixture.txt": b"TEST_ONLY_NOT_A_CREDENTIAL\n"}, "floor")
+        head = self.repo.commit({"secrets/fixture.txt": None, "docs/result.md": b"result\n"}, "hide it")
+        self.assertEqual(risk_map.classify_range(self.repo.root, base, head)["tier"], "A")
+        report = risk_map.classify_history(self.repo.root, base, head)
+        self.assertEqual(report["tier"], "human")
+        self.assertEqual([row["path"] for row in report["paths"]], ["docs/result.md", "secrets/fixture.txt"])
+        self.assertEqual((report["base"], report["head"], report["policy"]["path"]), (base, head, POLICY))
+
+    def test_a_rename_inside_the_history_counts_both_paths(self) -> None:
+        base = self.base_with_policy()
+        self.repo.move("src/auth/login.py", "docs/login.py")
+        self.repo.commit(message="move auth into docs")
+        self.repo.move("docs/login.py", "src/auth/login.py")
+        head = self.repo.commit({"docs/a.md": b"changed\n"}, "move it back")
+        self.assertEqual(risk_map.classify_range(self.repo.root, base, head)["tier"], "A")
+        report = risk_map.classify_history(self.repo.root, base, head)
+        self.assertEqual((report["tier"], report["lenses"]), ("C", ["security"]))
+        self.assertIn("docs/login.py", [row["path"] for row in report["paths"]])
+
+    def test_each_side_of_a_merge_counts(self) -> None:
+        base = self.base_with_policy()
+        self.repo.git("checkout", "-q", "-b", "side")
+        self.repo.commit({".github/workflows/ci.yml": b"on: push\n"}, "side workflow")
+        self.repo.commit({".github/workflows/ci.yml": None}, "side removes it")
+        self.repo.git("checkout", "-q", "main")
+        self.repo.commit({"docs/a.md": b"main\n"}, "main change")
+        self.repo.git("merge", "-q", "--no-edit", "side")
+        report = risk_map.classify_history(self.repo.root, base, "HEAD")
+        self.assertEqual(report["tier"], "human")
+        self.assertIn(".github/workflows/ci.yml", [row["path"] for row in report["paths"]])
+
+
 class CliTests(RepoCase):
     def test_json_is_byte_identical_on_every_host(self) -> None:
         base = self.base_with_policy()

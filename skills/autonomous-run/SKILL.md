@@ -133,9 +133,9 @@ in an attended session, with one yes from the operator:
    `gh pr create --base <base-branch> --head agentsmith/<run-id> --title "<title>" --body-file <file>`.
 6. Run `agentsmith ci watch --pr <number>` and report its one end state and next step. Do not fix,
    rerun or comment on CI from this step.
-7. After a green watch, run `deliver <run-id> --eligibility --sha <accepted-sha>` and report the
-   eligibility line. It is information only. A human merges; never merge, approve or enable
-   auto-merge from this step.
+7. After a green watch, run `deliver <run-id> --eligibility --sha <accepted-sha> --pr <number>`
+   and report the eligibility line. It is information only. A human merges; never merge, approve
+   or enable auto-merge from this step.
 
 ## Report
 

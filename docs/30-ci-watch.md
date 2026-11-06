@@ -66,7 +66,8 @@ is not counted as flaky: the base may be the difference. A rerun needs the opera
 ## Report
 
 `--json` prints one line of ASCII JSON with sorted keys: `state`, `exit_code`, `next_step`,
-`repo`, `pr`, `sha`, `base`, `elapsed_seconds`, `schema_version`, and `runs`, where each run has
+`repo`, `pr`, `sha`, `base`, `branch` (the pull request's head branch; `null` for `--sha`),
+`elapsed_seconds`, `schema_version`, and `runs`, where each run has
 its `id`, `workflow`, `event`, `attempt`, `status`, `conclusion` and `failing_jobs` (each with
 `id`, `name` and `category`).
 

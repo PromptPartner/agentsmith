@@ -3,12 +3,14 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -31,6 +33,12 @@ FAKE_CLIENT = textwrap.dedent('''\
     prompt = argv[-1]
     receipt_path = pathlib.Path(argv[argv.index("-o") + 1]) if "-o" in argv else None
     checker = "You are the independent checker" in prompt
+    if not checker and "Fixture: commit a floor path first" in pathlib.Path("docs/specs/task.md").read_text():
+        pathlib.Path("secrets").mkdir(exist_ok=True)
+        pathlib.Path("secrets/fixture.txt").write_text("TEST_ONLY_NOT_A_CREDENTIAL\\n", encoding="utf-8")
+        subprocess.run(["git", "add", "secrets/fixture.txt"], check=True)
+        subprocess.run(["git", "commit", "-qm", "fixture: floor path"], check=True)
+        subprocess.run(["git", "rm", "-q", "secrets/fixture.txt"], check=True)
     if not checker:
         pathlib.Path("src").mkdir(exist_ok=True)
         pathlib.Path("src/change.txt").write_text("fixed\\n", encoding="utf-8")
@@ -49,6 +57,32 @@ FAKE_CLIENT = textwrap.dedent('''\
         print(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 7, "output_tokens": 3}}))
     else:
         print(json.dumps({"type": "result", "total_cost_usd": 0.25, "structured_output": receipt}))
+''')
+
+# A read-only gh: one pull request whose head is the accepted commit on agentsmith/deliver, one green run.
+FAKE_GH = textwrap.dedent('''\
+    #!/usr/bin/env python3
+    import json, pathlib, sys
+    args = sys.argv[1:]
+    with (pathlib.Path(__file__).parent / "gh.log").open("a", encoding="utf-8") as log:
+        log.write(json.dumps(args) + "\\n")
+    run = {"id": 101, "name": "verify", "workflow_id": 1, "head_sha": "@SHA@", "head_branch": "agentsmith/deliver",
+           "head_repository": {"full_name": "fixture/deliver"}, "status": "completed", "conclusion": "success",
+           "event": "pull_request", "run_attempt": 1}
+    job = {"id": 201, "name": "test", "status": "completed", "conclusion": "success", "steps": []}
+    if args[:2] == ["auth", "status"]:
+        print("logged in")
+    elif args[:2] == ["repo", "view"]:
+        print(json.dumps({"nameWithOwner": "fixture/deliver", "defaultBranchRef": {"name": "main"}}))
+    elif args[:2] == ["pr", "view"]:
+        print(json.dumps({"headRefOid": "@SHA@", "headRefName": "agentsmith/deliver", "baseRefName": "main",
+                          "mergeable": "MERGEABLE", "headRepository": {"nameWithOwner": "fixture/deliver"}}))
+    elif args[:1] == ["api"] and "/actions/runs?" in args[-1]:
+        print(json.dumps([{"workflow_runs": [run], "total_count": 1}]))
+    elif args[:1] == ["api"] and "/jobs?" in args[-1]:
+        print(json.dumps([{"jobs": [job], "total_count": 1}]))
+    else:
+        sys.exit("fake gh refuses: " + " ".join(args))
 ''')
 
 HEX40 = re.compile(r"\b[0-9a-f]{40}\b")
@@ -84,7 +118,8 @@ class DeliverTests(unittest.TestCase):
         return subprocess.run(["git", *args], cwd=repo, env=self.env, text=True, capture_output=True,
                               check=True).stdout.strip()
 
-    def accepted_run(self, *, policy_tier: str = "B", declared: str | None = None, run_id: str = "deliver") -> Path:
+    def accepted_run(self, *, policy_tier: str = "B", declared: str | None = None, run_id: str = "deliver",
+                     spec_note: str = "") -> Path:
         origin = self.root / "origin.git"
         subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], env=self.env, check=True)
         repo = self.root / "repo"
@@ -95,7 +130,8 @@ class DeliverTests(unittest.TestCase):
         (repo / "docs/specs").mkdir(parents=True)
         (repo / "docs/specs/task.md").write_text(
             "---\nstatus: accepted\ndecision_ticket: DEC-1\naccepted_by: Test Operator\n"
-            "accepted_at: 2026-11-06\n---\n# Spec\nMake src/change.txt hold the fixed value.\n", encoding="utf-8")
+            "accepted_at: 2026-11-06\n---\n# Spec\nMake src/change.txt hold the fixed value.\n" + spec_note,
+            encoding="utf-8")
         (repo / "README.md").write_text("fixture\n", encoding="utf-8")
         (repo / ".harness").mkdir()
         (repo / ".harness/risk-policy.json").write_text(json.dumps(
@@ -166,18 +202,36 @@ class DeliverTests(unittest.TestCase):
         self.assertIn(f"git push origin {accepted}:refs/heads/agentsmith/deliver", text.stdout)
         self.assertIn(report["body"], text.stdout)
 
-    def test_eligibility_after_ci_is_yes_only_when_every_fact_is_met(self) -> None:
+    def pushed_and_calibrated(self) -> tuple[Path, str]:
+        """An A-tier accepted run, calibrated, pushed to a remote that reads as github.com/fixture/deliver."""
         repo = self.accepted_run(policy_tier="A")
         accepted = self.state(repo)["accepted_commit"]
         CONTROLLER.write_json(CONTROLLER.calibration_path(repo, "claude", "fixture-model", "high"),
                               {"status": "passed", "calibrated_at": "2026-11-06T09:00:00+00:00",
                                "client_version": "fixture"})
-        reports = {}
-        for state in ("green", "red-at-diff", "flaky"):
-            path = self.root / f"ci-{state}.json"
-            path.write_text(json.dumps({"state": state, "sha": accepted, "exit_code": 0}), encoding="utf-8")
-            reports[state] = path
-        result = self.deliver(repo, "--eligibility", "--sha", accepted, "--ci-report", str(reports["green"]), "--json")
+        # Git rewrites the GitHub address to the local bare origin, so nothing reaches the network.
+        self.git(repo, "config", f"url.{self.root / 'origin.git'}.insteadOf", "https://github.com/fixture/deliver.git")
+        self.git(repo, "remote", "set-url", "origin", "https://github.com/fixture/deliver.git")
+        self.git(repo, "push", "-q", "origin", f"{accepted}:refs/heads/agentsmith/deliver")
+        return repo, accepted
+
+    def ci_report(self, accepted: str, name: str, **fields: object) -> str:
+        report = {"state": "green", "sha": accepted, "repo": "fixture/deliver", "branch": "agentsmith/deliver",
+                  "pr": 7, "exit_code": 0, **fields}
+        path = self.root / f"ci-{name}.json"
+        path.write_text(json.dumps({key: value for key, value in report.items() if value is not None}),
+                        encoding="utf-8")
+        return str(path)
+
+    def eligibility_line(self, repo: Path, *args: str) -> str:
+        result = self.deliver(repo, "--eligibility", *args, "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)["eligibility"]["line"]
+
+    def test_eligibility_after_ci_is_yes_only_when_every_fact_is_met(self) -> None:
+        repo, accepted = self.pushed_and_calibrated()
+        result = self.deliver(repo, "--eligibility", "--sha", accepted, "--ci-report",
+                              self.ci_report(accepted, "green"), "--json")
         self.assertEqual(result.returncode, 0, result.stderr)
         report = json.loads(result.stdout)
         self.assertTrue(report["eligibility"]["eligible"], report["eligibility"])
@@ -188,19 +242,61 @@ class DeliverTests(unittest.TestCase):
         self.assertIn("CI green for this commit: pending CI", pending["eligibility"]["line"])
         for state in ("red-at-diff", "flaky"):
             with self.subTest(ci=state):
-                again = json.loads(self.deliver(repo, "--eligibility", "--sha", accepted, "--ci-report",
-                                                str(reports[state]), "--json").stdout)
-                self.assertFalse(again["eligibility"]["eligible"])
-                self.assertIn(f"CI green for this commit: unmet ({state})", again["eligibility"]["line"])
+                line = self.eligibility_line(repo, "--sha", accepted, "--ci-report",
+                                             self.ci_report(accepted, state, state=state))
+                self.assertIn("Auto-merge eligible: no", line)
+                self.assertIn(f"CI green for this commit: unmet ({state})", line)
         # A report about another commit, or a SHA that is not the accepted commit, is not CI for this head.
-        other = self.root / "ci-other.json"
-        other.write_text(json.dumps({"state": "green", "sha": "f" * 40}), encoding="utf-8")
-        again = json.loads(self.deliver(repo, "--eligibility", "--sha", accepted, "--ci-report", str(other),
-                                        "--json").stdout)
-        self.assertIn("CI green for this commit: unmet (the report is for ffffffffffff)", again["eligibility"]["line"])
-        moved = self.deliver(repo, "--eligibility", "--sha", "e" * 40, "--ci-report", str(reports["green"]), "--json")
-        self.assertIn("head equals the accepted commit: unmet", json.loads(moved.stdout)["eligibility"]["line"])
-        self.assertFalse(json.loads(moved.stdout)["eligibility"]["eligible"])
+        line = self.eligibility_line(repo, "--sha", accepted, "--ci-report", self.ci_report(accepted, "other", sha="f" * 40))
+        self.assertIn("CI green for this commit: unmet (the report is for ffffffffffff)", line)
+        line = self.eligibility_line(repo, "--sha", "e" * 40, "--ci-report", self.ci_report(accepted, "green"))
+        self.assertIn("Auto-merge eligible: no", line)
+        self.assertIn("head equals the accepted commit: unmet", line)
+
+    def test_eligibility_needs_ci_for_this_branch_and_repository(self) -> None:
+        repo, accepted = self.pushed_and_calibrated()
+        for name, fields, detail in (
+                ("foreign-repo", {"repo": "unrelated/other"}, "the report is for repository unrelated/other"),
+                ("other-branch", {"branch": "unrelated-branch"}, "the report is for branch unrelated-branch"),
+                ("saved-without-fields", {"repo": None, "branch": None}, "the report does not name its repo")):
+            with self.subTest(report=name):
+                line = self.eligibility_line(repo, "--sha", accepted, "--ci-report", self.ci_report(accepted, name, **fields))
+                self.assertIn("Auto-merge eligible: no", line)
+                self.assertIn(f"CI green for this commit: unmet ({detail}", line)
+
+    def test_eligibility_needs_the_remote_branch_at_the_accepted_commit(self) -> None:
+        repo, accepted = self.pushed_and_calibrated()
+        clone = self.root / "other"
+        subprocess.run(["git", "clone", "-q", str(self.root / "origin.git"), str(clone)], env=self.env, check=True)
+        self.git(clone, "-c", "user.name=Other", "-c", "user.email=user@example.com", "commit", "-q",
+                 "--allow-empty", "-m", "force-pushed head")
+        self.git(clone, "push", "-q", "--force", "origin", "HEAD:refs/heads/agentsmith/deliver")
+        moved = self.git(clone, "rev-parse", "HEAD")
+        line = self.eligibility_line(repo, "--sha", accepted, "--ci-report", self.ci_report(accepted, "green"))
+        self.assertIn("Auto-merge eligible: no", line)
+        self.assertIn(f"head equals the accepted commit: unmet (origin/agentsmith/deliver is at {moved[:12]})", line)
+
+    def test_eligibility_reads_ci_for_the_pull_request_through_gh(self) -> None:
+        repo, accepted = self.pushed_and_calibrated()
+        fake = self.root / "bin"
+        fake.mkdir()
+        (fake / "gh").write_text(FAKE_GH.replace("@SHA@", accepted), encoding="utf-8")
+        (fake / "gh").chmod(0o755)
+        env = {**self.env, "PATH": f"{fake}{os.pathsep}{self.env['PATH']}"}
+
+        def eligibility(*args: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run([sys.executable, str(CONTROLLER_PATH), "deliver", "deliver", "--eligibility", "--sha",
+                                   accepted, *args, "--json"], cwd=repo, env=env, text=True, capture_output=True)
+
+        refused = eligibility()
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("--eligibility needs --pr <number> or --ci-report", refused.stderr)
+        result = eligibility("--pr", "7")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(json.loads(result.stdout)["eligibility"]["eligible"], result.stdout)
+        calls = [json.loads(line) for line in (fake / "gh.log").read_text(encoding="utf-8").splitlines()]
+        self.assertIn(["pr", "view", "7", "--repo", "fixture/deliver"], [call[:5] for call in calls])
+        self.assertFalse([call for call in calls if call[:2] in (["pr", "create"], ["pr", "merge"])])
 
     def test_each_eligibility_fact_is_listed_met_or_unmet(self) -> None:
         repo = self.accepted_run(policy_tier="B")
@@ -232,6 +328,54 @@ class DeliverTests(unittest.TestCase):
         report = json.loads(self.deliver(repo, "--dry-run", "--json").stdout)
         self.assertEqual(report["staleness"], {"base": "origin/main", "behind": 1, "applies": True})
         self.assertIn("1 commit behind origin/main", report["body"])
+
+    def add_evidence(self, repo: Path, *items: str) -> None:
+        """Extra checker evidence that quotes no log, so only its hash binds it, as at acceptance."""
+        run_dir = repo / ".git/agentsmith-runs/deliver"
+        receipt = run_dir / "attempt-1-checker-receipt.json"
+        value = json.loads(receipt.read_text(encoding="utf-8"))
+        value["evidence"] += list(items)
+        receipt.write_text(json.dumps(value), encoding="utf-8")
+        proof_path = Path(self.state(repo)["verification_receipt"])
+        proof = json.loads(proof_path.read_text(encoding="utf-8"))
+        proof["checker_receipt_sha256"] = hashlib.sha256(receipt.read_bytes()).hexdigest()
+        proof_path.write_text(json.dumps(proof), encoding="utf-8")
+
+    def test_the_pull_request_text_names_no_local_path_and_no_model_summary(self) -> None:
+        repo = self.accepted_run()
+        # Split so that the leak gate, which scans this file, does not read them as real home folders.
+        mac_home, linux_home = "/Users/" + "alice", "/home/" + "alice"
+        CONTROLLER.write_json(CONTROLLER.calibration_path(repo, "claude", "fixture-model", "high"),
+                              {"status": "passed", "calibrated_at": "2026-11-06T09:00:00+00:00"})
+        path = repo / ".git/agentsmith-runs/deliver/state.json"
+        state = json.loads(path.read_text(encoding="utf-8"))
+        state["maker_receipt"]["summary"] = f"see {mac_home}/private/strategy.md @alice private-doc:BOARD-42"
+        path.write_text(json.dumps(state), encoding="utf-8")
+        self.add_evidence(repo, f"edited :: {repo}/src/change.txt", f"notes in {linux_home}/notes.md")
+        result = self.deliver(repo, "--dry-run", "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        text = report["title"] + "\n" + report["body"]
+        for private in (mac_home, linux_home, "@alice", "private-doc:BOARD-42", "strategy.md"):
+            self.assertNotIn(private, text)
+        self.assertIn("edited :: src/change.txt", report["body"])
+        self.assertIn("notes in ~/notes.md", report["body"])
+        self.assertIn("- src/change.txt", report["body"], "the body lists the changed paths Git reports")
+        self.assertNotIn(str(self.root), result.stdout, "neither the text nor the JSON names a local path")
+
+    def test_refuses_pull_request_text_that_holds_a_likely_secret(self) -> None:
+        repo = self.accepted_run()
+        self.add_evidence(repo, "token seen: " + "gh" + "p_" + "A1b2" * 9)
+        self.refused(repo, "the pull-request body holds a likely secret (GitHub token)")
+
+    def test_the_tier_counts_every_commit_that_the_push_publishes(self) -> None:
+        repo = self.accepted_run(policy_tier="A", spec_note="Fixture: commit a floor path first.\n")
+        state = self.state(repo)
+        history = self.git(repo, "rev-list", "--count", f"{state['base_head']}..{state['accepted_commit']}")
+        self.assertEqual(history, "2", "the maker committed a floor path, then removed it")
+        report = json.loads(self.deliver(repo, "--dry-run", "--json").stdout)
+        self.assertEqual((report["tier"]["tier"], report["tier"]["floor_paths"]), ("human", ["secrets/fixture.txt"]))
+        self.assertIn("no floor path: unmet (secrets/fixture.txt)", report["eligibility"]["line"])
 
     # --- refusals ----------------------------------------------------------------------------
 
@@ -291,9 +435,44 @@ class DeliverTests(unittest.TestCase):
         proof_path.write_text(json.dumps(proof), encoding="utf-8")
         self.refused(repo, "the verification receipt does not record checked citations")
 
+    def test_refuses_a_remote_or_branch_name_that_a_shell_would_run(self) -> None:
+        repo = self.accepted_run()
+        # Git accepts both names; printed into a push command, each would run printf.
+        remote = "origin;printf${IFS}INJECTED;#"
+        self.git(repo, "remote", "add", remote, str(self.root / "origin.git"))
+        self.git(repo, "fetch", "-q", remote)
+        self.git(repo, "remote", "set-head", remote, "main")
+        self.refused(repo, "is not a safe remote name", "--remote", remote)
+        self.refused(repo, "is not a safe branch name", "--base-branch", "main;id")
+        branch = "agentsmith/deliver;printf${IFS}INJECTED"
+        self.git(repo, "update-ref", f"refs/heads/{branch}", self.state(repo)["accepted_commit"])
+        path = repo / ".git/agentsmith-runs/deliver/state.json"
+        state = json.loads(path.read_text(encoding="utf-8"))
+        state["branch"] = branch
+        path.write_text(json.dumps(state), encoding="utf-8")
+        self.refused(repo, "is not a safe branch name")
+
     def test_refuses_when_the_base_branch_is_unknown(self) -> None:
         repo = self.accepted_run()
         self.refused(repo, "refs/remotes/origin/release is missing", "--base-branch", "release")
+
+    def test_refuses_a_base_that_was_not_fetched_since_the_remote_moved(self) -> None:
+        repo = self.accepted_run()
+        clone = self.root / "other"
+        subprocess.run(["git", "clone", "-q", str(self.root / "origin.git"), str(clone)], env=self.env, check=True)
+        (clone / "src").mkdir()
+        (clone / "src/change.txt").write_text("conflicting value\n", encoding="utf-8")
+        self.git(clone, "add", ".")
+        self.git(clone, "-c", "user.name=Other", "-c", "user.email=user@example.com", "commit", "-qm", "conflict")
+        self.git(clone, "push", "-q", "origin", "main")
+        # The cached origin/main still predates the conflict, so it would read as applying cleanly.
+        self.refused(repo, "base not fresh: origin has main at")
+        self.assertIn("run git fetch origin", self.deliver(repo, "--dry-run").stderr)
+
+    def test_refuses_when_the_remote_cannot_be_reached(self) -> None:
+        repo = self.accepted_run()
+        self.git(repo, "remote", "set-url", "origin", str(self.root / "missing.git"))
+        self.refused(repo, "cannot reach origin")
 
     def test_refuses_when_the_accepted_diff_no_longer_applies(self) -> None:
         repo = self.accepted_run()
@@ -308,14 +487,85 @@ class DeliverTests(unittest.TestCase):
         self.refused(repo, "the accepted diff does not apply to origin/main")
 
 
+def command_words(node: ast.AST) -> list[str]:
+    """The literal words of a command argument. A string counts only when it reads as a command
+    (one word, or starting with `git ` or `gh `), so a message that mentions git push does not."""
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return [word for item in node.elts for word in command_words(item)]
+    if isinstance(node, ast.Starred):
+        return command_words(node.value)
+    if isinstance(node, ast.JoinedStr):  # an f-string: its literal parts, with a gap for each value
+        text = "".join(part.value if isinstance(part, ast.Constant) else " {} " for part in node.values)
+    elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+        text = node.value
+    else:
+        return []
+    words = text.split()
+    return words if len(words) == 1 or words[:1] in (["git"], ["gh"]) else []
+
+
+def push_or_pull_request_commands(source: str) -> list[tuple[int, str]]:
+    """Every call, list or tuple whose literal words run `git ... push` or `gh ... pr create|merge`.
+    A call counts its function name too, so a helper call such as git(repo, "push") is found."""
+    found: dict[int, str] = {}
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Call):
+            name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+            words = [name] + [word for arg in [*node.args, *(item.value for item in node.keywords)]
+                              for word in command_words(arg)]
+        elif isinstance(node, (ast.List, ast.Tuple)):
+            words = command_words(node)
+        else:
+            continue
+        for index, word in enumerate(words):
+            rest = words[index + 1:]
+            pull_request = rest[rest.index("pr") + 1:] if word == "gh" and "pr" in rest else []
+            if (word == "git" and "push" in rest) or {"create", "merge"} & set(pull_request):
+                found.setdefault(node.lineno, " ".join(words))
+                break
+    return sorted(found.items())
+
+
 class LandingContractTests(unittest.TestCase):
     """The attended landing step: the controller prints, a person approves, the skill pushes."""
 
+    def test_the_push_command_quotes_every_value_for_a_posix_shell(self) -> None:
+        command = CONTROLLER.push_command("my remote", "a" * 40, "agentsmith/x;id")
+        self.assertEqual(shlex.split(command), ["git", "push", "my remote", "a" * 40 + ":refs/heads/agentsmith/x;id"])
+
+    def test_the_leak_check_names_the_field_and_uses_the_secret_scanner_patterns(self) -> None:
+        token = "AK" + "IA" + "ABCDEFGHIJKLMNOP"
+        self.assertEqual(CONTROLLER.leak_problems({"title": f"IMP-1 {token}", "body": "clean"}),
+                         ["the pull-request title holds a likely secret (AWS access key id)"])
+        self.assertEqual(CONTROLLER.leak_problems({"title": "IMP-1", "body": "clean"}), [])
+        # The installed controller cannot import agentsmith.py, so it carries a copy; keep it equal.
+        spec = importlib.util.spec_from_file_location("agentsmith_core_for_deliver", ROOT / "agentsmith.py")
+        assert spec and spec.loader
+        core = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(core)
+        self.assertEqual([(name, pattern.pattern, pattern.flags) for name, pattern in CONTROLLER.SECRET_PATTERNS],
+                         [(name, pattern.pattern, pattern.flags) for name, pattern in core.SECRET_PATTERNS])
+
     def test_the_controller_has_no_push_or_pull_request_code_path(self) -> None:
         source = CONTROLLER_PATH.read_text(encoding="utf-8")
-        self.assertNotRegex(source, r'\[\s*"git"\s*,\s*"push"')
-        self.assertNotRegex(source, r'\[\s*"gh"\s*,\s*"pr"')
+        self.assertEqual(push_or_pull_request_commands(source), [])
         self.assertNotIn("network_access=true", source)
+
+    def test_the_guard_finds_a_push_or_pull_request_command_in_any_spelling(self) -> None:
+        source = textwrap.dedent("""\
+            import subprocess
+            def forbidden(repo, remote):
+                subprocess.run(['git', 'push', 'origin', 'HEAD'])
+                subprocess.run(('gh', 'pr', 'create'))
+                git(repo, "push", remote)
+                command = ["gh", "pr", "merge", "7"]
+                subprocess.run(f"git -C {repo} push", shell=True)
+            def allowed(repo):
+                git(repo, "ls-remote", "origin")
+                subprocess.run(["gh", "pr", "view", "7"])
+                raise RuntimeError("the controller never runs git push")
+            """)
+        self.assertEqual([line for line, _ in push_or_pull_request_commands(source)], [3, 4, 5, 6, 7])
 
     def test_the_skill_lands_the_exact_commit_after_one_question(self) -> None:
         skill = (ROOT / "skills/autonomous-run/SKILL.md").read_text(encoding="utf-8")
