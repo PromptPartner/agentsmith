@@ -1503,6 +1503,36 @@ def private_tool_environment(env: dict[str, str], scratch: Path, *, home: bool) 
     return {**env, **{key: str(value) for key, value in folders.items()}}
 
 
+# Tool caches a checker would otherwise resolve under the HOME it keeps for its client's sign-in,
+# each pointed at a folder inside the checker's own fresh folder.
+CHECKER_TOOL_CACHES = {
+    "npm_config_cache": "npm", "npm_config_store_dir": "pnpm-store", "YARN_CACHE_FOLDER": "yarn",
+    "BUN_INSTALL_CACHE_DIR": "bun", "PIP_CACHE_DIR": "pip", "UV_CACHE_DIR": "uv",
+    "PYTHONUSERBASE": "python-user", "CARGO_HOME": "cargo", "GOCACHE": "go-build",
+    "GOMODCACHE": "go-mod", "GRADLE_USER_HOME": "gradle",
+}
+
+
+def checker_environment(env: dict[str, str], scratch: Path) -> dict[str, str]:
+    """A checker keeps its HOME, because Claude Code and Codex sign in from it, but every
+    temporary, configuration, data and cache folder it would read points at fresh folders. The
+    maker could write the shared temporary folders, including Claude Code's `/tmp/claude-<uid>`."""
+    environment = private_tool_environment(env, scratch, home=False)
+    base = scratch / "folders"
+    folders = {"TEMP": scratch / "tmp", "TMP": scratch / "tmp", "XDG_CONFIG_HOME": base / "config",
+               "XDG_DATA_HOME": base / "data", "XDG_STATE_HOME": base / "state",
+               "CLAUDE_CODE_TMPDIR": scratch / "c",
+               **{key: base / name for key, name in CHECKER_TOOL_CACHES.items()}}
+    for folder in folders.values():
+        folder.mkdir(parents=True, exist_ok=True)
+    git_config = scratch / "gitconfig"
+    git_config.write_text("", encoding="utf-8")  # no ~/.gitconfig, which a tool could plant
+    environment.update({key: str(value) for key, value in folders.items()},
+                       GIT_CONFIG_GLOBAL=str(git_config),
+                       MAVEN_OPTS=f"-Dmaven.repo.local={base / 'maven'}")
+    return environment
+
+
 def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str],
                      *, state: dict[str, Any] | None = None) -> subprocess.CompletedProcess[str]:
     """Run the human-approved verifier with no network and no writes outside its worktree and a
@@ -1934,12 +1964,8 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
     with contextlib.ExitStack() as stack:
         environment = stack.enter_context(native_role_environment(runtime, worktree))
         if role == "checker":
-            # The maker could write the shared temporary and cache folders, including the one
-            # Claude Code's sandboxed shell uses by default (`/tmp/claude-<uid>`).
             scratch = stack.enter_context(private_scratch("agentsmith-check-"))
-            environment = private_tool_environment(environment, scratch, home=False)
-            (scratch / "c").mkdir()
-            environment["CLAUDE_CODE_TMPDIR"] = str(scratch / "c")
+            environment = checker_environment(environment, scratch)
         result, error = supervised_process(cmd, worktree, timeout, environment, state, prefix)
     stdout, stderr = result.stdout, result.stderr
     write_json(run_dir / (prefix + '-exit.json'),

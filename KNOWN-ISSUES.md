@@ -3,6 +3,16 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [x] 2026-11-06 — Found by independent review of the 2026-11-05 cache fix: the checker still
+  shared `TEMP`, `TMP`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `HOME` with the maker, and `npm config
+  get cache` resolved to the shared `HOME/.npm`. The checker now gets fresh folders for all of
+  these except `HOME`, which its client needs to sign in; the tool caches it would find under `HOME`
+  (npm, pnpm, Yarn, Bun, pip, uv, Python user folder, Cargo, Go, Gradle, Maven) and the global Git
+  config point at the fresh folder. Red first: the extended checker-environment test (shared
+  `TEMP`, no cache pins) and the reviewer's probe; real `npm` now resolves its cache inside the
+  fresh folder. A real `claude -p` and `codex exec` signed in with the new environment. Still
+  open: a tool not on that list reads its files under the real `HOME`; the maker's sandbox cannot
+  write there.
 - [x] 2026-11-06 — Found by independent review of the 2026-11-05 head-binding fix: the controller
   read the branch and `HEAD` before its final clean check, so an amend with the same tree made
   while that check ran was accepted under the stale commit ID. The IDs are now read again after
@@ -43,8 +53,8 @@ been authorized, so the entries are kept here.
   `test_checker_gets_fresh_temp_and_cache_folders_and_the_maker_keeps_its_own`, the Linux bind
   test and the `plant-cache` fake-client case failed before and pass after. A native Codex 0.165.0
   `codex sandbox` probe with the checker profile read the fresh `TMPDIR` and could not write it.
-  Still open: the Claude checker setting is not qualified with the native client; the macOS
-  verifier can still write `/tmp`; a detached process from a role can still find a fresh folder.
+  Still open: Claude Code signs in with the checker setting (checked 2026-11-06), but its sandboxed
+  shell has not run a native checker with it; the macOS verifier can still write `/tmp`; a detached process from a role can still find a fresh folder.
 - [x] 2026-11-05 — An autonomous run could record `accepted` for a commit that the run branch no
   longer pointed at. Nothing compared the branch with the checked commit at acceptance, and a
   commit made during verification was invisible to the checker's Git snapshot, which is taken

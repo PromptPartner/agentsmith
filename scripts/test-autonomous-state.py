@@ -629,11 +629,19 @@ class AutonomousStateTests(unittest.TestCase):
         class Observed(Exception):
             pass
 
+        npm = shutil.which("npm")
+        resolved: dict[str, str] = {}
+
         def capture(_command, _cwd, _timeout, env, state, prefix):
             observed[prefix.rsplit("-", 1)[-1]] = dict(env)
             for key in ("TMPDIR", "XDG_CACHE_HOME", "CLAUDE_CODE_TMPDIR"):
                 if key in env and prefix.endswith("checker"):
                     self.assertTrue(Path(env[key]).is_dir(), f"{key} must exist while the role runs")
+            if npm and os.name != "nt":
+                # What npm itself resolves, with the shared home that still holds a planted cache.
+                resolved[prefix.rsplit("-", 1)[-1]] = subprocess.run(
+                    [npm, "config", "get", "cache"], env=dict(env), capture_output=True, text=True,
+                    check=False).stdout.strip()
             raise Observed
 
         with tempfile.TemporaryDirectory(prefix="agentsmith checker scratch ") as temporary:
@@ -645,8 +653,13 @@ class AutonomousStateTests(unittest.TestCase):
             manifest = {"roles": {role: {"runtime": "claude", "model": "fixture", "effort": "high"}
                                   for role in ("maker", "checker")},
                         "limits": {"claude_max_usd": 5}}
+            shared_home = root / "shared-home"
+            (shared_home / ".npm").mkdir(parents=True)
+            (shared_home / ".npm" / "planted").write_text("maker cache", encoding="utf-8")
             shared = {"TMPDIR": "/tmp/shared-by-every-role", "XDG_CACHE_HOME": "/tmp/shared-cache",
-                      "PATH": os.environ.get("PATH", "")}
+                      "TEMP": "/tmp/shared-by-every-role", "TMP": "/tmp/shared-by-every-role",
+                      "XDG_CONFIG_HOME": "/tmp/shared-config", "XDG_DATA_HOME": "/tmp/shared-data",
+                      "HOME": str(shared_home), "PATH": os.environ.get("PATH", "")}
             with mock.patch.dict(os.environ, shared, clear=True), \
                     mock.patch.object(CONTROLLER, "state_root", return_value=root / "runs"), \
                     mock.patch.object(CONTROLLER, "resolved_git_path", return_value=root / ".git"), \
@@ -658,10 +671,27 @@ class AutonomousStateTests(unittest.TestCase):
                         CONTROLLER.launch_role(state, manifest, role, role)
         maker, checker = observed["maker"], observed["checker"]
         self.assertEqual(maker["TMPDIR"], "/tmp/shared-by-every-role")
-        for key in ("TMPDIR", "XDG_CACHE_HOME", "CLAUDE_CODE_TMPDIR"):
-            self.assertNotIn(checker[key], ("/tmp/shared-by-every-role", "/tmp/shared-cache"), key)
-            self.assertFalse(Path(checker[key]).exists(), f"{key} outlived the checker")
+        # The checker keeps HOME, which its client needs to sign in; everything tools resolve
+        # from it or from the shared folders points at the checker's own fresh folder instead.
+        self.assertEqual(checker["HOME"], str(shared_home))
+        scratch = Path(checker["TMPDIR"]).parent
+        pinned = ("TMPDIR", "TEMP", "TMP", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
+                  "XDG_STATE_HOME", "CLAUDE_CODE_TMPDIR", "npm_config_cache", "npm_config_store_dir",
+                  "YARN_CACHE_FOLDER", "BUN_INSTALL_CACHE_DIR", "PIP_CACHE_DIR", "UV_CACHE_DIR",
+                  "PYTHONUSERBASE", "CARGO_HOME", "GOCACHE", "GOMODCACHE", "GRADLE_USER_HOME",
+                  "GIT_CONFIG_GLOBAL")
+        for key in pinned:
+            with self.subTest(variable=key):
+                self.assertIn(key, checker)
+                self.assertTrue(Path(checker[key]).is_relative_to(scratch), f"{key}={checker[key]}")
+        self.assertIn(f"-Dmaven.repo.local={scratch}", checker["MAVEN_OPTS"])
+        for value in checker.values():
+            self.assertFalse(value.startswith("/tmp/shared"), value)
+        self.assertFalse(Path(checker["TMPDIR"]).exists(), "the checker folder outlived the checker")
         self.assertLess(len(checker["CLAUDE_CODE_TMPDIR"]), 64, "a long path makes Claude fall back")
+        if resolved:
+            self.assertEqual(resolved["maker"], str(shared_home / ".npm"))
+            self.assertTrue(Path(resolved["checker"]).is_relative_to(scratch), resolved["checker"])
 
     def test_infrastructure_failures_come_from_a_known_list_and_never_from_model_output(self) -> None:
         signature = CONTROLLER.infrastructure_signature

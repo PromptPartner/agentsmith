@@ -214,16 +214,22 @@ Content planted there would run inside the verifier, which is how one sandboxed 
 another. So each run of the verifier gets its own `HOME`, `TMPDIR`, `XDG_CACHE_HOME`,
 `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_STATE_HOME` in a new folder under `/tmp`, writable
 only by that verifier and removed afterwards. Before, the verifier used the fixed home
-`/tmp/agentsmith-verifier-home` and the controller's `TMPDIR`. Each checker gets a new `TMPDIR`,
-`XDG_CACHE_HOME` and `CLAUDE_CODE_TMPDIR` the same way; the last one matters because Claude Code's
-sandboxed shell otherwise uses one temporary folder per user, `/tmp/claude-<uid>`, for every
-role. The checker keeps its real `HOME`, which its client needs to sign in and which the maker's
-sandbox cannot write. The maker keeps its usual folders, so it can use the caches you already
-have. On Windows the verifier already runs with its home and temporary folders in the disposable
-worktree and a temporary AppContainer profile. Limits: these folders are fresh, not secret, so a
-process that a role left running in the background could still find one; the macOS verifier can
-still write `/tmp` itself; and the Claude checker setting is not yet qualified with the native
-client.
+`/tmp/agentsmith-verifier-home` and the controller's `TMPDIR`. Each checker gets the same kind of
+fresh folder for `TMPDIR`, `TEMP`, `TMP`, `XDG_CACHE_HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
+`XDG_STATE_HOME` and `CLAUDE_CODE_TMPDIR`. The last one matters because Claude Code's sandboxed
+shell otherwise uses one temporary folder per user, `/tmp/claude-<uid>`, for every role. The
+checker keeps its real `HOME`, because Claude Code and Codex sign in from it. So the tool caches it
+would find under `HOME` are pointed at the fresh folder too: npm, pnpm, Yarn, Bun, pip, uv, the
+Python user folder, Cargo, Go, Gradle and Maven, and `GIT_CONFIG_GLOBAL` is an empty file instead
+of `~/.gitconfig`. A real `claude -p` (Claude Code 2.1.318) and a real `codex exec` (Codex 0.165.0)
+signed in and answered with this environment. What remains: a tool that is not on that list still
+reads its files under the real `HOME`. The maker's sandbox cannot write `HOME` (it may write only
+its worktree, Git metadata and temporary folders), so this matters only if something else writes
+there. The maker keeps its usual folders, so it can use the caches you already have. On Windows the
+verifier already runs with its home and temporary folders in the disposable worktree and a
+temporary AppContainer profile. Limits: these folders are fresh, not secret, so a process that a
+role left running in the background could still find one; and the macOS verifier can still write
+`/tmp` itself.
 Codex checkers use a named read-only filesystem profile with no additional write roots.
 Their native sandbox permission is distinct from the later mutation checks. Checkers inspect deterministic verifier
 evidence and may run read-only probes; checks needing output files run through the verifier.
