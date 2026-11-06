@@ -82,6 +82,16 @@ if $LIST_ONLY; then
   exit 0
 fi
 
+# Hooks, `git rebase --exec` and wrappers export Git's repository variables (`git rev-parse
+# --local-env-vars`, the ref namespace, `git -c` overrides). A phase that inherits them runs its
+# test fixtures against that repository: one such run re-initialized a shared repository as bare.
+unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT \
+  GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE \
+  GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR GIT_NAMESPACE
+while IFS= read -r name; do
+  case "$name" in GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*) unset "$name" ;; esac
+done < <(compgen -e)
+
 cd "$ROOT_DIR"
 START=$SECONDS
 for i in "${!LABELS[@]}"; do

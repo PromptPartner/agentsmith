@@ -611,5 +611,75 @@ class EmptyVerificationTests(unittest.TestCase):
         self.assertIn("no-such-phase", result.stdout + result.stderr)
 
 
+
+FIXTURE_PHASE = """import os, pathlib, subprocess, sys, tempfile
+# What a test fixture does: make a throwaway repository and commit to it.
+leaked = sorted(name for name in os.environ if name in {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"})
+if leaked:
+    print("inherited Git variables: " + ", ".join(leaked), file=sys.stderr)
+work = pathlib.Path(tempfile.mkdtemp(prefix="fixture "))
+git = ["git", "-c", "user.name=Fixture", "-c", "user.email=user@example.com", "-c", "commit.gpgsign=false", "-C", str(work)]
+subprocess.run([*git, "init", "-q"], check=True)
+subprocess.run([*git, "config", "core.autocrlf", "false"], check=True)
+(work / "file.txt").write_text("fixture\\n", encoding="utf-8")
+subprocess.run([*git, "add", "file.txt"], check=True)
+subprocess.run([*git, "commit", "-q", "-m", "fixture"], check=True)
+sys.exit(3 if leaked else 0)
+"""
+
+
+class GitEnvironmentIsolationTests(unittest.TestCase):
+    """Hooks, `git rebase --exec` and wrappers export GIT_DIR and friends. A verification phase
+    that inherits them writes its fixtures into that repository: one run re-initialized a shared
+    repository as bare. The gate entry points must start every phase without them."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory(prefix="agentsmith verify git env ")
+        base = Path(self.temporary.name)
+        self.clean = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        self.sentinel = base / "sentinel"
+        subprocess.run(["git", "init", "-q", str(self.sentinel)], env=self.clean, check=True)
+        subprocess.run(["git", "-C", str(self.sentinel), "-c", "user.name=Sentinel", "-c", "user.email=user@example.com",
+                        "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "sentinel"],
+                       env=self.clean, check=True)
+        self.project = base / "project"
+        (self.project / ".harness").mkdir(parents=True)
+        (self.project / "fixture_phase.py").write_text(FIXTURE_PHASE, encoding="utf-8")
+        command = shell_command(sys.executable, str(self.project / "fixture_phase.py"))
+        (self.project / ".harness" / "verify.conf").write_text(f"fixture :: {command}\n", encoding="utf-8")
+        self.inherited = {**os.environ, "GIT_DIR": str(self.sentinel / ".git"),
+                          "GIT_WORK_TREE": str(self.sentinel), "GIT_INDEX_FILE": str(self.sentinel / ".git" / "index")}
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def snapshot(self) -> tuple[bytes, bytes, bytes]:
+        git = ["git", "-C", str(self.sentinel)]
+        refs = subprocess.run([*git, "for-each-ref", "--format=%(refname) %(objectname)"], env=self.clean,
+                              capture_output=True, check=True).stdout
+        objects = subprocess.run([*git, "count-objects", "-v"], env=self.clean, capture_output=True, check=True).stdout
+        return (self.sentinel / ".git" / "config").read_bytes(), refs, objects
+
+    def assert_sentinel_untouched(self, command: list[str]) -> None:
+        before = self.snapshot()
+        result = subprocess.run(command, cwd=self.project, env=self.inherited, text=True, encoding="utf-8",
+                                errors="replace", capture_output=True, check=False)
+        self.assertEqual(self.snapshot(), before, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_python_runner_clears_inherited_git_environment(self) -> None:
+        self.assert_sentinel_untouched([sys.executable, str(CORE), "verify", "--target", str(self.project)])
+
+    def test_recording_runner_clears_inherited_git_environment(self) -> None:
+        self.assert_sentinel_untouched([sys.executable, str(CORE), "verify", "--target", str(self.project),
+                                        "--record", str(self.project / "receipt"), "--tree-class", "disposable-fixture"])
+
+    @unittest.skipIf(os.name == "nt", "verify.sh is the POSIX repository runner")
+    def test_repository_runner_clears_inherited_git_environment(self) -> None:
+        (self.project / "scripts").mkdir()
+        runner = self.project / "scripts" / "verify.sh"
+        runner.write_bytes((ROOT / "scripts" / "verify.sh").read_bytes())
+        self.assert_sentinel_untouched(["bash", str(runner)])
+
 if __name__ == "__main__":
     unittest.main()

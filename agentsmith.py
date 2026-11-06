@@ -8041,6 +8041,24 @@ def stream_redacted_output(source: Any, destination: Any, display: Any,
         source.close()
 
 
+# `git rev-parse --local-env-vars`, plus the ref namespace and `git -c` overrides. Hooks,
+# `git rebase --exec` and wrappers export them; a phase that inherits them runs its test fixtures
+# against that repository instead of their own temporary ones.
+INHERITED_GIT_ENV = frozenset({
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX",
+    "GIT_SHALLOW_FILE", "GIT_COMMON_DIR", "GIT_NAMESPACE",
+})
+
+
+def verify_phase_env() -> dict[str, str]:
+    """The environment every verification phase starts from: this one, minus inherited Git repository state."""
+    return {key: value for key, value in os.environ.items()
+            if key.upper() not in INHERITED_GIT_ENV
+            and not key.upper().startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))}
+
+
 def recorded_verify_phase(command: str, root: Path, stdout_path: Path,
                           stderr_path: Path) -> tuple[int, set[str]]:
     categories: set[str] = set()
@@ -8054,6 +8072,7 @@ def recorded_verify_phase(command: str, root: Path, stdout_path: Path,
             command,
             cwd=root,
             shell=True,
+            env=verify_phase_env(),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -8259,7 +8278,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
         return 0
     for index, (label, command) in enumerate(phases, 1):
         print(f"[{index}/{len(phases)}] {label}\n  {command}")
-        result = subprocess.run(command, cwd=root, shell=True)
+        result = subprocess.run(command, cwd=root, shell=True, env=verify_phase_env())
         if result.returncode:
             warn(f"verification phase '{label}' failed with exit {result.returncode}")
             return result.returncode

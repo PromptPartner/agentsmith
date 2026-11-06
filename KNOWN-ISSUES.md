@@ -3,6 +3,24 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [x] 2026-11-06 — Verification phases inherited Git's repository variables (`GIT_DIR`,
+  `GIT_WORK_TREE`, `GIT_INDEX_FILE` and the rest of `git rev-parse --local-env-vars`). Hooks,
+  `git rebase --exec` and wrappers export them, so a test fixture's `git -C <temporary> init`
+  re-initialized the enclosing repository instead: one run under `rebase --exec` set
+  `core.bare = true` on a shared repository and committed fixtures onto the branch being rebased.
+  `scripts/verify.sh` and `agentsmith verify` (with and without `--record`) now clear these
+  variables before any phase runs. The three `GitEnvironmentIsolationTests` in
+  `scripts/test-verify-receipts.py` failed before the change and pass after.
+- [ ] 2026-11-06 — Test scripts run directly, outside the gate, still pass these variables to their
+  Git fixtures: `test-agent-conformance.py`, `test-autonomous-graph-base.py`,
+  `test-autonomous-run.sh`, `test-autonomous-state.py`, `test-doctor.py`,
+  `test-durable-checkpoints.py`, `test-first-verified-loop-contracts.py`,
+  `test-installer-safety.py`, `test-leak-gate.sh`, `test-secret-scan.py`, `test-update.py`,
+  `test-wayfinder-spec.sh`, `test-windows-verifier-sandbox.py`, `test-work-graph-contracts.py`,
+  `test-work-graph-dispatch.py`, `test-work-graph-release-evidence.py`,
+  `test-work-graph-status.py`. Run them through `scripts/verify.sh --only <label>` from a hook or
+  `rebase --exec`, not directly.
+
 - [ ] 2026-10-20 — Native Windows `test_deleted_git_lock_does_not_fail_acl_cleanup` failed once
   with `verifier did not start` in verify run `39429936983`, attempt 1, job
   `compatibility (windows-latest)`, on master `d56a0d5`. Attempt 2 on the same commit passed, and
