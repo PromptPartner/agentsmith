@@ -1244,7 +1244,9 @@ class AutonomousStateTests(unittest.TestCase):
     def test_protected_input_rejection_escapes_control_characters_in_a_name(self) -> None:
         # Git on Windows refuses to store such a name, so the two path lists are supplied here.
         crafted = ".harness/clear\x1b[2J.conf"
-        with mock.patch.object(CONTROLLER, "git_paths", side_effect=[[], [crafted]]):
+        with mock.patch.object(CONTROLLER, "git_paths", side_effect=[[], [crafted]]), \
+                mock.patch.object(CONTROLLER, "history_commits", return_value=[]), \
+                mock.patch.object(CONTROLLER, "history_paths", return_value={}):
             with self.assertRaises(CONTROLLER.RunError) as rejected:
                 CONTROLLER.validate_verification_changes(Path("."), "base", "head", {})
         self.assertIn("protected verification inputs", str(rejected.exception))

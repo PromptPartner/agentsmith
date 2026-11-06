@@ -3,6 +3,17 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [x] 2026-11-06 — The maker scope check and the protected-input check (policy files, baseline
+  tests, agent instructions and the symbolic links that reach them) read only the end-to-end diff
+  from the base to the candidate. A maker could add an out-of-scope file, or edit `AGENTS.md`, in one
+  commit and undo it in the next; the run was accepted, and the history that would be pushed still
+  carried the file, for example a secret. Found by an independent review lane. Both checks now read
+  every commit from the base to the candidate (moves by both paths, merges against each parent,
+  links in every commit) and name the path and the first commit that touched it. Three fake-client
+  cases in `test-autonomous-run.sh` (an out-of-scope file added then deleted, `src/CLAUDE.md` added
+  then removed, the target of a linked `AGENTS.md` edited then restored) were accepted before and
+  are refused now.
+
 - [x] 2026-11-06 — Found by independent review of the 2026-11-05 cache fix: the checker still
   shared `TEMP`, `TMP`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `HOME` with the maker, and `npm config
   get cache` resolved to the shared `HOME/.npm`. The checker now gets fresh folders for all of
