@@ -560,6 +560,13 @@ been authorized, so the entries are kept here.
   Process-group stopping does not contain detached daemons or hostile same-user processes.
   The [qualification contract](docs/26-native-qualification-contract.md) defines required cases;
   the earlier project-config override probe is inconclusive, and inference remains unqualified.
+  2026-11-06: checker budget reservation fixed. When the maker and the checker spend one cap, a
+  share of it (`limits.checker_reserve`, default 0.25, bounds 0.05 to 0.5) is held for checking; a
+  maker with nothing above it is not launched and the run escalates with "budget reserved for
+  checking". With one $0.60 Claude cap and $0.25 per role, the fake-client run in
+  `test-autonomous-run.sh` launched a second maker and spent $0.75 before; it now stops at $0.50,
+  and the first maker's `--max-budget-usd` is 0.45. Linux/native containment and crash/timeout
+  pilots and unreported crash spend remain open.
 - [x] 2026-10-04 — Stopping the primary during peer inspection could swallow SIGTERM as an
   ordinary run error and falsely report the legitimate `disjoint` peer branch as tampering.
   Cancellation now bypasses invalid-peer handlers. Retained before/after fixtures and deterministic

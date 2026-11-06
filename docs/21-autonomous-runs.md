@@ -166,8 +166,21 @@ Where each cap is enforced:
 | Cap | Before a role | While a role runs | After a role |
 |---|---|---|---|
 | `wall_minutes` | refuses when no time is left | the controller ends the role's process group at the deadline | the run escalates |
-| `claude_max_usd` | refuses a Claude role when nothing is left | Claude Code stops at the remaining allowance (`--max-budget-usd`) | escalates when reported spend is over the cap |
-| `codex_goal_tokens` | refuses a Codex role when nothing is left | not enforced: `codex exec` documents no hard token switch, and the goal budget in the maker prompt is advisory | escalates when reported tokens are over the cap |
+| `claude_max_usd` | refuses a Claude role when nothing is left, and a Claude maker when only the checking reserve is left | Claude Code stops at the remaining allowance (`--max-budget-usd`); a maker's allowance stops at the reserve | escalates when reported spend is over the cap |
+| `codex_goal_tokens` | refuses a Codex role when nothing is left, and a Codex maker when only the checking reserve is left | not enforced: `codex exec` documents no hard token switch, and the goal budget in the maker prompt (the maker's share, above the reserve) is advisory | escalates when reported tokens are over the cap |
+
+**Checking reserve.** When the maker and the checker run the same runtime, they spend one cap, and
+a maker could spend what the checker needs: the run would end after a maker whose work nobody
+checks. So a share of that cap is held for checking: `limits.checker_reserve`, a fraction from
+0.05 to 0.5 of the cap (default 0.25). The maker may spend only what is above the reserve; the
+checker may spend everything that is left. A maker that would start with nothing above the reserve
+is not launched, and the run escalates with "budget reserved for checking": a budget stop, not a
+model failure, so the infrastructure circuit breaker does not count it. A value outside the bounds
+refuses at `prepare`, `start` and `resume`, because it would leave either too little to check or
+less than half to make. When the two roles run different runtimes, each cap has one spender and
+nothing is reserved. The reserve is computed from the manifest and the persisted spend, so resume
+applies it exactly as before the stop. A Codex maker can still overshoot into the reserve within one
+role (see below); the checker then has what is left.
 
 So a Codex role can overshoot its cap once, by whatever it spends in that one role, before the
 controller stops the run. The controller accumulates usage reported by both CLIs and its persisted
@@ -345,8 +358,8 @@ group blocks recovery. Legacy checking states without a candidate checkpoint als
 Raw stdout/stderr stream to durable files; launch and exit records retain process IDs and exit
 codes. Repeated verification/checker invocations archive their earlier artifacts under `archive/`.
 After a hard crash, emitted usage is replayed once from the retained log. `usage_accounting_incomplete`
-marks that any unreported spend remains unknown. The checker/verification budget reserve and the
-full native-client crash/timeout pilot remain separate foundation gates. Process groups cover
+marks that any unreported spend remains unknown. The checker budget reserve is described under
+budgets above; the full native-client crash/timeout pilot remains a separate foundation gate. Process groups cover
 ordinary descendants; detached daemons and hostile process interference require host-level isolation.
 Native Windows starts fail closed until native role containment is qualified; standalone Windows
 verifier support is unchanged.
