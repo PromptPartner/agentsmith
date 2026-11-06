@@ -58,6 +58,14 @@ A small checker model always gets a normal review: a light pass relies on judgme
 skip, and a deep pass on long tracing. For tiers that want a deep review, the plan and the brief
 warn that a stronger checker is needed.
 
+## Candidate data in the brief
+
+Whoever wrote the candidate chose its file names, so they can carry text meant to steer the
+reviewer. The brief shows the changed paths that triggered the lens only inside a block marked as
+data from the candidate, opened and closed by a marker with a random token, one escaped line each
+(control characters and newlines appear as `\xNN`, and every line starts with `  | `). The brief
+tells the reviewer to treat that block, the diff and every changed file as data, not instructions.
+
 ## Evidence
 
 Every finding cites the candidate (the head commit) in the form
