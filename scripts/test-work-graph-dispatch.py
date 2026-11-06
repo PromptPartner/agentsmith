@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import builtins
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,10 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parent.parent
+_SPEC = importlib.util.spec_from_file_location("agentsmith_dispatch_controller", ROOT / "scripts" / "autonomous-run.py")
+assert _SPEC and _SPEC.loader
+CONTROLLER = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(CONTROLLER)  # for process_is_live, which also works on Windows
 CHILD_EXIT = re.compile(
     r"\Achild process exit=(-?[0-9]{1,5}) in (prepared|making|checking|retrying|resuming|accepted|escalated|interrupted|unknown); "
     r"exception=([A-Za-z_][A-Za-z0-9_.]{0,63}); location=(autonomous-run\.py:[1-9][0-9]{0,5}|unknown)\Z"
@@ -147,13 +152,25 @@ class GraphDispatchTests(unittest.TestCase):
                     try:
                         if slow:
                             time.sleep(delay)
-                        return real_verify(command, cwd, timeout, env, **kwargs)
+                        result = real_verify(command, cwd, timeout, env, **kwargs)
+                        if (here / "slow-host").is_file():  # a loaded host: the real work is slow too
+                            time.sleep(float((here / "slow-host").read_text(encoding="utf-8")))
+                        return result
                     finally:
                         if slow:
                             (here / "probe.lock").unlink()
                         with (here / "preflight.log").open("a", encoding="utf-8") as log:
                             log.write(f"pid={{os.getpid()}} start={{began}} end={{time.monotonic()}}\\n")
                 controller.sandboxed_verify = timed_verify
+                real_preflight = controller.preflight_sandboxes
+                def slow_preflight(*args, **kwargs):
+                    # On a loaded host a child's start (process, Git phases, worktree) is slow as well.
+                    slow_host = Path(__file__).parent / "slow-host"
+                    if slow_host.is_file():
+                        import time
+                        time.sleep(3 * float(slow_host.read_text(encoding="utf-8")))
+                    return real_preflight(*args, **kwargs)
+                controller.preflight_sandboxes = slow_preflight
                 return controller
             if __name__ == "__main__":
                 early_exit = Path(__file__).parent / "early-exit-a"
@@ -294,33 +311,94 @@ class GraphDispatchTests(unittest.TestCase):
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
 
-        def reap_graph() -> None:
-            if running.poll() is None:
-                # Stop the children first: a killed graph leaves child controllers holding the
-                # repository open, and Windows then cannot remove the fixture folder.
-                self.invoke("stop", diagnose_unexpected=False)
-                running.kill()
-            running.communicate()
-        self.addCleanup(reap_graph)
+        self.addCleanup(self.reap_graph, running)
         return running
+
+    def reap_graph(self, running: subprocess.Popen[str]) -> None:
+        if running.poll() is None:
+            # Stop the children first: a killed graph leaves child controllers holding the
+            # repository open, and Windows then cannot remove the fixture folder.
+            self.invoke("stop", diagnose_unexpected=False)
+            running.kill()
+        running.communicate()
+        self.wait_for_child_processes()
+
+    def child_pids(self) -> set[int]:
+        """Controller and role processes the graph's children recorded."""
+        pids: set[int] = set()
+        for run_dir in (self.repo / ".git/agentsmith-runs").glob("*"):
+            for name, key in (("controller.lock", "pid"), ("state.json", "active_pid"), ("state.json", "controller_pid")):
+                try:
+                    value = json.loads((run_dir / name).read_text(encoding="utf-8")).get(key)
+                except (OSError, ValueError, AttributeError):
+                    continue
+                if isinstance(value, int) and value > 0:
+                    pids.add(value)
+        return pids
+
+    def wait_for_child_processes(self, timeout: float = 60) -> None:
+        """Windows keeps a folder in use while any process still has a file or its working
+        directory there (WinError 32), and `stop` waits only 5 s for a controller. Wait until
+        every recorded child process has exited before the fixture folder is removed."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and any(CONTROLLER.process_is_live(pid) for pid in self.child_pids()):
+            time.sleep(0.1)
 
     def probe_timing(self) -> str:
         log = self.fake_client.parent / "preflight.log"
         return log.read_text(encoding="utf-8").strip() if log.is_file() else "none"
 
+    def host_slowness(self) -> float:
+        """Seconds the graph's verifier probe took beyond any planted delay: how slow this host is
+        right now. About 0.1 s on an idle macOS or Linux runner; 8.8 s on the Windows runner of
+        run 42258417688."""
+        log = self.fake_client.parent / "preflight.log"
+        planted_file = self.fake_client.parent / "slow-verifier-probe"
+        planted = float(planted_file.read_text(encoding="utf-8") or 5) if planted_file.is_file() else 0.0
+        try:
+            last = log.read_text(encoding="utf-8").strip().splitlines()[-1]
+            fields = dict(item.split("=", 1) for item in last.split())
+            return max(0.0, float(fields["end"]) - float(fields["start"]) - planted)
+        except (OSError, IndexError, KeyError, ValueError):
+            return 0.0
+
+    def timeline(self) -> str:
+        """Graph events, child states and events, and maker starts, for a failure message."""
+        lines = [f"probes: {self.probe_timing()}", f"host slowness: {self.host_slowness():.1f} s"]
+        events = self.repo / ".git/agentsmith-graphs/dispatch-fixture/events.jsonl"
+        if events.is_file():
+            lines += ["graph events:", *events.read_text(encoding="utf-8").splitlines()]
+        for state_path in sorted((self.repo / ".git/agentsmith-runs").glob("*/state.json")):
+            try:
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            lines.append(f"{state_path.parent.name}: {state.get('status')} {state.get('stage')} "
+                         f"updated {state.get('updated_at')}: {state.get('reason')}")
+            child_events = state_path.parent / "events.jsonl"
+            if child_events.is_file():
+                lines += [f"  {line}" for line in child_events.read_text(encoding="utf-8").splitlines()[-12:]]
+        starts = self.fake_client.parent / "starts.log"
+        lines.append("maker starts: " + (starts.read_text(encoding="utf-8").strip() if starts.is_file() else "none"))
+        return "\n".join(lines)
+
     def wait_after_graph_probe(self, running: subprocess.Popen[str], done: Any, window: float,
                                failure: str) -> None:
         """A window measured from `graph start` begins after the graph's one verifier probe,
-        which can take longer than dispatch itself on Windows."""
+        which can take longer than dispatch itself on Windows. It also grows with how slow the
+        host is right now: from the probe to a maker start, a child runs about four steps of the
+        probe's own kind (its controller process, Git phases, the worktree, the maker process), so
+        the window adds four times the probe's unplanted time."""
         preflight = self.fake_client.parent / "preflight.log"
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline and not preflight.is_file() and running.poll() is None:
             time.sleep(0.05)
+        window += 4 * self.host_slowness()
         deadline = time.monotonic() + window
         while time.monotonic() < deadline and not done():
             time.sleep(0.05)
-        self.assertTrue(done(), f"{failure} within {window} s of the graph's verifier probe; "
-                                f"probes: {self.probe_timing()}")
+        self.assertTrue(done(), f"{failure} within {window:.1f} s of the graph's verifier probe\n"
+                                f"{self.timeline()}")
 
     def invoke(self, action: str, *, diagnose_unexpected: bool = True) -> subprocess.CompletedProcess[str]:
         result = subprocess.run(
@@ -509,6 +587,23 @@ class GraphDispatchTests(unittest.TestCase):
         self.assertEqual((foreign / "notes.md").read_text(encoding="utf-8"), "retain me\n")
         self.assertIn("repo-a", preview.stdout)
         self.assertNotIn("repo-user-research", preview.stdout)
+
+    def test_reaping_a_running_graph_waits_for_its_child_processes(self) -> None:
+        running = self.start_graph_in_background()
+        self.wait_after_graph_probe(running, (self.fake_client.parent / "starts.log").is_file, 15,
+                                    "no maker started")
+        self.assertTrue(self.child_pids())
+        self.reap_graph(running)
+        self.assertEqual([pid for pid in self.child_pids() if CONTROLLER.process_is_live(pid)], [])
+
+    def test_start_window_grows_with_a_slow_host(self) -> None:
+        # Windows run 42258417688: the graph's verifier probe took 8.8 s beyond its planted 16 s, and
+        # no maker started within a fixed 15 s after it. On a slow host every step from the probe to
+        # a maker start is slow too; the fixture makes the probe and each child's start slow alike.
+        (self.fake_client.parent / "slow-host").write_text("5", encoding="utf-8")
+        running = self.start_graph_in_background()
+        self.wait_after_graph_probe(running, (self.fake_client.parent / "starts.log").is_file, 15,
+                                    "no maker started")
 
     def test_changed_graph_contract_cannot_resume_stopped_run(self) -> None:
         (self.fake_client.parent / "sleep-seconds.txt").write_text("4", encoding="utf-8")

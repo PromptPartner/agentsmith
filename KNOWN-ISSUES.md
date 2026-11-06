@@ -866,6 +866,20 @@ global selections needs its own design because update replays the record.
   in `test-work-graph-status.py` the child-exit test's 10 s window starts after the probe. With
   `AGENTSMITH_TEST_SLOW_PROBE=16`, one dispatch test and one status test failed before and both
   modules pass after.
+  2026-11-06: recurred in push run `42258417688` (PR #72) on Windows with the probe printed: it
+  took 24.8 s, 8.8 s beyond its planted 16 s, so the runner was slow at that moment. After the
+  probe a graph child runs no machine-wide lock: children skip the verifier probe, role probes are
+  no-ops on Windows, and AgentSmith's own locks are not in the snapshot. The same path takes
+  0.9-1.0 s on macOS (three measured runs). The fixed 15 s window was a budget for an idle host. It
+  now adds four times the probe's unplanted time (about 35 s on that runner), and a failure prints
+  a timeline: probe timing, host slowness, graph events, each child's status, stage and last
+  events, and maker starts. `test_start_window_grows_with_a_slow_host` (probe and child start both
+  slowed, as on a loaded host) reproduced the exact assertion on macOS before and passes after.
+  Cleanup now waits up to 60 s for every recorded child controller and role process to exit
+  before the fixture folder is removed, because `stop` waits only 5 s and Windows keeps a folder in
+  use while a process still holds it (`WinError 32`); on macOS this cannot fail, so
+  `test_reaping_a_running_graph_waits_for_its_child_processes` is a guard there. Keep this entry
+  open until a Windows run passes, or a new failure prints its timeline.
 
 ## Doctor signals, hook log, evaluation cost and CLI surface (2026-10-26)
 
