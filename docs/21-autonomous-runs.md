@@ -473,14 +473,18 @@ It lists six facts, each `met` or `unmet` with the reason:
 2. no path that any pushed commit touches is on the risk map's fixed floor;
 3. the checker accepted with valid citations;
 4. a passing calibration matches this checker (client, model, effort and prompt);
-5. the head equals the accepted commit;
-6. CI is green for this commit.
+5. the head equals the accepted commit, and after CI the remote branch is still at it (read with
+   `git ls-remote`, so a force-push shows);
+6. CI is green for this commit, on the run's own branch, in the remote's GitHub repository.
 
 The answer is `yes` only when all six are met. At dry-run time there is no CI yet, so the last
 fact reads `pending CI` and the answer is `no`. After CI, run
-`deliver <run-id> --eligibility --sha <sha>`: it repeats every check, reads CI with
-`agentsmith ci watch` (or a saved `ci watch --json` report given with `--ci-report`), and prints
-the line and body again. The line is information only: a human merges, and nothing in this
+`deliver <run-id> --eligibility --sha <sha> --pr <number>`: it repeats every check, reads CI for
+that pull request with `agentsmith ci watch` (which counts only runs on the pull request's own head
+branch), and prints the line and body again. A saved `ci watch --pr <number> --json` report can
+stand in for `--pr` with `--ci-report <file>`; it counts only if its `sha`, `repo` and `branch`
+name the accepted commit, the remote's GitHub repository and the run branch, so a report without
+those fields, or from another branch or repository, leaves the CI fact unmet. The line is information only: a human merges, and nothing in this
 release merges automatically.
 
 ### A future auto-merge trial (not switched on)

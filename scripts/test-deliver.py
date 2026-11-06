@@ -58,6 +58,32 @@ FAKE_CLIENT = textwrap.dedent('''\
         print(json.dumps({"type": "result", "total_cost_usd": 0.25, "structured_output": receipt}))
 ''')
 
+# A read-only gh: one pull request whose head is the accepted commit on agentsmith/deliver, one green run.
+FAKE_GH = textwrap.dedent('''\
+    #!/usr/bin/env python3
+    import json, pathlib, sys
+    args = sys.argv[1:]
+    with (pathlib.Path(__file__).parent / "gh.log").open("a", encoding="utf-8") as log:
+        log.write(json.dumps(args) + "\\n")
+    run = {"id": 101, "name": "verify", "workflow_id": 1, "head_sha": "@SHA@", "head_branch": "agentsmith/deliver",
+           "head_repository": {"full_name": "fixture/deliver"}, "status": "completed", "conclusion": "success",
+           "event": "pull_request", "run_attempt": 1}
+    job = {"id": 201, "name": "test", "status": "completed", "conclusion": "success", "steps": []}
+    if args[:2] == ["auth", "status"]:
+        print("logged in")
+    elif args[:2] == ["repo", "view"]:
+        print(json.dumps({"nameWithOwner": "fixture/deliver", "defaultBranchRef": {"name": "main"}}))
+    elif args[:2] == ["pr", "view"]:
+        print(json.dumps({"headRefOid": "@SHA@", "headRefName": "agentsmith/deliver", "baseRefName": "main",
+                          "mergeable": "MERGEABLE", "headRepository": {"nameWithOwner": "fixture/deliver"}}))
+    elif args[:1] == ["api"] and "/actions/runs?" in args[-1]:
+        print(json.dumps([{"workflow_runs": [run], "total_count": 1}]))
+    elif args[:1] == ["api"] and "/jobs?" in args[-1]:
+        print(json.dumps([{"jobs": [job], "total_count": 1}]))
+    else:
+        sys.exit("fake gh refuses: " + " ".join(args))
+''')
+
 HEX40 = re.compile(r"\b[0-9a-f]{40}\b")
 HEX64 = re.compile(r"\b[0-9a-f]{64}\b")
 STAMP = re.compile(r"\b20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9:]{8}\+00:00\b")
@@ -175,18 +201,36 @@ class DeliverTests(unittest.TestCase):
         self.assertIn(f"git push origin {accepted}:refs/heads/agentsmith/deliver", text.stdout)
         self.assertIn(report["body"], text.stdout)
 
-    def test_eligibility_after_ci_is_yes_only_when_every_fact_is_met(self) -> None:
+    def pushed_and_calibrated(self) -> tuple[Path, str]:
+        """An A-tier accepted run, calibrated, pushed to a remote that reads as github.com/fixture/deliver."""
         repo = self.accepted_run(policy_tier="A")
         accepted = self.state(repo)["accepted_commit"]
         CONTROLLER.write_json(CONTROLLER.calibration_path(repo, "claude", "fixture-model", "high"),
                               {"status": "passed", "calibrated_at": "2026-11-06T09:00:00+00:00",
                                "client_version": "fixture"})
-        reports = {}
-        for state in ("green", "red-at-diff", "flaky"):
-            path = self.root / f"ci-{state}.json"
-            path.write_text(json.dumps({"state": state, "sha": accepted, "exit_code": 0}), encoding="utf-8")
-            reports[state] = path
-        result = self.deliver(repo, "--eligibility", "--sha", accepted, "--ci-report", str(reports["green"]), "--json")
+        # Git rewrites the GitHub address to the local bare origin, so nothing reaches the network.
+        self.git(repo, "config", f"url.{self.root / 'origin.git'}.insteadOf", "https://github.com/fixture/deliver.git")
+        self.git(repo, "remote", "set-url", "origin", "https://github.com/fixture/deliver.git")
+        self.git(repo, "push", "-q", "origin", f"{accepted}:refs/heads/agentsmith/deliver")
+        return repo, accepted
+
+    def ci_report(self, accepted: str, name: str, **fields: object) -> str:
+        report = {"state": "green", "sha": accepted, "repo": "fixture/deliver", "branch": "agentsmith/deliver",
+                  "pr": 7, "exit_code": 0, **fields}
+        path = self.root / f"ci-{name}.json"
+        path.write_text(json.dumps({key: value for key, value in report.items() if value is not None}),
+                        encoding="utf-8")
+        return str(path)
+
+    def eligibility_line(self, repo: Path, *args: str) -> str:
+        result = self.deliver(repo, "--eligibility", *args, "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)["eligibility"]["line"]
+
+    def test_eligibility_after_ci_is_yes_only_when_every_fact_is_met(self) -> None:
+        repo, accepted = self.pushed_and_calibrated()
+        result = self.deliver(repo, "--eligibility", "--sha", accepted, "--ci-report",
+                              self.ci_report(accepted, "green"), "--json")
         self.assertEqual(result.returncode, 0, result.stderr)
         report = json.loads(result.stdout)
         self.assertTrue(report["eligibility"]["eligible"], report["eligibility"])
@@ -197,19 +241,61 @@ class DeliverTests(unittest.TestCase):
         self.assertIn("CI green for this commit: pending CI", pending["eligibility"]["line"])
         for state in ("red-at-diff", "flaky"):
             with self.subTest(ci=state):
-                again = json.loads(self.deliver(repo, "--eligibility", "--sha", accepted, "--ci-report",
-                                                str(reports[state]), "--json").stdout)
-                self.assertFalse(again["eligibility"]["eligible"])
-                self.assertIn(f"CI green for this commit: unmet ({state})", again["eligibility"]["line"])
+                line = self.eligibility_line(repo, "--sha", accepted, "--ci-report",
+                                             self.ci_report(accepted, state, state=state))
+                self.assertIn("Auto-merge eligible: no", line)
+                self.assertIn(f"CI green for this commit: unmet ({state})", line)
         # A report about another commit, or a SHA that is not the accepted commit, is not CI for this head.
-        other = self.root / "ci-other.json"
-        other.write_text(json.dumps({"state": "green", "sha": "f" * 40}), encoding="utf-8")
-        again = json.loads(self.deliver(repo, "--eligibility", "--sha", accepted, "--ci-report", str(other),
-                                        "--json").stdout)
-        self.assertIn("CI green for this commit: unmet (the report is for ffffffffffff)", again["eligibility"]["line"])
-        moved = self.deliver(repo, "--eligibility", "--sha", "e" * 40, "--ci-report", str(reports["green"]), "--json")
-        self.assertIn("head equals the accepted commit: unmet", json.loads(moved.stdout)["eligibility"]["line"])
-        self.assertFalse(json.loads(moved.stdout)["eligibility"]["eligible"])
+        line = self.eligibility_line(repo, "--sha", accepted, "--ci-report", self.ci_report(accepted, "other", sha="f" * 40))
+        self.assertIn("CI green for this commit: unmet (the report is for ffffffffffff)", line)
+        line = self.eligibility_line(repo, "--sha", "e" * 40, "--ci-report", self.ci_report(accepted, "green"))
+        self.assertIn("Auto-merge eligible: no", line)
+        self.assertIn("head equals the accepted commit: unmet", line)
+
+    def test_eligibility_needs_ci_for_this_branch_and_repository(self) -> None:
+        repo, accepted = self.pushed_and_calibrated()
+        for name, fields, detail in (
+                ("foreign-repo", {"repo": "unrelated/other"}, "the report is for repository unrelated/other"),
+                ("other-branch", {"branch": "unrelated-branch"}, "the report is for branch unrelated-branch"),
+                ("saved-without-fields", {"repo": None, "branch": None}, "the report does not name its repo")):
+            with self.subTest(report=name):
+                line = self.eligibility_line(repo, "--sha", accepted, "--ci-report", self.ci_report(accepted, name, **fields))
+                self.assertIn("Auto-merge eligible: no", line)
+                self.assertIn(f"CI green for this commit: unmet ({detail}", line)
+
+    def test_eligibility_needs_the_remote_branch_at_the_accepted_commit(self) -> None:
+        repo, accepted = self.pushed_and_calibrated()
+        clone = self.root / "other"
+        subprocess.run(["git", "clone", "-q", str(self.root / "origin.git"), str(clone)], env=self.env, check=True)
+        self.git(clone, "-c", "user.name=Other", "-c", "user.email=user@example.com", "commit", "-q",
+                 "--allow-empty", "-m", "force-pushed head")
+        self.git(clone, "push", "-q", "--force", "origin", "HEAD:refs/heads/agentsmith/deliver")
+        moved = self.git(clone, "rev-parse", "HEAD")
+        line = self.eligibility_line(repo, "--sha", accepted, "--ci-report", self.ci_report(accepted, "green"))
+        self.assertIn("Auto-merge eligible: no", line)
+        self.assertIn(f"head equals the accepted commit: unmet (origin/agentsmith/deliver is at {moved[:12]})", line)
+
+    def test_eligibility_reads_ci_for_the_pull_request_through_gh(self) -> None:
+        repo, accepted = self.pushed_and_calibrated()
+        fake = self.root / "bin"
+        fake.mkdir()
+        (fake / "gh").write_text(FAKE_GH.replace("@SHA@", accepted), encoding="utf-8")
+        (fake / "gh").chmod(0o755)
+        env = {**self.env, "PATH": f"{fake}{os.pathsep}{self.env['PATH']}"}
+
+        def eligibility(*args: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run([sys.executable, str(CONTROLLER_PATH), "deliver", "deliver", "--eligibility", "--sha",
+                                   accepted, *args, "--json"], cwd=repo, env=env, text=True, capture_output=True)
+
+        refused = eligibility()
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("--eligibility needs --pr <number> or --ci-report", refused.stderr)
+        result = eligibility("--pr", "7")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(json.loads(result.stdout)["eligibility"]["eligible"], result.stdout)
+        calls = [json.loads(line) for line in (fake / "gh.log").read_text(encoding="utf-8").splitlines()]
+        self.assertIn(["pr", "view", "7", "--repo", "fixture/deliver"], [call[:5] for call in calls])
+        self.assertFalse([call for call in calls if call[:2] in (["pr", "create"], ["pr", "merge"])])
 
     def test_each_eligibility_fact_is_listed_met_or_unmet(self) -> None:
         repo = self.accepted_run(policy_tier="B")

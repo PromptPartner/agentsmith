@@ -3143,22 +3143,67 @@ def default_branch(repo: Path, remote: str) -> str | None:
     return head.split("/", 1)[1] if head.startswith(f"{remote}/") else None
 
 
-def eligibility(checks: dict[str, Any], sha: str, ci: dict[str, Any] | None) -> dict[str, Any]:
-    """D2: informational only. "yes" needs every fact; nothing merges because of it."""
+def github_repository(repo: Path, remote: str) -> str | None:
+    """owner/name from the remote's configured GitHub URL (before any insteadOf rewrite)."""
+    url = git(repo, "config", "--get", f"remote.{remote}.url", check=False)
+    match = re.fullmatch(r"(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)"
+                         r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?", url)
+    return match.group(1) if match else None
+
+
+def remote_head(repo: Path, remote: str, branch: str) -> tuple[str | None, str]:
+    """Read-only: the commit the remote has for `branch` now, or why that cannot be told."""
+    environment = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    try:
+        result = run(["git", "ls-remote", "--exit-code", remote, f"refs/heads/{branch}"], repo, timeout=60,
+                     env=environment)
+    except subprocess.TimeoutExpired:
+        return None, f"{remote} did not answer within 60 s"
+    if result.returncode == 2:
+        return None, f"{remote} has no branch {branch}"
+    if result.returncode:
+        lines = result.stderr.strip().splitlines()
+        return None, f"cannot reach {remote}: {lines[-1] if lines else 'exit ' + str(result.returncode)}"
+    return result.stdout.split()[0], ""
+
+
+def ci_problem(ci: dict[str, Any], sha: str, branch: str, repository: str | None) -> str | None:
+    """A CI report counts only for this commit, this branch and this repository."""
+    if not all(isinstance(ci.get(key), str) and ci.get(key) for key in ("sha", "repo", "branch")):
+        return "the report does not name its repo, branch and sha; save it from `agentsmith ci watch --pr`"
+    if ci["sha"] != sha:
+        return f"the report is for {ci['sha'][:12]}"
+    if repository is None:
+        return "cannot tell the GitHub repository of the remote"
+    if ci["repo"].casefold() != repository.casefold():
+        return f"the report is for repository {ci['repo']}, not {repository}"
+    if ci["branch"] != branch:
+        return f"the report is for branch {ci['branch']}, not {branch}"
+    return None if ci.get("state") == "green" else str(ci.get("state"))
+
+
+def eligibility(checks: dict[str, Any], sha: str, ci: dict[str, Any] | None,
+                pushed: dict[str, Any] | None = None) -> dict[str, Any]:
+    """D2: informational only. "yes" needs every fact; nothing merges because of it. After CI,
+    `pushed` holds what the remote has: its branch head and GitHub repository."""
     tier = checks["tier"]
     calibration = checks["calibration"].get("status")
     if ci is None:
         ci_fact = (None, "pending CI")
-    elif ci.get("sha") != sha:
-        ci_fact = (False, f"unmet (the report is for {str(ci.get('sha'))[:12]})")
     else:
-        ci_fact = (ci.get("state") == "green", "met" if ci.get("state") == "green" else f"unmet ({ci.get('state')})")
+        problem = ci_problem(ci, sha, checks["branch"], (pushed or {}).get("repository"))
+        ci_fact = (problem is None, f"unmet ({problem})")
+    head_fact = (sha == checks["accepted"], f"unmet ({sha[:12]} is not {checks['accepted'][:12]})")
+    if head_fact[0] and pushed is not None and pushed["head"] != checks["accepted"]:
+        where = f"{pushed['remote']}/{checks['branch']}"
+        head_fact = (False, f"unmet ({where} is at {pushed['head'][:12]})" if pushed["head"]
+                     else f"unmet ({pushed['error']})")
     facts = [
         (tier["tier"] == "A", f"unmet ({tier['tier']})"),
         (not tier["floor_paths"], f"unmet ({', '.join(tier['floor_paths'][:3])})"),
         (True, ""),  # delivery_checks already refused anything else
         (calibration == "passed", f"unmet ({calibration})"),
-        (sha == checks["accepted"], f"unmet ({sha[:12]} is not {checks['accepted'][:12]})"),
+        head_fact,
         ci_fact,
     ]
     rows = [{"fact": name, "met": met, "detail": "met" if met else detail}
@@ -3220,24 +3265,31 @@ def delivery_body(checks: dict[str, Any], verdict: dict[str, Any]) -> str:
 def deliver(args: argparse.Namespace) -> int:
     """Check an accepted run and print its push command and pull-request text; never push."""
     if not args.dry_run and not args.eligibility:
-        raise RunError("deliver only checks and prints: pass --dry-run, or --eligibility --sha <sha> after "
-                       "CI; the controller never pushes")
+        raise RunError("deliver only checks and prints: pass --dry-run, or --eligibility --sha <sha> --pr <number> "
+                       "after CI; the controller never pushes")
     if args.eligibility and not (args.sha and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", args.sha)):
         raise RunError("--eligibility needs --sha with the full lowercase commit SHA that CI ran")
+    if args.eligibility and not (args.pr or args.ci_report):
+        raise RunError("--eligibility needs --pr <number> or --ci-report <file>: CI counts only for the pull "
+                       "request's own branch")
     repo = repo_root(Path.cwd())
     checks = delivery_checks(repo, load_run(repo, args.run_id), args.remote, args.base_branch)
     sha = args.sha if args.eligibility else checks["accepted"]
     ci: dict[str, Any] | None = None
+    pushed: dict[str, Any] | None = None
     if args.eligibility:
+        head, error = remote_head(repo, args.remote, checks["branch"])
+        pushed = {"remote": args.remote, "head": head, "error": error,
+                  "repository": github_repository(repo, args.remote)}
         if args.ci_report:
             ci = load_json(Path(args.ci_report))
         else:
             import ci_watch  # read-only GitHub reads through gh, as `agentsmith ci watch` does
             try:
-                ci = ci_watch.watch(ci_watch.Gh(), None, sha=sha)
+                ci = ci_watch.watch(ci_watch.Gh(), pushed["repository"], pr=args.pr)
             except ci_watch.GhError as exc:
                 raise RunError(f"ci watch could not run: {exc}") from None
-    verdict = eligibility(checks, sha, ci)
+    verdict = eligibility(checks, sha, ci, pushed)
     # Only structured receipt fields, with no local path; the maker's free-text summary stays out.
     title = without_local_paths(f"{checks['manifest'].get('implementation_ticket')}: {checks['branch']}", repo)[:72]
     body = without_local_paths(delivery_body(checks, verdict), repo)
@@ -3492,7 +3544,9 @@ def parser() -> argparse.ArgumentParser:
     landing.add_argument("--eligibility", action="store_true",
                          help="re-evaluate the auto-merge eligibility line after CI for --sha")
     landing.add_argument("--sha", help="the full commit SHA that CI ran (with --eligibility)")
-    landing.add_argument("--ci-report", help="a saved `agentsmith ci watch --json` report (default: run the watch)")
+    landing.add_argument("--pr", type=int, help="the pull request whose CI to watch (with --eligibility)")
+    landing.add_argument("--ci-report", help="a saved `agentsmith ci watch --pr <number> --json` report, "
+                                             "instead of --pr")
     landing.add_argument("--remote", default="origin")
     landing.add_argument("--base-branch", help="the branch the pull request targets (default: the remote's HEAD)")
     landing.add_argument("--json", action="store_true")

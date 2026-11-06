@@ -269,6 +269,12 @@ class StateTests(unittest.TestCase):
             with self.subTest(state=state):
                 self.assertIn(f"| `{state}` | {code} |", doc)
 
+    def test_a_pull_request_report_names_its_head_branch(self) -> None:
+        # deliver --eligibility checks that a saved report is about the run's own branch.
+        fixture, _, report = run_fixture("green")
+        self.assertEqual(report["branch"], fixture["pr"][0]["headRefName"])
+        self.assertIsNone(run_fixture("sha-mode-green")[2]["branch"])
+
     def test_report_json_is_sorted_ascii(self) -> None:
         _, _, report = run_fixture("green")
         text = ci_watch.to_json(report)
