@@ -63,6 +63,12 @@ the exit code, last child phase, exception class, a fixed code for a known contr
 (such as `refusal=previous-role-live`, or `refusal=unknown`), and controller source line. It does
 not copy raw child output into graph audit state.
 
+A child whose circuit breaker stopped it (the same infrastructure failure twice in a row, see
+[autonomous runs](21-autonomous-runs.md)) halts the graph: children already running finish, but
+no new child starts, because it would meet the same host, network or sign-in failure. The graph
+records `graph_halted` with the child and the failure, and ends as `blocked`. Fix the cause,
+`resume` that child with `autonomous-run.py resume <id>`, then `graph resume`.
+
 To interrupt, use `agentsmith graph stop --graph .harness/work-graph.json`; repeated requests are
 safe. It asks active child controllers to stop and retains state, logs, receipts, branches, and
 worktrees. `agentsmith graph resume --graph .harness/work-graph.json` checks the pinned graph,

@@ -797,6 +797,9 @@ def _run_graph(contract: dict[str, Any], state: dict[str, Any], directory: Path,
     dispatched = {item["run_id"] for item in state["dispatches"]}
     pending_events: list[tuple[str, str, str | None, str]] = []
     stop_sent: set[str] = set()
+    # A child stopped by its circuit breaker means the host, network or client sign-in is
+    # failing; starting another child there would only fail the same way.
+    halted: str | None = None
     while True:
         stopping = _stop_path(contract).exists()
         if stopping:
@@ -827,7 +830,17 @@ def _run_graph(contract: dict[str, Any], state: dict[str, Any], directory: Path,
             _save_graph_state(directory, state)
             raise
         report = status(contract)
-        if not active and not stopping:
+        if halted and not active:
+            _save_graph_state(directory, state)
+            for kind, run_id, commit, reason in pending_events:
+                _graph_event(directory, contract["graph_id"], kind, run_id=run_id,
+                             commit=commit, reason=reason)
+            pending_events.clear()
+            state["status"] = "blocked"
+            _save_graph_state(directory, state)
+            _graph_event(directory, contract["graph_id"], "graph_halted", reason=halted)
+            return status(contract)
+        if not active and not stopping and not halted:
             launches: list[tuple[str, Path, str]] = []
             for run_id in report["ready_set"]:
                 if run_id in dispatched or len(launches) >= contract["graph"]["max_parallel"]:
@@ -867,6 +880,10 @@ def _run_graph(contract: dict[str, Any], state: dict[str, Any], directory: Path,
                 pending_events.append(("run_completed", run_id, child.get("accepted_commit"),
                                        "child checker accepted"))
             else:
+                signature = child.get("infrastructure_stop") if child else None
+                if isinstance(signature, str) and re.fullmatch(r"[a-z0-9-]{1,64}", signature):
+                    halted = (f"child {run_id} stopped on a repeated infrastructure failure ({signature}); "
+                              "no new child was started; fix the cause, then resume the child and the graph")
                 reason = child_failure_reason(child, process.returncode, stderr)
                 if child is None:
                     dispatch = next(item for item in reversed(state["dispatches"])

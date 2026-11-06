@@ -3,6 +3,99 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [x] 2026-11-06 — Found by independent review of the 2026-11-05 cache fix: the checker still
+  shared `TEMP`, `TMP`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `HOME` with the maker, and `npm config
+  get cache` resolved to the shared `HOME/.npm`. The checker now gets fresh folders for all of
+  these except `HOME`, which its client needs to sign in; the tool caches it would find under `HOME`
+  (npm, pnpm, Yarn, Bun, pip, uv, Python user folder, Cargo, Go, Gradle, Maven) and the global Git
+  config point at the fresh folder. Red first: the extended checker-environment test (shared
+  `TEMP`, no cache pins) and the reviewer's probe; real `npm` now resolves its cache inside the
+  fresh folder. A real `claude -p` and `codex exec` signed in with the new environment. Still
+  open: a tool not on that list reads its files under the real `HOME`; the maker's sandbox cannot
+  write there.
+- [x] 2026-11-06 — Found by independent review of the 2026-11-05 head-binding fix: the controller
+  read the branch and `HEAD` before its final clean check, so an amend with the same tree made
+  while that check ran was accepted under the stale commit ID. The IDs are now read again after
+  the clean check, as the last step before the acceptance record. Red first:
+  `test_a_commit_during_the_final_clean_check_is_still_caught` and the reviewer's end-to-end race
+  (accepted before, escalated now).
+- [x] 2026-11-06 — Found by independent review of the 2026-11-05 instruction-file fix: a
+  symbolic link carried instructions past it. With `AGENTS.md -> src/rules.txt` in the base, a
+  maker edited only `src/rules.txt` inside its scope, and the checker read the edit through
+  `AGENTS.md`. Link targets of instruction files are now protected too, in the base and the
+  candidate, through chains and linked folders and ignoring case; adding, retargeting or removing
+  a link to a protected file is refused. `test_symbolic_links_cannot_carry_instructions_past_the_protection`
+  (8 cases) and the `linked-rules` fake-client case failed before and pass after. A link that
+  points outside the repository is not followed.
+- [x] 2026-11-05 — Autonomous runs had no circuit breaker for infrastructure failures. A role
+  client that lost its network or sign-in ended the whole run at once, and nothing told a work
+  graph to stop starting children on the same failing host. Now a known failure (a fixed list
+  matched against the client's own error output) relaunches the role without spending an attempt,
+  the same failure twice in a row stops the run with `infrastructure_stop`, `resume` reruns that
+  attempt, and a graph then starts no new child. Red first: the `infra-once` and `infra-always` fake-client cases and
+  `test_repeated_infrastructure_failure_stops_new_child_launches` (child `b` started after the
+  breaker stopped `a`) failed before and pass after; `crash-unknown` shows unknown failures are
+  unchanged.
+- [ ] 2026-11-05 — Permission denials do not stop a role while it runs. Claude Code lists single
+  `permission_denied` messages only with `--output-format stream-json --verbose`, a launch change
+  that needs native qualification, and Codex `exec --json` documents no denial event (checked
+  2026-11-05), so Codex roles are not covered at all. Partly fixed 2026-11-06 after independent
+  review: the final `permission_denials` of a Claude role are counted and recorded, and a Claude
+  checker that accepts after any denial is relaunched as the infrastructure failure
+  `permission-denials`; twice in a row stops the run
+  (`test_an_accepting_checker_with_permission_denials_is_not_trusted` and the `checker-denials`
+  fake-client case failed before and pass after). The attempt cap and wall clock still bound a
+  role that keeps being denied.
+- [x] 2026-11-05 — Autonomous-run roles shared writable temporary and cache folders. Every
+  verifier used the fixed home `/tmp/agentsmith-verifier-home` and the controller's `TMPDIR`, and
+  every checker inherited the maker's `TMPDIR`, `XDG_CACHE_HOME` and Claude Code's per-user
+  sandbox folder `/tmp/claude-<uid>`. A maker could plant a cache entry, `.gitconfig` or Python
+  `.pth` file that a later verifier or checker ran (the cross-talk Simon Willison reported on
+  2026-10-01). With the v0.5.0 controller, a fake maker's planted files were visible to the
+  verifier (exit 1) and to the checker. Each verifier now gets a private `HOME`, `TMPDIR` and XDG
+  folders, and each checker a private `TMPDIR`, `XDG_CACHE_HOME` and `CLAUDE_CODE_TMPDIR`, all
+  removed afterwards. `test_each_verifier_gets_a_private_home_temp_and_cache`,
+  `test_checker_gets_fresh_temp_and_cache_folders_and_the_maker_keeps_its_own`, the Linux bind
+  test and the `plant-cache` fake-client case failed before and pass after. A native Codex 0.165.0
+  `codex sandbox` probe with the checker profile read the fresh `TMPDIR` and could not write it.
+  Still open: Claude Code signs in with the checker setting (checked 2026-11-06), but its sandboxed
+  shell has not run a native checker with it; the macOS verifier can still write `/tmp`; a detached process from a role can still find a fresh folder.
+- [x] 2026-11-05 — An autonomous run could record `accepted` for a commit that the run branch no
+  longer pointed at. Nothing compared the branch with the checked commit at acceptance, and a
+  commit made during verification was invisible to the checker's Git snapshot, which is taken
+  after the verifier. With the v0.5.0 controller, a fake maker's detached process committed while
+  the verifier ran and the run was accepted at the old commit. The controller now refuses
+  acceptance unless the branch, the worktree `HEAD` and a clean worktree all match the checked
+  commit. `test_a_commit_after_verification_refuses_acceptance` and the `late-commit` fake-client
+  case failed before the change and pass after.
+- [x] 2026-11-05 — Autonomous-run budgets failed open: `codex_goal_tokens` or `claude_max_usd` set
+  to 0 or left out meant "no cap", and validation checked only attempts and wall time. With the
+  v0.5.0 controller, a fake-client run with `codex_goal_tokens: 0` ran to acceptance. Now each
+  runtime a role uses needs a positive cap, or the string `"unbounded"` with a written
+  `budget_rationale`; anything else refuses at `prepare`, `start` and `resume`, and a cap that
+  reaches a launch unvalidated fails closed. Red first: 22 refusal cases in
+  `test_missing_or_zero_budget_refuses_instead_of_meaning_no_cap` and the zero-budget and
+  unbounded-budget fake-client cases.
+- [ ] 2026-11-05 — The Codex token cap is not enforced while a Codex role runs. `codex exec`
+  documents no hard token switch (checked against learn.chatgpt.com non-interactive mode on
+  2026-11-05), and it reports usage in `turn.completed` only when the turn ends. The controller
+  refuses a Codex role when the cap is used up and escalates after a role that crossed it, so one
+  role can overshoot once; `wall_minutes` bounds that role. Revisit when Codex documents an
+  enforced budget.
+- [ ] 2026-11-05 — Unverified: Codex token accounting may count cached input twice.
+  `usage_metrics` adds `input_tokens` and `cached_input_tokens`; if Codex reports cached input as
+  part of `input_tokens`, as the OpenAI API does, the total is too high and a cap stops early
+  (fails closed). It also reads `reasoning_tokens`, while the Codex docs name the field
+  `reasoning_output_tokens`. Confirm against a native Codex usage record before changing it.
+- [x] 2026-11-05 — An autonomous-run maker could add or edit agent instruction files (`AGENTS.md`,
+  `CLAUDE.md`, `.claude/` settings, skills and hooks, `.codex/`, `.agents/`, `GEMINI.md`,
+  `.cursor/`) at any depth, and the checker's client then loaded them from the candidate
+  worktree. That is instruction injection into the judge. With the v0.5.0 controller, a fake maker
+  that wrote `src/CLAUDE.md` inside its `src/**` scope reached an accepted run. These paths are now
+  controller policy at any depth and ignoring case; scope cannot allow them.
+  `test_agent_instruction_files_are_protected_at_any_depth` (22 paths) and the
+  `nested-instructions` fake-client case in `scripts/test-autonomous-run.sh` failed before the
+  change and pass after.
 - [ ] 2026-10-20 — Native Windows `test_deleted_git_lock_does_not_fail_acl_cleanup` failed once
   with `verifier did not start` in verify run `39429936983`, attempt 1, job
   `compatibility (windows-latest)`, on master `d56a0d5`. Attempt 2 on the same commit passed, and

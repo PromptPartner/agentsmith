@@ -51,6 +51,23 @@ may be added. Include additional project acceptance inputs
 as globs in `verify.protected_paths` in the reviewed manifest. Protected changes require separate
 operator review outside this run; the controller has no self-approval override.
 
+Agent instructions are protected in the same way, because the checker runs in a worktree at the
+candidate commit and its client loads them from there. A maker that edits them would write
+instructions for its own judge. The rule covers a file named `AGENTS.md`, `AGENTS.override.md`,
+`CLAUDE.md`, `CLAUDE.local.md` or `GEMINI.md`, and anything inside a `.claude/`, `.codex/`,
+`.agents/` or `.cursor/` folder (settings, hooks, skills, subagents, rules). It applies at any
+depth, not only at the root: Claude Code loads a nested `CLAUDE.md` when it reads files in that
+folder, and it finds nested `.claude/skills`. Names match ignoring case, because macOS and Windows
+open `claude.md` when a client asks for `CLAUDE.md`. Adding, editing, deleting and moving all
+count. Symbolic links count too, in the base and in the candidate: when `AGENTS.md` links to
+`src/rules.txt`, or `.claude` links to a folder, the target is protected like the instruction
+file itself, through chains of links. Adding, retargeting or removing a link that points at a
+protected file is refused. An untouched link such as `CLAUDE.md -> AGENTS.md` keeps working. A
+link that points outside the repository is not followed; keep instruction files inside it. If a task really needs one of these files changed, for example documentation that happens
+to be named `AGENTS.md`, make that change yourself in a reviewed commit, then start the run from
+that commit. Neither `scope.allowed_paths` nor any other manifest field can allow it: the operator
+approves scope, and scope must not be able to widen what a maker may tell its checker.
+
 Controller verification writes the raw exit code and stdout/stderr to `attempt-N-verify.txt` and
 an adjacent JSON receipt. That receipt binds the candidate and base commits, spec and manifest
 hashes, verification policy and configuration hashes, controller/launcher hashes, output hash,
@@ -59,6 +76,14 @@ not accept a candidate. Besides trying to falsify the acceptance criteria, the c
 to reject a change that is larger than the stated problem needs, and a red test that failed for
 the wrong reason (a stub, an import error or an earlier gate instead of the bug's own failure
 message). Role exit codes are retained separately from structured receipts.
+
+Acceptance is bound to the exact commit the checks passed. Just before it records `accepted`,
+the controller confirms that the run branch and the run worktree's `HEAD` still point at that
+commit and that the worktree is clean, and it reads both commit IDs again after that clean
+check, because a commit can land while the check runs. A commit that lands after the verifier started, for
+example from a process a role left running, refuses acceptance: the run escalates and names the
+checked commit and where the branch is now. `accepted_commit` in the run state, the
+`run_accepted` event and `candidate_commit` in the verification receipt all name that one commit.
 
 Trusted state stays in the controller's shared run directory. Each native role receives explicit
 write restrictions for that directory, the original contract, and the controller/launcher source
@@ -125,12 +150,30 @@ Only `accepted`, `escalated` and `interrupted` runs and `completed`, `failed`, `
 folder that holds files but no state (for example a lock left by a start that crashed) is
 undetermined: inspect it and remove it by hand before the guard can answer 0.
 
-Codex receives the manifest objective and remaining native goal token budget. Claude receives only
-the remaining run-wide USD allowance. The controller accumulates usage reported by both CLIs and
-its persisted state remains authoritative, so resume cannot reset time or reported spend. Codex's
-CLI has no controller-enforced hard token switch; its native goal is the in-runtime cap, and the
-controller stops after reported usage crosses the manifest ceiling. Calibrate that limit in an
-attended run before treating it as a precise cost control.
+Every budget is explicit. `limits.wall_minutes` must be a positive whole number of minutes, and
+`limits.max_attempts` a whole number from 1 to 3. Each runtime that a role uses needs its own
+cap: `limits.codex_goal_tokens` (a positive whole number of tokens) when a role runs Codex, and
+`limits.claude_max_usd` (a positive number of US dollars) when a role runs Claude. A zero, a
+negative number, text, or a missing cap refuses at `prepare`, `start` and `resume`; in v0.5.0 and
+earlier, zero or a missing cap meant "no cap", so update older manifests before you start them.
+To run without a token or USD cap, write the string `"unbounded"` for that cap and say who chose
+it and why in `limits.budget_rationale`; without that text the controller refuses. The wall clock
+has no unbounded choice, because it is the one cap that stops every role while it runs. A work
+graph is stricter: each child needs numeric caps for both runtimes.
+
+Where each cap is enforced:
+
+| Cap | Before a role | While a role runs | After a role |
+|---|---|---|---|
+| `wall_minutes` | refuses when no time is left | the controller ends the role's process group at the deadline | the run escalates |
+| `claude_max_usd` | refuses a Claude role when nothing is left | Claude Code stops at the remaining allowance (`--max-budget-usd`) | escalates when reported spend is over the cap |
+| `codex_goal_tokens` | refuses a Codex role when nothing is left | not enforced: `codex exec` documents no hard token switch, and the goal budget in the maker prompt is advisory | escalates when reported tokens are over the cap |
+
+So a Codex role can overshoot its cap once, by whatever it spends in that one role, before the
+controller stops the run. The controller accumulates usage reported by both CLIs and its persisted
+state remains authoritative, so resume cannot reset time or reported spend. Calibrate the Codex
+limit in an attended run before treating it as a precise cost control, and bound a single Codex
+role with `wall_minutes`.
 
 ### Sizing the budget
 
@@ -163,6 +206,30 @@ runs with a credential-free environment, no network, no access to other home-dir
 and no writes outside the disposable worktree. Read-only Git metadata remains visible so Git-based
 checks work. macOS uses the built-in sandbox; Linux requires `bubblewrap`. On any other host—or
 Linux without `bwrap`—verification exits closed instead of silently running unrestricted.
+
+No temporary or cache folder is shared between the maker and a later role. Tools keep caches and
+startup files in the home, temporary and XDG folders (pip, npm, uv, Go, Cargo, Gradle, a
+`.gitconfig`, a Python user `site-packages`), and a maker can write the shared temporary folders.
+Content planted there would run inside the verifier, which is how one sandboxed role can reach
+another. So each run of the verifier gets its own `HOME`, `TMPDIR`, `XDG_CACHE_HOME`,
+`XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_STATE_HOME` in a new folder under `/tmp`, writable
+only by that verifier and removed afterwards. Before, the verifier used the fixed home
+`/tmp/agentsmith-verifier-home` and the controller's `TMPDIR`. Each checker gets the same kind of
+fresh folder for `TMPDIR`, `TEMP`, `TMP`, `XDG_CACHE_HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
+`XDG_STATE_HOME` and `CLAUDE_CODE_TMPDIR`. The last one matters because Claude Code's sandboxed
+shell otherwise uses one temporary folder per user, `/tmp/claude-<uid>`, for every role. The
+checker keeps its real `HOME`, because Claude Code and Codex sign in from it. So the tool caches it
+would find under `HOME` are pointed at the fresh folder too: npm, pnpm, Yarn, Bun, pip, uv, the
+Python user folder, Cargo, Go, Gradle and Maven, and `GIT_CONFIG_GLOBAL` is an empty file instead
+of `~/.gitconfig`. A real `claude -p` (Claude Code 2.1.318) and a real `codex exec` (Codex 0.165.0)
+signed in and answered with this environment. What remains: a tool that is not on that list still
+reads its files under the real `HOME`. The maker's sandbox cannot write `HOME` (it may write only
+its worktree, Git metadata and temporary folders), so this matters only if something else writes
+there. The maker keeps its usual folders, so it can use the caches you already have. On Windows the
+verifier already runs with its home and temporary folders in the disposable worktree and a
+temporary AppContainer profile. Limits: these folders are fresh, not secret, so a process that a
+role left running in the background could still find one; and the macOS verifier can still write
+`/tmp` itself.
 Codex checkers use a named read-only filesystem profile with no additional write roots.
 Their native sandbox permission is distinct from the later mutation checks. Checkers inspect deterministic verifier
 evidence and may run read-only probes; checks needing output files run through the verifier.
@@ -187,6 +254,39 @@ Claude role settings explicitly set `disableAllHooks: true`, exclude user/projec
 and supply an empty strict MCP configuration. The [Claude hook reference](https://code.claude.com/docs/en/hooks)
 documents the session override. Managed host policy remains part of the trusted native-client boundary;
 generated settings are offline evidence, not proof of native tool denial.
+
+### Infrastructure failures and the circuit breaker
+
+A role can fail for a reason that says nothing about the work: the client lost its network
+connection, its sign-in expired, the service was overloaded, its sandbox did not start, or the
+client crashed. When a role exits without a receipt and the failure matches a short, fixed list,
+the controller relaunches the same role in the same attempt, so the failure does not use up one
+of the three attempts. The list (`INFRASTRUCTURE_FAILURES` in the controller) is matched only
+against the client's standard error and its own error records (a Codex `error` or `turn.failed`
+event, a Claude `result` marked `is_error`), never against model or tool output. A client killed by
+a signal it did not get from the controller also counts. Anything not on the list is an ordinary
+failure and escalates as before.
+
+The breaker stops the run, as `escalated`, when the same failure happens twice in a row or after
+three infrastructure failures in a row. The message names the failure and says that no attempt
+was spent; the state records it as `infrastructure_stop`, and the events file has one
+`infrastructure_failure` event per failure. A maker is relaunched only from the same clean start:
+if the failed maker moved `HEAD` or left changes, the run escalates for review instead. Fix the
+cause, then `resume`; resuming starts the count again and reruns the same attempt, so the
+failure still costs no attempt. In a work graph, a child stopped this way
+halts new child launches (see [parallel work graphs](24-parallel-work-graphs.md)).
+
+Permission denials are counted when a Claude role ends: Claude Code lists the tool calls it
+denied in its final result (`permission_denials`), and the controller records the number in the
+role's exit record. A Claude checker that accepts after even one denied call is not trusted. A
+read-only checker has no allowed use for an edit, a write, network or a connector, so a denial
+means its investigation left its contract. The controller treats that as the infrastructure
+failure `permission-denials` and starts a fresh checker. The same result twice in a row stops the
+run. A checker that rejects keeps its rejection. A maker's denials are only recorded, because the
+verifier and the checker still judge its candidate. The verifier is a plain shell command with no
+tool permissions, so it has no denials to report. Two gaps remain. Nothing stops a role while it
+runs, because Claude reports single denials only in streamed output (`stream-json`), which these
+roles do not use. And Codex documents no denial event, so Codex roles are not covered.
 
 ## Operations and recovery
 

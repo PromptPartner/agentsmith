@@ -14,7 +14,9 @@ import fnmatch
 import hashlib
 import importlib.util
 import json
+import math
 import os
+import posixpath
 import re
 import signal
 import shutil
@@ -77,6 +79,14 @@ class BudgetExceeded(RunError):
     def __init__(self, message: str, receipt: dict[str, Any] | None) -> None:
         super().__init__(message)
         self.receipt = receipt
+
+
+class InfrastructureFailure(RunError):
+    """A role client failed for a known host, network or client reason before any receipt."""
+
+    def __init__(self, message: str, signature: str) -> None:
+        super().__init__(message)
+        self.signature = signature
 
 
 class RunInterrupted(RuntimeError):
@@ -781,6 +791,69 @@ def unset_role_settings(manifest: dict[str, Any]) -> list[str]:
     return unset
 
 
+UNBOUNDED = "unbounded"
+# The cap each runtime spends, and the type its value must have.
+RUNTIME_BUDGETS = {"codex": ("codex_goal_tokens", "a positive whole number of tokens"),
+                   "claude": ("claude_max_usd", "a positive number of US dollars")}
+
+
+def positive_number(value: Any, *, whole: bool) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    if whole and not isinstance(value, int):
+        return False
+    return math.isfinite(value) and value > 0
+
+
+def validate_budgets(manifest: dict[str, Any]) -> None:
+    """Every budget is explicit. A zero or missing cap once meant "no cap"; now it refuses, and
+    only the string "unbounded" with a written `budget_rationale` removes a token or USD cap.
+    The wall clock has no unbounded choice: it is the cap enforced inside every role."""
+    limits = manifest.get("limits")
+    if not isinstance(limits, dict):
+        raise RunError("limits must be a JSON object")
+    attempts = limits.get("max_attempts")
+    if not positive_number(attempts, whole=True) or attempts > 3:
+        raise RunError("limits.max_attempts must be between 1 and 3")
+    if not positive_number(limits.get("wall_minutes"), whole=True):
+        raise RunError("limits.wall_minutes must be a positive whole number of minutes")
+    rationale = limits.get("budget_rationale", "")
+    if not isinstance(rationale, str):
+        raise RunError("limits.budget_rationale must be text: the size class, the usage it rests on, and who set it")
+    runtimes = {role.get("runtime") for role in manifest.get("roles", {}).values() if isinstance(role, dict)}
+    for runtime, (field, kind) in RUNTIME_BUDGETS.items():
+        if runtime not in runtimes:
+            continue
+        value = limits.get(field)
+        if value == UNBOUNDED:
+            if not rationale.strip():
+                raise RunError(f"limits.{field} is unbounded; write who chose that and why in "
+                               "limits.budget_rationale")
+        elif not positive_number(value, whole=field == "codex_goal_tokens"):
+            raise RunError(f"limits.{field} must be {kind}, or \"{UNBOUNDED}\" with a written "
+                           "limits.budget_rationale; zero or a missing value no longer means no cap")
+
+
+def budget_cap(limits: dict[str, Any], field: str) -> float | None:
+    """The validated cap, or None for an explicit unbounded choice."""
+    value = limits.get(field)
+    if value == UNBOUNDED:
+        return None
+    if not positive_number(value, whole=False):
+        raise RunError(f"limits.{field} is not a validated budget")  # fail closed, never "no cap"
+    return float(value)
+
+
+def budget_overrun(state: dict[str, Any], manifest: dict[str, Any], runtime: str) -> str | None:
+    """Name the run-wide cap a finished role of this runtime crossed, if any."""
+    cap = budget_cap(manifest["limits"], RUNTIME_BUDGETS[runtime][0])
+    if runtime == "claude" and cap is not None and float(state.get("claude_cost_usd", 0.0)) > cap:
+        return "Claude run-wide USD budget exceeded"
+    if runtime == "codex" and cap is not None and int(state.get("codex_tokens_used", 0)) > cap:
+        return "Codex run-wide token budget exceeded"
+    return None
+
+
 def validate_manifest(manifest: dict[str, Any], repo: Path) -> tuple[Path, str]:
     required = ["schema_version", "run_id", "spec_path", "implementation_ticket", "base_ref",
                 "roles", "scope", "verify", "limits", "git", "external_writes"]
@@ -811,13 +884,7 @@ def validate_manifest(manifest: dict[str, Any], repo: Path) -> tuple[Path, str]:
     verify_config = manifest["verify"]
     if not isinstance(verify_config, dict) or not isinstance(verify_config.get("command"), str) or not verify_config["command"].strip():
         raise RunError("verify.command must name a required verification command")
-    limits = manifest["limits"]
-    if not 1 <= int(limits.get("max_attempts", 0)) <= 3:
-        raise RunError("limits.max_attempts must be between 1 and 3")
-    if int(limits.get("wall_minutes", 0)) <= 0:
-        raise RunError("limits.wall_minutes must be positive")
-    if "budget_rationale" in limits and not isinstance(limits["budget_rationale"], str):
-        raise RunError("limits.budget_rationale must be text: the size class, the usage it rests on, and who set it")
+    validate_budgets(manifest)
     spec_rel = Path(str(manifest["spec_path"]))
     if spec_rel.is_absolute() or ".." in spec_rel.parts or spec_rel.parts[:2] != ("docs", "specs"):
         raise RunError("spec_path must be a repository-relative path under docs/specs/")
@@ -940,6 +1007,7 @@ def prepare(args: argparse.Namespace) -> int:
     if unset:
         raise RunError(f"{', '.join(unset)} are blank or placeholders; pass --maker-model and "
                        "--checker-model, or fill them in the template, before prepare writes a manifest")
+    validate_budgets(manifest)
     output = Path(args.output or f".harness/runs/{args.run_id}.json")
     output = output if output.is_absolute() else repo / output
     if output.exists() and not args.force:
@@ -981,25 +1049,104 @@ VERIFICATION_POLICY_PATHS = (
 BASELINE_TEST_PATHS = ("test_*.py", "*_test.py", "tests/**", "test/**",
                        "**/tests/**", "**/test/**", "**/test_*.py", "**/*_test.py",
                        "*.test.*", "*.spec.*", "*_test.go", "*_spec.rb", "scripts/test-*")
+# Instructions and configuration that Claude Code, Codex and other agent clients load from the
+# checkout. The checker runs in a worktree at the candidate commit, so a maker that edits these
+# writes instructions for its own judge. They count at any depth: Claude Code loads a nested
+# CLAUDE.md when it reads files in that folder, and discovers nested `.claude/skills`. Names match
+# ignoring case, because macOS and Windows open `claude.md` when a client asks for `CLAUDE.md`.
+AGENT_INSTRUCTION_FILES = frozenset({"agents.md", "agents.override.md", "claude.md",
+                                     "claude.local.md", "gemini.md"})
+AGENT_CONFIGURATION_FOLDERS = frozenset({".claude", ".codex", ".agents", ".cursor"})
+
+
+def agent_instruction_path(path: str) -> bool:
+    parts = path.casefold().split("/")
+    return parts[-1] in AGENT_INSTRUCTION_FILES or any(part in AGENT_CONFIGURATION_FOLDERS for part in parts)
+
+
+def symbolic_links(worktree: Path, commit: str) -> dict[str, str | None]:
+    """Each symbolic link in a commit, with the repository path it points to (None outside it)."""
+    links: dict[str, str | None] = {}
+    for entry in run(["git", "ls-tree", "-r", "-z", "--full-tree", commit], worktree).stdout.split("\0"):
+        meta, _, path = entry.partition("\t")
+        fields = meta.split()
+        if len(fields) != 3 or fields[0] != "120000":
+            continue
+        target = subprocess.run(["git", "cat-file", "blob", fields[2]], cwd=worktree, capture_output=True,
+                                check=False).stdout.decode("utf-8", errors="replace")
+        joined = posixpath.normpath(posixpath.join(posixpath.dirname(path), target))
+        outside = target.startswith("/") or joined == ".." or joined.startswith("../")
+        links[path] = None if outside else joined
+    return links
+
+
+def link_protected_targets(links: dict[str, str | None]) -> dict[str, str]:
+    """Repository paths an instruction link reads through, mapped to that link, following chains.
+    Each key is case-folded, because the checkout may be on a case-insensitive disk."""
+    folded = {path.casefold(): target for path, target in links.items()}
+    protected: dict[str, str] = {}
+    for link in links:
+        if not agent_instruction_path(link):
+            continue
+        target = links[link]
+        for _ in range(40):  # the depth at which the operating system gives up as well
+            if target is None or target.casefold() in protected:
+                break
+            protected[target.casefold()] = link
+            target = folded.get(target.casefold())
+    return protected
+
+
+def link_reason(path: str, protected: dict[str, str], links: list[dict[str, str | None]]) -> str | None:
+    """Why a changed path reaches agent instructions through a symbolic link, if it does."""
+    folded = path.casefold()
+    for target, link in protected.items():
+        if folded == target or folded.startswith(target + "/"):
+            return f"{path} (read through {link})"
+    for version in links:
+        if path not in version:
+            continue
+        chain = {key.casefold(): value for key, value in version.items()}
+        target = version[path]
+        for _ in range(40):
+            if target is None:
+                break
+            if agent_instruction_path(target) or target.casefold() in protected:
+                return f"{path} (a link to {target})"
+            target = chain.get(target.casefold())
+    return None
 
 
 def validate_verification_changes(worktree: Path, base: str, head: str,
                                   manifest: dict[str, Any]) -> None:
-    """Reject policy edits and edits/deletions of the approved baseline checks."""
+    """Reject policy edits, agent-instruction edits, and edits/deletions of the approved
+    baseline checks. Operator-approved scope cannot widen any of these."""
     extra = manifest.get("verify", {}).get("protected_paths", [])
     if not isinstance(extra, list) or any(not isinstance(path, str) or not path for path in extra):
         raise RunError("verify.protected_paths must be an array of nonempty path globs")
     baseline = set(git_paths(worktree, "ls-tree", "-r", "--name-only", base))
+    # A symbolic link such as AGENTS.md -> src/rules.txt makes its target an instruction file too,
+    # in the base and in the candidate; adding, moving or removing a link to one also counts.
+    versions = [symbolic_links(worktree, base), symbolic_links(worktree, head)]
+    reached = {**link_protected_targets(versions[0]), **link_protected_targets(versions[1])}
     protected = []
+    instructions = []
     for path in git_paths(worktree, "diff", "--name-only", "--no-renames", base, head):
         patterns = (*VERIFICATION_POLICY_PATHS, *extra)
         if path in baseline:
             patterns += BASELINE_TEST_PATHS
-        if path == manifest.get("spec_path") or any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns):
+        through_link = link_reason(path, reached, versions)
+        if agent_instruction_path(path):
+            instructions.append(path)
+        elif through_link:
+            instructions.append(through_link)
+        elif path == manifest.get("spec_path") or any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns):
             protected.append(path)
-    if protected:
+    if protected or instructions:
+        detail = ([shown_paths(protected)] if protected else []) + (
+            ["agent instructions: " + shown_paths(instructions)] if instructions else [])
         raise RunError("maker changed protected verification inputs; separate operator review required: "
-                       + shown_paths(protected))
+                       + "; ".join(detail))
 
 
 def verification_binding(state: dict[str, Any], manifest: dict[str, Any], head: str) -> dict[str, Any]:
@@ -1020,6 +1167,27 @@ def verification_binding(state: dict[str, Any], manifest: dict[str, Any], head: 
             "launcher": file_digest(Path(build_native_command.__code__.co_filename)),
         },
     }
+
+
+def candidate_moved(worktree: Path, branch: str, commit: str) -> str | None:
+    """Why the run branch no longer shows exactly the commit its checks passed, if it does not.
+    A detached process left by a role, or anyone else, can commit after the verifier ran. The
+    commit IDs are read again after the clean check, because a commit can land while it runs."""
+    def moved() -> str | None:
+        head = git(worktree, "rev-parse", "HEAD", check=False)
+        tip = git(worktree, "rev-parse", "--verify", f"refs/heads/{branch}", check=False)
+        if head == commit and tip == commit:
+            return None
+        return (f"candidate moved after its checks passed at {commit}: branch {branch} is at "
+                f"{tip or 'nothing'} and the run worktree at {head or 'nothing'}; operator review required")
+
+    first = moved()
+    if first:
+        return first
+    if not clean(worktree):
+        return (f"run worktree changed after the checks passed at {commit}: it has uncommitted "
+                "changes; operator review required")
+    return moved()
 
 
 def acceptance_ready(verify_exit: int, checker: dict[str, Any]) -> bool:
@@ -1312,13 +1480,76 @@ def validate_git_unchanged(before: dict[str, Any], after: dict[str, Any], actor:
             raise RunError(f"{actor} changed protected Git metadata: {key}")
 
 
+@contextlib.contextmanager
+def private_scratch(prefix: str):
+    """A fresh folder for one role or verifier, removed afterwards. It is short and under `/tmp`
+    where that exists: Claude Code falls back to a shared temporary folder when its override path
+    is long. A role's own detached process can still find it; see docs/21."""
+    root = Path("/tmp") if os.name != "nt" and Path("/tmp").is_dir() else None
+    with tempfile.TemporaryDirectory(prefix=prefix, dir=root, ignore_cleanup_errors=True) as folder:
+        yield Path(folder).resolve()
+
+
+def private_tool_environment(env: dict[str, str], scratch: Path, *, home: bool) -> dict[str, str]:
+    """Point the temporary, cache and (for the verifier) home folders that tools read at fresh
+    folders, so nothing a maker planted in a shared one runs in a later role."""
+    folders = {"TMPDIR": scratch / "tmp", "XDG_CACHE_HOME": scratch / "cache"}
+    if home:
+        base = scratch / "home"
+        folders.update(HOME=base, XDG_CONFIG_HOME=base / ".config",
+                       XDG_DATA_HOME=base / ".local/share", XDG_STATE_HOME=base / ".local/state")
+    for folder in folders.values():
+        folder.mkdir(parents=True, exist_ok=True)
+    return {**env, **{key: str(value) for key, value in folders.items()}}
+
+
+# Tool caches a checker would otherwise resolve under the HOME it keeps for its client's sign-in,
+# each pointed at a folder inside the checker's own fresh folder.
+CHECKER_TOOL_CACHES = {
+    "npm_config_cache": "npm", "npm_config_store_dir": "pnpm-store", "YARN_CACHE_FOLDER": "yarn",
+    "BUN_INSTALL_CACHE_DIR": "bun", "PIP_CACHE_DIR": "pip", "UV_CACHE_DIR": "uv",
+    "PYTHONUSERBASE": "python-user", "CARGO_HOME": "cargo", "GOCACHE": "go-build",
+    "GOMODCACHE": "go-mod", "GRADLE_USER_HOME": "gradle",
+}
+
+
+def checker_environment(env: dict[str, str], scratch: Path) -> dict[str, str]:
+    """A checker keeps its HOME, because Claude Code and Codex sign in from it, but every
+    temporary, configuration, data and cache folder it would read points at fresh folders. The
+    maker could write the shared temporary folders, including Claude Code's `/tmp/claude-<uid>`."""
+    environment = private_tool_environment(env, scratch, home=False)
+    base = scratch / "folders"
+    folders = {"TEMP": scratch / "tmp", "TMP": scratch / "tmp", "XDG_CONFIG_HOME": base / "config",
+               "XDG_DATA_HOME": base / "data", "XDG_STATE_HOME": base / "state",
+               "CLAUDE_CODE_TMPDIR": scratch / "c",
+               **{key: base / name for key, name in CHECKER_TOOL_CACHES.items()}}
+    for folder in folders.values():
+        folder.mkdir(parents=True, exist_ok=True)
+    git_config = scratch / "gitconfig"
+    git_config.write_text("", encoding="utf-8")  # no ~/.gitconfig, which a tool could plant
+    environment.update({key: str(value) for key, value in folders.items()},
+                       GIT_CONFIG_GLOBAL=str(git_config),
+                       MAVEN_OPTS=f"-Dmaven.repo.local={base / 'maven'}")
+    return environment
+
+
 def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str],
                      *, state: dict[str, Any] | None = None) -> subprocess.CompletedProcess[str]:
-    """Run the human-approved verifier with no network and no writes outside its worktree."""
+    """Run the human-approved verifier with no network and no writes outside its worktree and a
+    private home, temporary and cache folder that exists only for this run of the verifier."""
     common = resolved_git_path(cwd, "--git-common-dir")
     if sys.platform == "win32":
+        # The Windows verifier points HOME, USERPROFILE, APPDATA, TEMP and TMP at the disposable
+        # worktree and LOCALAPPDATA at a temporary AppContainer profile, both private to it.
         from windows_verifier_sandbox import run_verifier
         return run_verifier(command, cwd, common, timeout, env)
+    with private_scratch("agentsmith-verify-") as scratch:
+        return posix_sandboxed_verify(command, cwd, common, timeout,
+                                      private_tool_environment(env, scratch, home=True), scratch, state)
+
+
+def posix_sandboxed_verify(command: str, cwd: Path, common: Path, timeout: int, env: dict[str, str],
+                           scratch: Path, state: dict[str, Any] | None) -> subprocess.CompletedProcess[str]:
     if sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").exists():
         escaped = str(cwd).replace('"', '\\"')
         escaped_common = str(common).replace('"', '\\"')
@@ -1332,8 +1563,10 @@ def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str],
             "(deny network*)",
             "(deny file-write*)",
             f'(deny file-read-data (require-all (subpath "{home}") '
-            f'(require-not (subpath "{escaped}")) (require-not (subpath "{escaped_common}"))))',
+            f'(require-not (subpath "{escaped}")) (require-not (subpath "{escaped_common}")) '
+            f'(require-not (subpath {json.dumps(str(scratch), ensure_ascii=False)}))))',
             f'(allow file-write* (subpath "{escaped}"))',
+            f'(allow file-write* (subpath {json.dumps(str(scratch), ensure_ascii=False)}))',
             '(allow file-write* (subpath "/tmp") (subpath "/private/tmp"))',
             '(allow file-write* (literal "/dev/null") (literal "/dev/dtracehelper"))',
             *[f'(deny file-write* (subpath {json.dumps(str(path.resolve()), ensure_ascii=False)}))'
@@ -1351,7 +1584,7 @@ def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str],
         if not home.is_relative_to(temporary):
             args += ["--tmpfs", str(home)]
         directories: set[Path] = set()
-        for target in (cwd.resolve(), common):
+        for target in (cwd.resolve(), common, scratch):
             for mount_root in (temporary, home):
                 if target.is_relative_to(mount_root):
                     current = mount_root
@@ -1364,7 +1597,7 @@ def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str],
         if not home.is_relative_to(temporary):
             args += ["--remount-ro", str(home)]
         args += ["--bind", str(cwd), str(cwd), "--ro-bind", str(common), str(common),
-                 "--dev", "/dev", "--proc", "/proc",
+                 "--bind", str(scratch), str(scratch), "--dev", "/dev", "--proc", "/proc",
                  "--chdir", str(cwd), "/bin/bash", "-c", command]
         return verifier_process(args, cwd, timeout, env, state)
     return subprocess.CompletedProcess([], 126, "", "no supported fail-closed verifier sandbox")
@@ -1438,10 +1671,11 @@ def parse_receipt(path: Path, stdout: str) -> dict[str, Any]:
 
 
 def verifier_env() -> dict[str, str]:
-    allowed = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "SHELL")
+    """The credential-free base. `sandboxed_verify` adds a private HOME, TMPDIR and XDG folders
+    for each run of the verifier; a fixed shared home let a maker plant caches and config there."""
+    allowed = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "SHELL")
     env = {key: os.environ[key] for key in allowed if key in os.environ}
-    env.update({"HOME": "/tmp/agentsmith-verifier-home", "CI": "1",
-                "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "/usr/bin/false"})
+    env.update({"CI": "1", "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "/usr/bin/false"})
     return env
 
 
@@ -1691,9 +1925,12 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
     common_git = state_root(Path(state["repo"])).parent
     maker_write_dirs = [common_git, resolved_git_path(worktree, '--git-dir')] if role == 'maker' else []
     protected = trusted_paths(state)
+    cap = budget_cap(manifest["limits"], RUNTIME_BUDGETS[runtime][0])
     if runtime == "codex":
-        token_budget = int(manifest["limits"].get("codex_goal_tokens", 0))
-        if token_budget and int(state.get("codex_tokens_used", 0)) >= token_budget:
+        # Codex has no documented hard token switch for `codex exec`, so this cap is enforced
+        # here, before each Codex role, and after it (`budget_overrun`); the goal budget in the
+        # maker prompt is advisory.
+        if cap is not None and int(state.get("codex_tokens_used", 0)) >= cap:
             raise RunError("Codex run-wide token budget exhausted")
         cmd = build_native_command(
             "codex", prompt, worktree, schema_path, receipt_path,
@@ -1710,26 +1947,32 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
                 protected_write_paths=protected,
             ),
         )
-        budget = float(manifest["limits"].get("claude_max_usd", 0))
-        remaining_budget = budget - float(state.get("claude_cost_usd", 0.0))
-        if budget and remaining_budget <= 0:
+        # Claude Code enforces the remaining allowance inside the role (`--max-budget-usd`).
+        remaining_budget = None if cap is None else cap - float(state.get("claude_cost_usd", 0.0))
+        if remaining_budget is not None and remaining_budget <= 0:
             raise RunError("Claude run-wide USD budget exhausted")
         cmd = build_native_command(
             "claude", prompt, worktree, schema_path, receipt_path, settings_path=settings_path,
             extra_write_dirs=maker_write_dirs, read_only=role == "checker",
             model=str(role_cfg.get("model", "")), effort=str(role_cfg.get("effort", "")),
-            claude_max_usd=max(0.0, remaining_budget),
+            claude_max_usd=remaining_budget or 0.0,
         )
     event(state, "role_started", role=role, runtime=runtime, attempt=state["attempt"])
     prefix = f"attempt-{state['attempt']}-{role}"
     state['usage_pending'] = {'role': role, 'runtime': runtime, 'prefix': prefix}
     save_state(state)
-    with native_role_environment(runtime, worktree) as environment:
+    with contextlib.ExitStack() as stack:
+        environment = stack.enter_context(native_role_environment(runtime, worktree))
+        if role == "checker":
+            scratch = stack.enter_context(private_scratch("agentsmith-check-"))
+            environment = checker_environment(environment, scratch)
         result, error = supervised_process(cmd, worktree, timeout, environment, state, prefix)
     stdout, stderr = result.stdout, result.stderr
+    denials = permission_denials(stdout) if runtime == "claude" else None
     write_json(run_dir / (prefix + '-exit.json'),
                {'role': role, 'runtime': runtime, 'exit_code': result.returncode,
-                'model': role_cfg['model'], 'effort': role_cfg['effort']})
+                'model': role_cfg['model'], 'effort': role_cfg['effort'],
+                **({'permission_denials': denials} if denials is not None else {})})
     record_role_usage(state, runtime, role, stdout)
     if error is not None:
         if isinstance(error, subprocess.TimeoutExpired):
@@ -1737,13 +1980,7 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
         raise error
     # Each cap is checked after a role that spends it; the launch checks above refuse a role
     # whose own runtime has nothing left.
-    over_budget = None
-    max_cost = float(manifest["limits"].get("claude_max_usd", 0))
-    if runtime == "claude" and max_cost and state["claude_cost_usd"] > max_cost:
-        over_budget = "Claude run-wide USD budget exceeded"
-    max_tokens = int(manifest["limits"].get("codex_goal_tokens", 0))
-    if runtime == "codex" and max_tokens and state["codex_tokens_used"] > max_tokens:
-        over_budget = "Codex run-wide token budget exceeded"
+    over_budget = budget_overrun(state, manifest, runtime)
     receipt = None
     if not result.returncode:
         # Keep a finished role's receipt before enforcing a cap it crossed on the way.
@@ -1761,9 +1998,109 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
         if state.get("status") == "interrupted":
             raise RunInterrupted("stopped by operator")
         raise_if_stopped(run_dir)
+        signature = infrastructure_signature(result.returncode, stdout, stderr)
+        if signature is not None:
+            raise InfrastructureFailure(f"{runtime} {role} exited {result.returncode} before a receipt "
+                                        f"({signature})", signature)
         raise RunError(f"{runtime} {role} exited {result.returncode}: {stderr[-500:].strip()}")
     assert receipt is not None
+    if role == "checker" and receipt["status"] == "accepted" and denials:
+        # A read-only checker has no allowed use for an edit, a write, network or a connector, so
+        # one denied call means its investigation left its contract: its acceptance is not used.
+        # A rejection stays a rejection. Codex reports no denials, so this covers Claude only.
+        raise InfrastructureFailure(f"claude checker accepted after {denials} denied tool call(s)",
+                                    "permission-denials")
     return receipt
+
+
+def permission_denials(stdout: str) -> int:
+    """The denied tool calls Claude Code lists in its final result (`permission_denials`)."""
+    count = 0
+    for line in stdout.splitlines():
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(record, dict) and record.get("type") == "result" and isinstance(
+                record.get("permission_denials"), list):
+            count = len(record["permission_denials"])
+    return count
+
+
+# Known infrastructure failures of a role client, matched only against the client's stderr and
+# its own error records (Codex `error`/`turn.failed` events, a Claude `result` with `is_error`),
+# never against model or tool output. Anything else is an ordinary failure. Keep this list short
+# and specific: a wrong match retries a role that should have stopped.
+INFRASTRUCTURE_FAILURES = (
+    ("sandbox-start", re.compile(r"sandbox_apply: Operation not permitted|^bwrap: ", re.MULTILINE)),
+    ("client-panic", re.compile(r"thread '[^']*' panicked at")),
+    ("network", re.compile(r"error sending request for url|stream disconnected before completion"
+                           r"|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|API Error: Connection error",
+                           re.IGNORECASE)),
+    ("authentication", re.compile(r"401 Unauthorized|Invalid API key|OAuth token has expired"
+                                  r"|Please run /login|refresh token (?:was|has been|is) (?:revoked|expired|invalid)",
+                                  re.IGNORECASE)),
+    ("overloaded", re.compile(r"429 Too Many Requests|rate_limit_error|overloaded_error"
+                              r"|API Error: 5\d\d", re.IGNORECASE)),
+)
+# The same signature twice in a row stops the run; so does this many failures in a row.
+MAX_INFRASTRUCTURE_STREAK = 3
+
+
+def client_error_text(stdout: str, stderr: str) -> str:
+    """The client's own error reports: stderr, plus error records from its JSON output."""
+    texts = [stderr]
+    for line in stdout.splitlines():
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        if record.get("type") in {"error", "turn.failed"} or (
+                record.get("type") == "result" and record.get("is_error") is True):
+            texts.append(json.dumps(record, ensure_ascii=False))
+    return "\n".join(texts)
+
+
+def infrastructure_signature(returncode: int, stdout: str, stderr: str) -> str | None:
+    if returncode < 0:
+        return f"client-killed-by-signal-{-returncode}"
+    text = client_error_text(stdout, stderr)
+    return next((name for name, pattern in INFRASTRUCTURE_FAILURES if pattern.search(text)), None)
+
+
+def launch_role_with_breaker(state: dict[str, Any], manifest: dict[str, Any], role: str, prompt: str,
+                             *, retry_problem: Any = None, **kwargs: Any) -> dict[str, Any]:
+    """Relaunch a role after a known infrastructure failure without spending an attempt. The
+    same failure twice in a row, or MAX_INFRASTRUCTURE_STREAK failures in a row, stop the run."""
+    while True:
+        try:
+            receipt = launch_role(state, manifest, role, prompt, **kwargs)
+        except InfrastructureFailure as failure:
+            streak = [*state.get("infrastructure_streak", []), failure.signature]
+            state["infrastructure_streak"] = streak
+            save_state(state, "infrastructure_failure", role=role, signature=failure.signature,
+                       attempt=state["attempt"])
+            if (len(streak) > 1 and streak[-1] == streak[-2]) or len(streak) >= MAX_INFRASTRUCTURE_STREAK:
+                state["infrastructure_stop"] = failure.signature
+                if role == "maker":
+                    # No maker finished, so resume reruns this attempt instead of starting the next.
+                    state["repeat_attempt"] = True
+                repeated = ("the same infrastructure failure twice in a row" if streak[-1] == streak[-2]
+                            else f"{len(streak)} infrastructure failures in a row")
+                advice = ("read why the checker tried denied actions in its log, then resume"
+                          if failure.signature == "permission-denials"
+                          else "fix the host, network or client sign-in, then resume")
+                raise RunError(f"{repeated} ({failure.signature}) in the {role}: {failure}; no attempt "
+                               f"was spent; {advice}") from failure
+            problem = retry_problem() if retry_problem is not None else None
+            if problem:
+                raise RunError(f"{failure}; not relaunched because {problem}") from failure
+            continue
+        if state.pop("infrastructure_streak", None) is not None:
+            save_state(state)
+        return receipt
 
 
 def role_prompt(state: dict[str, Any], manifest: dict[str, Any], role: str,
@@ -1782,10 +2119,11 @@ A moved file counts twice: list the old path and the new path.
 """
     if role == "maker":
         feedback = f"\nThe prior checker rejected the attempt:\n{json.dumps(prior, indent=2)}\n" if prior else ""
-        goal_budget = int(manifest["limits"].get("codex_goal_tokens", 0)) - int(state.get("codex_tokens_used", 0))
+        codex_maker = manifest["roles"]["maker"]["runtime"] == "codex"
+        cap = budget_cap(manifest["limits"], "codex_goal_tokens") if codex_maker else None
+        goal_budget = 0 if cap is None else int(cap) - int(state.get("codex_tokens_used", 0))
         goal = (f"If your runtime exposes the native goal tool, create a goal for this exact ticket with token budget "
-                f"{goal_budget}; the manifest remains authoritative.\n") if (
-                    manifest["roles"]["maker"]["runtime"] == "codex" and goal_budget > 0) else ""
+                f"{goal_budget}; the manifest remains authoritative.\n") if goal_budget > 0 else ""
         return common + goal + f"""Implement the smallest complete change, run {manifest['verify']['command']},
 and make atomic local commits only. Leave the worktree clean. HEAD must advance beyond {base}.
 Use status completed or blocked; do not mark your own work accepted.{feedback}"""
@@ -1845,12 +2183,13 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
     worktree = Path(state["worktree"])
     max_attempts = int(manifest["limits"]["max_attempts"])
     prior = state.get("last_checker_receipt")
-    while state["attempt"] < max_attempts or pending_candidate(state):
+    while state["attempt"] < max_attempts or pending_candidate(state) or state.get("repeat_attempt"):
         raise_if_stopped(Path(state["state_path"]).parent)
         if remaining_seconds(state, manifest) <= 0:
             raise RunError("wall-clock budget exhausted")
         if not pending_candidate(state):
-            state["attempt"] += 1
+            if not state.pop("repeat_attempt", False):
+                state["attempt"] += 1
             state["status"] = "making"
             # Resume rejects a `making` checkpoint whose start differs from HEAD. Save this
             # attempt's start with it, so a stop while the attempt waits for its Git phase
@@ -1872,8 +2211,16 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
                 save_state(state)
                 maker_error: Exception | None = None
                 maker: dict[str, Any] | None = None
+                def maker_retry_problem() -> str | None:
+                    # Relaunch only from the same clean start; anything else needs a person.
+                    if git(worktree, "rev-parse", "HEAD") != before_head or not clean(worktree):
+                        return "the failed maker changed the worktree"
+                    return None
+
                 try:
-                    maker = launch_role(state, manifest, "maker", role_prompt(state, manifest, "maker", prior))
+                    maker = launch_role_with_breaker(state, manifest, "maker",
+                                                     role_prompt(state, manifest, "maker", prior),
+                                                     retry_problem=maker_retry_problem)
                 except Exception as exc:
                     maker_error = exc
                 after_head = git(worktree, "rev-parse", "HEAD")
@@ -1952,9 +2299,10 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             checker_error: Exception | None = None
             checker: dict[str, Any] | None = None
             try:
-                checker = launch_role(state, manifest, "checker",
-                                      role_prompt(state, manifest, "checker", verify_output=verify_output),
-                                      role_worktree=checker_worktree)
+                checker = launch_role_with_breaker(
+                    state, manifest, "checker",
+                    role_prompt(state, manifest, "checker", verify_output=verify_output),
+                    role_worktree=checker_worktree)
             except Exception as exc:
                 checker_error = exc
             validate_git_unchanged(
@@ -1978,6 +2326,10 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
         if acceptance_ready(verify.returncode, checker):
             # A stop that arrived before the acceptance record still interrupts the run.
             raise_if_stopped(Path(state["state_path"]).parent)
+            # The last step before the record: the branch must still be the checked commit.
+            moved = candidate_moved(worktree, state["branch"], checker_head)
+            if moved:
+                raise RunError(moved)
             state["status"] = "accepted"
             state['stage'] = 'accepted'
             state["accepted_commit"] = checker_head
@@ -2433,6 +2785,9 @@ def resume(args: argparse.Namespace) -> int:
                 stop_file.unlink()
             state["status"] = "resuming"
             state["reason"] = None
+            # Resuming is the operator's answer to a stopped breaker: count afresh.
+            state.pop("infrastructure_streak", None)
+            state.pop("infrastructure_stop", None)
             state["resumed_epoch"] = time.time()
             state["scope"] = normalized_scope(manifest["scope"])
             state["controller_pid"] = os.getpid()
