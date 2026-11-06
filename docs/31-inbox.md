@@ -45,8 +45,8 @@ with a warning.
 
 ## GitHub issues and claims
 
-`--issues` reads open issues and open pull requests through the [GitHub CLI](https://cli.github.com)
-(`gh issue list`, `gh pr list`). It needs `gh` installed and logged in, and fails with exit status 2
+`--issues` reads every open issue and open pull request through the [GitHub CLI](https://cli.github.com)
+(read-only `gh api --paginate` requests, so no list stops at a fixed limit). It needs `gh` installed and logged in, and fails with exit status 2
 and a clear message when it is not; without `--issues`, `gh` is never used. Triage is a draft
 disposition printed in the row (for example "direct" for an issue labelled `bug`). Nothing is
 written to GitHub: no labels, no comments, no assignment.

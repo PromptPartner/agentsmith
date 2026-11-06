@@ -79,14 +79,22 @@ class Gh:
     def repo(self, cwd: Path) -> str:
         return self._json(cwd, "repo", "view", "--json", "nameWithOwner")["nameWithOwner"]
 
+    def _all(self, cwd: Path, endpoint: str) -> list[dict[str, Any]]:
+        """Every item of a paginated REST list (GET), all pages: `issue list` and `pr list` stop at a limit."""
+        pages = self._json(cwd, "api", "--paginate", "--slurp", endpoint)
+        if not isinstance(pages, list) or not all(isinstance(page, list) for page in pages):
+            raise GhError(f"gh api {endpoint.split('?')[0]} returned an unexpected shape")
+        return [item for page in pages for item in page if isinstance(item, dict)]
+
     def issues(self, cwd: Path, repo: str) -> list[dict[str, Any]]:
-        return self._json(cwd, "issue", "list", "--repo", repo, "--state", "open", "--limit", "200",
-                          "--json", "number,title,createdAt,labels,url") or []
+        # The issues endpoint lists pull requests too; they carry a pull_request key.
+        return [{"number": item.get("number"), "title": item.get("title"), "createdAt": item.get("created_at"),
+                 "labels": item.get("labels") or [], "url": item.get("html_url")}
+                for item in self._all(cwd, f"repos/{repo}/issues?state=open&per_page=100") if "pull_request" not in item]
 
     def pr_heads(self, cwd: Path, repo: str) -> set[str]:
-        prs = self._json(cwd, "pr", "list", "--repo", repo, "--state", "open", "--limit", "200",
-                         "--json", "number,headRefOid") or []
-        return {pr["headRefOid"] for pr in prs if isinstance(pr.get("headRefOid"), str)}
+        return {pr["head"]["sha"] for pr in self._all(cwd, f"repos/{repo}/pulls?state=open&per_page=100")
+                if isinstance((pr.get("head") or {}).get("sha"), str)}
 
 
 def _env() -> dict[str, str]:

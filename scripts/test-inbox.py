@@ -243,15 +243,33 @@ class NoWriteTests(InboxCase):
 
 
 class FakeGh:
+    """gh as recorded: `issue list` and `pr list` stop at --limit; `gh api --paginate --slurp` returns every
+    page of 100 in one array, and without --slurp only the first page."""
+
     def __init__(self, issues: list, prs: list) -> None:
         self.issues, self.prs, self.calls = issues, prs, []
 
     def __call__(self, argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
         self.calls.append(list(argv))
         verb = tuple(argv[1:3])
-        # `gh auth status` prints text, not JSON (recorded from gh 2.101.0).
-        value = {("auth", "status"): "github.com\n  Logged in to github.com account owner (keyring)\n", ("issue", "list"): self.issues, ("pr", "list"): self.prs,
-                 ("repo", "view"): {"nameWithOwner": "owner/name"}}[verb]
+        limit = int(argv[argv.index("--limit") + 1]) if "--limit" in argv else 30
+        if argv[1] == "api":
+            endpoint = argv[-1]
+            if "/issues?" in endpoint:
+                items = [{"number": issue["number"], "title": issue["title"], "created_at": issue["createdAt"],
+                          "labels": issue["labels"], "html_url": issue.get("url", "")} for issue in self.issues]
+                # The issues API lists pull requests too; they carry a pull_request key.
+                items += [{"number": pr["number"], "title": "a pull request", "created_at": iso(60), "labels": [],
+                           "pull_request": {"url": "x"}} for pr in self.prs]
+            else:
+                items = [{"number": pr["number"], "head": {"sha": pr["headRefOid"]}} for pr in self.prs]
+            pages = [items[start:start + 100] for start in range(0, len(items), 100)] or [[]]
+            value = pages if "--slurp" in argv else pages[0]
+        else:
+            # `gh auth status` prints text, not JSON (recorded from gh 2.101.0).
+            value = {("auth", "status"): "github.com\n  Logged in to github.com account owner (keyring)\n",
+                     ("issue", "list"): self.issues[:limit], ("pr", "list"): self.prs[:limit],
+                     ("repo", "view"): {"nameWithOwner": "owner/name"}}[verb]
         return subprocess.CompletedProcess(argv, 0, value if isinstance(value, str) else json.dumps(value), "")
 
 
@@ -273,7 +291,20 @@ class GitHubTests(InboxCase):
         self.assertIn("claimed", rows[("untriaged", "#12")]["next_step"])
         self.assertIn("draft disposition", rows[("untriaged", "#13")]["next_step"])
         for argv in fake.calls:
-            self.assertIn(tuple(argv[1:3]), READ_ONLY_GH, argv)
+            if argv[1] == "api":
+                self.assertFalse({"-X", "--method", "-f", "-F", "--field", "--raw-field", "--input"} & set(argv), argv)
+            else:
+                self.assertIn(tuple(argv[1:3]), READ_ONLY_GH, argv)
+
+    def test_every_open_issue_and_pull_request_is_read(self) -> None:
+        accepted = self.repo.branch("agentsmith/acc", self.base, {"src/a.py": b"a\n"})
+        self.repo.run_state("acc", status="accepted", base_head=self.base, accepted_commit=accepted)
+        issues = [{"number": n, "title": f"Issue {n}", "createdAt": iso(60), "labels": []} for n in range(1, 251)]
+        prs = [{"number": 1000 + n, "headRefOid": "f" * 40} for n in range(200)] + [{"number": 1300, "headRefOid": accepted}]
+        report = self.collect(gh=inbox.Gh(runner=FakeGh(issues, prs), which=lambda _: "gh"), repo_name="owner/name")
+        kinds = [row["kind"] for row in report["rows"]]
+        self.assertEqual(kinds.count("untriaged"), 250)
+        self.assertNotIn("accepted", kinds)  # its pull request is the 201st open one
 
     def test_without_issues_gh_is_never_used(self) -> None:
         real_run = subprocess.run
