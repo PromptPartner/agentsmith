@@ -108,6 +108,7 @@ RUNTIME_FILES = (
     ".agentsmith/work_graph.py",
     ".agentsmith/project_memory.py",
     ".agentsmith/config_audit.py",
+    ".agentsmith/inbox.py",
     ".agentsmith/risk_map.py",
     ".agentsmith/agentsmith",
     ".agentsmith/agentsmith.cmd",
@@ -2002,7 +2003,7 @@ def copy_runtime(target: Path, *, dry_run: bool) -> Path:
             contained_copy(source, config_destination / source.name)
         for helper_name in ("native_launcher.py", "evaluate.py", "work_graph.py",
                             "windows_verifier_sandbox.py", "project_memory.py", "config_audit.py",
-                            "risk_map.py"):
+                            "risk_map.py", "inbox.py"):
             helper_source = ROOT / helper_name
             if helper_source.exists():
                 contained_copy(helper_source, destination.parent / helper_name)
@@ -9118,6 +9119,41 @@ def cmd_risk(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_inbox(args: argparse.Namespace) -> int:
+    sys.dont_write_bytecode = True  # listing writes nothing, not even compiled files
+    import inbox
+    target = Path(args.target or os.getcwd()).expanduser()
+    try:
+        if args.inbox_command == "claim":
+            gh = inbox.Gh()
+            try:
+                gh.check(target)
+            except inbox.GhError as exc:
+                gh, reason = None, str(exc)
+            path = inbox.claim(target, args.issue, gh=gh, repo_name=args.repo)
+            note = "verified open on GitHub" if gh is not None else f"unverified, because {reason}"
+            print(f"claimed #{inbox._issue_number(args.issue)} locally ({path}), {note}; nothing was written to GitHub")
+            return 0
+        if args.inbox_command == "release":
+            inbox.release(target, args.issue)
+            print(f"released #{inbox._issue_number(args.issue)}")
+            return 0
+        report = inbox.collect(target, gh=inbox.Gh() if args.issues else None, repo_name=args.repo, base=args.base)
+    except (inbox.InboxError, inbox.GhError, inbox.ClaimError) as exc:
+        print(f"[error] inbox: {exc}", file=sys.stderr)
+        return 2
+    text = inbox.to_json(report) if args.json else inbox.render_text(report)
+    stream = getattr(sys.stdout, "buffer", None)
+    if stream is None:
+        sys.stdout.write(text)
+    else:
+        sys.stdout.flush()
+        stream.write(text.encode("ascii") if args.json
+                     else text.encode(sys.stdout.encoding or "utf-8", "backslashreplace"))
+        stream.flush()
+    return 0
+
+
 def memory_git_identity(target: Path) -> tuple[str | None, str | None]:
     values = []
     for arguments in (("symbolic-ref", "--short", "HEAD"), ("rev-parse", "--verify", "HEAD")):
@@ -9379,7 +9415,7 @@ def add_common_install_flags(parser: argparse.ArgumentParser) -> None:
 
 PUBLIC_COMMANDS = (
     "install", "update", "doctor", "status", "profiles", "verify", "demo", "resume",
-    "handoff", "new-feedback", "new-research", "memory",
+    "handoff", "new-feedback", "new-research", "memory", "inbox",
 )
 
 
@@ -9536,6 +9572,28 @@ def parser() -> argparse.ArgumentParser:
     classify.add_argument("--head", required=True, help="commit to classify")
     classify.add_argument("--target", help="Git repository (default: current directory)")
     classify.add_argument("--json", action="store_true", help="schema-versioned, byte-stable report")
+    inbox_parser = sub.add_parser(
+        "inbox", help="list everything that waits on you, derived from runs, graphs, specs and Git",
+        description="List escalated, interrupted and dead runs, accepted work not yet landed, integration "
+                    "candidates, and specs and run manifests that need you. Every row is derived on each call "
+                    "and re-checked against Git; listing writes no file. --issues also reads open GitHub "
+                    "issues through gh, read-only. `claim` and `release` keep local claims under the Git "
+                    "common directory.",
+    )
+    inbox_parser.add_argument("--target", help="Git repository (default: current directory)")
+    inbox_parser.add_argument("--json", action="store_true", help="schema-versioned report")
+    inbox_parser.add_argument("--issues", action="store_true",
+                              help="also read open issues and pull requests with gh (read-only)")
+    inbox_parser.add_argument("--repo", help="OWNER/NAME for --issues (default: the repository gh finds here)")
+    inbox_parser.add_argument("--base", help="branch on origin that counts as landed (default: origin/HEAD)")
+    inbox_sub = inbox_parser.add_subparsers(dest="inbox_command", metavar="{claim,release}")
+    for name, summary in (("claim", "claim an issue locally; a second claim is refused"),
+                          ("release", "release a local claim")):
+        claim_parser = inbox_sub.add_parser(name, help=summary)
+        claim_parser.add_argument("issue", help="issue number")
+        claim_parser.add_argument("--target", default=argparse.SUPPRESS, help="Git repository (default: current directory)")
+        if name == "claim":
+            claim_parser.add_argument("--repo", default=argparse.SUPPRESS, help="OWNER/NAME to check the issue on")
     memory = sub.add_parser("memory", help="search and read bounded local Markdown memory")
     # `memory startup` is the hook's internal entry point, so it stays out of the listed choices.
     memory_commands = memory.add_subparsers(dest="memory_command", required=True, metavar="{search,read}")
@@ -9573,7 +9631,7 @@ def parser() -> argparse.ArgumentParser:
 def normalize_legacy_argv(argv: list[str]) -> list[str]:
     if not argv:
         return ["install", "--wizard"]
-    commands = {"install", "update", "agents", "doctor", "status", "profiles", "wizard", "compatibility", "verify", "validate-integration", "graph", "demo", "resume", "handoff", "new-feedback", "new-research", "secret-scan", "hook", "memory", "audit-config", "risk", "evaluate"}
+    commands = {"install", "update", "agents", "doctor", "status", "profiles", "wizard", "compatibility", "verify", "validate-integration", "graph", "demo", "resume", "handoff", "new-feedback", "new-research", "secret-scan", "hook", "memory", "audit-config", "risk", "inbox", "evaluate"}
     if argv[0] in commands or argv[0] in {"-h", "--help", "--version"}:
         return argv
     if "--doctor" in argv:
@@ -10063,6 +10121,8 @@ def run(argv: list[str] | None = None) -> int:
         return cmd_audit_config(args)
     if args.command == "risk":
         return cmd_risk(args)
+    if args.command == "inbox":
+        return cmd_inbox(args)
     if args.command == "memory":
         return cmd_memory(args)
     if args.command == "hook":

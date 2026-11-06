@@ -62,6 +62,7 @@ emulate hooks or MCP to make matrix cells green.
 | `agentsmith new-research` | Create a durable research note that is archived, never silently deleted. |
 | `agentsmith new-feedback` | Create the five-stage post-incident record. |
 | `agentsmith doctor` | Inspect effective instruction sources and actual installed safety, skills, MCP, hooks, scanner, and runtime state. |
+| `agentsmith inbox [--issues] [--json]` | List what waits on you (escalated, dead and interrupted runs, unlanded accepted work, integration candidates, specs and manifests, open issues), derived and re-checked against Git on every call ([inbox](31-inbox.md)). |
 
 ### For programs and CI
 
