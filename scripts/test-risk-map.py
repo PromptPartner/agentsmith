@@ -165,6 +165,14 @@ class PureClassifyTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(risk_map.classify([path], rules)["tier"], "A")
 
+    def test_floor_folders_cover_the_folder_entry_itself(self) -> None:
+        # A submodule or symlink can sit exactly at a floor folder's path.
+        rules = self.rules({"paths": ["**"], "tier": "A"})
+        for path in (".github/workflows", ".github/actions", "db/migrations", "migrations", "secrets",
+                     "app/secrets", ".harness", ".claude", "src/.codex"):
+            with self.subTest(path=path):
+                self.assertEqual(risk_map.classify([path], rules)["tier"], "human")
+
     def test_a_recorded_tier_cannot_be_lowered(self) -> None:
         for recorded in risk_map.TIERS:
             for proposed in risk_map.TIERS:
@@ -202,13 +210,16 @@ class PureClassifyTests(unittest.TestCase):
         self.assertEqual(risk_map.classify(["docs/guide.md"], rules)["tier"], "A")
         self.assertEqual(risk_map.classify(["AGENTS.md"], rules)["tier"], "human")
 
-    def test_name_status_parsing_keeps_both_paths_of_renames_and_copies(self) -> None:
-        raw = (b"M\0src/a b.py\0R087\0old/x.py\0.github/workflows/x.yml\0"
-               b"C100\0src/k.py\0src/k copy.py\0D\0gone.txt\0A\0docs/caf\xc3\xa9.md\0T\0link\0")
-        self.assertEqual(risk_map.parse_name_status(raw), [
-            ".github/workflows/x.yml", "docs/café.md", "gone.txt", "link", "old/x.py",
-            "src/a b.py", "src/k copy.py", "src/k.py"])
-
+    def test_raw_parsing_keeps_both_paths_and_entry_kinds(self) -> None:
+        z = "0" * 40
+        raw = (f":100644 100644 {z} {z} M\0src/a b.py\0:100644 100644 {z} {z} R087\0old/x.py\0"
+               f".github/workflows/x.yml\0:100644 100644 {z} {z} C100\0src/k.py\0src/k copy.py\0"
+               f":100644 000000 {z} {z} D\0gone.txt\0:000000 160000 {z} {z} A\0vendor/lib\0"
+               f":100644 120000 {z} {z} T\0link\0").encode() + f":000000 100644 {z} {z} A\0".encode() \
+            + b"docs/caf\xc3\xa9.md\0"
+        self.assertEqual(risk_map.parse_raw(raw), {
+            ".github/workflows/x.yml": [], "docs/caf\u00e9.md": [], "gone.txt": [], "link": ["symlink"],
+            "old/x.py": [], "src/a b.py": [], "src/k copy.py": [], "src/k.py": [], "vendor/lib": ["submodule"]})
 
 class RepoCase(unittest.TestCase):
     def setUp(self) -> None:
@@ -273,6 +284,27 @@ class RangeTests(RepoCase):
         # A user's rename-limit setting must not switch copy detection off.
         self.repo.git("config", "diff.renameLimit", "1")
         self.assertEqual(risk_map.to_json(risk_map.classify_range(self.repo.root, base, head)), risk_map.to_json(report))
+
+    def test_symlinks_and_submodules_are_at_least_c(self) -> None:
+        base = self.repo.commit({POLICY: policy({"paths": ["**"], "tier": "A"}), "docs/a.md": b"a\n"}, "base")
+        target = subprocess.run(["git", "-C", str(self.repo.root), "hash-object", "-w", "--stdin"],
+                                input=b"../AGENTS.md", env=self.repo.env, capture_output=True,
+                                check=True).stdout.decode("ascii").strip()
+        for mode, oid, path in (("160000", base, "vendor/lib"), ("160000", base, ".github/workflows"),
+                                ("120000", target, "docs/link.md"), ("160000", base, "db/migrations")):
+            self.repo.git("update-index", "--add", "--cacheinfo", f"{mode},{oid},{path}")
+        head = self.repo.commit(message="entries")
+        rows = {row["path"]: row for row in risk_map.classify_range(self.repo.root, base, head)["paths"]}
+        self.assertEqual((rows["vendor/lib"]["tier"], rows["vendor/lib"]["matched"]), ("C", ["type:submodule", "rule:1"]))
+        self.assertEqual((rows["docs/link.md"]["tier"], rows["docs/link.md"]["matched"]), ("C", ["type:symlink", "rule:1"]))
+        self.assertEqual(rows[".github/workflows"]["tier"], "human")
+        self.assertEqual(rows["db/migrations"]["tier"], "human")
+        # Turning a regular file into a symlink is a change of kind and counts the same way.
+        self.repo.git("rm", "-q", "--cached", "docs/a.md")
+        self.repo.git("update-index", "--add", "--cacheinfo", f"120000,{target},docs/a.md")
+        later = self.repo.commit(message="type change")
+        row = risk_map.classify_range(self.repo.root, head, later)["paths"][0]
+        self.assertEqual((row["path"], row["tier"]), ("docs/a.md", "C"))
 
     def test_candidate_cannot_relax_its_own_policy(self) -> None:
         base = self.base_with_policy()

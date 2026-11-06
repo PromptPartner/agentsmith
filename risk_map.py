@@ -48,18 +48,20 @@ def floor_reasons(path: str) -> list[str]:
     """Return the floor categories a repository-relative path falls in."""
     folded = path.casefold()
     parts = folded.split("/")
-    name, folders = parts[-1], parts[:-1]
+    name = parts[-1]
     reasons = []
     if name in AGENT_INSTRUCTION_FILES or any(part in AGENT_CONFIGURATION_FOLDERS for part in parts):
         reasons.append("floor:agent-instructions")
-    if folded.startswith((".github/workflows/", ".github/actions/")) or name == "codeowners":
+    # Folder rules cover the folder's own entry too: a submodule or symlink can sit at that path.
+    if folded in (".github/workflows", ".github/actions") or folded.startswith((".github/workflows/", ".github/actions/")) \
+            or name == "codeowners":
         reasons.append("floor:ci")
     if parts[0] in HARNESS_FOLDERS or folded in HARNESS_FILES or folded.startswith("scripts/verify"):
         reasons.append("floor:harness")
     if (name.startswith((".env", "id_")) or name.endswith((".pem", "_key"))
-            or "secrets" in folders):
+            or "secrets" in parts):
         reasons.append("floor:credentials")
-    if "migrations" in folders:
+    if "migrations" in parts:
         reasons.append("floor:migrations")
     return reasons
 
@@ -154,24 +156,28 @@ def raise_tier(recorded: str, proposed: str) -> str:
     return max(recorded, proposed, key=TIERS.index)
 
 
-def classify_path(path: str, policy: dict[str, Any]) -> dict[str, Any]:
+def classify_path(path: str, policy: dict[str, Any], kinds: Iterable[str] = ()) -> dict[str, Any]:
+    """Classify one path. `kinds` names special entries on either side of the change (symlink,
+    submodule): their effect lies outside the diff, a link's target or another repository, so they
+    are at least C, a change the operator reviews every time."""
     folded = path.casefold()
-    matched = floor_reasons(path)
-    tier = "human" if matched else "A"
-    lenses: set[str] = set()
+    floor = floor_reasons(path)
+    special = [f"type:{kind}" for kind in sorted(set(kinds))]
     hits = [rule for rule in policy["rules"] if any(_matches(pattern, folded) for pattern in rule["patterns"])]
+    tier = "human" if floor or not hits else "C" if special else "A"
+    lenses: set[str] = set()
     for rule in hits:
         tier = raise_tier(tier, rule["tier"])
         lenses.update(rule["lenses"])
-    matched += [rule["id"] for rule in hits]
-    if not matched:
-        matched, tier = ["unmatched"], "human"
+    matched = floor + special + [rule["id"] for rule in hits] + ([] if floor or hits else ["unmatched"])
     return {"path": path, "tier": tier, "lenses": sorted(lenses), "matched": matched}
 
 
-def classify(paths: Iterable[str], policy: dict[str, Any]) -> dict[str, Any]:
-    """Pure classification. An empty change is human too: nothing was classified."""
-    rows = [classify_path(path, policy) for path in sorted(set(paths))]
+def classify(paths: Iterable[str] | dict[str, list[str]], policy: dict[str, Any]) -> dict[str, Any]:
+    """Pure classification of paths, or of {path: entry kinds}. An empty change is human: nothing
+    was classified."""
+    kinds = paths if isinstance(paths, dict) else {path: [] for path in paths}
+    rows = [classify_path(path, policy, kinds[path]) for path in sorted(kinds)]
     tier = "human" if not rows else "A"
     for row in rows:
         tier = raise_tier(tier, row["tier"])
@@ -186,22 +192,31 @@ def _decode(raw: bytes) -> str:
         return raw.decode("utf-8", "backslashreplace")
 
 
-def parse_name_status(raw: bytes) -> list[str]:
-    """Parse `git diff-tree -z --name-status` output into every path it names, old and new."""
+ENTRY_KINDS = {b"120000": "symlink", b"160000": "submodule"}
+
+
+def parse_raw(raw: bytes) -> dict[str, list[str]]:
+    """Parse `git diff-tree -z --raw` output into {path: special entry kinds}, naming every path,
+    old and new. A rename or copy gives each path the kind of its own side."""
     fields = raw.split(b"\0")
     if fields and fields[-1] == b"":
         fields.pop()
-    paths: set[str] = set()
+    paths: dict[str, set[str]] = {}
     index = 0
     while index < len(fields):
-        status = fields[index][:1]
+        header = fields[index].split(b" ")
+        if len(header) != 5 or not header[0].startswith(b":") or not header[4]:
+            raise RiskError("unexpected git diff output")
+        old_mode, new_mode, status = header[0][1:], header[1], header[4][:1]
         count = 2 if status in (b"R", b"C") else 1
         named = fields[index + 1:index + 1 + count]
-        if not status or len(named) != count:
+        if len(named) != count:
             raise RiskError("unexpected git diff output")
-        paths.update(_decode(path) for path in named)
+        sides = [(named[0], (old_mode,)), (named[1], (new_mode,))] if count == 2 else [(named[0], (old_mode, new_mode))]
+        for path, modes in sides:
+            paths.setdefault(_decode(path), set()).update(ENTRY_KINDS[mode] for mode in modes if mode in ENTRY_KINDS)
         index += 1 + count
-    return sorted(paths)
+    return {path: sorted(kinds) for path, kinds in sorted(paths.items())}
 
 
 def _git(repo: Path, *args: str) -> bytes:
@@ -247,8 +262,8 @@ def classify_range(repo: Path, base: str, head: str) -> dict[str, Any]:
     # are reported; --find-copies-harder also checks unmodified files as copy sources, and -l0
     # stops a configured rename limit from silently skipping that search.
     changes = _git(repo, "diff-tree", "-r", "-z", "-M", "-C", "--find-copies-harder", "-l0",
-                   "--no-commit-id", "--name-status", base_id, head_id)
-    report = classify(parse_name_status(changes), policy)
+                   "--no-commit-id", "--raw", base_id, head_id)
+    report = classify(parse_raw(changes), policy)
     return {"schema_version": SCHEMA_VERSION, "base": base_id, "head": head_id,
             "policy": {"path": POLICY_PATH, "blob": blob}, **report}
 

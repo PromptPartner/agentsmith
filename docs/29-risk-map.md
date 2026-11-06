@@ -68,10 +68,10 @@ policy, so no policy can remove it. Names match ignoring case.
 | Floor | Paths |
 |---|---|
 | Agent instructions | `AGENTS.md`, `AGENTS.override.md`, `CLAUDE.md`, `CLAUDE.local.md`, `GEMINI.md` at any depth; anything inside a `.claude/`, `.codex/`, `.agents/` or `.cursor/` folder |
-| Continuous integration | `.github/workflows/**`, `.github/actions/**`, any `CODEOWNERS` file |
+| Continuous integration | `.github/workflows` and `.github/actions` and anything inside them, any `CODEOWNERS` file |
 | Harness | `.harness/**` (including the policy itself), `.agentsmith/**`, `agentsmith.py`, `scripts/autonomous-run.py`, `native_launcher.py`, `work_graph.py`, `windows_verifier_sandbox.py`, `risk_map.py`, `scripts/verify*` |
-| Credentials | Names starting with `.env` or `id_`, names ending in `.pem` or `_key`, anything inside a `secrets/` folder |
-| Migrations | Anything inside a `migrations/` folder |
+| Credentials | Names starting with `.env` or `id_`, names ending in `.pem` or `_key`, a `secrets` folder and anything inside it |
+| Migrations | A `migrations` folder and anything inside it |
 
 The floor errs toward review. The credential names can match ordinary files, such as
 `id_utils.py`; such a change is `human` and the operator reviews it.
@@ -86,8 +86,16 @@ each new file with every file at the base and can take a while in a large reposi
 
 Copy detection relies on Git's similarity check (at least half the content alike). Content that
 is copied by hand and then changed beyond that, or spread over several files, cannot be traced to
-its source; such a change is classified by its new paths only. A range with no changed paths is `human`, because nothing
-was classified.
+its source; such a change is classified by its new paths only.
+
+A symlink or a submodule (Git calls it a gitlink) on either side of a change is at least `C`, with
+`type:symlink` or `type:submodule` in `matched`. Its effect lies outside the diff: a link points
+at another file, and a submodule pulls in another repository at a new commit. Neither can be
+classified from its path alone, but both are ordinary in many projects, so they need the
+operator's review every time rather than the `human` floor. A folder entry on the floor, such as a
+submodule placed at `.github/workflows`, is `human` like the folder's contents.
+
+A range with no changed paths is `human`, because nothing was classified.
 
 ## A tier can be raised, never lowered
 
