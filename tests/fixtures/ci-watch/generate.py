@@ -25,6 +25,8 @@ NEW_SHA = "1111111111111111111111111111111111111111"
 def pr(mergeable="MERGEABLE", state="BLOCKED", rollup="SUCCESS", head=SHA):
     # statusCheckRollup is what an aggregate view reads; the watch must never trust it.
     return {"number": 67, "headRefOid": head, "baseRefName": "master", "state": "OPEN",
+            "headRefName": "fix/verify-git-env-isolation", "headRepository": {"name": "agentsmith"},
+            "headRepositoryOwner": {"login": "PromptPartner"},
             "mergeable": mergeable, "mergeStateStatus": state,
             "statusCheckRollup": [{"__typename": "CheckRun", "name": "compatibility (ubuntu-latest)",
                                    "status": "COMPLETED", "conclusion": rollup}]}

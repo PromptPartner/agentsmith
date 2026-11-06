@@ -95,7 +95,8 @@ class Gh:
 
     def pr(self, repo: str, number: int) -> dict[str, Any]:
         return self._json("pr", "view", str(number), "--repo", repo, "--json",
-                          "headRefOid,baseRefName,mergeable,mergeStateStatus,state")
+                          "headRefOid,baseRefName,mergeable,mergeStateStatus,state,headRefName,headRepository,"
+                          "headRepositoryOwner")
 
     def _pages(self, endpoint: str, key: str) -> list[dict[str, Any]]:
         """Every item of a paginated REST list (GET). A list shorter than its total_count fails closed."""
@@ -173,6 +174,13 @@ def _category(job: dict[str, Any], view: dict[str, Any], others: list[dict[str, 
     return "red-at-diff"
 
 
+def _head_repository(info: dict[str, Any]) -> str:
+    repository = info.get("headRepository") or {}
+    if repository.get("nameWithOwner"):
+        return str(repository["nameWithOwner"])
+    return f"{(info.get('headRepositoryOwner') or {}).get('login', '')}/{repository.get('name', '')}"
+
+
 def watch(gh: Gh, repo: str | None, *, pr: int | None = None, sha: str | None = None,
           base: str | None = None, cap_seconds: float = 3600, stall_seconds: float = 1800,
           poll_seconds: float = 30, now: Callable[[], float] = time.time,
@@ -181,6 +189,7 @@ def watch(gh: Gh, repo: str | None, *, pr: int | None = None, sha: str | None = 
     if (pr is None) == (sha is None):
         raise ValueError("watch needs exactly one of pr and sha")
     started = now()
+    head: tuple[str, str] | None = None
     deadline = started + cap_seconds
     runs_report: list[dict[str, Any]] = []
     seen_runs = listed = False
@@ -225,6 +234,7 @@ def watch(gh: Gh, repo: str | None, *, pr: int | None = None, sha: str | None = 
                 info = read(gh.pr, repo, pr)
                 base = base or info.get("baseRefName")
                 sha = info.get("headRefOid")
+                head = (info.get("headRefName"), _head_repository(info))
                 if info.get("mergeable") == "CONFLICTING" or info.get("mergeStateStatus") == "DIRTY":
                     return finish("conflict")
                 if info.get("mergeable") != "UNKNOWN":
@@ -238,7 +248,11 @@ def watch(gh: Gh, repo: str | None, *, pr: int | None = None, sha: str | None = 
                 if moved:
                     return finish("head-moved", new=moved)
             moment = now()
-            runs = sorted((run for run in read(gh.runs, repo, sha) if run.get("headSha") == sha),
+            # For a PR, a run counts only from the PR's own head branch and repository: the same
+            # commit pushed to another branch or fork does not test this pull request.
+            runs = sorted((run for run in read(gh.runs, repo, sha) if run.get("headSha") == sha
+                           and (head is None or (run.get("headBranch"), str(run.get("headRepository") or "").casefold())
+                                == (head[0], head[1].casefold()))),
                           key=lambda run: run["databaseId"])
             views = {run["databaseId"]: read(gh.run, repo, run["databaseId"]) for run in runs}
             listed, seen_runs = True, seen_runs or bool(runs)

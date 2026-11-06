@@ -20,7 +20,9 @@ branch is the repository's default branch unless `--base` names another one.
    `conflict`, and no run is read: a conflicting pull request gets no run, so waiting for one
    would end in a false result. While GitHub is still computing mergeability, the watch waits.
 2. **The runs for the exact head commit.** It lists the workflow runs registered for the head
-   SHA and follows those runs and their jobs. It never reads the pull request's aggregate check
+   SHA and follows those runs and their jobs. With `--pr`, a run counts only when it also comes from the pull
+   request's head branch and head repository: the same commit pushed to another branch or a fork
+   does not test this pull request. It never reads the pull request's aggregate check
    view: right after a push, that view can still show the previous commit's green checks before
    the new run exists.
 3. **One wall-clock cap.** Polls are 30 seconds apart. The cap (`--cap-minutes`, default 60)

@@ -241,7 +241,14 @@
  "pr": [
   {
    "baseRefName": "master",
+   "headRefName": "fix/verify-git-env-isolation",
    "headRefOid": "884ab3cfbaf1b05e7557712c2108a99b0284c9fe",
+   "headRepository": {
+    "name": "agentsmith"
+   },
+   "headRepositoryOwner": {
+    "login": "PromptPartner"
+   },
    "mergeStateStatus": "BLOCKED",
    "mergeable": "MERGEABLE",
    "number": 67,

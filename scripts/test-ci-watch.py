@@ -218,6 +218,21 @@ class StateTests(unittest.TestCase):
         with self.assertRaisesRegex(ci_watch.GhError, "read 101 of 102"):
             self.watch_fixture(self.many_runs(failing_last=False, registered=102))
 
+    def test_pr_watch_ignores_runs_of_the_same_sha_from_another_branch_or_fork(self) -> None:
+        # The same commit can be pushed to an unrelated branch or a fork; those runs do not test this PR.
+        for field, value in (("head_branch", "someone-else"), ("head_repository", {"full_name": "fork/agentsmith"})):
+            with self.subTest(field=field):
+                fixture = json.loads((FIXTURES / "green.json").read_text(encoding="utf-8"))
+                for poll in fixture["polls"]:
+                    for run in poll["runs"]:
+                        run[field] = value
+                self.assertEqual(self.watch_fixture(fixture)["state"], "no-run-registered")
+        fixture = json.loads((FIXTURES / "green.json").read_text(encoding="utf-8"))
+        for poll in fixture["polls"]:
+            for run in poll["runs"]:
+                run["head_repository"] = {"full_name": "promptpartner/AgentSmith"}  # names ignore case
+        self.assertEqual(self.watch_fixture(fixture)["state"], "green")
+
     def test_exit_codes_are_distinct_and_documented(self) -> None:
         codes = [ci_watch.STATES[state][0] for state in ci_watch.STATES]
         self.assertEqual(len(codes), len(set(codes)))
