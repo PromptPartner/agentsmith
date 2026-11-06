@@ -70,3 +70,7 @@ its tier; `minutes add` takes a run ID and the minutes a person spent on it.
 `factory export <folder>` writes one JSON file per run (its state, events and receipts) and one for
 the factory logs, to a folder outside the Git folder that is empty or does not exist yet. Use it to
 keep the record beyond the repository's Git folder.
+Export redacts rather than refuses: your home folder becomes `~`, and text that looks like a
+secret (the secret scanner's patterns, GitHub tokens, and `secret`, `token`, `password` or
+`api_key` assignments) becomes `[redacted: <kind>]`. It prints how many values it redacted.
+Redaction is pattern-based, so read an export before you share it.

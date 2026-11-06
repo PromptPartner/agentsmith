@@ -192,6 +192,27 @@ class FactoryTests(unittest.TestCase):
         with self.assertRaisesRegex(factory.FactoryError, "not an empty folder"):
             factory.export(self.repo, target)
 
+    def test_export_redacts_home_paths_and_secret_like_text(self) -> None:
+        import agentsmith
+        self.add_run("leaky", "accepted")
+        state_path = self.runs / "leaky/state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        token = "ghp_" + "a" * 36
+        state.update(worktree=str(Path.home() / "projects/client-repo-leaky"),
+                     reason=f"token = '{token}' and synthetic-secret=FAKE_TEST_VALUE_12345")
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        target = self.repo.parent / "export"
+        summary = factory.export(self.repo, target)
+        text = (target / "run-leaky.json").read_text(encoding="utf-8")
+        self.assertNotIn(str(Path.home()), text)
+        self.assertIn("~/projects/client-repo-leaky", text)
+        self.assertNotIn(token, text)
+        self.assertNotIn("FAKE_TEST_VALUE_12345", text)
+        self.assertIn("[redacted:", text)
+        self.assertGreaterEqual(summary["redactions"], 2)
+        self.assertEqual(json.loads((target / "factory.json").read_text(encoding="utf-8"))["redactions"],
+                         summary["redactions"])
+
     # --- readiness ----------------------------------------------------------------------------
 
     def refuse_once(self) -> None:

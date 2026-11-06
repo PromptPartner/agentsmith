@@ -9135,7 +9135,9 @@ def cmd_factory(args: argparse.Namespace) -> int:
             print(f"recorded in {factory.add_minutes(repo, args.run_id, args.minutes)}")
             return 0
         if args.factory_command == "export":
-            print(f"exported to {factory.export(repo, Path(args.directory))}")
+            summary = factory.export(repo, Path(args.directory), secret_patterns=SECRET_PATTERNS)
+            print(f"exported {summary['runs']} run(s) to {summary['target']}; "
+                  f"{summary['redactions']} home path(s) or secret-like value(s) redacted")
             return 0
         gh, gh_error = ci_watch.Gh(), None
         # CI is read for the target's own GitHub repository, never for the current folder's.

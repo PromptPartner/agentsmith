@@ -428,20 +428,50 @@ def collect_export(repo: Path) -> dict[str, Any]:
             "factory": {name: read_jsonl(root / f"{name}.jsonl") for name in ("events", "defects", "minutes")}}
 
 
-def export(repo: Path, target: Path) -> Path:
+# Export redacts rather than refuses: the record is still useful with a secret-like value removed.
+EXPORT_SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("GitHub token", re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}")),
+    ("assigned secret", re.compile(r"(?i)\b[\w-]*(?:secret|token|password|passwd|api[_-]?key)[\w-]*"
+                                   r"[\"' ]*[:=]\s*[\"']?[^\s\"',]{8,}")),
+)
+
+
+def redact(value: Any, patterns: tuple[tuple[str, re.Pattern[str]], ...], counter: list[int]) -> Any:
+    """Replace the home folder with ~ and secret-like text with a marker, in every string."""
+    if isinstance(value, dict):
+        return {key: redact(item, patterns, counter) for key, item in value.items()}
+    if isinstance(value, list):
+        return [redact(item, patterns, counter) for item in value]
+    if not isinstance(value, str):
+        return value
+    for home in {str(Path.home().resolve()), str(Path.home())}:
+        if home and home != "/" and home in value:
+            counter[0] += value.count(home)
+            value = value.replace(home, "~")
+    for name, pattern in patterns:
+        value, count = pattern.subn(f"[redacted: {name}]", value)
+        counter[0] += count
+    return value
+
+
+def export(repo: Path, target: Path,
+           secret_patterns: tuple[tuple[str, re.Pattern[str]], ...] = ()) -> dict[str, Any]:
+    """Write receipts out of the Git folder, with home paths and secret-like text redacted.
+    `secret_patterns` adds the repository's own secret-scanner patterns to the built-in ones."""
     target = target.expanduser().resolve()
     if target == common_dir(repo) or target.is_relative_to(common_dir(repo)):
         raise FactoryError("export writes out of the Git folder: name a folder outside it")
     if target.exists() and (not target.is_dir() or any(target.iterdir())):
         raise FactoryError(f"{target} exists and is not an empty folder")
-    data = collect_export(repo)
+    counter = [0]
+    data = redact(collect_export(repo), (*EXPORT_SECRET_PATTERNS, *secret_patterns), counter)
     target.mkdir(parents=True, exist_ok=True)
     for run in data["runs"]:
         (target / f"run-{run['run_id']}.json").write_text(json.dumps(run, indent=2, sort_keys=True) + "\n",
                                                            encoding="utf-8")
-    (target / "factory.json").write_text(json.dumps(data["factory"], indent=2, sort_keys=True) + "\n",
-                                         encoding="utf-8")
-    return target
+    (target / "factory.json").write_text(json.dumps({**data["factory"], "redactions": counter[0]}, indent=2,
+                                                    sort_keys=True) + "\n", encoding="utf-8")
+    return {"target": str(target), "runs": len(data["runs"]), "redactions": counter[0]}
 
 
 def append_log(repo: Path, name: str, record: dict[str, Any]) -> Path:
