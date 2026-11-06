@@ -18,6 +18,7 @@ import math
 import os
 import posixpath
 import re
+import shlex
 import signal
 import shutil
 import subprocess
@@ -2962,6 +2963,25 @@ def fenced(text: str) -> str:
     return "```text\n" + clean.replace("```", "` ` `").strip() + "\n```"
 
 
+# The printed push command is pasted into a shell. Git accepts names such as `origin;id`, so a
+# name must also pass this narrower pattern, and every value is quoted besides.
+SAFE_REMOTE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+SAFE_BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*")
+
+
+def unsafe_name(repo: Path, kind: str, name: str) -> str | None:
+    pattern, ref = (SAFE_REMOTE, f"refs/remotes/{name}/HEAD") if kind == "remote" else (SAFE_BRANCH, f"refs/heads/{name}")
+    if pattern.fullmatch(name) and not run(["git", "check-ref-format", ref], repo).returncode:
+        return None
+    allowed = "letters, digits, . _ -" + (" and /" if kind == "branch" else "")
+    return f"{name!r} is not a safe {kind} name: use {allowed}, starting with a letter or digit"
+
+
+def push_command(remote: str, sha: str, branch: str) -> str:
+    """Text for a person to run in a POSIX shell (sh, bash, zsh); the controller never runs it."""
+    return "git push " + " ".join(shlex.quote(value) for value in (remote, f"{sha}:refs/heads/{branch}"))
+
+
 def base_staleness(repo: Path, remote: str, base: str, accepted: str) -> tuple[dict[str, Any], str | None]:
     ref = f"refs/remotes/{remote}/{base}"
     if not git(repo, "rev-parse", "--verify", "--quiet", ref, check=False):
@@ -2983,6 +3003,11 @@ def delivery_checks(repo: Path, state: dict[str, Any], remote: str, base: str | 
     run_id = state.get("run_id")
     if state.get("status") != "accepted":
         raise RunError(f"deliver refused: run {run_id} is {state.get('status')}, not accepted")
+    # The names reach git arguments and the printed push command: check them before anything else.
+    names = [unsafe_name(repo, "remote", remote), unsafe_name(repo, "branch", str(state.get("branch"))),
+             unsafe_name(repo, "branch", base) if base is not None else None]
+    if any(names):
+        raise RunError("deliver refused: " + "; ".join(problem for problem in names if problem))
     problems: list[str] = []
     accepted, branch = str(state.get("accepted_commit")), str(state.get("branch"))
     run_dir = Path(state["state_path"]).parent
@@ -3029,6 +3054,8 @@ def delivery_checks(repo: Path, state: dict[str, Any], remote: str, base: str | 
     staleness: dict[str, Any] = {}
     if base is None:
         problems.append(f"cannot tell the base branch: {remote}/HEAD is not set; pass --base-branch")
+    elif unsafe_name(repo, "branch", base):
+        problems.append(str(unsafe_name(repo, "branch", base)))
     else:
         staleness, problem = base_staleness(repo, remote, base, accepted)
         if problem:
@@ -3156,7 +3183,7 @@ def deliver(args: argparse.Namespace) -> int:
     summary = " ".join(str((checks["state"].get("maker_receipt") or {}).get("summary", "")).split())
     title = (f"{checks['branch']}: {summary}"[:72]).rstrip()
     report = {"run_id": args.run_id, "head": checks["accepted"], "branch": checks["branch"],
-              "push_command": f"git push {args.remote} {checks['accepted']}:refs/heads/{checks['branch']}",
+              "push_command": push_command(args.remote, checks["accepted"], checks["branch"]),
               "title": title, "body": delivery_body(checks, verdict), "tier": checks["tier"],
               "staleness": checks["staleness"], "calibration": checks["calibration"], "eligibility": verdict}
     if args.json:

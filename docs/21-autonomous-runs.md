@@ -433,7 +433,13 @@ It then recomputes the risk tier from the base commit with the base policy, and 
 can only rise: the result is the highest of the recorded, recomputed and declared tiers. It
 reports how many commits the accepted commit is behind the base branch. It prints the exact push
 command, `git push origin <accepted-commit>:refs/heads/agentsmith/<run-id>`, and a pull-request
-title and body built only from receipts:
+title and body built only from receipts.
+
+The push command is for a POSIX shell (sh, bash, zsh), and every value in it is quoted. Git
+accepts remote and branch names that a shell would run, such as `origin;id`, so `deliver` also
+refuses a remote, run branch or base branch whose name uses anything other than letters, digits,
+`.`, `_`, `-` (and `/` in a branch), or that `git check-ref-format` rejects. A name that passes
+needs no quoting, so the same command also works in PowerShell. The pull-request text holds:
 
 - the tier and its lenses;
 - the verifier and checker evidence;

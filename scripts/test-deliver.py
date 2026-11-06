@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -291,6 +292,23 @@ class DeliverTests(unittest.TestCase):
         proof_path.write_text(json.dumps(proof), encoding="utf-8")
         self.refused(repo, "the verification receipt does not record checked citations")
 
+    def test_refuses_a_remote_or_branch_name_that_a_shell_would_run(self) -> None:
+        repo = self.accepted_run()
+        # Git accepts both names; printed into a push command, each would run printf.
+        remote = "origin;printf${IFS}INJECTED;#"
+        self.git(repo, "remote", "add", remote, str(self.root / "origin.git"))
+        self.git(repo, "fetch", "-q", remote)
+        self.git(repo, "remote", "set-head", remote, "main")
+        self.refused(repo, "is not a safe remote name", "--remote", remote)
+        self.refused(repo, "is not a safe branch name", "--base-branch", "main;id")
+        branch = "agentsmith/deliver;printf${IFS}INJECTED"
+        self.git(repo, "update-ref", f"refs/heads/{branch}", self.state(repo)["accepted_commit"])
+        path = repo / ".git/agentsmith-runs/deliver/state.json"
+        state = json.loads(path.read_text(encoding="utf-8"))
+        state["branch"] = branch
+        path.write_text(json.dumps(state), encoding="utf-8")
+        self.refused(repo, "is not a safe branch name")
+
     def test_refuses_when_the_base_branch_is_unknown(self) -> None:
         repo = self.accepted_run()
         self.refused(repo, "refs/remotes/origin/release is missing", "--base-branch", "release")
@@ -310,6 +328,10 @@ class DeliverTests(unittest.TestCase):
 
 class LandingContractTests(unittest.TestCase):
     """The attended landing step: the controller prints, a person approves, the skill pushes."""
+
+    def test_the_push_command_quotes_every_value_for_a_posix_shell(self) -> None:
+        command = CONTROLLER.push_command("my remote", "a" * 40, "agentsmith/x;id")
+        self.assertEqual(shlex.split(command), ["git", "push", "my remote", "a" * 40 + ":refs/heads/agentsmith/x;id"])
 
     def test_the_controller_has_no_push_or_pull_request_code_path(self) -> None:
         source = CONTROLLER_PATH.read_text(encoding="utf-8")
