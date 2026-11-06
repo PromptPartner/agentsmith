@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -18,7 +19,10 @@ sys.path.insert(0, str(ROOT))
 import ci_watch  # noqa: E402
 import factory  # noqa: E402
 
+CONTROLLER = factory.load_controller(ROOT)
+
 NOW = datetime(2026, 11, 6, 12, 0, tzinfo=timezone.utc)
+SSH_USER = "git" + "@"  # the SSH user of GitHub remote URLs, not an address
 CLEAN_ENV = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
 POLICY = json.dumps({"schema_version": 1, "rules": [{"paths": ["src/**"], "tier": "B"}]})
 WORKFLOW = """name: verify
@@ -85,6 +89,7 @@ class FactoryTests(unittest.TestCase):
         (self.repo / ".github/workflows/verify.yml").write_text(WORKFLOW, encoding="utf-8")
         self.git("add", ".")
         self.git("commit", "-qm", "base")
+        self.git("remote", "add", "origin", "https://github.com/owner/project.git")
         self.runs = self.repo / ".git/agentsmith-runs"
 
     def git(self, *args: str) -> str:
@@ -92,11 +97,12 @@ class FactoryTests(unittest.TestCase):
                               check=True).stdout.strip()
 
     def add_run(self, run_id: str, status: str, *, hours_ago: float = 24, touches: int = 0, tier: str = "B",
-            usd: float = 1.0, tokens: int = 1000) -> None:
+            usd: float | None = 1.0, tokens: int = 1000) -> None:
         folder = self.runs / run_id
         folder.mkdir(parents=True)
-        state = {"run_id": run_id, "status": status, "started_at": stamp(hours_ago), "claude_cost_usd": usd,
-                 "codex_tokens_used": tokens, "risk": {"tier": tier}}
+        state = {"run_id": run_id, "status": status, "started_at": stamp(hours_ago), "risk": {"tier": tier}}
+        if usd is not None:
+            state.update(claude_cost_usd=usd, codex_tokens_used=tokens)
         (folder / "state.json").write_text(json.dumps(state), encoding="utf-8")
         events = [{"event": "run_started"}] + [{"event": "run_escalated"}, {"event": "run_resumed"}][:touches] + (
             [{"event": "run_accepted"}] if status == "accepted" else [])
@@ -138,6 +144,60 @@ class FactoryTests(unittest.TestCase):
         for row in report["numbers"]:
             self.assertEqual(row["window"], report["window"], row["name"])
             self.assertIn("n", row)
+
+    def test_unknown_spend_is_reported_and_left_out(self) -> None:
+        for index in range(5):
+            self.add_run(f"known-{index}", "accepted", usd=2.0, tokens=100)
+        self.add_run("unknown", "accepted", usd=None)
+        incomplete = self.runs / "known-4/state.json"
+        state = json.loads(incomplete.read_text(encoding="utf-8"))
+        state["usage_accounting_incomplete"] = True
+        incomplete.write_text(json.dumps(state), encoding="utf-8")
+        spend = self.number(factory.numbers(self.repo, now=NOW, ci_runs=[]), "spend per landed change")
+        self.assertEqual((spend["status"], spend["n"]), ("insufficient data", 4))
+        self.assertIn("2 run(s) with unknown spend left out", spend["detail"])
+        self.add_run("known-5", "accepted", usd=2.0, tokens=100)
+        spend = self.number(factory.numbers(self.repo, now=NOW, ci_runs=[]), "spend per landed change")
+        self.assertEqual((spend["n"], spend["value"]), (5, {"claude_usd": 2.0, "codex_tokens": 100}))
+
+    def test_red_time_starts_from_the_state_before_the_window(self) -> None:
+        # Workflow 1 was already failing when the window opened, and only went green 20 h ago.
+        seeds = [ci_run(1, "failure", 50)]
+        runs = [ci_run(2, "success", 20)] + [ci_run(10 + n, "success", 10, workflow=2 + n) for n in range(4)]
+        report = factory.numbers(self.repo, since="2026-11-05", now=NOW, ci_runs=runs, ci_seeds=seeds)
+        red = self.number(report, "time the default branch spends red")
+        self.assertEqual(red["value"]["hours"], 16.0)  # from the window start, 36 h ago, to 20 h ago
+        self.assertIn("upper bound", red["detail"])
+
+    def test_the_window_ends_now(self) -> None:
+        for index in range(5):
+            self.add_run(f"future-{index}", "accepted", hours_ago=-24 * 365 * 70)  # started "in 2096"
+        factory.add_defect(self.repo, "c" * 40, "B", now=NOW + timedelta(days=30))
+        report = factory.numbers(self.repo, now=NOW, ci_runs=[])
+        self.assertEqual(self.number(report, "accepted without human rework")["n"], 0)
+        self.assertEqual(self.number(report, "defects found after merge, per tier")["value"], None)
+        self.assertEqual(report["window"]["until"], NOW.isoformat(timespec="seconds"))
+        with self.assertRaisesRegex(factory.FactoryError, "is after now"):
+            factory.numbers(self.repo, since="2027-01-01", now=NOW, ci_runs=[])
+
+    def test_invalid_log_rows_are_skipped_and_counted(self) -> None:
+        for index in range(5):
+            self.add_run(f"ok-{index}", "accepted", tier="B")
+            factory.add_minutes(self.repo, f"ok-{index}", 10, now=NOW)
+        at = (NOW - timedelta(hours=1)).isoformat(timespec="seconds")
+        for row in ({"at": at, "run_id": "ok-0", "minutes": -1000000}, {"at": at, "run_id": "ok-1", "minutes": True},
+                    {"at": at, "run_id": "ok-2", "minutes": "60"}, {"at": "2099-01-01T00:00:00+00:00", "run_id": "ok-3",
+                                                                      "minutes": 30}, {"run_id": "ok-4", "minutes": 30}):
+            factory.append_log(self.repo, "minutes", row)
+        for row in ({"at": at, "tier": "B"}, {"at": at, "sha": "abc", "tier": "B"}, {"at": at, "sha": "d" * 40, "tier": "Z"},
+                    {"at": "2099-01-01T00:00:00+00:00", "sha": "d" * 40, "tier": "B"}):
+            factory.append_log(self.repo, "defects", row)
+        report = factory.numbers(self.repo, now=NOW, ci_runs=[])
+        self.assertEqual(self.number(report, "human minutes per landed change")["value"], 10.0)
+        self.assertEqual(self.number(report, "defects found after merge, per tier")["value"]["B"]["defects"], 0)
+        self.assertIn("skipped 5 invalid minutes row(s)", report["warnings"])
+        self.assertIn("skipped 4 invalid defects row(s)", report["warnings"])
+        self.assertIn("skipped 5 invalid minutes row(s)", factory.render(report))
 
     def test_too_few_cases_say_insufficient_data(self) -> None:
         for index in range(3):
@@ -189,9 +249,72 @@ class FactoryTests(unittest.TestCase):
         with self.assertRaisesRegex(factory.FactoryError, "not an empty folder"):
             factory.export(self.repo, target)
 
+    def test_export_redacts_home_paths_and_secret_like_text(self) -> None:
+        import agentsmith
+        self.add_run("leaky", "accepted")
+        state_path = self.runs / "leaky/state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        token = "ghp_" + "a" * 36
+        state.update(worktree=str(Path.home() / "projects/client-repo-leaky"),
+                     reason=f"token = '{token}' and synthetic-secret=FAKE_TEST_VALUE_12345")
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        target = self.repo.parent / "export"
+        summary = factory.export(self.repo, target)
+        text = (target / "run-leaky.json").read_text(encoding="utf-8")
+        self.assertNotIn(str(Path.home()), text)
+        self.assertIn("~/projects/client-repo-leaky", text)
+        self.assertNotIn(token, text)
+        self.assertNotIn("FAKE_TEST_VALUE_12345", text)
+        self.assertIn("[redacted:", text)
+        self.assertGreaterEqual(summary["redactions"], 2)
+        self.assertEqual(json.loads((target / "factory.json").read_text(encoding="utf-8"))["redactions"],
+                         summary["redactions"])
+
     # --- readiness ----------------------------------------------------------------------------
 
-    def ready_inputs(self, **changes) -> dict:
+    def refuse_once(self) -> None:
+        """A real kill-switch drill: the controller refuses a start while the marker exists."""
+        marker = self.repo / ".harness/AUTONOMY_PAUSED"
+        marker.touch()
+        try:
+            with self.assertRaises(CONTROLLER.RunError):
+                CONTROLLER.assert_autonomy_not_paused(self.repo, action="start", run_id="drill")
+        finally:
+            marker.unlink()
+
+    def kill_switch(self, *events: dict) -> dict:
+        log = self.repo / ".git/agentsmith-factory/events.jsonl"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("".join(json.dumps(item) + "\n" for item in events), encoding="utf-8")
+        report = self.readiness_without_drill()
+        return next(item for item in report["checks"] if item["name"] == "kill switch tested")
+
+    def readiness_without_drill(self) -> dict:
+        values = self.ready_inputs(drill=False)
+        gh = ci_watch.Gh(runner=FakeRunner(values["runs"], values["jobs"]), which=lambda _: "gh")
+        return factory.readiness(self.repo, controller=values["controller"], gh=gh, manifest=values["manifest"],
+                                 base="main", now=datetime.now(timezone.utc))
+
+    def test_a_forged_kill_switch_record_is_not_evidence(self) -> None:
+        self.refuse_once()
+        real = json.loads((self.repo / ".git/agentsmith-factory/events.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+        self.assertEqual(self.kill_switch(real)["status"], "pass")
+        forged = [
+            {"event": "autonomy_pause_refused"},
+            {**real, "marker": str(self.repo.parent / "elsewhere/AUTONOMY_PAUSED")},
+            {**real, "marker_mtime_ns": None},
+            {**real, "marker_mtime_ns": int((NOW + timedelta(days=1)).timestamp() * 1e9)},
+            {**real, "action": "fly"},
+            {**real, "run_id": ""},
+            {**real, "at": "2099-01-01T00:00:00+00:00"},
+        ]
+        for event in forged:
+            with self.subTest(event=event):
+                result = self.kill_switch(event)
+                self.assertEqual(result["status"], "fail", result)
+                self.assertIn("0 refusal(s) recorded with their facts", result["evidence"])
+
+    def ready_inputs(self, drill: bool = True, **changes) -> dict:
         jobs = {9: [job("compatibility (windows-latest)", 20), job("compatibility (macos-latest)", 8),
                     job("compatibility (ubuntu-latest)", 6)]}
         runs = [ci_run(9, "success", 6)]
@@ -199,8 +322,8 @@ class FactoryTests(unittest.TestCase):
                                      preflight_sandboxes=lambda *_args, **_kwargs: None,
                                      calibration_status=lambda *_args: {"status": "passed",
                                                                         "calibrated_at": "2026-11-05T09:00:00+00:00"})
-        factory.append_log(self.repo, "events", {"at": "2026-11-05T10:00:00+00:00", "event": "autonomy_pause_refused",
-                                                 "action": "start", "run_id": "drill"})
+        if drill:
+            self.refuse_once()
         values = {"runs": runs, "jobs": jobs, "controller": controller,
                   "manifest": {"roles": {"checker": {"runtime": "claude", "model": "m", "effort": "high"}}}}
         values.update(changes)
@@ -210,7 +333,7 @@ class FactoryTests(unittest.TestCase):
         values = self.ready_inputs(**changes)
         gh = ci_watch.Gh(runner=FakeRunner(values["runs"], values["jobs"]), which=lambda _: "gh")
         return factory.readiness(self.repo, controller=values["controller"], gh=values.get("gh", gh),
-                                 manifest=values["manifest"], base="main", now=NOW,
+                                 manifest=values["manifest"], base="main", now=datetime.now(timezone.utc),
                                  gh_error=values.get("gh_error"))
 
     def failing(self, report: dict) -> dict[str, str]:
@@ -253,6 +376,19 @@ class FactoryTests(unittest.TestCase):
         unnamed = self.readiness(manifest=None)
         self.assertIn("checker calibration passed", self.failing(unnamed))
 
+    def test_an_unknown_timeout_fails_the_headroom_check(self) -> None:
+        self.git("rm", "-q", ".github/workflows/verify.yml")
+        self.git("commit", "-qm", "workflow not at the base")
+        headroom = next(item for item in self.readiness()["checks"] if item["name"] == "CI headroom")
+        self.assertEqual(headroom["status"], "fail", headroom)
+        self.assertIn("timeout unknown", headroom["evidence"])
+        self.assertEqual(factory.job_timeout("", "compatibility (windows-latest)"), None)
+        self.assertEqual(factory.job_timeout(WORKFLOW.replace("timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 20 }}",
+                                                              "timeout-minutes: ${{ inputs.minutes }}"),
+                                             "compatibility (windows-latest)"), None)
+        no_key = WORKFLOW.replace("    timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 20 }}\n", "")
+        self.assertEqual(factory.job_timeout(no_key, "compatibility (windows-latest)"), 360)
+
     def test_readiness_reads_the_base_commit_and_the_kill_switch_record(self) -> None:
         (self.repo / ".harness/lenses.json").unlink()
         (self.repo / ".harness/verify.conf").write_text("tests :: python3 -m unittest\n", encoding="utf-8")
@@ -287,6 +423,69 @@ class FactoryTests(unittest.TestCase):
                           base="main", now=NOW)
         factory.numbers(self.repo, now=NOW, ci_runs=[])
         self.assertEqual(snapshot(), before)
+
+    @unittest.skipIf(os.name == "nt", "the fake gh is a POSIX script")
+    def test_the_cli_reads_ci_for_the_target_not_the_current_folder(self) -> None:
+        self.add_run("one", "accepted")
+        self.git("remote", "set-url", "origin", SSH_USER + "github.com:owner/target-project.git")
+        bin_dir = self.repo.parent / "bin"
+        bin_dir.mkdir()
+        calls = self.repo.parent / "gh-calls.log"
+        (bin_dir / "gh").write_text(f"""#!{sys.executable}
+import json, sys
+args = sys.argv[1:]
+open({str(calls)!r}, "a").write(json.dumps(args) + "\\n")
+if args[:2] == ["auth", "status"]:
+    raise SystemExit(0)
+if args[:2] == ["repo", "view"] and "nameWithOwner" in args:
+    print(json.dumps({{"nameWithOwner": "someone/the-current-folder"}}))
+elif args[:2] == ["repo", "view"]:
+    print(json.dumps({{"defaultBranchRef": {{"name": "main"}}}}))
+elif "--slurp" in args:
+    print(json.dumps([{{"total_count": 0, "workflow_runs": []}}]))
+else:
+    print(json.dumps({{"total_count": 0, "workflow_runs": []}}))
+""", encoding="utf-8")
+        (bin_dir / "gh").chmod(0o755)
+        env = {**CLEAN_ENV, "PATH": str(bin_dir) + os.pathsep + CLEAN_ENV.get("PATH", "")}
+        result = subprocess.run([sys.executable, str(ROOT / "agentsmith.py"), "factory", "numbers", "--json",
+                                 "--target", str(self.repo)], cwd=ROOT, env=env, capture_output=True, text=True,
+                                check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        logged = [json.loads(line) for line in calls.read_text(encoding="utf-8").splitlines()]
+        api = [args for args in logged if args[0] == "api"]
+        self.assertTrue(api and all("repos/owner/target-project/" in args[-1] for args in api), logged)
+        self.assertFalse([args for args in logged if "nameWithOwner" in args], "the current folder's repository")
+
+    def test_the_github_repository_comes_from_the_targets_origin(self) -> None:
+        for url, slug in ((SSH_USER + "github.com:owner/name.git", "owner/name"), ("https://github.com/owner/name", "owner/name"),
+                          ("ssh://" + SSH_USER + "github.com/owner/name.git", "owner/name"), ("https://gitlab.com/owner/name", None)):
+            with self.subTest(url=url):
+                self.git("remote", "remove", "origin") if self.git("remote") else None
+                self.git("remote", "add", "origin", url)
+                self.assertEqual(factory.github_slug(self.repo), slug)
+
+    @unittest.skipUnless((sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").exists())
+                         or (sys.platform.startswith("linux") and shutil.which("bwrap")),
+                         "the real preflight needs the macOS or Linux sandbox")
+    def test_the_real_preflight_writes_only_a_throwaway_system_temp_folder(self) -> None:
+        # The sandbox probe creates and removes a folder in the system temporary folder; nothing in
+        # the repository or its Git folder changes, and that is what the docs claim.
+        def snapshot() -> dict[str, bytes]:
+            return {str(path): path.read_bytes() for path in self.repo.rglob("*") if path.is_file()}
+
+        before = snapshot()
+        manifest = {"roles": {"maker": {"runtime": "codex"}, "checker": {"runtime": "claude", "model": "m",
+                                                                         "effort": "high"}}}
+        report = factory.readiness(self.repo, controller=CONTROLLER, gh=None, manifest=manifest, base="main",
+                                   now=datetime.now(timezone.utc), gh_error="offline")
+        executes = next(item for item in report["checks"] if item["name"] == "checker can execute on this host")
+        self.assertEqual(executes["status"], "pass", executes)
+        self.assertEqual(snapshot(), before)
+        docs = (ROOT / "docs/31-factory-readiness.md").read_text(encoding="utf-8")
+        self.assertIn("write nothing in the repository or its Git folder", docs)
+        self.assertIn("system temporary folder", docs)
+        self.assertNotIn("`readiness` and `numbers` write nothing and switch nothing on.", docs)
 
     def test_the_cli_reports_without_gh(self) -> None:
         # gh with an empty configuration is not signed in, on every runner: the CI number says so.

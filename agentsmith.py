@@ -9135,23 +9135,31 @@ def cmd_factory(args: argparse.Namespace) -> int:
             print(f"recorded in {factory.add_minutes(repo, args.run_id, args.minutes)}")
             return 0
         if args.factory_command == "export":
-            print(f"exported to {factory.export(repo, Path(args.directory))}")
+            summary = factory.export(repo, Path(args.directory), secret_patterns=SECRET_PATTERNS)
+            print(f"exported {summary['runs']} run(s) to {summary['target']}; "
+                  f"{summary['redactions']} home path(s) or secret-like value(s) redacted")
             return 0
         gh, gh_error = ci_watch.Gh(), None
+        # CI is read for the target's own GitHub repository, never for the current folder's.
+        slug = factory.github_slug(repo)
         try:
             gh.check()
+            if slug is None:
+                raise ci_watch.GhError(f"the origin remote of {repo} is not a GitHub repository")
         except ci_watch.GhError as exc:
             gh, gh_error = None, str(exc)
         if args.factory_command == "numbers":
             start, _ = factory.window(args.since, factory.datetime.now(factory.timezone.utc))
-            runs = None
+            runs, seeds = None, []
             if gh is not None:
                 try:
-                    base = args.base or gh.default_branch(gh.repo())
-                    runs = factory.ci_runs(gh, gh.repo(), base, start)
-                except ci_watch.GhError as exc:
-                    gh_error = str(exc)
-            report = factory.numbers(repo, since=args.since, ci_runs=runs, ci_error=gh_error)
+                    base = args.base or gh.default_branch(slug)
+                    runs = factory.ci_runs(gh, slug, base, start)
+                    seeds = factory.ci_seed_runs(gh, slug, base, start)
+                except (ci_watch.GhError, factory.FactoryError) as exc:
+                    gh_error, runs = str(exc), None
+            report = factory.numbers(repo, since=args.since, ci_runs=runs, ci_error=gh_error,
+                                     ci_seeds=seeds if runs is not None else [])
         else:
             manifest = None
             if args.manifest:
@@ -9162,7 +9170,7 @@ def cmd_factory(args: argparse.Namespace) -> int:
                 base = head or "HEAD"
             report = factory.readiness(repo, controller=factory.load_controller(repo), gh=gh, manifest=manifest,
                                        base=base, green_days=args.green_days, headroom=args.headroom,
-                                       gh_error=gh_error)
+                                       gh_error=gh_error, repo_slug=slug)
     except (factory.FactoryError, OSError, ValueError) as exc:
         print(f"[error] factory: {exc}", file=sys.stderr)
         return 2
@@ -9622,7 +9630,8 @@ def parser() -> argparse.ArgumentParser:
                                                          "from runs, events and read-only CI reads; no stored board")
     factory_sub = factory_parser.add_subparsers(dest="factory_command", required=True)
     ready = factory_sub.add_parser("readiness", description="Check whether this repository is ready for wider "
-                                   "autonomy. Writes nothing and switches nothing on. Exit 0 ready, 1 not ready.")
+                                   "autonomy. Writes nothing in the repository or its Git folder (the sandbox probe uses a "
+                                   "throwaway temporary folder) and switches nothing on. Exit 0 ready, 1 not ready.")
     ready.add_argument("--manifest", help="a run manifest naming the checker (client, model, effort)")
     ready.add_argument("--base", help="the base branch or ref (default: origin/HEAD, else HEAD)")
     ready.add_argument("--green-days", type=int, default=7, help="days the default branch must have been green")

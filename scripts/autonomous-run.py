@@ -185,8 +185,12 @@ def assert_autonomy_not_paused(repo: Path, *, action: str = "work", run_id: str 
         for name in names:
             if name.casefold() == wanted:
                 # The evidence that the kill switch works, for `agentsmith factory readiness`.
+                try:
+                    marker_mtime = (folder / name).stat().st_mtime_ns
+                except OSError:
+                    marker_mtime = None
                 record_factory_event(repo, "autonomy_pause_refused", action=action, run_id=run_id,
-                                     marker=str(folder / name))
+                                     marker=str((folder / name).resolve()), marker_mtime_ns=marker_mtime)
                 raise RunError(f"autonomy is paused by {folder / name}; remove it to allow new work "
                                "(live runs are not stopped; use stop <id>)")
 
@@ -1572,6 +1576,7 @@ def _git_metadata_once(repo: Path, *, known_peers: dict[str, Any] | None = None)
         "hooks": hooks,
         "protected_files": protected,
         "existing_objects": objects,
+        "factory": factory_snapshot(common),
         "registered_peers": {
             "refs": sorted(other_run_refs),
             "protected_refs": sorted(line.split(" ", 1)[0] for line in refs),
@@ -1607,6 +1612,50 @@ def git_metadata(repo: Path, *, known_peers: dict[str, Any] | None = None) -> di
         time.sleep(0.02)
 
 
+# The only entries the factory records folder may hold: operator logs that only grow.
+FACTORY_LOGS = frozenset({"events.jsonl", "defects.jsonl", "minutes.jsonl"})
+
+
+def factory_snapshot(common: Path) -> dict[str, Any]:
+    """The factory records folder's shape. It is left out of the strict comparison because other
+    commands append to it while a run is live, so it gets its own rule: only the known logs, as
+    regular files, and each may only grow (an append keeps every earlier byte)."""
+    folder = common / "agentsmith-factory"
+    entries: dict[str, Any] = {}
+    if folder.is_symlink() or (folder.exists() and not folder.is_dir()):
+        return {"folder": str(folder), "entries": {".": {"kind": "not-a-folder"}}}
+    for path in sorted(folder.rglob("*")) if folder.is_dir() else []:
+        rel = path.relative_to(folder).as_posix()
+        if path.is_symlink() or not path.is_file():
+            entries[rel] = {"kind": "symlink" if path.is_symlink() else "other"}
+            continue
+        data = path.read_bytes()
+        entries[rel] = {"kind": "file", "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+    return {"folder": str(folder), "entries": entries}
+
+
+def factory_tampering(before: dict[str, Any] | None, after: dict[str, Any] | None) -> str | None:
+    if not before or not after:
+        return None
+    folder = Path(after["folder"])
+    for rel, entry in after["entries"].items():
+        if rel not in FACTORY_LOGS or entry["kind"] != "file":
+            return f"agentsmith-factory/{rel} is not an operator log file"
+    for rel, entry in before["entries"].items():
+        if entry.get("kind") != "file":
+            continue
+        later = after["entries"].get(rel)
+        if later is None or later["size"] < entry["size"]:
+            return f"agentsmith-factory/{rel} lost records"
+        try:
+            prefix = (folder / rel).read_bytes()[:entry["size"]]
+        except OSError:
+            return f"agentsmith-factory/{rel} cannot be read"
+        if hashlib.sha256(prefix).hexdigest() != entry["sha256"]:
+            return f"agentsmith-factory/{rel} was rewritten, not appended to"
+    return None
+
+
 def ignored_paths(worktree: Path) -> set[str]:
     return set(git_paths(worktree, "ls-files", "--others", "--ignored", "--exclude-standard"))
 
@@ -1634,6 +1683,9 @@ def validate_git_transition(worktree: Path, before: dict[str, Any], after: dict[
                                  if old_files.get(path) != new_files.get(path))
                 raise RunError(f"runtime changed protected Git metadata: {key}: {', '.join(changed[:8])}")
             raise RunError(f"runtime changed protected Git metadata: {key}")
+    tampered = factory_tampering(before.get("factory"), after.get("factory"))
+    if tampered:
+        raise RunError(f"runtime changed protected Git metadata: {tampered}")
     after_objects = dict(after["existing_objects"])
     altered_objects = [path for path, digest in before["existing_objects"]
                        if after_objects.get(path) != digest]
@@ -1654,6 +1706,9 @@ def validate_git_unchanged(before: dict[str, Any], after: dict[str, Any], actor:
     for key in ("refs", "config", "config_worktree", "hooks", "protected_files", "existing_objects"):
         if before[key] != after[key]:
             raise RunError(f"{actor} changed protected Git metadata: {key}")
+    tampered = factory_tampering(before.get("factory"), after.get("factory"))
+    if tampered:
+        raise RunError(f"{actor} changed protected Git metadata: {tampered}")
 
 
 @contextlib.contextmanager

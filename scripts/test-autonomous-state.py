@@ -510,6 +510,21 @@ class AutonomousStateTests(unittest.TestCase):
         state = {"repo": str(repo), "manifest_path": str(repo / "m.json"), "spec_path": "s.md"}
         self.assertIn(CONTROLLER.factory_root(repo), CONTROLLER.trusted_paths(state))
 
+    def test_the_factory_folder_may_only_grow_by_appends_to_its_logs(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith factory shape ") as temporary:
+            common = Path(temporary)
+            folder = common / "agentsmith-factory"
+            folder.mkdir()
+            (folder / "events.jsonl").write_text('{"event": "first"}\n', encoding="utf-8")
+            before = CONTROLLER.factory_snapshot(common)
+            with (folder / "events.jsonl").open("a", encoding="utf-8") as log:
+                log.write('{"event": "appended by another command"}\n')
+            (folder / "defects.jsonl").write_text('{"sha": "x"}\n', encoding="utf-8")
+            self.assertIsNone(CONTROLLER.factory_tampering(before, CONTROLLER.factory_snapshot(common)))
+            (folder / "events.jsonl").write_text('{"event": "rewritten"}\n', encoding="utf-8")
+            self.assertIn("rewritten, not appended to",
+                          CONTROLLER.factory_tampering(before, CONTROLLER.factory_snapshot(common)))
+
     def test_kill_switch_in_main_checkout_pauses_linked_worktrees(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith pause ") as temporary:
             repo = Path(temporary).resolve() / "main"

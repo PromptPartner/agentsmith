@@ -2,7 +2,8 @@
 """Readiness and numbers for autonomous runs, derived from what is already recorded.
 
 Nothing here is a stored board: every report is computed from run state, `events.jsonl`, the
-operator's own logs and read-only GitHub reads. `readiness` and `numbers` write nothing and switch
+operator's own logs and read-only GitHub reads. `readiness` and `numbers` write nothing in the
+repository or its Git folder (the checker preflight uses a throwaway system temporary folder) and switch
 nothing on. The only writers are `export` (to a folder the operator names) and the two operator
 logs (`defect add`, `minutes add`) under the Git folder.
 """
@@ -52,6 +53,15 @@ def common_dir(repo: Path) -> Path:
     value = git(repo, "rev-parse", "--git-common-dir")
     path = Path(value)
     return (path if path.is_absolute() else repo / path).resolve()
+
+
+def github_slug(repo: Path, remote: str = "origin") -> str | None:
+    """owner/name of the target's GitHub remote, so CI is read for that repository and not for
+    whatever repository the current folder belongs to. None when the remote is not on GitHub."""
+    url = git(repo, "remote", "get-url", remote, check=False)
+    match = re.fullmatch(r"(?:git@github\.com:|ssh://git@github\.com/|https://(?:[^@/]+@)?github\.com/)"
+                         r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?", url)
+    return match.group(1) if match else None
 
 
 def factory_dir(repo: Path) -> Path:
@@ -110,7 +120,15 @@ def window(since: str | None, now: datetime) -> tuple[datetime, datetime]:
     start = parse_time(since if "T" in since else since + "T00:00:00+00:00")
     if start is None:
         raise FactoryError(f"--since needs a date such as 2026-10-01, not {since!r}")
+    if start > now:
+        raise FactoryError(f"--since {since} is after now")
     return start, now
+
+
+def within(value: Any, start: datetime, end: datetime) -> bool:
+    """A record counts only inside [start, end]: before the window or in the future, it does not."""
+    moment = parse_time(value)
+    return moment is not None and start <= moment <= end
 
 
 def number(name: str, n: int, value: Any, unit: str, start: datetime, end: datetime,
@@ -126,11 +144,16 @@ def touches(run: dict[str, Any]) -> int:
     return sum(1 for item in run["events"] if item.get("event") in TOUCH_EVENTS)
 
 
-def red_time(ci_runs: list[dict[str, Any]], start: datetime, end: datetime) -> float:
-    """Seconds in [start, end] during which the latest completed run of any workflow was failing."""
+def red_time(ci_runs: list[dict[str, Any]], start: datetime, end: datetime,
+             seeds: list[dict[str, Any]] = ()) -> float:
+    """Seconds in [start, end] during which the latest completed run of any workflow was failing.
+    `seeds` are the last runs before the window, so a workflow already red at its start counts."""
     ordered = sorted((run for run in ci_runs if parse_time(run.get("updated_at"))),
                      key=lambda run: parse_time(run["updated_at"]))
     failing: dict[Any, bool] = {}
+    for run in sorted((run for run in seeds if parse_time(run.get("updated_at"))),
+                      key=lambda run: parse_time(run["updated_at"])):
+        failing[run.get("workflow_id") or run.get("name")] = run.get("conclusion") not in PASSING
     red, since = 0.0, start
     for run in ordered:
         moment = min(max(parse_time(run["updated_at"]), start), end)
@@ -144,11 +167,12 @@ def red_time(ci_runs: list[dict[str, Any]], start: datetime, end: datetime) -> f
 
 
 def numbers(repo: Path, *, since: str | None = None, now: datetime | None = None,
-            ci_runs: list[dict[str, Any]] | None = None, ci_error: str | None = None) -> dict[str, Any]:
+            ci_runs: list[dict[str, Any]] | None = None, ci_error: str | None = None,
+            ci_seeds: list[dict[str, Any]] = ()) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
     start, end = window(since, now)
     runs, unreadable = load_runs(repo)
-    in_window = [run for run in runs if (parse_time(run["state"].get("started_at")) or start - timedelta(1)) >= start]
+    in_window = [run for run in runs if within(run["state"].get("started_at"), start, end)]
     finished = [run for run in in_window if run["state"].get("status") in TERMINAL]
     accepted = [run for run in in_window if run["state"].get("status") == "accepted"]
     clean = [run for run in accepted if touches(run) == 0]
@@ -160,8 +184,24 @@ def numbers(repo: Path, *, since: str | None = None, now: datetime | None = None
         risk = run["state"].get("risk")
         return risk.get("tier") if isinstance(risk, dict) and risk.get("tier") in TIERS else "unknown"
 
-    defects = [item for item in read_jsonl(factory_dir(repo) / "defects.jsonl")
-               if (parse_time(item.get("at")) or start - timedelta(1)) >= start]
+    warnings: list[str] = []
+
+    def valid_rows(name: str, valid: Callable[[dict[str, Any]], bool]) -> list[dict[str, Any]]:
+        """Operator logs are checked as they are read; an invalid row is skipped and counted."""
+        rows_read = read_jsonl(factory_dir(repo) / f"{name}.jsonl")
+        kept = [item for item in rows_read if valid(item)]
+        if len(kept) < len(rows_read):
+            warnings.append(f"skipped {len(rows_read) - len(kept)} invalid {name} row(s)")
+        return kept
+
+    def stamped(item: dict[str, Any]) -> bool:
+        moment = parse_time(item.get("at"))
+        return moment is not None and moment <= end
+
+    defects = [item for item in valid_rows("defects", lambda item: stamped(item) and item.get("tier") in TIERS
+                                           and isinstance(item.get("sha"), str)
+                                           and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", item["sha"]) is not None)
+               if within(item.get("at"), start, end)]
     per_tier = {}
     for name in (*TIERS, "unknown"):
         landed = sum(1 for run in accepted if tier(run) == name)
@@ -176,9 +216,10 @@ def numbers(repo: Path, *, since: str | None = None, now: datetime | None = None
                        round(total_touches / len(accepted), 3) if accepted else None, "touches", start, end,
                        f"{total_touches} escalation, interruption and resume event(s) in accepted runs"))
     minutes: dict[str, float] = {}
-    for item in read_jsonl(factory_dir(repo) / "minutes.jsonl"):
-        if isinstance(item.get("minutes"), (int, float)) and not isinstance(item.get("minutes"), bool):
-            minutes[str(item.get("run_id"))] = minutes.get(str(item.get("run_id")), 0.0) + float(item["minutes"])
+    for item in valid_rows("minutes", lambda item: stamped(item) and isinstance(item.get("run_id"), str)
+                           and isinstance(item.get("minutes"), (int, float)) and not isinstance(item.get("minutes"), bool)
+                           and 0 < item["minutes"] <= 24 * 60):
+        minutes[item["run_id"]] = minutes.get(item["run_id"], 0.0) + float(item["minutes"])
     logged = [run for run in accepted if run["id"] in minutes]
     rows.append(number("human minutes per landed change", len(logged),
                        round(sum(minutes[run["id"]] for run in logged) / len(logged), 1) if logged else None,
@@ -188,20 +229,34 @@ def numbers(repo: Path, *, since: str | None = None, now: datetime | None = None
                      "status": "unavailable", "detail": f"cannot read CI: {ci_error or 'no CI data'}"})
     else:
         completed = [run for run in ci_runs if run.get("status") == "completed"]
-        red = red_time(completed, start, end)
+        red = red_time(completed, start, end, list(ci_seeds))
         rows.append(number("time the default branch spends red", len(completed),
                            {"hours": round(red / 3600, 2), "share": round(red / max(1.0, (end - start).total_seconds()), 3)},
                            "hours and share of the window", start, end,
-                           f"from {len(completed)} completed push run(s) on the default branch"))
-    usd = sum(float(run["state"].get("claude_cost_usd") or 0.0) for run in in_window)
-    tokens = sum(int(run["state"].get("codex_tokens_used") or 0) for run in in_window)
-    rows.append(number("spend per landed change", len(accepted),
-                       {"claude_usd": round(usd / len(accepted), 2), "codex_tokens": round(tokens / len(accepted))}
-                       if accepted else None, "per landed change", start, end,
-                       f"all spend of {len(in_window)} run(s) in the window over {len(accepted)} landed change(s)"))
+                           f"from {len(completed)} completed push run(s) on the default branch and the last run of "
+                           "each workflow before the window; an upper bound, because a failing workflow counts as "
+                           "red until its next run, however long pushes pause"))
+    def spend_known(run: dict[str, Any]) -> bool:
+        state = run["state"]
+        return (not state.get("usage_accounting_incomplete")
+                and all(isinstance(state.get(key), (int, float)) and not isinstance(state.get(key), bool)
+                        and state[key] >= 0 for key in ("claude_cost_usd", "codex_tokens_used")))
+
+    # Unknown spend is not zero: those runs are left out, and the number says how many.
+    known = [run for run in in_window if spend_known(run)]
+    known_accepted = [run for run in accepted if spend_known(run)]
+    usd = sum(float(run["state"]["claude_cost_usd"]) for run in known)
+    tokens = sum(int(run["state"]["codex_tokens_used"]) for run in known)
+    unknown = len(in_window) - len(known)
+    rows.append(number("spend per landed change", len(known_accepted),
+                       {"claude_usd": round(usd / len(known_accepted), 2),
+                        "codex_tokens": round(tokens / len(known_accepted))} if known_accepted else None,
+                       "per landed change", start, end,
+                       f"all known spend of {len(known)} run(s) in the window over {len(known_accepted)} landed "
+                       f"change(s)" + (f"; {unknown} run(s) with unknown spend left out" if unknown else "")))
     return {"schema_version": SCHEMA_VERSION, "window": {"since": start.isoformat(timespec="seconds"),
                                                          "until": end.isoformat(timespec="seconds")},
-            "minimum_sample": MIN_SAMPLE, "numbers": rows, "unreadable_runs": unreadable}
+            "minimum_sample": MIN_SAMPLE, "numbers": rows, "unreadable_runs": unreadable, "warnings": warnings}
 
 
 # --- CI reads (read-only, through gh) ---------------------------------------------------------
@@ -212,14 +267,29 @@ def ci_runs(gh: Any, repo_slug: str, branch: str, since: datetime) -> list[dict[
                      f"&created=%3E%3D{since.date().isoformat()}&per_page=100", "workflow_runs")
 
 
+def ci_seed_runs(gh: Any, repo_slug: str, branch: str, since: datetime) -> list[dict[str, Any]]:
+    """The latest completed push run of each workflow before the window: the state it opens with."""
+    page = gh._json("api", f"repos/{repo_slug}/actions/runs?branch={branch}&event=push&status=completed"
+                           f"&created=%3C{since.date().isoformat()}&per_page=100")
+    if not isinstance(page, dict):
+        raise FactoryError("gh api returned an unexpected shape for the runs before the window")
+    latest: dict[Any, dict[str, Any]] = {}
+    for run in page.get("workflow_runs") or []:
+        key = run.get("workflow_id")
+        if key not in latest or (run.get("updated_at") or "") > (latest[key].get("updated_at") or ""):
+            latest[key] = run
+    return list(latest.values())
+
+
 def job_os(name: str) -> str | None:
     folded = name.casefold()
     return next((system for system, words in OPERATING_SYSTEMS if any(word in folded for word in words)), None)
 
 
-def job_timeout(workflow: str, job_name: str) -> int:
-    """The timeout-minutes that applies to a job, read from the workflow text. Handles a literal and
-    the `matrix.os == 'x' && A || B` form; anything else falls back to GitHub's 360 minutes."""
+def job_timeout(workflow: str, job_name: str) -> int | None:
+    """The timeout-minutes that applies to a job, read from the workflow text: a literal, or the
+    `matrix.os == 'x' && A || B` form. A job found without the key has GitHub's 360 minutes. None
+    when the workflow, the job or the value cannot be read: headroom then fails closed."""
     blocks = re.split(r"\n  (?=[A-Za-z0-9_-]+:\s*\n)", workflow)
     best = None
     for block in blocks[1:]:
@@ -229,7 +299,7 @@ def job_timeout(workflow: str, job_name: str) -> int:
             best = block
             break
     if best is None:
-        return GITHUB_DEFAULT_TIMEOUT_MINUTES
+        return None
     value = re.search(r"\n    timeout-minutes:\s*(.+)", best)
     if not value:
         return GITHUB_DEFAULT_TIMEOUT_MINUTES
@@ -239,7 +309,7 @@ def job_timeout(workflow: str, job_name: str) -> int:
     choice = re.fullmatch(r"\$\{\{\s*matrix\.os\s*==\s*'([^']+)'\s*&&\s*(\d+)\s*\|\|\s*(\d+)\s*\}\}", text)
     if choice:
         return int(choice.group(2)) if choice.group(1) in job_name else int(choice.group(3))
-    return GITHUB_DEFAULT_TIMEOUT_MINUTES
+    return None
 
 
 # --- readiness ---------------------------------------------------------------------------------
@@ -247,6 +317,29 @@ def job_timeout(workflow: str, job_name: str) -> int:
 def check(name: str, passed: bool, evidence: str, next_step: str) -> dict[str, Any]:
     return {"name": name, "status": "pass" if passed else "fail", "evidence": evidence,
             "next_step": "none" if passed else next_step}
+
+
+REFUSING_ACTIONS = {"prepare", "start", "resume", "graph", "calibrate"}
+
+
+def refusal_holds(repo: Path, item: dict[str, Any], now: datetime) -> bool:
+    """A kill-switch refusal record with its facts: the command, a run or graph id where one is
+    refused, the marker at `.harness/AUTONOMY_PAUSED` of this checkout or its main checkout, the
+    marker's modification time, which cannot be later than the refusal, and a time not in the future."""
+    if item.get("event") != "autonomy_pause_refused" or item.get("action") not in REFUSING_ACTIONS:
+        return False
+    if item.get("action") != "calibrate" and not (isinstance(item.get("run_id"), str) and item["run_id"]):
+        return False
+    at = parse_time(item.get("at"))
+    mtime = item.get("marker_mtime_ns")
+    if at is None or at > now or isinstance(mtime, bool) or not isinstance(mtime, int) or mtime <= 0:
+        return False
+    if mtime > (at.timestamp() + 2) * 1e9:  # the marker existed before the refusal (2 s for clock rounding)
+        return False
+    marker = Path(str(item.get("marker", "")))
+    roots = {repo.resolve(), common_dir(repo).parent.resolve()}
+    return (marker.is_absolute() and marker.name.casefold() == "autonomy_paused"
+            and marker.parent.name == ".harness" and marker.parent.parent.resolve() in roots)
 
 
 def load_controller(repo: Path) -> Any:
@@ -263,7 +356,7 @@ def load_controller(repo: Path) -> Any:
 
 def readiness(repo: Path, *, controller: Any, gh: Any | None, manifest: dict[str, Any] | None, base: str,
               green_days: int = 7, headroom: float = 0.7, now: datetime | None = None,
-              gh_error: str | None = None) -> dict[str, Any]:
+              gh_error: str | None = None, repo_slug: str | None = None) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
     checks = []
     base_commit = git(repo, "rev-parse", "--verify", "--quiet", base + "^{commit}", check=False)
@@ -275,7 +368,9 @@ def readiness(repo: Path, *, controller: Any, gh: Any | None, manifest: dict[str
         checks.append(check("CI headroom", False, reason, "install gh and run `gh auth login`"))
     else:
         try:
-            slug = gh.repo()
+            slug = repo_slug or github_slug(repo)
+            if slug is None:
+                raise FactoryError("the target's origin remote is not a GitHub repository")
             runs = ci_runs(gh, slug, branch, now - timedelta(days=green_days))
             failing = [run for run in runs if run.get("conclusion") not in PASSING]
             green = bool(runs) and not failing
@@ -297,6 +392,10 @@ def readiness(repo: Path, *, controller: Any, gh: Any | None, manifest: dict[str
                         continue
                     minutes = (ended - began).total_seconds() / 60
                     limit = job_timeout(workflow, str(job.get("name")))
+                    if limit is None:
+                        rows.append(f"{system} {job.get('name')}: {minutes:.0f} min, timeout unknown")
+                        tight.append(rows[-1])
+                        continue
                     rows.append(f"{system} {job.get('name')}: {minutes:.0f} of {limit} min")
                     if minutes >= headroom * limit:
                         tight.append(rows[-1])
@@ -332,12 +431,12 @@ def readiness(repo: Path, *, controller: Any, gh: Any | None, manifest: dict[str
                             f"{checker.get('runtime')} {checker.get('model')} ({checker.get('effort')}): "
                             f"{status.get('status')}" + (f" at {status['calibrated_at']}" if status.get("calibrated_at") else ""),
                             "run `autonomous-run.py calibrate <manifest>` with this checker"))
-    # 5. The kill switch has been seen to stop work.
-    refusals = [item for item in read_jsonl(factory_dir(repo) / "events.jsonl")
-                if item.get("event") == "autonomy_pause_refused"]
+    # 5. The kill switch has been seen to stop work. A local log is evidence, not proof: each record
+    # must carry the refusal's facts, and the facts that can be checked are.
+    refusals = [item for item in read_jsonl(factory_dir(repo) / "events.jsonl") if refusal_holds(repo, item, now)]
     checks.append(check("kill switch tested", bool(refusals),
-                        f"{len(refusals)} refusal(s) recorded" + (f", latest {refusals[-1].get('at')} "
-                                                                f"({refusals[-1].get('action')})" if refusals else ""),
+                        f"{len(refusals)} refusal(s) recorded with their facts"
+                        + (f", latest {refusals[-1].get('at')} ({refusals[-1].get('action')})" if refusals else ""),
                         "create .harness/AUTONOMY_PAUSED, try a start, see it refused, then remove the file"))
     # 6-7. What the base commit carries.
     def at_base(path: str) -> str | None:
@@ -394,20 +493,50 @@ def collect_export(repo: Path) -> dict[str, Any]:
             "factory": {name: read_jsonl(root / f"{name}.jsonl") for name in ("events", "defects", "minutes")}}
 
 
-def export(repo: Path, target: Path) -> Path:
+# Export redacts rather than refuses: the record is still useful with a secret-like value removed.
+EXPORT_SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("GitHub token", re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}")),
+    ("assigned secret", re.compile(r"(?i)\b[\w-]*(?:secret|token|password|passwd|api[_-]?key)[\w-]*"
+                                   r"[\"' ]*[:=]\s*[\"']?[^\s\"',]{8,}")),
+)
+
+
+def redact(value: Any, patterns: tuple[tuple[str, re.Pattern[str]], ...], counter: list[int]) -> Any:
+    """Replace the home folder with ~ and secret-like text with a marker, in every string."""
+    if isinstance(value, dict):
+        return {key: redact(item, patterns, counter) for key, item in value.items()}
+    if isinstance(value, list):
+        return [redact(item, patterns, counter) for item in value]
+    if not isinstance(value, str):
+        return value
+    for home in {str(Path.home().resolve()), str(Path.home())}:
+        if home and home != "/" and home in value:
+            counter[0] += value.count(home)
+            value = value.replace(home, "~")
+    for name, pattern in patterns:
+        value, count = pattern.subn(f"[redacted: {name}]", value)
+        counter[0] += count
+    return value
+
+
+def export(repo: Path, target: Path,
+           secret_patterns: tuple[tuple[str, re.Pattern[str]], ...] = ()) -> dict[str, Any]:
+    """Write receipts out of the Git folder, with home paths and secret-like text redacted.
+    `secret_patterns` adds the repository's own secret-scanner patterns to the built-in ones."""
     target = target.expanduser().resolve()
     if target == common_dir(repo) or target.is_relative_to(common_dir(repo)):
         raise FactoryError("export writes out of the Git folder: name a folder outside it")
     if target.exists() and (not target.is_dir() or any(target.iterdir())):
         raise FactoryError(f"{target} exists and is not an empty folder")
-    data = collect_export(repo)
+    counter = [0]
+    data = redact(collect_export(repo), (*EXPORT_SECRET_PATTERNS, *secret_patterns), counter)
     target.mkdir(parents=True, exist_ok=True)
     for run in data["runs"]:
         (target / f"run-{run['run_id']}.json").write_text(json.dumps(run, indent=2, sort_keys=True) + "\n",
                                                            encoding="utf-8")
-    (target / "factory.json").write_text(json.dumps(data["factory"], indent=2, sort_keys=True) + "\n",
-                                         encoding="utf-8")
-    return target
+    (target / "factory.json").write_text(json.dumps({**data["factory"], "redactions": counter[0]}, indent=2,
+                                                    sort_keys=True) + "\n", encoding="utf-8")
+    return {"target": str(target), "runs": len(data["runs"]), "redactions": counter[0]}
 
 
 def append_log(repo: Path, name: str, record: dict[str, Any]) -> Path:
@@ -453,4 +582,6 @@ def render(report: dict[str, Any]) -> str:
                      f"[n={row['n']}] {row['detail']}")
     for name in report.get("unreadable_runs", []):
         lines.append(f"  unreadable run: {name}")
+    for warning in report.get("warnings", []):
+        lines.append(f"  warning: {warning}")
     return "\n".join(lines) + "\n"
