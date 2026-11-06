@@ -10,7 +10,6 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -307,8 +306,9 @@ class CliTests(unittest.TestCase):
                               env=env or CLEAN_ENV, timeout=60)
 
     def test_cli_without_gh_exits_2_and_names_the_fix(self) -> None:
-        with tempfile.TemporaryDirectory() as empty:
-            result = self.cli("--sha", "a" * 40, "--repo", "owner/name", env={**CLEAN_ENV, "PATH": empty})
+        # A PATH with no gh in it. The fixtures folder needs no write access, unlike a temporary
+        # folder, which a read-only sandbox cannot create.
+        result = self.cli("--sha", "a" * 40, "--repo", "owner/name", env={**CLEAN_ENV, "PATH": str(FIXTURES)})
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertIn("gh", result.stderr)
         self.assertEqual(result.stdout, "")
