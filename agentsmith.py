@@ -9630,7 +9630,8 @@ def parser() -> argparse.ArgumentParser:
                                                          "from runs, events and read-only CI reads; no stored board")
     factory_sub = factory_parser.add_subparsers(dest="factory_command", required=True)
     ready = factory_sub.add_parser("readiness", description="Check whether this repository is ready for wider "
-                                   "autonomy. Writes nothing and switches nothing on. Exit 0 ready, 1 not ready.")
+                                   "autonomy. Writes nothing in the repository or its Git folder (the sandbox probe uses a "
+                                   "throwaway temporary folder) and switches nothing on. Exit 0 ready, 1 not ready.")
     ready.add_argument("--manifest", help="a run manifest naming the checker (client, model, effort)")
     ready.add_argument("--base", help="the base branch or ref (default: origin/HEAD, else HEAD)")
     ready.add_argument("--green-days", type=int, default=7, help="days the default branch must have been green")

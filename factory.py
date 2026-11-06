@@ -2,7 +2,8 @@
 """Readiness and numbers for autonomous runs, derived from what is already recorded.
 
 Nothing here is a stored board: every report is computed from run state, `events.jsonl`, the
-operator's own logs and read-only GitHub reads. `readiness` and `numbers` write nothing and switch
+operator's own logs and read-only GitHub reads. `readiness` and `numbers` write nothing in the
+repository or its Git folder (the checker preflight uses a throwaway system temporary folder) and switch
 nothing on. The only writers are `export` (to a folder the operator names) and the two operator
 logs (`defect add`, `minutes add`) under the Git folder.
 """

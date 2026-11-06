@@ -7,7 +7,9 @@
 
 Both answers are derived each time from what is already recorded: run state and `events.jsonl`,
 two operator logs, and read-only GitHub reads through `gh`. Nothing is kept as a board.
-`readiness` and `numbers` write nothing and switch nothing on.
+`readiness` and `numbers` write nothing in the repository or its Git folder and switch nothing on.
+One exception, isolated: the checker preflight in `readiness` runs one command through the verifier
+sandbox in a throwaway folder that it creates in the system temporary folder and removes again.
 
 ```sh
 agentsmith factory readiness --manifest .harness/runs/<run-id>.json [--base origin/main] [--json]

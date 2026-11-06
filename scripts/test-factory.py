@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -463,6 +464,28 @@ else:
                 self.git("remote", "remove", "origin") if self.git("remote") else None
                 self.git("remote", "add", "origin", url)
                 self.assertEqual(factory.github_slug(self.repo), slug)
+
+    @unittest.skipUnless((sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").exists())
+                         or (sys.platform.startswith("linux") and shutil.which("bwrap")),
+                         "the real preflight needs the macOS or Linux sandbox")
+    def test_the_real_preflight_writes_only_a_throwaway_system_temp_folder(self) -> None:
+        # The sandbox probe creates and removes a folder in the system temporary folder; nothing in
+        # the repository or its Git folder changes, and that is what the docs claim.
+        def snapshot() -> dict[str, bytes]:
+            return {str(path): path.read_bytes() for path in self.repo.rglob("*") if path.is_file()}
+
+        before = snapshot()
+        manifest = {"roles": {"maker": {"runtime": "codex"}, "checker": {"runtime": "claude", "model": "m",
+                                                                         "effort": "high"}}}
+        report = factory.readiness(self.repo, controller=CONTROLLER, gh=None, manifest=manifest, base="main",
+                                   now=datetime.now(timezone.utc), gh_error="offline")
+        executes = next(item for item in report["checks"] if item["name"] == "checker can execute on this host")
+        self.assertEqual(executes["status"], "pass", executes)
+        self.assertEqual(snapshot(), before)
+        docs = (ROOT / "docs/31-factory-readiness.md").read_text(encoding="utf-8")
+        self.assertIn("write nothing in the repository or its Git folder", docs)
+        self.assertIn("system temporary folder", docs)
+        self.assertNotIn("`readiness` and `numbers` write nothing and switch nothing on.", docs)
 
     def test_the_cli_reports_without_gh(self) -> None:
         # gh with an empty configuration is not signed in, on every runner: the CI number says so.
