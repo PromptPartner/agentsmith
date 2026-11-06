@@ -3,6 +3,11 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [ ] 2026-11-06 — `git_metadata()` excludes the active worktree's Git directory from the protected
+  files. Called from the main checkout, that directory is the whole common directory, so nothing
+  outside objects, refs, config and hooks would be compared. Every current caller passes a run's
+  or checker's linked worktree, so this is not reachable today; found while writing the
+  `packed-refs.lock` test, which had to snapshot from a linked worktree to see the lock at all.
 - [ ] 2026-10-20 — Native Windows `test_deleted_git_lock_does_not_fail_acl_cleanup` failed once
   with `verifier did not start` in verify run `39429936983`, attempt 1, job
   `compatibility (windows-latest)`, on master `d56a0d5`. Attempt 2 on the same commit passed, and
