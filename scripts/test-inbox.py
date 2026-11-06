@@ -145,6 +145,26 @@ class RowKindTests(InboxCase):
         self.assertEqual(self.collect()["rows"], [])
 
 
+class OriginBaseTests(InboxCase):
+    def test_a_dangling_origin_head_falls_back_to_an_existing_base_with_a_warning(self) -> None:
+        landed = self.repo.branch("agentsmith/landed", self.base, {"src/a.py": b"a\n"})
+        self.repo.run_state("landed", status="accepted", base_head=self.base, accepted_commit=landed)
+        self.repo.git("update-ref", "refs/remotes/origin/master", landed)
+        self.repo.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/deleted-main")
+        report = self.collect()
+        self.assertEqual(report["rows"], [], report)
+        self.assertTrue(any("origin/HEAD" in warning and "origin/master" in warning for warning in report["warnings"]),
+                        report["warnings"])
+
+    def test_a_named_base_that_is_missing_is_a_warning_not_a_silent_fallback(self) -> None:
+        landed = self.repo.branch("agentsmith/landed", self.base, {"src/a.py": b"a\n"})
+        self.repo.run_state("landed", status="accepted", base_head=self.base, accepted_commit=landed)
+        self.repo.git("update-ref", "refs/remotes/origin/master", landed)
+        report = self.collect(base="release")
+        self.assertEqual([row["id"] for row in report["rows"]], ["landed"])
+        self.assertTrue(any("origin/release" in warning for warning in report["warnings"]), report["warnings"])
+
+
 class ContradictionTests(InboxCase):
     def test_rows_that_contradict_git_are_dropped_with_a_warning(self) -> None:
         self.repo.run_state("gone", status="escalated", base_head=self.base, reason="x")

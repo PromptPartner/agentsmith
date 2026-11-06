@@ -178,15 +178,33 @@ class _Collector:
         self.origin_base = self._origin_base()
 
     def _origin_base(self) -> str | None:
-        names = [f"refs/remotes/origin/{self.base}"] if self.base else []
-        if not names:
-            head = _git(self.repo, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
-            names = [head] if head else ["refs/remotes/origin/main", "refs/remotes/origin/master"]
-        for name in names:
-            oid = _git(self.repo, "rev-parse", "--verify", "--quiet", f"{name}^{{commit}}")
+        """The commit that counts as landed, in a fixed order: --base on origin; else the branch
+        origin/HEAD points to; else origin/main; else origin/master. A name that does not resolve
+        is a warning, never a silent fallback."""
+        def resolve(ref: str) -> str | None:
+            return _git(self.repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+
+        if self.base:
+            oid = resolve(f"refs/remotes/origin/{self.base}")
+            if oid is None:
+                self.warnings.append(f"origin/{self.base} does not exist here; accepted work cannot be checked as "
+                                     "landed, so all of it is listed (fetch, or check --base)")
+            return oid
+        head = _git(self.repo, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
+        if head:
+            oid = resolve(head)
             if oid:
                 return oid
-        self.warnings.append("no origin base branch found; accepted work cannot be checked as landed, so all of it is listed")
+        for name in ("main", "master"):
+            oid = resolve(f"refs/remotes/origin/{name}")
+            if oid:
+                if head:
+                    self.warnings.append(f"origin/HEAD points to missing {head.removeprefix('refs/remotes/')}; "
+                                         f"using origin/{name} as the landed base (`git remote set-head origin "
+                                         "--auto` repairs it)")
+                return oid
+        self.warnings.append("no origin base branch found (origin/HEAD, origin/main, origin/master); accepted work "
+                             "cannot be checked as landed, so all of it is listed")
         return None
 
     def _landed(self, commit: str) -> bool:

@@ -35,8 +35,13 @@ inbox never shows a row that Git does not support.
 
 Each row has a `kind`, an `id`, an `age` (since the item last changed), a one-line next step,
 and a `tier` where a commit range exists (from the [risk map](29-risk-map.md), computed from the
-run's base commit to its commit). `--base <branch>` names the branch on `origin` that counts as
-landed; the default is `origin/HEAD`, then `origin/main` or `origin/master`.
+run's base commit to its commit).
+
+The branch that counts as landed is resolved in this order: `--base <branch>` on `origin`; else the
+branch `origin/HEAD` points to; else `origin/main`; else `origin/master`. When `--base` names a
+branch that does not exist, or `origin/HEAD` points to a branch that is gone, the inbox says so in
+a warning and never falls back silently. When nothing resolves, every accepted commit is listed,
+with a warning.
 
 ## GitHub issues and claims
 
