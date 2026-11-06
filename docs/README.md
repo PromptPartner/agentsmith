@@ -41,3 +41,5 @@ Product templates, demos, and the [spec format](specs/README.md) remain public. 
 - [Configuration audit](27-config-audit.md) — selected local checks, completeness and explicit CI gates.
 
 - [Risk map](29-risk-map.md) — the tier of a change from a committed path policy and a fixed always-human floor.
+
+- [Review lenses](32-review-lenses.md) — report-only specialist reviews: triggers, depth, briefs and the trial record.
