@@ -490,7 +490,17 @@ def to_json(report: dict[str, Any]) -> str:
     return json.dumps(report, sort_keys=True, ensure_ascii=True) + "\n"
 
 
+def _printable(value: Any) -> str:
+    """Escape C0 and C1 control characters and DEL, so text from a state file or an issue title
+    cannot move the cursor, clear the screen or set the terminal title."""
+    return "".join(f"\\x{ord(char):02x}" if ord(char) < 32 or 127 <= ord(char) <= 159 else char
+                   for char in str(value))
+
+
 def render_text(report: dict[str, Any]) -> str:
+    report = {"rows": [{key: _printable(value) if isinstance(value, str) else value for key, value in row.items()}
+                       for row in report["rows"]],
+              "warnings": [_printable(warning) for warning in report["warnings"]]}
     if not report["rows"]:
         lines = ["Nothing waits on you."]
     else:

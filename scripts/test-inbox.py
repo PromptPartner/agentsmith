@@ -306,6 +306,18 @@ class GitHubTests(InboxCase):
         self.assertEqual(kinds.count("untriaged"), 250)
         self.assertNotIn("accepted", kinds)  # its pull request is the 201st open one
 
+    def test_terminal_controls_in_titles_never_reach_the_table(self) -> None:
+        title = "before\x1b[2J\x1b[Hafter\x07\x9b31m\x7fend"
+        issues = [{"number": 5, "title": title, "createdAt": iso(60), "labels": []}]
+        self.repo.run_state("odd", status="escalated", base_head=self.base, reason="x\x1b]0;title\x07")
+        self.repo.git("branch", "agentsmith/odd", self.base)
+        report = self.collect(gh=inbox.Gh(runner=FakeGh(issues, []), which=lambda _: "gh"), repo_name="owner/name")
+        text = inbox.render_text(report)
+        self.assertFalse([char for char in text if char != "\n" and (ord(char) < 32 or 127 <= ord(char) <= 159)],
+                         repr(text))
+        self.assertIn("before\\x1b[2J", text)
+        self.assertIn(title, inbox.to_json(report).encode().decode("unicode_escape"))
+
     def test_without_issues_gh_is_never_used(self) -> None:
         real_run = subprocess.run
 

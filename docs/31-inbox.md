@@ -43,6 +43,9 @@ branch that does not exist, or `origin/HEAD` points to a branch that is gone, th
 a warning and never falls back silently. When nothing resolves, every accepted commit is listed,
 with a warning.
 
+The table prints control characters from titles, reasons and file names as `\xNN` escapes, so
+no text can move the cursor or clear the terminal. `--json` keeps the exact text, JSON-escaped.
+
 ## GitHub issues and claims
 
 `--issues` reads every open issue and open pull request through the [GitHub CLI](https://cli.github.com)
