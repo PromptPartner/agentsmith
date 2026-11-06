@@ -157,6 +157,18 @@ def last_progress(view: dict[str, Any]) -> float:
     return max(value for value in map(_seconds, stamps) if value is not None)
 
 
+def _finished(view: dict[str, Any]) -> bool:
+    """A run counts as finished only with its jobs: a completed run whose job list is empty or
+    still running is an incomplete answer from GitHub, not evidence of green. A run that failed
+    with no job at all (for example startup_failure) is finished."""
+    if view.get("status") != "completed":
+        return False
+    jobs = view.get("jobs") or []
+    if not jobs:
+        return view.get("conclusion") not in PASSING
+    return all(job.get("status") == "completed" for job in jobs)
+
+
 def _failing(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [job for job in jobs if job.get("status") == "completed" and job.get("conclusion") not in PASSING]
 
@@ -272,11 +284,11 @@ def watch(gh: Gh, repo: str | None, *, pr: int | None = None, sha: str | None = 
             if not runs:
                 if moment - started >= min(REGISTRATION_SECONDS, cap_seconds):
                     return finish("no-run-registered")
-            elif all(view.get("status") == "completed" for view in views.values()):
+            elif all(_finished(view) for view in views.values()):
                 return _completed(read, gh, repo, views, runs_report, base, finish)
             else:
                 for run_id, view in views.items():
-                    if view.get("status") != "completed" and moment - last_progress(view) > stall_seconds:
+                    if not _finished(view) and moment - last_progress(view) > stall_seconds:
                         return finish("runner-stalled", run=run_id, minutes=(moment - last_progress(view)) / 60)
             sleep(min(poll_seconds, max(0.0, deadline - now())))
     except _Deadline:

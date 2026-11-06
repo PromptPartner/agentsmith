@@ -143,6 +143,13 @@ write("post-test-artifact", "The project's tests ran and passed, then uploading 
       [completed_failure([job(500, UBUNTU, "failure", failed_step="Run actions/upload-artifact@v7",
                               ran=("Python core compiles", "Risk map contracts and byte-identical JSON")),
                           job(501, MAC)])])
+write("completed-without-jobs", "GitHub reports the run completed and successful but returns no jobs (or jobs "
+      "still running) on every read; that is not evidence of green.", {"state": "cap-reached", "exit": 17},
+      [{"runs": [listed(100, "push", "completed", "success", updated=5.0)],
+        "views": {"100": view(100, "push", "completed", "success", [])}},
+       {"runs": [listed(100, "push", "completed", "success", updated=5.0)],
+        "views": {"100": view(100, "push", "completed", "success", [job(500, UBUNTU, status="in_progress")])}}],
+      cap=2)
 write("environment-timeout", "A job hit the hosted timeout (conclusion timed_out).",
       {"state": "environment", "exit": 13}, [completed_failure(failing_jobs(conclusion="timed_out"))])
 stalled_view = view(100, "push", "queued", "", [], created=-40.0, updated=-40.0)

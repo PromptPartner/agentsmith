@@ -36,7 +36,7 @@ branch is the repository's default branch unless `--base` names another one.
 
 | State | Exit | Meaning |
 |---|---|---|
-| `green` | 0 | Every run for the commit completed, and every job passed or was skipped. |
+| `green` | 0 | Every run for the commit completed with its jobs listed, and every job passed or was skipped. A completed run whose job list is empty or still running is read again, not counted as green. |
 | `red-at-diff` | 10 | A job failed in the project's own steps, and it does not fail on the base branch. |
 | `red-on-base` | 11 | The failing job also fails on the base branch's latest completed push run of the same workflow. |
 | `flaky` | 12 | The failing job passed on an earlier attempt of the same run, or in another run of the same workflow and event for this commit. |
