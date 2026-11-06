@@ -321,7 +321,7 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
     listed = set(usage_list.group(1).split(",")) if usage_list else set()
     rows = set(re.findall(r"^    ([a-z][a-z-]*)", help_run.stdout, re.MULTILINE))
     internal = {"hook", "secret-scan", "graph", "wizard", "evaluate", "compatibility", "agents",
-                "validate-integration", "audit-config"}
+                "validate-integration", "audit-config", "ci"}
     results.check(
         bool(listed) and not (listed | rows) & internal,
         "root help lists only public commands",

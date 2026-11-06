@@ -168,5 +168,33 @@ class GhTests(unittest.TestCase):
         self.assertEqual((jobs[0]["conclusion"], jobs[0]["completedAt"]), ("success", "2026-11-06T15:04:00Z"))
 
 
+class CliTests(unittest.TestCase):
+    def cli(self, *args: str, env: dict | None = None) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([sys.executable, str(CORE), "ci", "watch", *args], capture_output=True, text=True,
+                              env=env or CLEAN_ENV, timeout=60)
+
+    def test_cli_without_gh_exits_2_and_names_the_fix(self) -> None:
+        with tempfile.TemporaryDirectory() as empty:
+            result = self.cli("--sha", "a" * 40, "--repo", "owner/name", env={**CLEAN_ENV, "PATH": empty})
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("gh", result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    def test_cli_rejects_a_short_sha_and_needs_one_target(self) -> None:
+        short = self.cli("--sha", "abc123", "--repo", "owner/name")
+        self.assertEqual(short.returncode, 2)
+        self.assertIn("full 40- or 64-character", short.stderr)
+        missing = self.cli("--repo", "owner/name")
+        self.assertEqual(missing.returncode, 2)
+        self.assertIn("--pr", missing.stderr)
+        self.assertNotIn("unrecognized arguments", short.stderr + missing.stderr)
+
+    def test_cli_help_lists_states_and_exit_codes(self) -> None:
+        result = self.cli("--help", env={**CLEAN_ENV, "COLUMNS": "400"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for state, (code, _) in ci_watch.STATES.items():
+            self.assertIn(f"{state}={code}", " ".join(result.stdout.split()))
+
+
 if __name__ == "__main__":
     unittest.main()
