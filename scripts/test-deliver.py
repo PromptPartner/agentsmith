@@ -328,6 +328,19 @@ class LandingContractTests(unittest.TestCase):
             self.assertIn(required, step)
         self.assertNotIn("never push, open a PR", skill, "the old blanket rule contradicts the landing step")
 
+    def test_the_auto_merge_trial_is_designed_but_not_switched_on(self) -> None:
+        docs = (ROOT / "docs/21-autonomous-runs.md").read_text(encoding="utf-8")
+        section = docs.split("### A future auto-merge trial (not switched on)", 1)
+        self.assertEqual(len(section), 2, "docs/21 needs the trial design")
+        trial = section[1].split("\n## ", 1)[0]
+        for parameter in ("one area", "path glob", "dated window", "four weeks", "no escaped defect",
+                          ".harness/AUTOMERGE_PAUSED", "revert", "red", "Nothing in this release merges automatically"):
+            self.assertIn(parameter.casefold(), trial.casefold())
+        sources = [ROOT / "scripts/autonomous-run.py", ROOT / "work_graph.py", ROOT / "agentsmith.py"]
+        for source in sources:
+            self.assertNotIn("AUTOMERGE_PAUSED", source.read_text(encoding="utf-8"),
+                             f"{source.name}: the trial is not switched on, so no code reads its kill switch")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

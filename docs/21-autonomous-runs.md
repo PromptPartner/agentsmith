@@ -469,6 +469,27 @@ fact reads `pending CI` and the answer is `no`. After CI, run
 the line and body again. The line is information only: a human merges, and nothing in this
 release merges automatically.
 
+### A future auto-merge trial (not switched on)
+
+Nothing in this release merges automatically. The eligibility line collects the data that a later,
+separately approved trial would need. Such a trial must name every one of these parameters before
+it starts:
+
+- **One area:** a single path glob, such as `docs/**`, and the risk tier that applies to it. Changes
+  outside the area are never eligible.
+- **A dated window:** a start and an end date. When the window ends, the trial stops unless it is
+  approved again.
+- **Data first:** at least four weeks of eligibility lines recorded for that area before the trial
+  starts, with no escaped defect in the area in that time: a defect found after merge in a change
+  that the line called eligible.
+- **A kill switch:** while `.harness/AUTOMERGE_PAUSED` exists, nothing merges automatically. It
+  mirrors `.harness/AUTONOMY_PAUSED` and belongs to the operator.
+- **An automatic rollback rule:** a revert pull request is opened when the default branch turns red
+  after an automatic merge, or when a defect is traced to an automatically merged change; the
+  trial then pauses until the operator reviews it.
+
+Until such a trial is approved and built, a human merges every pull request.
+
 ## Parallel work graphs
 
 `agentsmith graph validate --graph <repository-relative-json>` checks a clean, committed graph and
