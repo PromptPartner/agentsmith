@@ -625,8 +625,20 @@ class VerifyLockTests(unittest.TestCase):
         self.env = {key: value for key, value in os.environ.items() if not key.startswith(("GIT_", "AGENTSMITH_VERIFY"))}
         self.env.update(GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="user@example.com",
                         GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="user@example.com")
+        # Git for Windows' system configuration turns on core.autocrlf, while the evidence recorder
+        # runs this test with system configuration off. Played here on every system: the fixture's
+        # own Git calls see autocrlf=true, the in-process checks do not.
+        windows_like = Path(self.temporary.name) / "windows-system.gitconfig"
+        windows_like.write_text("[core]\n\tautocrlf = true\n", encoding="utf-8")
+        self.env["GIT_CONFIG_SYSTEM"] = str(windows_like)
         self.git("init", "-q")
+        # Clean by construction: line endings are pinned in the repository itself, which outranks
+        # system and global configuration, so every process reads the same bytes as committed.
+        self.git("config", "core.autocrlf", "false")
+        self.git("config", "core.safecrlf", "false")
         self.marker = self.root.parent / "phase-ran"
+        # A checkout made with autocrlf=true holds CRLF text, as the Windows runner's copy of verify.sh does.
+        (self.root / "notes.txt").write_bytes(b"one\r\ntwo\r\n")
         command = shell_command(sys.executable, "-c", f"open({str(self.marker)!r}, 'a').write('x')")
         (self.root / ".harness" / "verify.conf").write_text(f"mark :: {command}\n", encoding="utf-8")
         # verify.sh finds its project from its own location, so the fixture carries a committed copy.
