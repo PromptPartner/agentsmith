@@ -2198,7 +2198,7 @@ class FVL08ReleaseEvidenceContracts(unittest.TestCase):
         self.assertIn("actions/download-artifact@", workflow)
         self.assertIn("native-${{ runner.os }}.json", workflow)
         self.assertIn("--fvl08", workflow)
-        self.assertRegex(workflow, r"needs:\s*\[compatibility, posix-guardrails\]")
+        self.assertRegex(workflow, r"needs:\s*\[compatibility, posix-guardrails, windows-work-graph\]")
         for fixture in (
             "secret scanner",
             "verification receipt",
