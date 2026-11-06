@@ -408,6 +408,9 @@ def status(contract: dict[str, Any]) -> dict[str, Any]:
             if child_status == "accepted":
                 result.update(status="completed", reason="accepted child commit and checker receipt")
                 result["accepted_commit"] = _accepted_commit(contract, run_id, state)
+                risk = state.get("risk")
+                # Report-only: the tier the child's controller recorded from the base policy.
+                result["risk_tier"] = risk.get("tier") if isinstance(risk, dict) else None
             elif child_status == "escalated":
                 result.update(status="failed", reason=str(state.get("reason") or "child run escalated"))
             elif child_status == "interrupted":

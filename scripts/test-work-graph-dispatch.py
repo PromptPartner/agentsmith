@@ -401,6 +401,9 @@ class GraphDispatchTests(unittest.TestCase):
         self.assertEqual(report["status"], "completed", started.stdout + started.stderr + json.dumps(report))
         self.assertEqual({node["run_id"]: node["status"] for node in report["nodes"]},
                          {"a": "completed", "b": "completed", "c": "completed"})
+        # The fixture commits no risk policy, so every accepted child records the tier human.
+        self.assertEqual({node["run_id"]: node.get("risk_tier") for node in report["nodes"]},
+                         {"a": "human", "b": "human", "c": "human"})
         child = self.repo.parent / "repo-c"
         self.assertEqual((child / "src/a/change.txt").read_text(encoding="utf-8"), "a\n")
         self.assertEqual((child / "src/b/change.txt").read_text(encoding="utf-8"), "b\n")

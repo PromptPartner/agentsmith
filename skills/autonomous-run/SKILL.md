@@ -91,6 +91,8 @@ strict named filesystem profile, and Claude combines Bash denyWrite with file-to
 Native clients and the host remain trusted. Checkers inspect the controller verifier evidence,
 and an accepting checker cites it per criterion as `criterion :: file[:line] :: excerpt`; an
 acceptance whose citations do not check out is a checker defect and the attempt is reworked.
+At acceptance the run records the risk tier from the policy committed at the base (`status <id>`
+shows `risk_tier`); a declared `risk_tier` only raises it, and the tier decides nothing yet.
 
 Before `start` creates local Git or state artifacts, and before `resume` restarts work, the
 controller serializes a repository-local collision scan. Ancestor/descendant fixed prefixes from

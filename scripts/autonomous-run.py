@@ -791,6 +791,26 @@ def unset_role_settings(manifest: dict[str, Any]) -> list[str]:
     return unset
 
 
+# Risk tiers, lowest first, as in risk_map.TIERS. A manifest may declare one; it only raises.
+RISK_TIERS = ("A", "B", "C", "human")
+
+
+def risk_record(repo: Path, base: str, head: str, declared: str | None) -> dict[str, Any]:
+    """Classify base..head with the risk policy committed at the base, so a candidate cannot
+    relax the rules that judge it. Report-only: it decides nothing, and a classification that
+    cannot run is recorded as `human` with its error instead of stopping the run."""
+    record: dict[str, Any] = {"base": base, "head": head, "declared_tier": declared}
+    try:
+        import risk_map
+        report = risk_map.classify_range(repo, base, head)
+        record.update(computed_tier=report["tier"], lenses=report["lenses"], policy=report["policy"],
+                      tier=risk_map.raise_tier(report["tier"], declared or "A"))
+    except Exception as exc:  # ImportError, PolicyError, RiskError: recorded, never fatal
+        record.update(computed_tier=None, lenses=[], policy=None, tier="human",
+                      error=f"{type(exc).__name__}: {exc}"[:300])
+    return record
+
+
 UNBOUNDED = "unbounded"
 # The cap each runtime spends, and the type its value must have.
 RUNTIME_BUDGETS = {"codex": ("codex_goal_tokens", "a positive whole number of tokens"),
@@ -885,6 +905,8 @@ def validate_manifest(manifest: dict[str, Any], repo: Path) -> tuple[Path, str]:
     if not isinstance(verify_config, dict) or not isinstance(verify_config.get("command"), str) or not verify_config["command"].strip():
         raise RunError("verify.command must name a required verification command")
     validate_budgets(manifest)
+    if "risk_tier" in manifest and manifest["risk_tier"] not in RISK_TIERS:
+        raise RunError(f"risk_tier must be one of {', '.join(RISK_TIERS)}; it can only raise the computed tier")
     spec_rel = Path(str(manifest["spec_path"]))
     if spec_rel.is_absolute() or ".." in spec_rel.parts or spec_rel.parts[:2] != ("docs", "specs"):
         raise RunError("spec_path must be a repository-relative path under docs/specs/")
@@ -2403,6 +2425,10 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
         if acceptance_ready(verify.returncode, checker):
             # A stop that arrived before the acceptance record still interrupts the run.
             raise_if_stopped(Path(state["state_path"]).parent)
+            risk = risk_record(worktree, state["base_head"], checker_head, manifest.get("risk_tier"))
+            proof["risk"] = risk
+            write_json(proof_path, proof)
+            state["risk"] = risk
             # The last step before the record: the branch must still be the checked commit.
             moved = candidate_moved(worktree, state["branch"], checker_head)
             if moved:
@@ -2588,7 +2614,7 @@ def _real_file(path: Path) -> bool:
     return path.is_file() and not path.is_symlink()
 
 
-def live_work(repo: Path) -> tuple[list[str], list[str]]:
+def live_work(repo: Path, accepted: list[str] | None = None) -> tuple[list[str], list[str]]:
     """Read-only scan of every run and graph sharing this repository's Git metadata.
 
     Returns (live, undetermined). Linked worktrees share refs and worktree administration, so
@@ -2639,6 +2665,10 @@ def live_work(repo: Path) -> tuple[list[str], list[str]]:
             live.append(f"run {name}: {status} with no live controller; resume or inspect it first")
         elif status not in TERMINAL_RUN_STATUSES:
             unknown.append(f"run {name}: unrecognized status {status!r}")
+        elif status == "accepted" and accepted is not None:
+            risk = state.get("risk") if isinstance(state.get("risk"), dict) else {}
+            accepted.append(f"run {name}: accepted at {state.get('accepted_commit')}, "
+                            f"risk tier {risk.get('tier', 'not recorded')}")
     graphs = common / "agentsmith-graphs"
     for entry in sorted(graphs.iterdir() if _real_directory(graphs) else []):
         name = entry.name
@@ -2676,12 +2706,13 @@ def live_work(repo: Path) -> tuple[list[str], list[str]]:
 
 def all_terminal(repo: Path) -> int:
     """0: every run and graph is terminal. 1: something is live or not terminal. 2: cannot tell."""
+    accepted: list[str] = []
     try:
-        live, unknown = live_work(repo)
+        live, unknown = live_work(repo, accepted)
     except (OSError, ValueError, RunError) as exc:
         print(f"cannot tell whether autonomous work is live: {exc}")
         return 2
-    for line in [*unknown, *live]:
+    for line in [*accepted, *unknown, *live]:
         print(line)
     if unknown:
         print("cannot tell whether every autonomous run is terminal; do not change Git metadata")
@@ -2705,7 +2736,10 @@ def status_cmd(args: argparse.Namespace) -> int:
     keys = ["run_id", "status", "stage", "attempt", "active_pid", "branch", "worktree", "base_head",
             "accepted_commit", "deadline_epoch", "claude_cost_usd", "codex_tokens_used",
             "budget_rationale", "usage_accounting_incomplete", "reason", "updated_at"]
-    print(json.dumps({key: state.get(key) for key in keys if state.get(key) is not None}, indent=2))
+    view = {key: state.get(key) for key in keys if state.get(key) is not None}
+    if isinstance(state.get("risk"), dict):
+        view["risk_tier"] = state["risk"].get("tier")  # report-only: it decides nothing yet
+    print(json.dumps(view, indent=2))
     return 0
 
 

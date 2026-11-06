@@ -19,6 +19,7 @@ make_fake() {
   cp "$ROOT/scripts/autonomous-run.py" "$path/controller.py"
   cp "$ROOT/native_launcher.py" "$path/native_launcher.py"
   cp "$ROOT/windows_verifier_sandbox.py" "$path/windows_verifier_sandbox.py"
+  cp "$ROOT/risk_map.py" "$path/risk_map.py" 2>/dev/null || true
   chmod +x "$path/controller.py"
   cp "$ROOT/templates/autonomous-run.json" "$path/template.json"
   printf '%s\n' \
@@ -1012,6 +1013,41 @@ assert state['status'] == 'accepted' and state['attempt'] == 1
 assert state['accepted_commit'] == state['candidate_commit']
 assert state['codex_tokens_used'] == 10
 PY
+
+echo 'autonomous-run — the run receipt records the risk tier'
+for declared in none C A; do
+  id="risk-$declared"
+  repo="$(new_repo "$id")"; make_fake "$repo/../fake"
+  printf '%s\n' '{"schema_version": 1, "rules": [{"paths": ["src/**"], "tier": "B", "lenses": ["code"]}]}' > "$repo/.harness/risk-policy.json"
+  git -C "$repo" add . && git -C "$repo" commit -qm 'test: risk policy'
+  manifest "$repo" "$id"
+  if [ "$declared" != none ]; then
+    python3 - "$repo/.harness/runs/$id.json" "$declared" <<'PY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); v = json.loads(p.read_text()); v['risk_tier'] = sys.argv[2]
+p.write_text(json.dumps(v, indent=2) + '\n')
+PY
+    git -C "$repo" add . && git -C "$repo" commit -qm 'test: declared tier'
+  fi
+  expected=B; [ "$declared" = C ] && expected=C
+  if (cd "$repo" && invoke "$repo" accept start ".harness/runs/$id.json" >../out 2>../err); then
+    ok "risk $declared: run accepted"
+  else bad "risk $declared: run was not accepted"; sed -n '1,5p' "$repo/../err"; fi
+  assert "risk $declared: state and verification receipt record tier $expected from the base policy" \
+    python3 - "$repo/.git/agentsmith-runs/$id" "$expected" "$declared" <<'PY'
+import json, pathlib, sys
+root, expected, declared = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+state = json.load(open(root / 'state.json'))
+proof = json.load(open(state['verification_receipt']))
+risk = proof['risk']
+assert risk == state['risk'], (risk, state.get('risk'))
+assert (risk['tier'], risk['computed_tier'], risk['lenses']) == (expected, 'B', ['code']), risk
+assert risk['declared_tier'] == (None if declared == 'none' else declared), risk
+assert risk['policy']['blob'] and risk['head'] == state['accepted_commit'] and risk['base'] == state['base_head']
+PY
+  assert "risk $declared: status shows the tier" bash -c "cd '$repo' && python3 '$repo/../fake/controller.py' status '$id' | grep -q '\"risk_tier\": \"$expected\"'"
+  assert "risk $declared: the live-run guard shows the tier" bash -c "cd '$repo' && python3 '$repo/../fake/controller.py' status --all-terminal | grep -q 'run $id: accepted at .* risk tier $expected'"
+done
 
 echo 'autonomous-run — an acceptance must cite the verifier evidence'
 for mode in checker-no-citation checker-fabricated; do

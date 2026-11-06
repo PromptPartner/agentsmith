@@ -39,7 +39,8 @@ agentsmith graph status --graph .harness/work-graph.json --json
 
 Both accept `--target <repository>` and make no branch, worktree, state, or external write. An
 unknown schema, changed committed byte, unsafe path, scope collision, cycle, or unverified child
-lineage stops closed. `status` reports each node's reason and one safe next action. Run IDs must be
+lineage stops closed. `status` reports each node's reason and one safe next action. A completed node also shows the risk tier
+that its run recorded, as a report only. Run IDs must be
 unique; `integration_order` must name each exactly once. A graph change requires a new graph ID,
 not an in-place migration of a running graph.
 

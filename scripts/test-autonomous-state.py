@@ -2212,6 +2212,41 @@ class AutonomousStateTests(unittest.TestCase):
             self.assertIn("changed after the verifier finished",
                           problem('no failures :: reports/junit.xml :: failures="0"'))
 
+    def test_the_run_records_the_risk_tier_from_the_base_policy(self) -> None:
+        # The candidate rewrites the policy to drop its own lens and lower src/**. The record must
+        # still come from the policy committed at the base, and a declared tier only raises it.
+        strict = '{"schema_version": 1, "rules": [{"paths": ["src/**"], "tier": "C", "lenses": ["security"]}]}\n'
+        lenient = '{"schema_version": 1, "rules": [{"paths": ["src/**", ".harness/**"], "tier": "A"}]}\n'
+        with tempfile.TemporaryDirectory(prefix="agentsmith risk record ") as temporary:
+            repo = Path(temporary)
+            base = self.committed_fixture(repo, {".harness/risk-policy.json": strict, "src/app.py": "x = 1\n"})
+            base_blob = CONTROLLER.git(repo, "rev-parse", f"{base}:.harness/risk-policy.json")
+            head = self.commit_entries(repo, {"src/app.py": "x = 2\n", ".harness/risk-policy.json": lenient})
+            import risk_map
+            self.assertEqual(CONTROLLER.RISK_TIERS, risk_map.TIERS)
+            record = CONTROLLER.risk_record(repo, base, head, None)
+            self.assertEqual(record["policy"]["blob"], base_blob)
+            self.assertEqual(record["lenses"], ["security"])
+            self.assertEqual(record["computed_tier"], "human")  # the policy file itself is on the floor
+            only_code = self.commit_entries(repo, {".harness/risk-policy.json": strict})
+            record = CONTROLLER.risk_record(repo, base, only_code, None)
+            self.assertEqual((record["computed_tier"], record["tier"]), ("C", "C"))
+            self.assertEqual(CONTROLLER.risk_record(repo, base, only_code, "human")["tier"], "human")
+            self.assertEqual(CONTROLLER.risk_record(repo, base, only_code, "A")["tier"], "C")
+            # Report-only: a classification that cannot run is recorded, as human, not raised.
+            subprocess.run(["git", "-C", str(repo), "checkout", "-q", base], check=True)
+            broken = self.commit_entries(repo, {".harness/risk-policy.json": "{not json\n"})
+            later = self.commit_entries(repo, {"src/app.py": "x = 3\n"})
+            record = CONTROLLER.risk_record(repo, broken, later, "B")
+            self.assertEqual(record["tier"], "human")
+            self.assertIn("error", record)
+
+    def test_a_declared_risk_tier_must_be_a_known_tier(self) -> None:
+        manifest = self.budget_manifest()
+        manifest["risk_tier"] = "low"
+        with self.assertRaisesRegex(CONTROLLER.RunError, "risk_tier must be one of A, B, C, human"):
+            CONTROLLER.validate_manifest(manifest, ROOT)
+
     def test_a_commit_after_verification_refuses_acceptance(self) -> None:
         # The checks passed at one commit; a run branch that moved afterwards would hand the
         # operator unverified code under an "accepted" record.

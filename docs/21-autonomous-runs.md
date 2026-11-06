@@ -100,6 +100,18 @@ example from a process a role left running, refuses acceptance: the run escalate
 checked commit and where the branch is now. `accepted_commit` in the run state, the
 `run_accepted` event and `candidate_commit` in the verification receipt all name that one commit.
 
+**The run receipt records the risk tier.** At acceptance the controller classifies the change from
+the base commit to the accepted commit, as `agentsmith risk classify` does (see
+[the risk map](29-risk-map.md)), with the policy committed at the base, so a candidate that edits
+`.harness/risk-policy.json` is still judged by the policy it started from. The verification
+receipt and the run state record `risk`: the computed tier, the lenses, the policy blob, the base
+and accepted commits, and the tier recorded. A manifest may declare `risk_tier` (`A`, `B`, `C` or
+`human`); it can only raise the computed tier, never lower it. `status <id>` prints `risk_tier`,
+`status --all-terminal` lists each accepted run with its tier, and `agentsmith graph status` shows
+each completed child's tier. The tier is a report: it changes no decision. If the classification
+cannot run, for example because the policy at the base is invalid, the run records the tier
+`human` with the error and continues.
+
 Trusted state stays in the controller's shared run directory. Each native role receives explicit
 write restrictions for that directory, the original contract, and the controller/launcher source
 folders. Codex uses a strict named filesystem permissions profile: the maker can write its

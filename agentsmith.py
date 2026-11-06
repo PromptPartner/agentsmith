@@ -1770,7 +1770,8 @@ def cmd_graph(args: argparse.Namespace) -> int:
     else:
         say(f"work graph {report['graph_id']}: {report['status']}")
         for node in report["nodes"]:
-            say(f"  {node['run_id']}: {node['status']} — {node['reason']}")
+            tier = f" (risk tier {node['risk_tier']})" if node.get("risk_tier") else ""
+            say(f"  {node['run_id']}: {node['status']}{tier} — {node['reason']}")
         say(f"next: {report['next_action']['command']}")
     return 2 if args.graph_command in {"start", "resume"} and report["status"] != "completed" else 0
 
