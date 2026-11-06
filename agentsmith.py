@@ -109,6 +109,7 @@ RUNTIME_FILES = (
     ".agentsmith/project_memory.py",
     ".agentsmith/config_audit.py",
     ".agentsmith/risk_map.py",
+    ".agentsmith/ci_watch.py",
     ".agentsmith/agentsmith",
     ".agentsmith/agentsmith.cmd",
     ".agentsmith/config/agents.json",
@@ -2003,7 +2004,7 @@ def copy_runtime(target: Path, *, dry_run: bool) -> Path:
             contained_copy(source, config_destination / source.name)
         for helper_name in ("native_launcher.py", "evaluate.py", "work_graph.py",
                             "windows_verifier_sandbox.py", "project_memory.py", "config_audit.py",
-                            "risk_map.py"):
+                            "risk_map.py", "ci_watch.py"):
             helper_source = ROOT / helper_name
             if helper_source.exists():
                 contained_copy(helper_source, destination.parent / helper_name)
@@ -9119,6 +9120,34 @@ def cmd_risk(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ci_watch(args: argparse.Namespace) -> int:
+    sys.dont_write_bytecode = True
+    import ci_watch
+    if args.sha is not None and not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", args.sha):
+        print("[error] ci watch: --sha needs the full 40- or 64-character commit SHA in lowercase hex", file=sys.stderr)
+        return 2
+    if args.cap_minutes <= 0 or args.stall_minutes <= 0:
+        print("[error] ci watch: --cap-minutes and --stall-minutes must be positive", file=sys.stderr)
+        return 2
+    try:
+        report = ci_watch.watch(ci_watch.Gh(), args.repo, pr=args.pr, sha=args.sha, base=args.base,
+                                cap_seconds=args.cap_minutes * 60, stall_seconds=args.stall_minutes * 60)
+    except ci_watch.GhError as exc:
+        print(f"[error] ci watch: {exc}", file=sys.stderr)
+        return 2
+    text = ci_watch.to_json(report) if args.json else ci_watch.render_text(report)
+    # JSON as ASCII bytes whatever the console encoding; the text report follows the console.
+    stream = getattr(sys.stdout, "buffer", None)
+    if stream is None:
+        sys.stdout.write(text)
+    else:
+        sys.stdout.flush()
+        stream.write(text.encode("ascii") if args.json
+                     else text.encode(sys.stdout.encoding or "utf-8", "backslashreplace"))
+        stream.flush()
+    return report["exit_code"]
+
+
 def memory_git_identity(target: Path) -> tuple[str | None, str | None]:
     values = []
     for arguments in (("symbolic-ref", "--short", "HEAD"), ("rev-parse", "--verify", "HEAD")):
@@ -9396,7 +9425,7 @@ def parser() -> argparse.ArgumentParser:
     )
     root.add_argument("--version", action="version", version=f"agentsmith {VERSION}")
     # Internal commands (hook, secret-scan, graph, wizard, evaluate, compatibility, agents,
-    # validate-integration, audit-config, risk) serve programs and CI: they keep working but stay out of
+    # validate-integration, audit-config, risk, ci) serve programs and CI: they keep working but stay out of
     # the root help, so the public surface stays small. docs/12-whats-built-in.md lists them.
     sub = root.add_subparsers(dest="command", metavar="{" + ",".join(PUBLIC_COMMANDS) + "}")
     install = sub.add_parser("install", help="install or update managed rules and adapters")
@@ -9537,6 +9566,28 @@ def parser() -> argparse.ArgumentParser:
     classify.add_argument("--head", required=True, help="commit to classify")
     classify.add_argument("--target", help="Git repository (default: current directory)")
     classify.add_argument("--json", action="store_true", help="schema-versioned, byte-stable report")
+    ci = sub.add_parser("ci", description="report-only continuous-integration tools (GitHub, through gh)")
+    ci_sub = ci.add_subparsers(dest="ci_command", required=True)
+    # Kept as text so building the parser imports nothing; scripts/test-ci-watch.py checks it
+    # against ci_watch.STATES.
+    exit_codes = ("green=0, red-at-diff=10, red-on-base=11, flaky=12, environment=13, runner-stalled=14, "
+                  "no-run-registered=15, conflict=16, cap-reached=17, head-moved=18")
+    ci_watch_parser = ci_sub.add_parser(
+        "watch",
+        description="Follow the workflow runs registered for one commit until one end state. Checks merge "
+                    "conflicts first, never reads the aggregate check view, and never fixes, pushes, comments, "
+                    f"labels or reruns. Exit codes: {exit_codes}; 2 when gh is missing, not logged in, or a "
+                    "read fails.",
+    )
+    ci_target = ci_watch_parser.add_mutually_exclusive_group(required=True)
+    ci_target.add_argument("--pr", type=int, help="pull request number; its head commit is watched")
+    ci_target.add_argument("--sha", help="full commit SHA to watch")
+    ci_watch_parser.add_argument("--repo", help="OWNER/NAME (default: the repository gh finds here)")
+    ci_watch_parser.add_argument("--base", help="base branch for red-on-base (default: the PR's base, else the default branch)")
+    ci_watch_parser.add_argument("--cap-minutes", type=float, default=60, help="wall-clock cap for the whole watch (default 60)")
+    ci_watch_parser.add_argument("--stall-minutes", type=float, default=30,
+                                 help="no progress for this long is runner-stalled (default 30)")
+    ci_watch_parser.add_argument("--json", action="store_true", help="schema-versioned report")
     memory = sub.add_parser("memory", help="search and read bounded local Markdown memory")
     # `memory startup` is the hook's internal entry point, so it stays out of the listed choices.
     memory_commands = memory.add_subparsers(dest="memory_command", required=True, metavar="{search,read}")
@@ -9574,7 +9625,7 @@ def parser() -> argparse.ArgumentParser:
 def normalize_legacy_argv(argv: list[str]) -> list[str]:
     if not argv:
         return ["install", "--wizard"]
-    commands = {"install", "update", "agents", "doctor", "status", "profiles", "wizard", "compatibility", "verify", "validate-integration", "graph", "demo", "resume", "handoff", "new-feedback", "new-research", "secret-scan", "hook", "memory", "audit-config", "risk", "evaluate"}
+    commands = {"install", "update", "agents", "doctor", "status", "profiles", "wizard", "compatibility", "verify", "validate-integration", "graph", "demo", "resume", "handoff", "new-feedback", "new-research", "secret-scan", "hook", "memory", "audit-config", "risk", "ci", "evaluate"}
     if argv[0] in commands or argv[0] in {"-h", "--help", "--version"}:
         return argv
     if "--doctor" in argv:
@@ -10064,6 +10115,8 @@ def run(argv: list[str] | None = None) -> int:
         return cmd_audit_config(args)
     if args.command == "risk":
         return cmd_risk(args)
+    if args.command == "ci":
+        return cmd_ci_watch(args)
     if args.command == "memory":
         return cmd_memory(args)
     if args.command == "hook":
