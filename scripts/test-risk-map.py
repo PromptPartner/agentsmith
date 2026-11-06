@@ -173,6 +173,16 @@ class PureClassifyTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(risk_map.classify([path], rules)["tier"], "human")
 
+    def test_windows_trailing_dot_and_space_aliases_are_matched(self) -> None:
+        # Windows drops trailing dots and spaces from each name: `AGENTS.md.` opens AGENTS.md.
+        rules = self.rules({"paths": ["**"], "tier": "A"}, {"paths": ["src/auth/**"], "tier": "C"})
+        for path in ("AGENTS.md.", "AGENTS.md ", "nested/.claude./settings.json", "nested/.codex /config.toml",
+                     ".github/workflows./x.yml", "secrets. /token", ".harness ./verify.conf", "db/migrations./1.sql"):
+            with self.subTest(path=path):
+                self.assertEqual(risk_map.classify([path], rules)["tier"], "human")
+        self.assertEqual(risk_map.classify(["src/auth./login.py"], rules)["tier"], "C")
+        self.assertEqual(risk_map.classify(["docs/notes.md"], rules)["tier"], "A")
+
     def test_a_recorded_tier_cannot_be_lowered(self) -> None:
         for recorded in risk_map.TIERS:
             for proposed in risk_map.TIERS:

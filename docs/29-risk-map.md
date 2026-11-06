@@ -51,7 +51,8 @@ The policy is `.harness/risk-policy.json`. A starting point is
   stall a classification.
 - Every rule that matches a path counts, and the highest tier wins. Rule order does not matter, so
   a broad rule cannot hide a stricter one. The lenses of all matching rules add up.
-- Names match ignoring case, because macOS and Windows open `Src/Auth` for `src/auth`.
+- Names match ignoring case, because macOS and Windows open `Src/Auth` for `src/auth`, and
+  ignoring trailing dots and spaces in each name, because Windows opens `AGENTS.md.` for `AGENTS.md`.
 - A path that matches no rule is `human`.
 
 **The policy is read at `--base`.** A change that edits the policy is still classified by the
@@ -63,7 +64,7 @@ output.
 ## The fixed floor
 
 Some paths are `human` whatever the policy says. The floor is part of the program, not of the
-policy, so no policy can remove it. Names match ignoring case.
+policy, so no policy can remove it. Names match ignoring case and trailing dots and spaces.
 
 | Floor | Paths |
 |---|---|

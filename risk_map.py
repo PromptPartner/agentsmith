@@ -44,9 +44,16 @@ class RiskError(RuntimeError):
     """The commit range cannot be read."""
 
 
+def _fold(path: str) -> str:
+    """The spelling rules compare: case folded, and trailing dots and spaces dropped from each name,
+    because macOS and Windows open `claude.md` for `CLAUDE.md` and Windows opens `AGENTS.md.` for
+    `AGENTS.md`."""
+    return "/".join(part.rstrip(". ") for part in path.casefold().split("/"))
+
+
 def floor_reasons(path: str) -> list[str]:
     """Return the floor categories a repository-relative path falls in."""
-    folded = path.casefold()
+    folded = _fold(path)
     parts = folded.split("/")
     name = parts[-1]
     reasons = []
@@ -105,7 +112,7 @@ def _matches(segments: list[str], path: str) -> bool:
 
 def glob_match(pattern: str, path: str) -> bool:
     """Root-anchored glob match, ignoring case: `*` and `?` stay in one folder, `**` crosses folders."""
-    return _matches(_compile(pattern), path.casefold())
+    return _matches(_compile(pattern), _fold(path))
 
 
 def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -160,7 +167,7 @@ def classify_path(path: str, policy: dict[str, Any], kinds: Iterable[str] = ()) 
     """Classify one path. `kinds` names special entries on either side of the change (symlink,
     submodule): their effect lies outside the diff, a link's target or another repository, so they
     are at least C, a change the operator reviews every time."""
-    folded = path.casefold()
+    folded = _fold(path)
     # A name that is not UTF-8 cannot be matched reliably, so no rule may lower it.
     floor = (["unreadable-name"] if _unreadable(path) else []) + floor_reasons(path)
     special = [f"type:{kind}" for kind in sorted(set(kinds))]
