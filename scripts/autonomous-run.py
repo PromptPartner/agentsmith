@@ -2174,11 +2174,17 @@ def citation_problem(checker: dict[str, Any], index: dict[str, str], verify_log:
                 return f"evidence item {number} cites {name} from attempt {other.group(1)}, not this attempt ({attempt})"
             return f"evidence item {number} cites {shown_paths([name])}, which this attempt's verifier did not produce"
         path = verify_log if name == verify_log.name else checker_worktree / name
-        if file_digest(path) != index[name]:
+        # Read once: the hash and the quote are checked against the same bytes, so a write that
+        # lands between the two cannot supply the quote.
+        try:
+            data = path.read_bytes()
+        except OSError:
+            return f"evidence item {number} cites {name}, which can no longer be read"
+        if hashlib.sha256(data).hexdigest() != index[name]:
             return f"evidence item {number} cites {name}, which changed after the verifier finished"
         if len(excerpt) < 3:
             return f"evidence item {number} quotes no excerpt from {name}"
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = data.decode("utf-8", errors="replace")
         if line is not None:
             lines = text.splitlines()
             if line > len(lines):

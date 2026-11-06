@@ -2161,7 +2161,6 @@ class AutonomousStateTests(unittest.TestCase):
                 "ignored_paths": lambda *_args: set(), "clean": lambda *_args: True,
                 "changed_paths": lambda *_args: ["a.txt"], "path_allowed": lambda *_args: True,
                 "sandboxed_verify": fake_verify,
-                "file_digest": lambda *_args: "0" * 64,
             }.items():
                 fakes.enter_context(mock.patch.object(CONTROLLER, name, side_effect=value))
             outcome = CONTROLLER.run_controller(state, manifest)
@@ -2278,6 +2277,40 @@ class AutonomousStateTests(unittest.TestCase):
             state = {"repo": str(repo), "manifest_path": str(repo / "m.json"), "spec_path": "s.md"}
             self.assertIn(path.parent, CONTROLLER.trusted_paths(state))
             self.assertRegex(CONTROLLER.checker_prompt_sha256(), r"\A[0-9a-f]{64}\Z")
+
+    def test_a_citation_is_checked_against_the_bytes_that_were_hashed(self) -> None:
+        # A writer that lands after the hash and before the quote is read must not supply the quote.
+        with tempfile.TemporaryDirectory(prefix="agentsmith citation race ") as temporary:
+            root = Path(temporary)
+            log = root / "attempt-1-verify.txt"
+            log.write_text("exit=0\n", encoding="utf-8")
+            worktree = root / "check"
+            worktree.mkdir()
+            report = worktree / "report.txt"
+            report.write_text("old verifier report line\n", encoding="utf-8")
+            index = CONTROLLER.verifier_evidence(log, worktree, {"report.txt"})
+            real_digest, real_read = CONTROLLER.file_digest, Path.read_bytes
+
+            def write_after(path: Path) -> None:
+                if path == report and "forged" not in real_read(path).decode():
+                    report.write_text("forged after the hash was taken\n", encoding="utf-8")
+
+            def digest_then_write(path: Path) -> str:
+                value = real_digest(path)
+                write_after(path)
+                return value
+
+            def read_then_write(path: Path) -> bytes:
+                value = real_read(path)
+                write_after(path)
+                return value
+
+            with mock.patch.object(CONTROLLER, "file_digest", side_effect=digest_then_write), \
+                    mock.patch.object(Path, "read_bytes", autospec=True, side_effect=read_then_write):
+                problem = CONTROLLER.citation_problem(
+                    {"evidence": ["report :: report.txt :: forged after the hash was taken"]},
+                    index, log, worktree, 1)
+            self.assertIsNotNone(problem)
 
     def test_a_commit_after_verification_refuses_acceptance(self) -> None:
         # The checks passed at one commit; a run branch that moved afterwards would hand the
