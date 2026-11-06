@@ -1240,6 +1240,11 @@ def _git_metadata_once(repo: Path, *, known_peers: dict[str, Any] | None = None)
 # How long a snapshot waits for Git's temporary files and locks to clear before failing closed.
 # Locks last milliseconds, but a loaded hosted runner can stall a peer's Git call for seconds.
 GIT_METADATA_SETTLE_SECONDS = 10
+# Git's own short-lived lock files, the only ones a snapshot waits on. Any other file, such as a
+# lock another tool holds for a whole run, is compared as it is, as before.
+GIT_TRANSIENT_LOCK = re.compile(
+    r"(?:worktrees/[^/]+/)?(?:(?:packed-refs|HEAD|ORIG_HEAD|FETCH_HEAD|MERGE_HEAD|CHERRY_PICK_HEAD|REVERT_HEAD"
+    r"|AUTO_MERGE|config|config\.worktree|index|shallow)\.lock|logs/.+\.lock)")
 
 
 def git_metadata(repo: Path, *, known_peers: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1249,7 +1254,8 @@ def git_metadata(repo: Path, *, known_peers: dict[str, Any] | None = None) -> di
     shared object store, and Git's files ref backend holds lock files such as
     packed-refs.lock during ordinary ref transactions (a peer's commit or
     `git worktree add`), even when packed-refs itself does not change. Retry while
-    any of these exist, so a snapshot is only taken when no Git lock is held, then
+    any of these exist (GIT_TRANSIENT_LOCK names Git's own locks only), so a snapshot is
+    only taken when no Git lock is held, then
     fail closed if they do not settle. The locked files themselves (packed-refs,
     config, HEAD) and all committed objects remain compared.
     """
@@ -1265,7 +1271,7 @@ def git_metadata(repo: Path, *, known_peers: dict[str, Any] | None = None) -> di
             temporary = [path for path, _ in snapshot["existing_objects"]
                          if (path == "objects/maintenance.lock" or re.fullmatch(
                              r"objects/(?:[0-9a-f]{2}|pack)/tmp_(?:obj|pack|idx|rev)_[^/]+", path))]
-            locks = [path for path, _ in snapshot["protected_files"] if path.endswith(".lock")]
+            locks = [path for path, _ in snapshot["protected_files"] if GIT_TRANSIENT_LOCK.fullmatch(path)]
             if not temporary and not locks:
                 return snapshot
         if time.monotonic() >= deadline:

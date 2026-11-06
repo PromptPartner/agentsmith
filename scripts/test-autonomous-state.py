@@ -1880,7 +1880,7 @@ class AutonomousStateTests(unittest.TestCase):
             subprocess.run(["git", "-C", str(repo), "worktree", "add", "-qb", "agentsmith/run", str(worktree)],
                            check=True, env=env)
             before = CONTROLLER.git_metadata(worktree)
-            for name in ("packed-refs.lock", "HEAD.lock", "config.lock"):
+            for name in ("packed-refs.lock", "HEAD.lock", "config.lock", "shallow.lock", "logs/HEAD.lock"):
                 with self.subTest(lock=name):
                     lock = repo / ".git" / name
                     lock.write_bytes(b"a ref transaction in progress")
@@ -1902,6 +1902,17 @@ class AutonomousStateTests(unittest.TestCase):
                     CONTROLLER.git_metadata(worktree)
             self.assertLess(time.monotonic() - started, 2)
             stale.unlink()
+            # Locks that are not Git's own transient ones (another tool's long-held lock, a peer's
+            # coordination files) are compared as before, never waited on: an unchanged one passes at once.
+            for name in ("agentsmith-calibrations/tool.lock", "lfs/objects.lock", "gc.pid"):
+                with self.subTest(foreign=name):
+                    held = repo / ".git" / name
+                    held.parent.mkdir(parents=True, exist_ok=True)
+                    held.write_bytes(b"held for the whole run")
+                    with mock.patch.object(CONTROLLER, "GIT_METADATA_SETTLE_SECONDS", 0.3):
+                        first = CONTROLLER.git_metadata(worktree)
+                        CONTROLLER.validate_git_unchanged(first, CONTROLLER.git_metadata(worktree), "sibling")
+                    held.unlink()
             # A real change to packed-refs is still caught: the file itself is compared.
             subprocess.run(["git", "-C", str(repo), "pack-refs", "--all"], check=True, env=env)
             with self.assertRaisesRegex(CONTROLLER.RunError, "protected_files"):

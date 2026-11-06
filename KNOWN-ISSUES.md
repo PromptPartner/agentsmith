@@ -88,7 +88,8 @@ been authorized, so the entries are kept here.
   this child's two snapshots only. It recurred in push run `42240813808` (`884ab3c`, macOS
   compatibility, `test_cleanup_preview_retains_foreign_and_source_artifacts`, child reason
   "runtime changed protected Git metadata: protected_files: packed-refs.lock"). Fixed: a
-  snapshot is now taken only when no Git `*.lock` is held in the common directory; it retries for
+  snapshot is now taken only when none of Git's own transient locks (`packed-refs.lock`,
+  `HEAD.lock`, `config.lock`, `index.lock`, reflog locks and the like) is held; it retries for
   up to `GIT_METADATA_SETTLE_SECONDS` (10 seconds, room for a loaded hosted runner) and then fails
   closed, naming the lock. `packed-refs`, `config` and `HEAD`
   themselves are still compared. `test_git_metadata_waits_for_a_transient_ref_lock_without_ignoring_packed_refs`
