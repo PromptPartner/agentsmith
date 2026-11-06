@@ -171,6 +171,55 @@ the concepts; the pinned snapshot has no repository-wide license, so no upstream
 its recorder, publishing, and GitHub-query workflows were not adopted.
 → [evidence skill](https://github.com/michaelshimeles/skills/blob/5d403ea66775c04df222a1e9b302ef64ae45c712/evidence-driven-testing/SKILL.md) · [worktree skill](https://github.com/michaelshimeles/skills/blob/5d403ea66775c04df222a1e9b302ef64ae45c712/new-feature/SKILL.md) · [pinned commit](https://github.com/michaelshimeles/skills/commit/5d403ea66775c04df222a1e9b302ef64ae45c712)
 
+## The software-factory work
+
+These sources shaped the autonomous-run hardening, evidence-cited checks, delivery and readiness
+work of late 2026.
+
+**Cole Medin — `ai-software-factory` and `factory-mission-control`** — the most useful source,
+because he publishes his failures with numbers. Neither repository carries a licence, so
+AgentSmith took ideas only and copied no code, text, prompts or templates. The ideas taken:
+checker verdict lines that must cite evidence and are checked by a script; a deterministic merge
+gate with protected governance paths; a check result bound to the head commit; infrastructure
+failures that do not spend an attempt; and checker calibration against hand-labelled cases (from
+his MIT-licensed Archon). A sweep for runs that fall silent is next on that list. The lessons came
+from his own logs: his loop reviewer sent back 0 of 37 pull requests, 5 of 12 escaped defects had
+been graded PASS, and he later removed holdout scenarios because they cost about an hour per pull
+request and found nothing that review and CI had not found. **Archon** (MIT) was considered as the
+engine and not adopted; AgentSmith keeps its own controller.
+→ [DECISIONS.md](https://github.com/coleam00/ai-software-factory/blob/main/DECISIONS.md) (17 and 26 Oct 2026) · [incidents](https://github.com/coleam00/ai-software-factory/blob/main/docs/incidents.md) · [holdouts removed](https://github.com/coleam00/ai-software-factory/commit/7dff9c5054) (4 Nov) · [mission-control PRD](https://github.com/coleam00/factory-mission-control/blob/main/docs/mission-control.prd.md) · [Archon](https://github.com/coleam00/Archon/blob/dev/README.md)
+
+**Harness comparisons, 2026** — swapping one general-purpose harness for another moved success by
+a few points at most, while cost moved up to five times; one study found runs stopped at the wall
+clock that already held a passing patch. AgentSmith therefore reports spend per landed change, keeps
+a finished candidate when a cap stops a run, and does not claim the engine raises pass rates.
+→ [HarnessTax](https://www.samcodeman.com/writing/harnesstax-coding-agent-harness-benchmark) (17 Sep, corrected 17 Oct) · [arXiv 2610.04433](https://arxiv.org/html/2610.04433v1) (3 Oct) · [arXiv 2609.11987](https://arxiv.org/abs/2609.11987) (8 Sep) · [arXiv 2609.40303](https://arxiv.org/html/2609.40303v1) (30 Sep)
+
+**SpecBench** and **StrongDM** — agents saturate the tests they can see, while hidden tests expose
+large gaps; StrongDM keeps scenarios outside the code like a holdout set. AgentSmith adapted this
+as opt-in hidden acceptance tests that a person writes, that only reject and whose cost each run
+records. StrongDM's "no human review" rule was not adopted.
+→ [SpecBench, arXiv 2605.21384](https://arxiv.org/html/2605.21384v1) (20 May) · [StrongDM software factory](https://factory.strongdm.ai/) (6 Feb)
+
+**GitHub, Devin and Cursor** — none of them lets the agent merge on its own authority. Cursor's
+Bugbot reads its configuration from the base branch, which the pull request under review cannot
+change, and approval names the exact commit. AgentSmith's delivery step follows this: the risk
+policy is read at the base, the auto-merge eligibility line is bound to the head commit, and a
+human merges.
+→ [GitHub Agent Merge](https://github.blog/changelog/2026-10-28-agent-merge-watches-and-fixes-pull-requests-in-the-cloud/) (28 Oct) · [Devin release notes](https://docs.devin.ai/release-notes/overview) (Oct) · [Cursor cloud-agent release notes](https://cursor.com/docs/release-notes/cloud-agents) (7 Sep) · [Cursor Bugbot](https://cursor.com/docs/bugbot)
+
+**Claude Code and Codex, October 2026** — Claude Code added fail-closed hooks, a safety-event
+record and a setting that blocks writes outside the working directory; Codex's auto-review stops a
+turn after repeated denials. AgentSmith's circuit breaker and its use of reported permission
+denials follow the same shape for its own unattended roles.
+→ [Claude Code changelog](https://code.claude.com/docs/en/changelog) (2.1.295–2.1.314, 8–30 Oct) · [Codex auto-review](https://learn.chatgpt.com/docs/sandboxing/auto-review) · [Codex releases](https://github.com/openai/codex/releases) (0.160–0.166, Oct)
+
+**Simon Willison and Matthew Green** — Willison argued that hard budget caps should be the default,
+and quoted Green on agents in separate sandboxes passing instructions through a shared package
+cache. Hence budgets that refuse to start when missing, and private temporary and cache folders for
+the verifier and checker.
+→ [hard budget caps](https://simonwillison.net/2026/Oct/3/default-hard-budget-caps/) (3 Oct) · [Matthew Green](https://simonwillison.net/2026/Oct/1/matthew-green/) (1 Oct)
+
 ## Complementary work (not influences)
 
 These shaped nothing in `core/` — they sit *alongside* it, at a different layer.
