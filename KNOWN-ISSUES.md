@@ -89,7 +89,8 @@ been authorized, so the entries are kept here.
   compatibility, `test_cleanup_preview_retains_foreign_and_source_artifacts`, child reason
   "runtime changed protected Git metadata: protected_files: packed-refs.lock"). Fixed: a
   snapshot is now taken only when no Git `*.lock` is held in the common directory; it retries for
-  up to 2 seconds and then fails closed, naming the lock. `packed-refs`, `config` and `HEAD`
+  up to `GIT_METADATA_SETTLE_SECONDS` (10 seconds, room for a loaded hosted runner) and then fails
+  closed, naming the lock. `packed-refs`, `config` and `HEAD`
   themselves are still compared. `test_git_metadata_waits_for_a_transient_ref_lock_without_ignoring_packed_refs`
   failed before (three locks reported as changed metadata; a stale lock not refused) and passes
   after, and it checks that a real `packed-refs` change is still caught. Racing a real sibling

@@ -1237,6 +1237,11 @@ def _git_metadata_once(repo: Path, *, known_peers: dict[str, Any] | None = None)
     }
 
 
+# How long a snapshot waits for Git's temporary files and locks to clear before failing closed.
+# Locks last milliseconds, but a loaded hosted runner can stall a peer's Git call for seconds.
+GIT_METADATA_SETTLE_SECONDS = 10
+
+
 def git_metadata(repo: Path, *, known_peers: dict[str, Any] | None = None) -> dict[str, Any]:
     """Take a stable snapshot; never exempt a persistent non-object from tamper checks.
 
@@ -1248,7 +1253,7 @@ def git_metadata(repo: Path, *, known_peers: dict[str, Any] | None = None) -> di
     fail closed if they do not settle. The locked files themselves (packed-refs,
     config, HEAD) and all committed objects remain compared.
     """
-    deadline = time.monotonic() + 2
+    deadline = time.monotonic() + GIT_METADATA_SETTLE_SECONDS
     locks: list[str] = []
     while True:
         try:

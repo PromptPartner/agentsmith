@@ -1841,8 +1841,9 @@ class AutonomousStateTests(unittest.TestCase):
                 clear.join()
             self.assertFalse(any("tmp_obj_" in path for path, _ in snapshot["existing_objects"]))
             transient.write_bytes(b"persistent unexpected file")
-            with self.assertRaisesRegex(CONTROLLER.RunError, "temporary Git object file did not settle"):
-                CONTROLLER.git_metadata(repo)
+            with mock.patch.object(CONTROLLER, "GIT_METADATA_SETTLE_SECONDS", 0.3):
+                with self.assertRaisesRegex(CONTROLLER.RunError, "temporary Git object file did not settle"):
+                    CONTROLLER.git_metadata(repo)
             transient.unlink()
             maintenance = repo / ".git" / "objects" / "maintenance.lock"
             maintenance.write_bytes(b"Git auto-maintenance in progress")
@@ -1855,8 +1856,9 @@ class AutonomousStateTests(unittest.TestCase):
             self.assertFalse(any(path == "objects/maintenance.lock"
                                  for path, _ in snapshot["existing_objects"]))
             maintenance.write_bytes(b"persistent unexpected lock")
-            with self.assertRaisesRegex(CONTROLLER.RunError, "temporary Git object file did not settle"):
-                CONTROLLER.git_metadata(repo)
+            with mock.patch.object(CONTROLLER, "GIT_METADATA_SETTLE_SECONDS", 0.3):
+                with self.assertRaisesRegex(CONTROLLER.RunError, "temporary Git object file did not settle"):
+                    CONTROLLER.git_metadata(repo)
 
     def test_git_metadata_waits_for_a_transient_ref_lock_without_ignoring_packed_refs(self) -> None:
         # Git's files backend holds packed-refs.lock during ordinary ref transactions: a sibling run's
@@ -1890,10 +1892,15 @@ class AutonomousStateTests(unittest.TestCase):
                         clear.join()
                     CONTROLLER.validate_git_unchanged(before, after, "sibling")
             # A lock that never clears is not settled metadata: fail closed and name it.
+            # The wait is long enough for a loaded hosted runner; patched down here to keep the test fast.
+            self.assertGreaterEqual(CONTROLLER.GIT_METADATA_SETTLE_SECONDS, 10)
             stale = repo / ".git" / "packed-refs.lock"
             stale.write_bytes(b"left behind")
-            with self.assertRaisesRegex(CONTROLLER.RunError, "packed-refs.lock"):
-                CONTROLLER.git_metadata(worktree)
+            started = time.monotonic()
+            with mock.patch.object(CONTROLLER, "GIT_METADATA_SETTLE_SECONDS", 0.3):
+                with self.assertRaisesRegex(CONTROLLER.RunError, "packed-refs.lock"):
+                    CONTROLLER.git_metadata(worktree)
+            self.assertLess(time.monotonic() - started, 2)
             stale.unlink()
             # A real change to packed-refs is still caught: the file itself is compared.
             subprocess.run(["git", "-C", str(repo), "pack-refs", "--all"], check=True, env=env)
