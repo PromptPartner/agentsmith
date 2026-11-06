@@ -1237,28 +1237,46 @@ def _git_metadata_once(repo: Path, *, known_peers: dict[str, Any] | None = None)
     }
 
 
+# How long a snapshot waits for Git's temporary files and locks to clear before failing closed.
+# Locks last milliseconds, but a loaded hosted runner can stall a peer's Git call for seconds.
+GIT_METADATA_SETTLE_SECONDS = 10
+# Git's own short-lived lock files, the only ones a snapshot waits on. Any other file, such as a
+# lock another tool holds for a whole run, is compared as it is, as before.
+GIT_TRANSIENT_LOCK = re.compile(
+    r"(?:worktrees/[^/]+/)?(?:(?:packed-refs|HEAD|ORIG_HEAD|FETCH_HEAD|MERGE_HEAD|CHERRY_PICK_HEAD|REVERT_HEAD"
+    r"|AUTO_MERGE|config|config\.worktree|index|shallow)\.lock|logs/.+\.lock)")
+
+
 def git_metadata(repo: Path, *, known_peers: dict[str, Any] | None = None) -> dict[str, Any]:
     """Take a stable snapshot; never exempt a persistent non-object from tamper checks.
 
     Parallel Git commits briefly create tmp_obj files and maintenance.lock in the
-    shared object store. Retry while those exact temporary names exist, then fail
-    closed if they do not settle. All committed objects and other Git metadata
-    remain compared.
+    shared object store, and Git's files ref backend holds lock files such as
+    packed-refs.lock during ordinary ref transactions (a peer's commit or
+    `git worktree add`), even when packed-refs itself does not change. Retry while
+    any of these exist (GIT_TRANSIENT_LOCK names Git's own locks only), so a snapshot is
+    only taken when no Git lock is held, then
+    fail closed if they do not settle. The locked files themselves (packed-refs,
+    config, HEAD) and all committed objects remain compared.
     """
-    deadline = time.monotonic() + 2
+    deadline = time.monotonic() + GIT_METADATA_SETTLE_SECONDS
+    locks: list[str] = []
     while True:
         try:
             snapshot = _git_metadata_once(repo, known_peers=known_peers)
         except FileNotFoundError:
-            # A peer may have renamed its temporary object during the scan.
+            # A peer may have renamed its temporary object or released its lock during the scan.
             snapshot = None
         if snapshot is not None:
             temporary = [path for path, _ in snapshot["existing_objects"]
                          if (path == "objects/maintenance.lock" or re.fullmatch(
                              r"objects/(?:[0-9a-f]{2}|pack)/tmp_(?:obj|pack|idx|rev)_[^/]+", path))]
-            if not temporary:
+            locks = [path for path, _ in snapshot["protected_files"] if GIT_TRANSIENT_LOCK.fullmatch(path)]
+            if not temporary and not locks:
                 return snapshot
         if time.monotonic() >= deadline:
+            if snapshot is not None and locks:
+                raise RunError("Git lock file did not clear before metadata validation: " + ", ".join(locks[:8]))
             raise RunError("temporary Git object file did not settle before metadata validation")
         time.sleep(0.02)
 
