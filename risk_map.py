@@ -64,24 +64,46 @@ def floor_reasons(path: str) -> list[str]:
     return reasons
 
 
-def _glob(pattern: str) -> re.Pattern[str]:
-    """Compile a root-anchored glob: `*` and `?` stay inside one folder, `**` crosses folders."""
-    out = []
-    segments = []
-    for segment in pattern.casefold().split("/"):
-        # Repeated `**` means the same as one, and each extra one multiplies regex backtracking.
-        if not (segment == "**" and segments[-1:] == ["**"]):
-            segments.append(segment)
-    for index, segment in enumerate(segments):
-        last = index == len(segments) - 1
-        if segment == "**":
-            out.append(".*" if last else "(?:[^/]*/)*")
-            continue
-        out.append("".join("[^/]*" if char == "*" else "[^/]" if char == "?" else re.escape(char)
-                           for char in segment))
-        if not last:
-            out.append("/")
-    return re.compile("".join(out), re.DOTALL)
+def _wildcard(pattern: list[str] | str, items: list[str] | str, star: str,
+              same: Any) -> bool:
+    """Greedy two-pointer wildcard match: at most len(pattern) * len(items) steps, never exponential.
+    `star` matches any run of items; every other token must be `same` as exactly one item."""
+    p = i = 0
+    star_at, resume = -1, 0
+    while i < len(items):
+        if p < len(pattern) and pattern[p] == star:
+            star_at, resume = p, i
+            p += 1
+        elif p < len(pattern) and same(pattern[p], items[i]):
+            p += 1
+            i += 1
+        elif star_at >= 0:
+            p, resume = star_at + 1, resume + 1
+            i = resume
+        else:
+            return False
+    while p < len(pattern) and pattern[p] == star:
+        p += 1
+    return p == len(pattern)
+
+
+def _segment(pattern: str, name: str) -> bool:
+    # `*` is any run of characters inside one folder name, `?` exactly one character.
+    return _wildcard(pattern, name, "*", lambda token, char: token == "?" or token == char)
+
+
+def _compile(pattern: str) -> list[str]:
+    return pattern.casefold().split("/")
+
+
+def _matches(segments: list[str], path: str) -> bool:
+    # `**` is any run of whole folders, including none: `docs/**` covers `docs` itself.
+    return _wildcard(segments, path.split("/"), "**", _segment)
+
+
+def glob_match(pattern: str, path: str) -> bool:
+    """Root-anchored glob match, ignoring case: `*` and `?` stay in one folder, `**` crosses folders."""
+    return _matches(_compile(pattern), path.casefold())
 
 
 def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -120,7 +142,7 @@ def load_policy(data: bytes | None) -> dict[str, Any]:
         if not isinstance(lenses, list) or not all(isinstance(lens, str) and LENS_ID.fullmatch(lens)
                                                    for lens in lenses):
             raise PolicyError(f"{where}: lenses must be lowercase ids such as 'security'")
-        rules.append({"id": f"rule:{number}", "patterns": [_glob(path) for path in paths], "tier": rule["tier"],
+        rules.append({"id": f"rule:{number}", "patterns": [_compile(path) for path in paths], "tier": rule["tier"],
                       "lenses": sorted(set(lenses))})
     return {"rules": rules}
 
@@ -137,7 +159,7 @@ def classify_path(path: str, policy: dict[str, Any]) -> dict[str, Any]:
     matched = floor_reasons(path)
     tier = "human" if matched else "A"
     lenses: set[str] = set()
-    hits = [rule for rule in policy["rules"] if any(pattern.fullmatch(folded) for pattern in rule["patterns"])]
+    hits = [rule for rule in policy["rules"] if any(_matches(pattern, folded) for pattern in rule["patterns"])]
     for rule in hits:
         tier = raise_tier(tier, rule["tier"])
         lenses.update(rule["lenses"])

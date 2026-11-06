@@ -10,7 +10,6 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from unittest import mock
 
@@ -105,13 +104,34 @@ class PureClassifyTests(unittest.TestCase):
         self.assertEqual(risk_map.classify(["a.md"], rules)["tier"], "B")
         self.assertEqual(risk_map.classify(["x/y/a.md"], rules)["tier"], "B")
 
-    def test_repeated_double_star_matches_like_one_and_stays_fast(self) -> None:
-        # Each extra `**` multiplied the regex backtracking; twelve could hang classification.
-        rules = self.rules({"paths": ["/".join(["**"] * 12) + "/x"], "tier": "A"})
-        self.assertEqual(risk_map.classify(["x", "a/b/x"], rules)["tier"], "A")
-        started = time.monotonic()
-        self.assertEqual(risk_map.classify(["/".join(["a"] * 40) + "/y"], rules)["tier"], "human")
-        self.assertLess(time.monotonic() - started, 1.0)
+    def test_adversarial_globs_finish_within_a_hard_limit(self) -> None:
+        # Backtracking matchers take exponential time on these; each case runs in a child process
+        # so a regression fails on the limit instead of hanging the suite.
+        cases = (("*a" * 28 + "b", "a" * 40), ("/".join(["**", "a"] * 16) + "/z", "/".join(["a"] * 40)),
+                 ("/".join(["**"] * 12) + "/x", "/".join(["a"] * 40) + "/y"),
+                 ("/".join(["*a*a*a*a*a*a*b"] * 8), "/".join(["a" * 30] * 8)))
+        script = ("import json, sys; sys.path.insert(0, sys.argv[1]); import risk_map; "
+                  "rules = risk_map.load_policy(json.dumps({'schema_version': 1, 'rules': "
+                  "[{'paths': [sys.argv[2]], 'tier': 'A'}]}).encode()); "
+                  "print(risk_map.classify([sys.argv[3]], rules)['tier'])")
+        for pattern, path in cases:
+            with self.subTest(pattern=pattern[:30]):
+                result = subprocess.run([sys.executable, "-c", script, str(ROOT), pattern, path],
+                                        capture_output=True, env=CLEAN_ENV, timeout=10)
+                self.assertEqual(result.stdout.strip(), b"human", result.stderr)
+
+    def test_glob_semantics(self) -> None:
+        table = (("docs/**", "docs/a", True), ("docs/**", "docs/a/b", True), ("docs/**", "docs", True),
+                 ("docs/**", "docsx/a", False), ("**/x", "x", True), ("**/x", "a/b/x", True),
+                 ("a/**/b", "a/b", True), ("a/**/b", "a/x/y/b", True), ("a/**/b", "a/x/y/c", False),
+                 ("*.md", "a.md", True), ("*.md", "d/a.md", False), ("d?c/*", "doc/x", True),
+                 ("d?c/*", "dc/x", False), ("a*b*c", "abc", True), ("a*b*c", "aXbYc", True),
+                 ("a*b*c", "aXbY", False), ("*", "a/b", False), ("**", "a/b", True),
+                 ("src/*/x", "src/a/x", True), ("src/*/x", "src/a/b/x", False), ("a.b", "aXb", False),
+                 ("a+b(c)", "a+b(c)", True), ("Docs/**", "docs/A", True))
+        for pattern, path, expected in table:
+            with self.subTest(pattern=pattern, path=path):
+                self.assertEqual(risk_map.glob_match(pattern, path), expected)
 
     def test_rules_match_ignoring_case(self) -> None:
         # macOS and Windows open Src/Auth/x.py in the folder a rule for src/auth/** describes.

@@ -44,9 +44,11 @@ The policy is `.harness/risk-policy.json`. A starting point is
 
 - Each rule has `paths` (one or more globs), a `tier` (`A`, `B`, `C` or `human`) and optional
   `lenses` (lowercase ids such as `security`). Other keys are an error.
-- Globs start at the repository root. `*` and `?` match inside one folder; `**` matches across
-  folders. `*.md` matches only Markdown files at the root; use `**/*.md` for any depth. Use `/`
-  as the separator.
+- Globs start at the repository root. `*` and `?` match inside one folder name; `**` matches any
+  number of whole folders, including none, so `docs/**` also covers an entry named `docs`.
+  `*.md` matches only Markdown files at the root; use `**/*.md` for any depth. Use `/` as the
+  separator. Matching takes time proportional to the pattern and path lengths, so no pattern can
+  stall a classification.
 - Every rule that matches a path counts, and the highest tier wins. Rule order does not matter, so
   a broad rule cannot hide a stricter one. The lenses of all matching rules add up.
 - Names match ignoring case, because macOS and Windows open `Src/Auth` for `src/auth`.
