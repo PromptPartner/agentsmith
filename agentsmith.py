@@ -108,6 +108,7 @@ RUNTIME_FILES = (
     ".agentsmith/work_graph.py",
     ".agentsmith/project_memory.py",
     ".agentsmith/config_audit.py",
+    ".agentsmith/risk_map.py",
     ".agentsmith/agentsmith",
     ".agentsmith/agentsmith.cmd",
     ".agentsmith/config/agents.json",
@@ -2000,7 +2001,8 @@ def copy_runtime(target: Path, *, dry_run: bool) -> Path:
         for source in (REGISTRY_PATH, PROFILE_CATALOG_PATH, WIZARD_LOCALES_PATH):
             contained_copy(source, config_destination / source.name)
         for helper_name in ("native_launcher.py", "evaluate.py", "work_graph.py",
-                            "windows_verifier_sandbox.py", "project_memory.py", "config_audit.py"):
+                            "windows_verifier_sandbox.py", "project_memory.py", "config_audit.py",
+                            "risk_map.py"):
             helper_source = ROOT / helper_name
             if helper_source.exists():
                 contained_copy(helper_source, destination.parent / helper_name)
@@ -9093,6 +9095,29 @@ def cmd_audit_config(args: argparse.Namespace) -> int:
     return config_audit.exit_code(report, args.fail_on)
 
 
+def cmd_risk(args: argparse.Namespace) -> int:
+    sys.dont_write_bytecode = True
+    import risk_map
+    try:
+        report = risk_map.classify_range(Path(args.target or os.getcwd()).expanduser(), args.base, args.head)
+    except (risk_map.PolicyError, risk_map.RiskError) as exc:
+        print(f"[error] risk classify: {exc}", file=sys.stderr)
+        return 2
+    text = risk_map.to_json(report) if args.json else risk_map.render_text(report)
+    # Bytes, not text mode: Windows would turn each newline into CRLF. JSON is written as ASCII
+    # whatever the console encoding (UTF-16 would add a byte-order mark and double every byte);
+    # the text report follows the console so a person can read it.
+    stream = getattr(sys.stdout, "buffer", None)
+    if stream is None:
+        sys.stdout.write(text)
+    else:
+        sys.stdout.flush()
+        stream.write(text.encode("ascii") if args.json
+                     else text.encode(sys.stdout.encoding or "utf-8", "backslashreplace"))
+        stream.flush()
+    return 0
+
+
 def memory_git_identity(target: Path) -> tuple[str | None, str | None]:
     values = []
     for arguments in (("symbolic-ref", "--short", "HEAD"), ("rev-parse", "--verify", "HEAD")):
@@ -9370,7 +9395,7 @@ def parser() -> argparse.ArgumentParser:
     )
     root.add_argument("--version", action="version", version=f"agentsmith {VERSION}")
     # Internal commands (hook, secret-scan, graph, wizard, evaluate, compatibility, agents,
-    # validate-integration, audit-config) serve programs and CI: they keep working but stay out of
+    # validate-integration, audit-config, risk) serve programs and CI: they keep working but stay out of
     # the root help, so the public surface stays small. docs/12-whats-built-in.md lists them.
     sub = root.add_subparsers(dest="command", metavar="{" + ",".join(PUBLIC_COMMANDS) + "}")
     install = sub.add_parser("install", help="install or update managed rules and adapters")
@@ -9498,6 +9523,19 @@ def parser() -> argparse.ArgumentParser:
     audit.add_argument("--include-user", action="store_true", help="also read native user configuration")
     audit.add_argument("--json", action="store_true", help="schema-versioned report")
     audit.add_argument("--fail-on", choices=("low", "medium", "high", "critical"), help="explicit CI severity gate; incomplete inspection always errors")
+    risk = sub.add_parser("risk", description="classify changes by the committed risk policy")
+    risk_sub = risk.add_subparsers(dest="risk_command", required=True)
+    classify = risk_sub.add_parser(
+        "classify",
+        description="Print the tier (A, B, C or human) and the triggered lenses for the changes from "
+                    "--base to --head. The policy is .harness/risk-policy.json as committed at --base; "
+                    "paths outside it, and a fixed floor of governance, CI, harness, credential and "
+                    "migration paths, are human.",
+    )
+    classify.add_argument("--base", required=True, help="commit the change starts from; its policy applies")
+    classify.add_argument("--head", required=True, help="commit to classify")
+    classify.add_argument("--target", help="Git repository (default: current directory)")
+    classify.add_argument("--json", action="store_true", help="schema-versioned, byte-stable report")
     memory = sub.add_parser("memory", help="search and read bounded local Markdown memory")
     # `memory startup` is the hook's internal entry point, so it stays out of the listed choices.
     memory_commands = memory.add_subparsers(dest="memory_command", required=True, metavar="{search,read}")
@@ -9535,7 +9573,7 @@ def parser() -> argparse.ArgumentParser:
 def normalize_legacy_argv(argv: list[str]) -> list[str]:
     if not argv:
         return ["install", "--wizard"]
-    commands = {"install", "update", "agents", "doctor", "status", "profiles", "wizard", "compatibility", "verify", "validate-integration", "graph", "demo", "resume", "handoff", "new-feedback", "new-research", "secret-scan", "hook", "memory", "audit-config", "evaluate"}
+    commands = {"install", "update", "agents", "doctor", "status", "profiles", "wizard", "compatibility", "verify", "validate-integration", "graph", "demo", "resume", "handoff", "new-feedback", "new-research", "secret-scan", "hook", "memory", "audit-config", "risk", "evaluate"}
     if argv[0] in commands or argv[0] in {"-h", "--help", "--version"}:
         return argv
     if "--doctor" in argv:
@@ -10023,6 +10061,8 @@ def run(argv: list[str] | None = None) -> int:
         return cmd_secret_scan(args)
     if args.command == "audit-config":
         return cmd_audit_config(args)
+    if args.command == "risk":
+        return cmd_risk(args)
     if args.command == "memory":
         return cmd_memory(args)
     if args.command == "hook":
