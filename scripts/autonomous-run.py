@@ -2442,8 +2442,12 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             proof["checker_receipt_sha256"] = file_digest(
                 Path(state["state_path"]).parent / f"attempt-{state['attempt']}-checker-receipt.json")
             proof["checker_status"] = checker["status"]
+            # Every acceptance that would otherwise count is checked, including one with no or only
+            # blank evidence: that is a checker defect with rework feedback, not a plain rejection.
+            claims_acceptance = (verify.returncode == 0 and checker["status"] == "accepted"
+                                 and not checker["unresolved"])
             defect = (citation_problem(checker, evidence, verify_path, checker_worktree, state["attempt"])
-                      if acceptance_ready(verify.returncode, checker) else None)
+                      if claims_acceptance else None)
             if defect:
                 proof["checker_defect"] = defect
             write_json(proof_path, proof)

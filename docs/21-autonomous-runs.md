@@ -87,13 +87,13 @@ must appear within two lines of it. An excerpt needs at least 12 visible charact
 `exit=`, `STDOUT:` and `STDERR:` lines that the controller writes into every log, so a verify
 command must print what it checked (a test runner's summary, for example); one that prints
 nothing leaves a checker nothing to cite. These rules are a heuristic floor, not proof that the
-excerpt supports the criterion. Before
-acceptance, a check without any model reads every item. The acceptance is not trusted when an
-item has no citation, quotes too little, names a file that this attempt's verifier did not produce (for example a
-file from another attempt), cites a line past the end,
-or quotes text that is not there. It is not trusted either when any recorded file, cited or
-not, no longer matches its hash: a process the verifier started may have kept writing after
-it finished. That is a checker defect. The attempt is then reworked like a
+excerpt supports the criterion. Before acceptance, a check without any model reads every item.
+The acceptance is not trusted when it has no evidence item at all, or when an item has no
+citation, quotes too little, names a file that this attempt's verifier did not produce (for
+example a file from another attempt), cites a line past the end, or quotes text that is not
+there. It is not trusted either when any recorded file, cited or not, no longer matches its
+hash: a process the verifier started may have kept writing after it finished. That is a
+checker defect. The attempt is then reworked like a
 rejection: the defect is recorded as a `checker_defect` event and as `checker_defect` in the
 verification receipt, and the next maker is told that the acceptance was not trusted. A rejection
 needs no citations. The receipt shape does not change, so a stored receipt stays valid, and a

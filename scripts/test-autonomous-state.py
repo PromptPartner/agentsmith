@@ -2180,6 +2180,8 @@ class AutonomousStateTests(unittest.TestCase):
         # Every passed criterion cites this attempt's verifier output by file and excerpt. An
         # acceptance whose citations do not check out is not trusted: the attempt is reworked.
         cases = {
+            "no evidence at all": [],
+            "only blank evidence": ["   "],
             "no citation": ["looks good to me"],
             "fabricated file": ["tests pass :: attempt-1-junit.xml :: 12 passed"],
             "another attempt": ["tests pass :: attempt-7-verify.txt :: fixture verification passed"],
