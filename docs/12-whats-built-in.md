@@ -81,6 +81,7 @@ surface stays small.
 | `agentsmith agents list [--json]` | Print the supported agent registry. |
 | `agentsmith validate-integration --checkpoint <file>` | Validate a structured integration checkpoint without installing or launching packages. |
 | `agentsmith audit-config` | Advisory static audit of selected native configuration ([config audit](27-config-audit.md)). |
+| `agentsmith ci watch --pr <n>\|--sha <sha> [--json]` | Report-only watch of a commit's GitHub runs, ending in one named state with an exit code ([CI watch](30-ci-watch.md)). |
 
 The [First Verified Loop public proof](demos/first-verified-loop/README.md) exercises the portable
 status, verification, receipt, handoff, and resume commands together. Its lifecycle artifacts also
