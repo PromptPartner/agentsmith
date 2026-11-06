@@ -16,7 +16,7 @@ import time
 from typing import Any, Callable
 
 SCHEMA_VERSION = 1
-# state: (exit code, next step). {sha}, {base}, {job}, {run}, {repo}, {minutes} are filled in per report.
+# state: (exit code, next step). {sha}, {base}, {job}, {run}, {repo}, {minutes}, {new} are filled in per report.
 STATES: dict[str, tuple[int, str]] = {
     "green": (0, "Every run for {sha} passed; the pull request waits for a human merge."),
     "red-at-diff": (10, "Job '{job}' fails on this change; read gh run view {run} --repo {repo} --log-failed, fix the change, do not rerun."),
@@ -27,6 +27,7 @@ STATES: dict[str, tuple[int, str]] = {
     "no-run-registered": (15, "No workflow run exists for {sha}; check that the push reached GitHub and that a workflow triggers on it."),
     "conflict": (16, "The pull request conflicts with {base}; resolve the conflict and push before any run counts."),
     "cap-reached": (17, "Runs were still going after {minutes} minutes; run the watch again later."),
+    "head-moved": (18, "The pull request's head moved to {new} during the watch; watch the new head {new}."),
 }
 # Most actionable first: when jobs fail for different reasons, the report names the first.
 FAILURE_ORDER = ("red-at-diff", "red-on-base", "environment", "flaky")
@@ -154,12 +155,23 @@ def watch(gh: Gh, repo: str | None, *, pr: int | None = None, sha: str | None = 
     started = now()
     runs_report: list[dict[str, Any]] = []
 
-    def finish(state: str, job: str = "", run: Any = "", minutes: float = 0) -> dict[str, Any]:
+    def finish(state: str, job: str = "", run: Any = "", minutes: float = 0, new: str = "") -> dict[str, Any]:
+        if pr is not None and state not in ("conflict", "head-moved"):
+            # A push during the watch makes every result about the old head stale: read the head
+            # once more before reporting anything about it.
+            moved = moved_head()
+            if moved:
+                return finish("head-moved", new=moved)
         code, template = STATES[state]
         return {"schema_version": SCHEMA_VERSION, "state": state, "exit_code": code,
-                "next_step": template.format(sha=sha, base=base, job=job, run=run, repo=repo, minutes=int(minutes)),
+                "next_step": template.format(sha=sha, base=base, job=job, run=run, repo=repo, minutes=int(minutes),
+                                             new=new),
                 "repo": repo, "pr": pr, "sha": sha, "base": base,
                 "elapsed_seconds": int(now() - started), "runs": runs_report}
+
+    def moved_head() -> str | None:
+        head = gh.pr(repo, pr).get("headRefOid")
+        return head if head != sha else None
 
     if pr is not None:
         while True:
@@ -176,6 +188,10 @@ def watch(gh: Gh, repo: str | None, *, pr: int | None = None, sha: str | None = 
             sleep(poll_seconds)
     base = base or gh.default_branch(repo)
     while True:
+        if pr is not None:
+            moved = moved_head()
+            if moved:
+                return finish("head-moved", new=moved)
         moment = now()
         runs = sorted((run for run in gh.runs(repo, sha) if run.get("headSha") == sha),
                       key=lambda run: run["databaseId"])

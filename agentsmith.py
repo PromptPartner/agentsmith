@@ -9533,7 +9533,7 @@ def parser() -> argparse.ArgumentParser:
     # Kept as text so building the parser imports nothing; scripts/test-ci-watch.py checks it
     # against ci_watch.STATES.
     exit_codes = ("green=0, red-at-diff=10, red-on-base=11, flaky=12, environment=13, runner-stalled=14, "
-                  "no-run-registered=15, conflict=16, cap-reached=17")
+                  "no-run-registered=15, conflict=16, cap-reached=17, head-moved=18")
     ci_watch_parser = ci_sub.add_parser(
         "watch",
         description="Follow the workflow runs registered for one commit until one end state. Checks merge "

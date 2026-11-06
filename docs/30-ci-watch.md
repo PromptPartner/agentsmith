@@ -26,7 +26,8 @@ branch is the repository's default branch unless `--base` names another one.
 3. **One wall-clock cap.** Polls are 30 seconds apart. The cap (`--cap-minutes`, default 60)
    bounds the whole watch.
 4. **One end state.** When every run is complete, or something decides the outcome earlier,
-   the watch stops and prints the state and its next step.
+   the watch stops and prints the state and its next step. With `--pr`, the head is read again on every poll and once
+   more before any end state is reported, so a push during the watch ends it as `head-moved`.
 
 ## End states and exit codes
 
@@ -41,6 +42,7 @@ branch is the repository's default branch unless `--base` names another one.
 | `no-run-registered` | 15 | No run exists for the commit 5 minutes after the watch started, or when the cap is reached. |
 | `conflict` | 16 | The pull request conflicts with its base. |
 | `cap-reached` | 17 | Runs were still going when the cap was reached. |
+| `head-moved` | 18 | With `--pr`: the pull request's head commit changed during the watch. Results about the old head are stale, so none is reported; watch the new head. |
 
 Exit status 2 means the watch could not run: `gh` is missing or not logged in, the arguments are
 wrong, or a read from GitHub failed.

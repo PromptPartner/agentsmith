@@ -19,9 +19,12 @@ def ts(minutes: float) -> str:
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def pr(mergeable="MERGEABLE", state="BLOCKED", rollup="SUCCESS"):
+NEW_SHA = "1111111111111111111111111111111111111111"
+
+
+def pr(mergeable="MERGEABLE", state="BLOCKED", rollup="SUCCESS", head=SHA):
     # statusCheckRollup is what an aggregate view reads; the watch must never trust it.
-    return {"number": 67, "headRefOid": SHA, "baseRefName": "master", "state": "OPEN",
+    return {"number": 67, "headRefOid": head, "baseRefName": "master", "state": "OPEN",
             "mergeable": mergeable, "mergeStateStatus": state,
             "statusCheckRollup": [{"__typename": "CheckRun", "name": "compatibility (ubuntu-latest)",
                                    "status": "COMPLETED", "conclusion": rollup}]}
@@ -147,5 +150,7 @@ def progressing(minute):
 
 write("cap-reached", "Runs keep making progress past a 2-minute cap.", {"state": "cap-reached", "exit": 17},
       [progressing(0.5 * index) for index in range(1, 8)], cap=2)
+write("head-moved", "A new push moves the PR head while the old head's runs pass; the old SHA must not be "
+      "reported green.", {"state": "head-moved", "exit": 18}, [green_done], pr_polls=(pr(), pr(head=NEW_SHA)))
 write("sha-mode-green", "Watching a bare SHA: no PR lookup, base from the repository's default branch.",
       {"state": "green", "exit": 0}, [green_done], pr_polls=(), mode="sha")
