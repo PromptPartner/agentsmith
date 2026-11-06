@@ -3122,7 +3122,9 @@ def delivery_checks(repo: Path, state: dict[str, Any], remote: str, base: str | 
     import risk_map
     recorded = (state.get("risk") or {}).get("tier") if isinstance(state.get("risk"), dict) else None
     try:
-        report = risk_map.classify_range(repo, str(state["base_head"]), accepted)
+        # Every commit the push publishes, not only the endpoint diff: a floor path added and
+        # removed again is still in the pushed history.
+        report = risk_map.classify_history(repo, str(state["base_head"]), accepted)
     except (risk_map.PolicyError, risk_map.RiskError) as exc:
         raise RunError(f"deliver refused: cannot recompute the risk tier: {exc}") from None
     declared = manifest.get("risk_tier")

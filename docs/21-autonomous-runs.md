@@ -429,8 +429,10 @@ It refuses, and names every reason, unless all of these hold:
 - the base branch (`--base-branch`, by default the remote's `HEAD`) has been fetched, and the
   accepted diff still applies to it (`git merge-tree`, Git 2.38 or later).
 
-It then recomputes the risk tier from the base commit with the base policy, and the recorded tier
-can only rise: the result is the highest of the recorded, recomputed and declared tiers. It
+It then recomputes the risk tier with the policy at the base commit, over every path that any
+commit between the base and the accepted commit touches (renames, copies and each side of a merge
+included), not only the final diff: the push publishes each of those commits, so a floor path
+added and removed again still counts. The recorded tier can only rise: the result is the highest of the recorded, recomputed and declared tiers. It
 reports how many commits the accepted commit is behind the base branch. It prints the exact push
 command, `git push origin <accepted-commit>:refs/heads/agentsmith/<run-id>`, and a pull-request
 title and body built only from receipts.
@@ -468,7 +470,7 @@ Auto-merge eligible: yes|no for <sha> — tier A: met; no floor path: met; ...
 It lists six facts, each `met` or `unmet` with the reason:
 
 1. the tier is A;
-2. no changed path is on the risk map's fixed floor;
+2. no path that any pushed commit touches is on the risk map's fixed floor;
 3. the checker accepted with valid citations;
 4. a passing calibration matches this checker (client, model, effort and prompt);
 5. the head equals the accepted commit;

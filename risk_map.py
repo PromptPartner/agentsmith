@@ -252,9 +252,7 @@ def _commit(repo: Path, ref: str) -> str:
         raise RiskError(f"not a commit: {ref!r}") from None
 
 
-def classify_range(repo: Path, base: str, head: str) -> dict[str, Any]:
-    """Classify base..head with the policy as committed at base."""
-    base_id, head_id = _commit(repo, base), _commit(repo, head)
+def _policy_at(repo: Path, base_id: str) -> tuple[dict[str, Any], str | None]:
     listing = _git(repo, "ls-tree", "-z", "--full-tree", base_id, "--", POLICY_PATH)
     blob = None
     data = None
@@ -266,15 +264,38 @@ def classify_range(repo: Path, base: str, head: str) -> dict[str, Any]:
         blob = mode_type_id[2].decode("ascii")
         data = _git(repo, "cat-file", "blob", blob)
     try:
-        policy = load_policy(data)
+        return load_policy(data), blob
     except PolicyError as exc:
         raise PolicyError(f"{POLICY_PATH} at {base_id[:12]}: {exc}") from None
-    # Plumbing ignores most user diff configuration. -M and -C pair renames and copies so both paths
-    # are reported; --find-copies-harder also checks unmodified files as copy sources, and -l0
-    # stops a configured rename limit from silently skipping that search.
-    changes = _git(repo, "diff-tree", "-r", "-z", "-M", "-C", "--find-copies-harder", "-l0",
-                   "--no-commit-id", "--raw", base_id, head_id)
-    report = classify(parse_raw(changes), policy)
+
+
+# Plumbing ignores most user diff configuration. -M and -C pair renames and copies so both paths
+# are reported; --find-copies-harder also checks unmodified files as copy sources, and -l0 stops a
+# configured rename limit from silently skipping that search.
+DIFF_TREE = ("diff-tree", "-r", "-z", "-M", "-C", "--find-copies-harder", "-l0", "--no-commit-id", "--raw")
+
+
+def classify_range(repo: Path, base: str, head: str) -> dict[str, Any]:
+    """Classify base..head with the policy as committed at base."""
+    base_id, head_id = _commit(repo, base), _commit(repo, head)
+    policy, blob = _policy_at(repo, base_id)
+    report = classify(parse_raw(_git(repo, *DIFF_TREE, base_id, head_id)), policy)
+    return {"schema_version": SCHEMA_VERSION, "base": base_id, "head": head_id,
+            "policy": {"path": POLICY_PATH, "blob": blob}, **report}
+
+
+def classify_history(repo: Path, base: str, head: str) -> dict[str, Any]:
+    """Classify every path that any commit in base..head touches, with the endpoint diff, under
+    the policy at base. Pushing head publishes each of those commits, so a path added and removed
+    again still counts. A merge counts its changes against each parent."""
+    base_id, head_id = _commit(repo, base), _commit(repo, head)
+    policy, blob = _policy_at(repo, base_id)
+    paths = parse_raw(_git(repo, *DIFF_TREE, base_id, head_id))
+    commits = _git(repo, "rev-list", f"{base_id}..{head_id}").decode("ascii").split()
+    for commit in commits:
+        for path, kinds in parse_raw(_git(repo, *DIFF_TREE, "-m", "--root", commit)).items():
+            paths[path] = sorted(set(paths.get(path, [])) | set(kinds))
+    report = classify(paths, policy)
     return {"schema_version": SCHEMA_VERSION, "base": base_id, "head": head_id,
             "policy": {"path": POLICY_PATH, "blob": blob}, **report}
 

@@ -32,6 +32,12 @@ FAKE_CLIENT = textwrap.dedent('''\
     prompt = argv[-1]
     receipt_path = pathlib.Path(argv[argv.index("-o") + 1]) if "-o" in argv else None
     checker = "You are the independent checker" in prompt
+    if not checker and "Fixture: commit a floor path first" in pathlib.Path("docs/specs/task.md").read_text():
+        pathlib.Path("secrets").mkdir(exist_ok=True)
+        pathlib.Path("secrets/fixture.txt").write_text("TEST_ONLY_NOT_A_CREDENTIAL\\n", encoding="utf-8")
+        subprocess.run(["git", "add", "secrets/fixture.txt"], check=True)
+        subprocess.run(["git", "commit", "-qm", "fixture: floor path"], check=True)
+        subprocess.run(["git", "rm", "-q", "secrets/fixture.txt"], check=True)
     if not checker:
         pathlib.Path("src").mkdir(exist_ok=True)
         pathlib.Path("src/change.txt").write_text("fixed\\n", encoding="utf-8")
@@ -85,7 +91,8 @@ class DeliverTests(unittest.TestCase):
         return subprocess.run(["git", *args], cwd=repo, env=self.env, text=True, capture_output=True,
                               check=True).stdout.strip()
 
-    def accepted_run(self, *, policy_tier: str = "B", declared: str | None = None, run_id: str = "deliver") -> Path:
+    def accepted_run(self, *, policy_tier: str = "B", declared: str | None = None, run_id: str = "deliver",
+                     spec_note: str = "") -> Path:
         origin = self.root / "origin.git"
         subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], env=self.env, check=True)
         repo = self.root / "repo"
@@ -96,7 +103,8 @@ class DeliverTests(unittest.TestCase):
         (repo / "docs/specs").mkdir(parents=True)
         (repo / "docs/specs/task.md").write_text(
             "---\nstatus: accepted\ndecision_ticket: DEC-1\naccepted_by: Test Operator\n"
-            "accepted_at: 2026-11-06\n---\n# Spec\nMake src/change.txt hold the fixed value.\n", encoding="utf-8")
+            "accepted_at: 2026-11-06\n---\n# Spec\nMake src/change.txt hold the fixed value.\n" + spec_note,
+            encoding="utf-8")
         (repo / "README.md").write_text("fixture\n", encoding="utf-8")
         (repo / ".harness").mkdir()
         (repo / ".harness/risk-policy.json").write_text(json.dumps(
@@ -272,6 +280,15 @@ class DeliverTests(unittest.TestCase):
         repo = self.accepted_run()
         self.add_evidence(repo, "token seen: " + "gh" + "p_" + "A1b2" * 9)
         self.refused(repo, "the pull-request body holds a likely secret (GitHub token)")
+
+    def test_the_tier_counts_every_commit_that_the_push_publishes(self) -> None:
+        repo = self.accepted_run(policy_tier="A", spec_note="Fixture: commit a floor path first.\n")
+        state = self.state(repo)
+        history = self.git(repo, "rev-list", "--count", f"{state['base_head']}..{state['accepted_commit']}")
+        self.assertEqual(history, "2", "the maker committed a floor path, then removed it")
+        report = json.loads(self.deliver(repo, "--dry-run", "--json").stdout)
+        self.assertEqual((report["tier"]["tier"], report["tier"]["floor_paths"]), ("human", ["secrets/fixture.txt"]))
+        self.assertIn("no floor path: unmet (secrets/fixture.txt)", report["eligibility"]["line"])
 
     # --- refusals ----------------------------------------------------------------------------
 
