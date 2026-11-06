@@ -1168,6 +1168,33 @@ else bad 'explicit unbounded budget did not run'; sed -n '1,20p' "$repo/../err";
 assert 'unbounded Claude role gets no client USD cap' bash -c "! grep -q -- '--max-budget-usd' '$repo/../fake/argv.log'"
 assert 'unbounded Codex maker gets no goal token budget' bash -c "! grep -q 'token budget' '$repo/../fake/argv.log'"
 
+echo 'autonomous-run — the share of a shared budget that checking needs is reserved before the maker'
+# Maker and checker both run Claude with one $0.60 cap; the fake reports $0.25 per role. Without a
+# reservation the maker may spend what the checker needs: attempt 2's maker starts with $0.10 left,
+# crosses the cap, and the run ends after a maker whose work nobody can check.
+repo="$(new_repo checker-reserve)"; make_fake "$repo/../fake"; manifest "$repo" checker-reserve
+python3 - "$repo/.harness/runs/checker-reserve.json" <<'PY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); v = json.loads(p.read_text())
+v['roles']['maker']['runtime'] = 'claude'
+v['limits'].update(claude_max_usd=0.6, max_attempts=2)
+p.write_text(json.dumps(v, indent=2) + '\n')
+PY
+git -C "$repo" add . && git -C "$repo" commit -qm 'test: shared Claude budget'
+if (cd "$repo" && invoke "$repo" reject-once start .harness/runs/checker-reserve.json >../out 2>../err); then
+  bad 'a run whose second maker had only the checking reserve left was accepted'
+else ok 'a maker that would spend the checking reserve does not start'; fi
+assert 'the refusal says the budget is reserved for checking' grep -q 'budget reserved for checking' "$repo/../err"
+assert 'the first maker is capped below the shared cap by the reserve' grep -q -- '--max-budget-usd 0.45' "$repo/../fake/argv.log"
+assert 'no second maker was launched' test "$(grep -c -- '--max-budget-usd' "$repo/../fake/argv.log")" -eq 2
+python3 - "$repo/.git/agentsmith-runs/checker-reserve/state.json" <<'PY' && ok 'the reserve stop keeps spend at the two roles that ran' || bad 'the reserve stop spent past the roles that ran'
+import json, sys
+state = json.load(open(sys.argv[1]))
+assert state['status'] == 'escalated', state['status']
+assert abs(state['claude_cost_usd'] - 0.5) < 1e-9, state['claude_cost_usd']
+assert 'budget reserved for checking' in state['reason'], state['reason']
+PY
+
 echo 'autonomous-run — sandbox preflight before any run artifact'
 repo="$(new_repo preflight)"; make_fake "$repo/../fake"; manifest "$repo" preflight
 if [ "$(uname -s)" = Darwin ]; then
