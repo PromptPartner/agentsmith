@@ -3041,8 +3041,17 @@ def push_command(remote: str, sha: str, branch: str) -> str:
 
 def base_staleness(repo: Path, remote: str, base: str, accepted: str) -> tuple[dict[str, Any], str | None]:
     ref = f"refs/remotes/{remote}/{base}"
-    if not git(repo, "rev-parse", "--verify", "--quiet", ref, check=False):
+    cached = git(repo, "rev-parse", "--verify", "--quiet", ref, check=False)
+    if not cached:
         return {}, f"{ref} is missing; fetch {remote} first, or name the branch with --base-branch"
+    # The tracking ref is a cache: ask the remote (read-only) so that a base that moved since the
+    # last fetch cannot hide a conflict, and an unreachable remote refuses instead of passing.
+    live, error = remote_head(repo, remote, base)
+    if error:
+        return {}, error
+    if live != cached:
+        return {}, (f"base not fresh: {remote} has {base} at {str(live)[:12]}, but {ref} is at {cached[:12]}; "
+                    f"run git fetch {remote}")
     behind = int(git(repo, "rev-list", "--count", f"{accepted}..{ref}") or 0)
     # `git merge-tree --write-tree` (Git 2.38+) merges without touching any worktree: 0 is clean,
     # 1 is a conflict. Anything else means this Git cannot tell.

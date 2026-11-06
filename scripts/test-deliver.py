@@ -455,6 +455,24 @@ class DeliverTests(unittest.TestCase):
         repo = self.accepted_run()
         self.refused(repo, "refs/remotes/origin/release is missing", "--base-branch", "release")
 
+    def test_refuses_a_base_that_was_not_fetched_since_the_remote_moved(self) -> None:
+        repo = self.accepted_run()
+        clone = self.root / "other"
+        subprocess.run(["git", "clone", "-q", str(self.root / "origin.git"), str(clone)], env=self.env, check=True)
+        (clone / "src").mkdir()
+        (clone / "src/change.txt").write_text("conflicting value\n", encoding="utf-8")
+        self.git(clone, "add", ".")
+        self.git(clone, "-c", "user.name=Other", "-c", "user.email=user@example.com", "commit", "-qm", "conflict")
+        self.git(clone, "push", "-q", "origin", "main")
+        # The cached origin/main still predates the conflict, so it would read as applying cleanly.
+        self.refused(repo, "base not fresh: origin has main at")
+        self.assertIn("run git fetch origin", self.deliver(repo, "--dry-run").stderr)
+
+    def test_refuses_when_the_remote_cannot_be_reached(self) -> None:
+        repo = self.accepted_run()
+        self.git(repo, "remote", "set-url", "origin", str(self.root / "missing.git"))
+        self.refused(repo, "cannot reach origin")
+
     def test_refuses_when_the_accepted_diff_no_longer_applies(self) -> None:
         repo = self.accepted_run()
         clone = self.root / "other"

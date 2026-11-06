@@ -426,8 +426,11 @@ It refuses, and names every reason, unless all of these hold:
 - the verifier log still matches its recorded hash, and the citations that quote it still hold
   (files the verifier left in its disposable worktree are gone; they were checked at acceptance);
 - the run manifest is unchanged since the run started;
-- the base branch (`--base-branch`, by default the remote's `HEAD`) has been fetched, and the
-  accepted diff still applies to it (`git merge-tree`, Git 2.38 or later).
+- the base branch (`--base-branch`, by default the remote's `HEAD`) has been fetched, and is
+  fresh: `git ls-remote` (read-only) shows the remote still has it at the fetched commit. A remote
+  that cannot be reached, or a base that moved since the last fetch, refuses with
+  `base not fresh: … run git fetch <remote>`, because a stale copy could hide a conflict;
+- the accepted diff still applies to that fresh base (`git merge-tree`, Git 2.38 or later).
 
 It then recomputes the risk tier with the policy at the base commit, over every path that any
 commit between the base and the accepted commit touches (renames, copies and each side of a merge
