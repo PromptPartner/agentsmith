@@ -2,9 +2,9 @@
 
 Implementation ticket: IMP-7. Accepted commit `<commit>` on base `<commit>`.
 
-### Maker summary
+### Changed paths
 ```text
-Make src/change.txt hold the fixed value; ping @someone
+- src/change.txt
 ```
 
 ### Risk

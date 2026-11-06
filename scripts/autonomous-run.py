@@ -18,6 +18,7 @@ import math
 import os
 import posixpath
 import re
+import shlex
 import signal
 import shutil
 import subprocess
@@ -3039,10 +3040,95 @@ def fenced(text: str) -> str:
     return "```text\n" + clean.replace("```", "` ` `").strip() + "\n```"
 
 
+# The printed push command is pasted into a shell. Git accepts names such as `origin;id`, so a
+# name must also pass this narrower pattern, and every value is quoted besides.
+SAFE_REMOTE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+SAFE_BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*")
+
+
+def unsafe_name(repo: Path, kind: str, name: str) -> str | None:
+    pattern, ref = (SAFE_REMOTE, f"refs/remotes/{name}/HEAD") if kind == "remote" else (SAFE_BRANCH, f"refs/heads/{name}")
+    if pattern.fullmatch(name) and not run(["git", "check-ref-format", ref], repo).returncode:
+        return None
+    allowed = "letters, digits, . _ -" + (" and /" if kind == "branch" else "")
+    return f"{name!r} is not a safe {kind} name: use {allowed}, starting with a letter or digit"
+
+
+# A copy of SECRET_PATTERNS in agentsmith.py, which the installed controller cannot import;
+# scripts/test-deliver.py keeps the two equal.
+SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("PEM private key", re.compile(r"BEGIN [A-Z ]*PRIVATE KEY")),
+    ("AWS access key id", re.compile(r"AKIA[0-9A-Z]{16}")),
+    ("AWS temporary access key id", re.compile(r"ASIA[0-9A-Z]{16}")),
+    ("GitHub token", re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}")),
+    ("Slack token", re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}")),
+    ("OpenAI-style key", re.compile(r"sk-[A-Za-z0-9]{20,}")),
+    ("Anthropic-style key", re.compile(r"sk-ant-[A-Za-z0-9_-]{20,}")),
+    ("Google API key", re.compile(r"AIza[0-9A-Za-z_-]{35}")),
+    (
+        "assigned secret literal",
+        re.compile(
+            r"\b(password|passwd|pwd|secret|token|api[_-]?key)[\"' ]*[:=]\s*[\"'][^\"' \t]{8,}",
+            re.IGNORECASE,
+        ),
+    ),
+)
+# As in scripts/leak-gate.sh: a home folder names one machine and one user.
+HOME_PATH = re.compile(r"(?:[A-Za-z]:\\Users\\|/(?:home|Users)/)[A-Za-z0-9_-][A-Za-z0-9._-]*")
+
+
+def without_local_paths(text: str, repo: Path) -> str:
+    """Paths in the repository become repo-relative; home and temporary folders become ~ and $TMPDIR."""
+    roots = {str(path): "" for path in (repo, repo.resolve(), state_root(repo).parent.parent)}
+    for folder, name in ((Path.home(), "~"), (Path(tempfile.gettempdir()), "$TMPDIR")):
+        roots.update({str(folder): name + "/", str(folder.resolve()): name + "/"})
+    for root in sorted(roots, key=len, reverse=True):
+        if root not in ("", "/"):
+            text = text.replace(root + "/", roots[root]).replace(root, roots[root].rstrip("/") or ".")
+    return HOME_PATH.sub("~", text)
+
+
+def leak_problems(fields: dict[str, str], allow: tuple[re.Pattern[str], ...] = ()) -> list[str]:
+    """The secret scanner's patterns over the final pull-request text, one finding per field.
+    `allow` holds the repository's .harness/secret-scan.allow rules, which skip a whole line."""
+    problems = []
+    for field, text in fields.items():
+        lines = [line for line in text.splitlines() if not any(rule.search(line) for rule in allow)]
+        hit = next((name for name, pattern in SECRET_PATTERNS for line in lines if pattern.search(line)), None)
+        if hit:
+            problems.append(f"the pull-request {field} holds a likely secret ({hit})")
+        elif any(HOME_PATH.search(line) for line in lines):
+            problems.append(f"the pull-request {field} names a home folder")
+    return problems
+
+
+def secret_allow_rules(repo: Path) -> tuple[re.Pattern[str], ...]:
+    path = repo / ".harness" / "secret-scan.allow"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
+        return tuple(re.compile(line) for line in lines if line.strip() and not line.lstrip().startswith("#"))
+    except (OSError, UnicodeError, re.error) as exc:
+        raise RunError(f"deliver refused: cannot read {path.name}: {exc}") from None
+
+
+def push_command(remote: str, sha: str, branch: str) -> str:
+    """Text for a person to run in a POSIX shell (sh, bash, zsh); the controller never runs it."""
+    return "git push " + " ".join(shlex.quote(value) for value in (remote, f"{sha}:refs/heads/{branch}"))
+
+
 def base_staleness(repo: Path, remote: str, base: str, accepted: str) -> tuple[dict[str, Any], str | None]:
     ref = f"refs/remotes/{remote}/{base}"
-    if not git(repo, "rev-parse", "--verify", "--quiet", ref, check=False):
+    cached = git(repo, "rev-parse", "--verify", "--quiet", ref, check=False)
+    if not cached:
         return {}, f"{ref} is missing; fetch {remote} first, or name the branch with --base-branch"
+    # The tracking ref is a cache: ask the remote (read-only) so that a base that moved since the
+    # last fetch cannot hide a conflict, and an unreachable remote refuses instead of passing.
+    live, error = remote_head(repo, remote, base)
+    if error:
+        return {}, error
+    if live != cached:
+        return {}, (f"base not fresh: {remote} has {base} at {str(live)[:12]}, but {ref} is at {cached[:12]}; "
+                    f"run git fetch {remote}")
     behind = int(git(repo, "rev-list", "--count", f"{accepted}..{ref}") or 0)
     # `git merge-tree --write-tree` (Git 2.38+) merges without touching any worktree: 0 is clean,
     # 1 is a conflict. Anything else means this Git cannot tell.
@@ -3060,6 +3146,11 @@ def delivery_checks(repo: Path, state: dict[str, Any], remote: str, base: str | 
     run_id = state.get("run_id")
     if state.get("status") != "accepted":
         raise RunError(f"deliver refused: run {run_id} is {state.get('status')}, not accepted")
+    # The names reach git arguments and the printed push command: check them before anything else.
+    names = [unsafe_name(repo, "remote", remote), unsafe_name(repo, "branch", str(state.get("branch"))),
+             unsafe_name(repo, "branch", base) if base is not None else None]
+    if any(names):
+        raise RunError("deliver refused: " + "; ".join(problem for problem in names if problem))
     problems: list[str] = []
     accepted, branch = str(state.get("accepted_commit")), str(state.get("branch"))
     run_dir = Path(state["state_path"]).parent
@@ -3106,6 +3197,8 @@ def delivery_checks(repo: Path, state: dict[str, Any], remote: str, base: str | 
     staleness: dict[str, Any] = {}
     if base is None:
         problems.append(f"cannot tell the base branch: {remote}/HEAD is not set; pass --base-branch")
+    elif unsafe_name(repo, "branch", base):
+        problems.append(str(unsafe_name(repo, "branch", base)))
     else:
         staleness, problem = base_staleness(repo, remote, base, accepted)
         if problem:
@@ -3115,7 +3208,9 @@ def delivery_checks(repo: Path, state: dict[str, Any], remote: str, base: str | 
     import risk_map
     recorded = (state.get("risk") or {}).get("tier") if isinstance(state.get("risk"), dict) else None
     try:
-        report = risk_map.classify_range(repo, str(state["base_head"]), accepted)
+        # Every commit the push publishes, not only the endpoint diff: a floor path added and
+        # removed again is still in the pushed history.
+        report = risk_map.classify_history(repo, str(state["base_head"]), accepted)
     except (risk_map.PolicyError, risk_map.RiskError) as exc:
         raise RunError(f"deliver refused: cannot recompute the risk tier: {exc}") from None
     declared = manifest.get("risk_tier")
@@ -3123,7 +3218,7 @@ def delivery_checks(repo: Path, state: dict[str, Any], remote: str, base: str | 
     tier = risk_map.raise_tier(tier, declared if declared in risk_map.TIERS else "A")
     floor = sorted(row["path"] for row in report["paths"] if any(reason.startswith("floor:") for reason in row["matched"]))
     return {"state": state, "proof": proof, "checker": checker, "manifest": manifest, "accepted": accepted,
-            "branch": branch, "staleness": staleness,
+            "branch": branch, "staleness": staleness, "paths": changed_paths(repo, str(state["base_head"]), accepted),
             "tier": {"tier": tier, "recorded": recorded, "recomputed": report["tier"], "declared": declared,
                      "lenses": report["lenses"], "policy_blob": report["policy"]["blob"], "floor_paths": floor},
             "calibration": calibration_status(repo, (manifest.get("roles") or {}).get("checker") or {})}
@@ -3134,22 +3229,67 @@ def default_branch(repo: Path, remote: str) -> str | None:
     return head.split("/", 1)[1] if head.startswith(f"{remote}/") else None
 
 
-def eligibility(checks: dict[str, Any], sha: str, ci: dict[str, Any] | None) -> dict[str, Any]:
-    """D2: informational only. "yes" needs every fact; nothing merges because of it."""
+def github_repository(repo: Path, remote: str) -> str | None:
+    """owner/name from the remote's configured GitHub URL (before any insteadOf rewrite)."""
+    url = git(repo, "config", "--get", f"remote.{remote}.url", check=False)
+    match = re.fullmatch(r"(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)"
+                         r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?", url)
+    return match.group(1) if match else None
+
+
+def remote_head(repo: Path, remote: str, branch: str) -> tuple[str | None, str]:
+    """Read-only: the commit the remote has for `branch` now, or why that cannot be told."""
+    environment = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    try:
+        result = run(["git", "ls-remote", "--exit-code", remote, f"refs/heads/{branch}"], repo, timeout=60,
+                     env=environment)
+    except subprocess.TimeoutExpired:
+        return None, f"{remote} did not answer within 60 s"
+    if result.returncode == 2:
+        return None, f"{remote} has no branch {branch}"
+    if result.returncode:
+        lines = result.stderr.strip().splitlines()
+        return None, f"cannot reach {remote}: {lines[-1] if lines else 'exit ' + str(result.returncode)}"
+    return result.stdout.split()[0], ""
+
+
+def ci_problem(ci: dict[str, Any], sha: str, branch: str, repository: str | None) -> str | None:
+    """A CI report counts only for this commit, this branch and this repository."""
+    if not all(isinstance(ci.get(key), str) and ci.get(key) for key in ("sha", "repo", "branch")):
+        return "the report does not name its repo, branch and sha; save it from `agentsmith ci watch --pr`"
+    if ci["sha"] != sha:
+        return f"the report is for {ci['sha'][:12]}"
+    if repository is None:
+        return "cannot tell the GitHub repository of the remote"
+    if ci["repo"].casefold() != repository.casefold():
+        return f"the report is for repository {ci['repo']}, not {repository}"
+    if ci["branch"] != branch:
+        return f"the report is for branch {ci['branch']}, not {branch}"
+    return None if ci.get("state") == "green" else str(ci.get("state"))
+
+
+def eligibility(checks: dict[str, Any], sha: str, ci: dict[str, Any] | None,
+                pushed: dict[str, Any] | None = None) -> dict[str, Any]:
+    """D2: informational only. "yes" needs every fact; nothing merges because of it. After CI,
+    `pushed` holds what the remote has: its branch head and GitHub repository."""
     tier = checks["tier"]
     calibration = checks["calibration"].get("status")
     if ci is None:
         ci_fact = (None, "pending CI")
-    elif ci.get("sha") != sha:
-        ci_fact = (False, f"unmet (the report is for {str(ci.get('sha'))[:12]})")
     else:
-        ci_fact = (ci.get("state") == "green", "met" if ci.get("state") == "green" else f"unmet ({ci.get('state')})")
+        problem = ci_problem(ci, sha, checks["branch"], (pushed or {}).get("repository"))
+        ci_fact = (problem is None, f"unmet ({problem})")
+    head_fact = (sha == checks["accepted"], f"unmet ({sha[:12]} is not {checks['accepted'][:12]})")
+    if head_fact[0] and pushed is not None and pushed["head"] != checks["accepted"]:
+        where = f"{pushed['remote']}/{checks['branch']}"
+        head_fact = (False, f"unmet ({where} is at {pushed['head'][:12]})" if pushed["head"]
+                     else f"unmet ({pushed['error']})")
     facts = [
         (tier["tier"] == "A", f"unmet ({tier['tier']})"),
         (not tier["floor_paths"], f"unmet ({', '.join(tier['floor_paths'][:3])})"),
         (True, ""),  # delivery_checks already refused anything else
         (calibration == "passed", f"unmet ({calibration})"),
-        (sha == checks["accepted"], f"unmet ({sha[:12]} is not {checks['accepted'][:12]})"),
+        head_fact,
         ci_fact,
     ]
     rows = [{"fact": name, "met": met, "detail": "met" if met else detail}
@@ -3163,7 +3303,6 @@ def eligibility(checks: dict[str, Any], sha: str, ci: dict[str, Any] | None) -> 
 def delivery_body(checks: dict[str, Any], verdict: dict[str, Any]) -> str:
     state, proof, checker, manifest = checks["state"], checks["proof"], checks["checker"], checks["manifest"]
     tier, limits, staleness = checks["tier"], manifest.get("limits") or {}, checks["staleness"]
-    maker = state.get("maker_receipt") or {}
     calibration = checks["calibration"]
     lines = [
         f"## Autonomous run {state['run_id']}",
@@ -3171,8 +3310,8 @@ def delivery_body(checks: dict[str, Any], verdict: dict[str, Any]) -> str:
         f"Implementation ticket: {manifest.get('implementation_ticket')}. Accepted commit `{checks['accepted']}` "
         f"on base `{state.get('base_head')}`.",
         "",
-        "### Maker summary",
-        fenced(str(maker.get("summary", ""))),
+        "### Changed paths",
+        fenced("\n".join(f"- {path}" for path in checks["paths"])),
         "",
         "### Risk",
         f"Tier **{tier['tier']}** (recorded {tier['recorded']}, recomputed now {tier['recomputed']}, "
@@ -3212,30 +3351,42 @@ def delivery_body(checks: dict[str, Any], verdict: dict[str, Any]) -> str:
 def deliver(args: argparse.Namespace) -> int:
     """Check an accepted run and print its push command and pull-request text; never push."""
     if not args.dry_run and not args.eligibility:
-        raise RunError("deliver only checks and prints: pass --dry-run, or --eligibility --sha <sha> after "
-                       "CI; the controller never pushes")
+        raise RunError("deliver only checks and prints: pass --dry-run, or --eligibility --sha <sha> --pr <number> "
+                       "after CI; the controller never pushes")
     if args.eligibility and not (args.sha and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", args.sha)):
         raise RunError("--eligibility needs --sha with the full lowercase commit SHA that CI ran")
+    if args.eligibility and not (args.pr or args.ci_report):
+        raise RunError("--eligibility needs --pr <number> or --ci-report <file>: CI counts only for the pull "
+                       "request's own branch")
     repo = repo_root(Path.cwd())
     checks = delivery_checks(repo, load_run(repo, args.run_id), args.remote, args.base_branch)
     sha = args.sha if args.eligibility else checks["accepted"]
     ci: dict[str, Any] | None = None
+    pushed: dict[str, Any] | None = None
     if args.eligibility:
+        head, error = remote_head(repo, args.remote, checks["branch"])
+        pushed = {"remote": args.remote, "head": head, "error": error,
+                  "repository": github_repository(repo, args.remote)}
         if args.ci_report:
             ci = load_json(Path(args.ci_report))
         else:
             import ci_watch  # read-only GitHub reads through gh, as `agentsmith ci watch` does
             try:
-                ci = ci_watch.watch(ci_watch.Gh(), None, sha=sha)
+                ci = ci_watch.watch(ci_watch.Gh(), pushed["repository"], pr=args.pr)
             except ci_watch.GhError as exc:
                 raise RunError(f"ci watch could not run: {exc}") from None
-    verdict = eligibility(checks, sha, ci)
-    summary = " ".join(str((checks["state"].get("maker_receipt") or {}).get("summary", "")).split())
-    title = (f"{checks['branch']}: {summary}"[:72]).rstrip()
+    verdict = eligibility(checks, sha, ci, pushed)
+    # Only structured receipt fields, with no local path; the maker's free-text summary stays out.
+    title = without_local_paths(f"{checks['manifest'].get('implementation_ticket')}: {checks['branch']}", repo)[:72]
+    body = without_local_paths(delivery_body(checks, verdict), repo)
+    leaks = leak_problems({"title": title, "body": body}, secret_allow_rules(repo))
+    if leaks:
+        raise RunError("deliver refused: " + "; ".join(leaks))
+    calibration = {key: value for key, value in checks["calibration"].items() if key != "receipt"}
     report = {"run_id": args.run_id, "head": checks["accepted"], "branch": checks["branch"],
-              "push_command": f"git push {args.remote} {checks['accepted']}:refs/heads/{checks['branch']}",
-              "title": title, "body": delivery_body(checks, verdict), "tier": checks["tier"],
-              "staleness": checks["staleness"], "calibration": checks["calibration"], "eligibility": verdict}
+              "push_command": push_command(args.remote, checks["accepted"], checks["branch"]),
+              "title": title, "body": body, "tier": checks["tier"],
+              "staleness": checks["staleness"], "calibration": calibration, "eligibility": verdict}
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
         return 0
@@ -3479,7 +3630,9 @@ def parser() -> argparse.ArgumentParser:
     landing.add_argument("--eligibility", action="store_true",
                          help="re-evaluate the auto-merge eligibility line after CI for --sha")
     landing.add_argument("--sha", help="the full commit SHA that CI ran (with --eligibility)")
-    landing.add_argument("--ci-report", help="a saved `agentsmith ci watch --json` report (default: run the watch)")
+    landing.add_argument("--pr", type=int, help="the pull request whose CI to watch (with --eligibility)")
+    landing.add_argument("--ci-report", help="a saved `agentsmith ci watch --pr <number> --json` report, "
+                                             "instead of --pr")
     landing.add_argument("--remote", default="origin")
     landing.add_argument("--base-branch", help="the branch the pull request targets (default: the remote's HEAD)")
     landing.add_argument("--json", action="store_true")

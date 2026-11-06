@@ -430,15 +430,28 @@ It refuses, and names every reason, unless all of these hold:
 - the verifier log still matches its recorded hash, and the citations that quote it still hold
   (files the verifier left in its disposable worktree are gone; they were checked at acceptance);
 - the run manifest is unchanged since the run started;
-- the base branch (`--base-branch`, by default the remote's `HEAD`) has been fetched, and the
-  accepted diff still applies to it (`git merge-tree`, Git 2.38 or later).
+- the base branch (`--base-branch`, by default the remote's `HEAD`) has been fetched, and is
+  fresh: `git ls-remote` (read-only) shows the remote still has it at the fetched commit. A remote
+  that cannot be reached, or a base that moved since the last fetch, refuses with
+  `base not fresh: … run git fetch <remote>`, because a stale copy could hide a conflict;
+- the accepted diff still applies to that fresh base (`git merge-tree`, Git 2.38 or later).
 
-It then recomputes the risk tier from the base commit with the base policy, and the recorded tier
-can only rise: the result is the highest of the recorded, recomputed and declared tiers. It
+It then recomputes the risk tier with the policy at the base commit, over every path that any
+commit between the base and the accepted commit touches (renames, copies and each side of a merge
+included), not only the final diff: the push publishes each of those commits, so a floor path
+added and removed again still counts. The recorded tier can only rise: the result is the highest of the recorded, recomputed and declared tiers. It
 reports how many commits the accepted commit is behind the base branch. It prints the exact push
 command, `git push origin <accepted-commit>:refs/heads/agentsmith/<run-id>`, and a pull-request
-title and body built only from receipts:
+title and body built only from receipts.
 
+The push command is for a POSIX shell (sh, bash, zsh), and every value in it is quoted. Git
+accepts remote and branch names that a shell would run, such as `origin;id`, so `deliver` also
+refuses a remote, run branch or base branch whose name uses anything other than letters, digits,
+`.`, `_`, `-` (and `/` in a branch), or that `git check-ref-format` rejects. A name that passes
+needs no quoting, so the same command also works in PowerShell. The pull-request title is the
+implementation ticket and the run branch. The body holds:
+
+- the paths that Git reports as changed;
 - the tier and its lenses;
 - the verifier and checker evidence;
 - the checker calibration status;
@@ -446,8 +459,12 @@ title and body built only from receipts:
 - the base staleness;
 - the eligibility line.
 
-Text that a model wrote, the maker summary and the checker evidence, sits in code blocks, so no
-link, Markdown or `@`-mention in it takes effect. The body names no local path.
+The maker's free-text summary is left out. The only text that a model wrote is the checker
+evidence, and it sits in a code block with the changed paths, so no link, Markdown or `@`-mention
+in it takes effect. Paths inside the repository become repo-relative, and home and temporary
+folders become `~` and `$TMPDIR`, so neither the text nor the `--json` report names a local path.
+The secret scanner's patterns then run over the final title and body (honouring
+`.harness/secret-scan.allow`), and a likely secret refuses delivery and names the field.
 
 ### Auto-merge eligibility
 
@@ -460,17 +477,21 @@ Auto-merge eligible: yes|no for <sha> — tier A: met; no floor path: met; ...
 It lists six facts, each `met` or `unmet` with the reason:
 
 1. the tier is A;
-2. no changed path is on the risk map's fixed floor;
+2. no path that any pushed commit touches is on the risk map's fixed floor;
 3. the checker accepted with valid citations;
 4. a passing calibration matches this checker (client, model, effort and prompt);
-5. the head equals the accepted commit;
-6. CI is green for this commit.
+5. the head equals the accepted commit, and after CI the remote branch is still at it (read with
+   `git ls-remote`, so a force-push shows);
+6. CI is green for this commit, on the run's own branch, in the remote's GitHub repository.
 
 The answer is `yes` only when all six are met. At dry-run time there is no CI yet, so the last
 fact reads `pending CI` and the answer is `no`. After CI, run
-`deliver <run-id> --eligibility --sha <sha>`: it repeats every check, reads CI with
-`agentsmith ci watch` (or a saved `ci watch --json` report given with `--ci-report`), and prints
-the line and body again. The line is information only: a human merges, and nothing in this
+`deliver <run-id> --eligibility --sha <sha> --pr <number>`: it repeats every check, reads CI for
+that pull request with `agentsmith ci watch` (which counts only runs on the pull request's own head
+branch), and prints the line and body again. A saved `ci watch --pr <number> --json` report can
+stand in for `--pr` with `--ci-report <file>`; it counts only if its `sha`, `repo` and `branch`
+name the accepted commit, the remote's GitHub repository and the run branch, so a report without
+those fields, or from another branch or repository, leaves the CI fact unmet. The line is information only: a human merges, and nothing in this
 release merges automatically.
 
 ### A future auto-merge trial (not switched on)
