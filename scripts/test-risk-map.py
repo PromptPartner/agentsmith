@@ -343,6 +343,24 @@ class RangeTests(RepoCase):
             report = risk_map.classify_range(self.repo.root, base, base)
         self.assertEqual((report["base"], report["policy"]["blob"] is not None), (base, True))
 
+    def test_name_that_is_not_utf8_is_human(self) -> None:
+        # Git stores names as bytes; one that is not UTF-8 cannot be matched reliably.
+        base = self.repo.commit({POLICY: policy({"paths": ["**"], "tier": "A"}), "docs/a.md": b"a\n"}, "base")
+        blob = self.repo.git("rev-parse", f"{base}:docs/a.md")
+        subprocess.run(["git", "-C", str(self.repo.root), "update-index", "-z", "--index-info"],
+                       input=b"100644 " + blob.encode("ascii") + b"\tdocs/\xff.md\0", env=self.repo.env, check=True)
+        head = self.repo.commit(message="undecodable name")
+        report = risk_map.classify_range(self.repo.root, base, head)
+        self.assertEqual(report["tier"], "human")
+        # The new name reuses docs/a.md's content, so copy detection lists that source as well.
+        rows = {row["path"]: row for row in report["paths"]}
+        self.assertEqual(rows["docs/\udcff.md"]["matched"], ["unreadable-name", "rule:1"])
+        self.assertEqual(rows["docs/a.md"]["tier"], "A")
+        self.assertIn(b'"docs/\\udcff.md"', risk_map.to_json(report).encode("ascii"))
+        result = self.cli("--base", base, "--head", head)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(b"human", result.stdout)
+
     def test_policy_absent_at_base_is_human(self) -> None:
         base = self.repo.commit({"docs/a.md": b"a\n"}, "base")
         head = self.repo.commit({POLICY: policy({"paths": ["**"], "tier": "A"}), "docs/a.md": b"b\n"}, "add policy")

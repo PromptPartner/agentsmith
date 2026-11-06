@@ -116,4 +116,6 @@ the same bytes on macOS, Linux and Windows.
 ```
 
 `matched` names the reasons for each path: `rule:N` is the Nth rule in the policy (counting from
-1), `floor:<category>` is a floor entry, and `unmatched` means no rule matched.
+1), `floor:<category>` is a floor entry, `type:symlink` and `type:submodule` mark special entries,
+`unreadable-name` marks a name that is not valid UTF-8 (always `human`; its bytes appear as
+`\udcXX` escapes), and `unmatched` means no rule matched.

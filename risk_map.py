@@ -161,7 +161,8 @@ def classify_path(path: str, policy: dict[str, Any], kinds: Iterable[str] = ()) 
     submodule): their effect lies outside the diff, a link's target or another repository, so they
     are at least C, a change the operator reviews every time."""
     folded = path.casefold()
-    floor = floor_reasons(path)
+    # A name that is not UTF-8 cannot be matched reliably, so no rule may lower it.
+    floor = (["unreadable-name"] if _unreadable(path) else []) + floor_reasons(path)
     special = [f"type:{kind}" for kind in sorted(set(kinds))]
     hits = [rule for rule in policy["rules"] if any(_matches(pattern, folded) for pattern in rule["patterns"])]
     tier = "human" if floor or not hits else "C" if special else "A"
@@ -185,11 +186,13 @@ def classify(paths: Iterable[str] | dict[str, list[str]], policy: dict[str, Any]
 
 
 def _decode(raw: bytes) -> str:
-    try:
-        return raw.decode("utf-8")
-    except UnicodeDecodeError:
-        # Kept visible and deterministic; such a path matches no rule, so it is human.
-        return raw.decode("utf-8", "backslashreplace")
+    # Bytes that are not UTF-8 become lone surrogates (U+DC80-U+DCFF), which classify_path makes
+    # human and the JSON shows as \udcXX escapes.
+    return raw.decode("utf-8", "surrogateescape")
+
+
+def _unreadable(path: str) -> bool:
+    return any("\udc80" <= char <= "\udcff" for char in path)
 
 
 ENTRY_KINDS = {b"120000": "symlink", b"160000": "submodule"}
