@@ -904,6 +904,11 @@ def hidden_tests_problem(manifest: dict[str, Any], repo: Path) -> str | None:
     if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit) or run(
             ["git", "-C", str(clone), "cat-file", "-t", commit], repo).stdout.strip() != "commit":
         return "hidden_tests.commit must be a full commit SHA that exists in hidden_tests.repo"
+    # Only plain files and folders: a link or submodule could reach outside the suite, and no error
+    # may name a hidden entry, because errors are saved where roles can read them.
+    listing = run(["git", "-C", str(clone), "ls-tree", "-r", "-t", "-z", commit], repo).stdout.split("\0")
+    if any(entry and entry.split(" ", 1)[0] not in {"100644", "100755", "040000"} for entry in listing):
+        return "hidden_tests.commit holds an entry that is not a regular file or folder; keep the suite to plain files"
     command = hidden["command"]
     if not isinstance(command, list) or not command or not all(isinstance(item, str) and item for item in command):
         return "hidden_tests.command must be a non-empty list of arguments; {hidden} names the tests folder"
@@ -955,7 +960,12 @@ def run_hidden_tests(state: dict[str, Any], manifest: dict[str, Any], candidate:
     with private_scratch("agentsmith-hidden-") as scratch:
         workspace, suite = scratch / "candidate", scratch / "suite"
         extract_tree(Path(state["worktree"]), candidate, workspace)
-        extract_tree(Path(str(hidden["repo"])).expanduser().resolve(), hidden["commit"], suite)
+        try:
+            extract_tree(Path(str(hidden["repo"])).expanduser().resolve(), hidden["commit"], suite)
+        except (RunError, OSError) as exc:
+            # The detail names hidden entries; keep only a reference the operator can match locally.
+            reference = hashlib.sha256(str(exc).encode("utf-8", "replace")).hexdigest()[:12]
+            raise RunError(f"hidden acceptance tests could not be prepared (reference {reference})") from None
         run(["git", "init", "-q", str(workspace)], workspace)  # the verifier sandbox expects a Git folder
         argv = [item.replace("{hidden}", str(suite)).replace("{token}", token) for item in hidden["command"]]
         # No shared /tmp: code the hidden tests run must not leave the suite where a later role reads.

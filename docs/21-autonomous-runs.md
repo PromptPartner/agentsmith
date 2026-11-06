@@ -440,7 +440,10 @@ the manifest:
 worktree, when the commit does not exist there, or when a field is malformed. The clone must be a
 standalone repository: its Git folder inside it, not a worktree of the run's repository, and no
 objects borrowed from or lent to another repository (`objects/info/alternates`). Otherwise the
-hidden commit's objects would sit where a maker can read them with `git show`. When the verifier
+hidden commit's objects would sit where a maker can read them with `git show`. The hidden commit may hold
+only plain files and folders. No message that a run saves names a hidden file: if the suite
+cannot be prepared, the run records "hidden acceptance tests could not be prepared" with a
+short reference, and you see the detail by running `git archive` on the clone yourself. When the verifier
 passes and the run's risk tier (computed as at acceptance) is in `tiers`, the controller copies
 the candidate's files and that commit's files into two separate folders in a fresh temporary
 folder and runs `command` in the verifier sandbox, with the candidate's copy as its working

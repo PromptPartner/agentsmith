@@ -303,6 +303,30 @@ class HiddenPolicyTests(Fixture):
         self.assertNotIn('(subpath "/tmp")', private)
 
 
+class HiddenNamesStayHiddenTests(Fixture):
+    def test_a_hidden_entry_that_is_not_a_file_is_refused_without_naming_it(self) -> None:
+        clone = self.root / "hidden"
+        subprocess.run(["git", "init", "-q", str(clone)], env=self.env, check=True)
+        (clone / "run.sh").write_text('echo "AGENTSMITH-HIDDEN-PASS $1"\n', encoding="utf-8")
+        (clone / f"{SECRET}-CASE").symlink_to("run.sh")
+        self.git(clone, "add", ".")
+        self.git(clone, "-c", "user.name=Hidden", "-c", "user.email=user@example.com", "commit", "-qm", "hidden")
+        commit = self.git(clone, "rev-parse", "HEAD")
+        hidden = {"repo": str(clone), "commit": commit, "command": ["sh", "{hidden}/run.sh", "{token}"], "tiers": ["C"]}
+        manifest = self.manifest("x", hidden_tests=hidden)
+        problem = CONTROLLER.hidden_tests_problem(manifest, self.repo)
+        self.assertIn("not a regular file", problem or "")
+        self.assertNotIn(SECRET, problem or "")
+        # Should the tree reach a run anyway, the error that lands in run state names nothing hidden.
+        base = self.git(self.repo, "rev-parse", "HEAD")
+        state = {"worktree": str(self.repo), "base_head": base, "deadline_epoch": __import__("time").time() + 60}
+        with self.assertRaises(CONTROLLER.RunError) as raised:
+            CONTROLLER.run_hidden_tests(state, {**manifest, "hidden_tests": {**hidden, "tiers": ["human", "C", "B", "A"]}},
+                                        base)
+        self.assertIn("hidden acceptance tests could not be prepared", str(raised.exception))
+        self.assertNotIn(SECRET, str(raised.exception))
+
+
 class ReworkNoteTests(Fixture):
     NOTE = "Keep the fixed value, but also handle an empty file: the operator saw it fail in review."
 
