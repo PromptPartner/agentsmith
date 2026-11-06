@@ -119,7 +119,15 @@ def window(since: str | None, now: datetime) -> tuple[datetime, datetime]:
     start = parse_time(since if "T" in since else since + "T00:00:00+00:00")
     if start is None:
         raise FactoryError(f"--since needs a date such as 2026-10-01, not {since!r}")
+    if start > now:
+        raise FactoryError(f"--since {since} is after now")
     return start, now
+
+
+def within(value: Any, start: datetime, end: datetime) -> bool:
+    """A record counts only inside [start, end]: before the window or in the future, it does not."""
+    moment = parse_time(value)
+    return moment is not None and start <= moment <= end
 
 
 def number(name: str, n: int, value: Any, unit: str, start: datetime, end: datetime,
@@ -163,7 +171,7 @@ def numbers(repo: Path, *, since: str | None = None, now: datetime | None = None
     now = now or datetime.now(timezone.utc)
     start, end = window(since, now)
     runs, unreadable = load_runs(repo)
-    in_window = [run for run in runs if (parse_time(run["state"].get("started_at")) or start - timedelta(1)) >= start]
+    in_window = [run for run in runs if within(run["state"].get("started_at"), start, end)]
     finished = [run for run in in_window if run["state"].get("status") in TERMINAL]
     accepted = [run for run in in_window if run["state"].get("status") == "accepted"]
     clean = [run for run in accepted if touches(run) == 0]
@@ -175,8 +183,7 @@ def numbers(repo: Path, *, since: str | None = None, now: datetime | None = None
         risk = run["state"].get("risk")
         return risk.get("tier") if isinstance(risk, dict) and risk.get("tier") in TIERS else "unknown"
 
-    defects = [item for item in read_jsonl(factory_dir(repo) / "defects.jsonl")
-               if (parse_time(item.get("at")) or start - timedelta(1)) >= start]
+    defects = [item for item in read_jsonl(factory_dir(repo) / "defects.jsonl") if within(item.get("at"), start, end)]
     per_tier = {}
     for name in (*TIERS, "unknown"):
         landed = sum(1 for run in accepted if tier(run) == name)

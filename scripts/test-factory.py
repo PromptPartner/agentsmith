@@ -168,6 +168,17 @@ class FactoryTests(unittest.TestCase):
         self.assertEqual(red["value"]["hours"], 16.0)  # from the window start, 36 h ago, to 20 h ago
         self.assertIn("upper bound", red["detail"])
 
+    def test_the_window_ends_now(self) -> None:
+        for index in range(5):
+            self.add_run(f"future-{index}", "accepted", hours_ago=-24 * 365 * 70)  # started "in 2096"
+        factory.add_defect(self.repo, "c" * 40, "B", now=NOW + timedelta(days=30))
+        report = factory.numbers(self.repo, now=NOW, ci_runs=[])
+        self.assertEqual(self.number(report, "accepted without human rework")["n"], 0)
+        self.assertEqual(self.number(report, "defects found after merge, per tier")["value"], None)
+        self.assertEqual(report["window"]["until"], NOW.isoformat(timespec="seconds"))
+        with self.assertRaisesRegex(factory.FactoryError, "is after now"):
+            factory.numbers(self.repo, since="2027-01-01", now=NOW, ci_runs=[])
+
     def test_too_few_cases_say_insufficient_data(self) -> None:
         for index in range(3):
             self.add_run(f"few-{index}", "accepted")
