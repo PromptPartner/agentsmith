@@ -79,7 +79,8 @@ message). Role exit codes are retained separately from structured receipts.
 
 Acceptance is bound to the exact commit the checks passed. Just before it records `accepted`,
 the controller confirms that the run branch and the run worktree's `HEAD` still point at that
-commit and that the worktree is clean. A commit that lands after the verifier started, for
+commit and that the worktree is clean, and it reads both commit IDs again after that clean
+check, because a commit can land while the check runs. A commit that lands after the verifier started, for
 example from a process a role left running, refuses acceptance: the run escalates and names the
 checked commit and where the branch is now. `accepted_commit` in the run state, the
 `run_accepted` event and `candidate_commit` in the verification receipt all name that one commit.

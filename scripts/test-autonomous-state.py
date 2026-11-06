@@ -2091,6 +2091,27 @@ class AutonomousStateTests(unittest.TestCase):
             self.assertIn("1" * 40, durable["reason"])
             self.assertIn("f" * 40, durable["reason"])
 
+    def test_a_commit_during_the_final_clean_check_is_still_caught(self) -> None:
+        # The clean check takes time. An amend with the same tree that lands while it runs, after
+        # the branch and HEAD were read, must not let the stale checked commit be recorded.
+        with tempfile.TemporaryDirectory(prefix="agentsmith final read ") as temporary:
+            repo = Path(temporary)
+            checked = self.committed_fixture(repo, {"value.txt": "ok\n"})
+            branch = CONTROLLER.git(repo, "branch", "--show-current")
+            real_clean = CONTROLLER.clean
+
+            def amend_while_checking(worktree: Path) -> bool:
+                result = real_clean(worktree)
+                subprocess.run(["git", "-C", str(worktree), "commit", "-q", "--amend", "-m", "late amend"],
+                               check=True)
+                return result
+
+            with mock.patch.object(CONTROLLER, "clean", side_effect=amend_while_checking):
+                moved = CONTROLLER.candidate_moved(repo, branch, checked)
+            self.assertNotEqual(CONTROLLER.git(repo, "rev-parse", "HEAD"), checked)
+            self.assertIsNotNone(moved)
+            self.assertIn(f"candidate moved after its checks passed at {checked}", moved)
+
     def test_fake_roles_record_the_commit_their_checks_passed(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith accepted binding ") as temporary:
             _outcome, durable, _events = self.run_with_fake_roles(

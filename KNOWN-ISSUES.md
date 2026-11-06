@@ -3,6 +3,12 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [x] 2026-11-06 — Found by independent review of the 2026-11-05 head-binding fix: the controller
+  read the branch and `HEAD` before its final clean check, so an amend with the same tree made
+  while that check ran was accepted under the stale commit ID. The IDs are now read again after
+  the clean check, as the last step before the acceptance record. Red first:
+  `test_a_commit_during_the_final_clean_check_is_still_caught` and the reviewer's end-to-end race
+  (accepted before, escalated now).
 - [x] 2026-11-06 — Found by independent review of the 2026-11-05 instruction-file fix: a
   symbolic link carried instructions past it. With `AGENTS.md -> src/rules.txt` in the base, a
   maker edited only `src/rules.txt` inside its scope, and the checker read the edit through
