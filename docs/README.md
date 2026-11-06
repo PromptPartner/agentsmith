@@ -39,3 +39,5 @@ Product templates, demos, and the [spec format](specs/README.md) remain public. 
 - [Local project memory](project-memory.md) — manual recall and optional startup references.
 
 - [Configuration audit](27-config-audit.md) — selected local checks, completeness and explicit CI gates.
+
+- [Risk map](29-risk-map.md) — the tier of a change from a committed path policy and a fixed always-human floor.
