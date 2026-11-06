@@ -840,6 +840,25 @@ def risk_record(repo: Path, base: str, head: str, declared: str | None) -> dict[
     return record
 
 
+MAX_REWORK_NOTE_BYTES = 16 * 1024
+
+
+def rework_note(repo: Path, manifest: dict[str, Any]) -> str | None:
+    """The operator's rework note, checked against the hash pinned at prepare; None without one."""
+    rework = manifest.get("rework")
+    if rework is None:
+        return None
+    if not isinstance(rework, dict) or set(rework) != {"of", "note_path", "note_sha256"}:
+        raise RunError("rework needs exactly of, note_path and note_sha256; prepare it with --rework-of")
+    path = (repo / str(rework["note_path"])).resolve()
+    if not path.is_relative_to(repo.resolve()) or not path.is_file():
+        raise RunError(f"rework note {rework['note_path']} is missing; prepare a new run")
+    data = path.read_bytes()
+    if hashlib.sha256(data).hexdigest() != rework["note_sha256"]:
+        raise RunError("rework note changed since prepare; prepare a new run with the new note")
+    return data.decode("utf-8", errors="replace").strip()
+
+
 HIDDEN_HINT = ("hidden acceptance tests failed; re-read the spec's acceptance criteria and check the cases "
                "the visible tests do not cover")
 
@@ -1015,6 +1034,7 @@ def validate_manifest(manifest: dict[str, Any], repo: Path) -> tuple[Path, str]:
     hidden = hidden_tests_problem(manifest, repo)
     if hidden:
         raise RunError(hidden)
+    rework_note(repo, manifest)  # refuses a note that changed after prepare
     if "risk_tier" in manifest and manifest["risk_tier"] not in RISK_TIERS:
         raise RunError(f"risk_tier must be one of {', '.join(RISK_TIERS)}; it can only raise the computed tier")
     spec_rel = Path(str(manifest["spec_path"]))
@@ -1143,6 +1163,24 @@ def prepare(args: argparse.Namespace) -> int:
     hidden = hidden_tests_problem(manifest, repo)
     if hidden:
         raise RunError(hidden)
+    if bool(args.rework_of) != bool(args.note):
+        raise RunError("--rework-of and --note go together")
+    if args.rework_of:
+        # A rework is always a new run: an accepted or escalated run is never reopened.
+        if args.rework_of == args.run_id:
+            raise RunError("a rework is a new run: choose a run id other than the one it reworks")
+        previous = load_run(repo, args.rework_of)
+        owner = read_lock(state_root(repo) / args.rework_of)
+        if previous.get("status") not in TERMINAL_RUN_STATUSES or (owner and process_is_live(owner["pid"])):
+            raise RunError(f"run {args.rework_of} is {previous.get('status')}; only a finished run "
+                           "(accepted, escalated or interrupted) can be reworked")
+        note = (Path.cwd() / args.note).resolve()
+        if not note.is_relative_to(repo) or not note.is_file():
+            raise RunError(f"rework note {args.note} must be a file inside the repository")
+        if note.stat().st_size > MAX_REWORK_NOTE_BYTES:
+            raise RunError(f"rework note {args.note} is larger than {MAX_REWORK_NOTE_BYTES // 1024} KB")
+        manifest["rework"] = {"of": args.rework_of, "note_path": note.relative_to(repo).as_posix(),
+                              "note_sha256": hashlib.sha256(note.read_bytes()).hexdigest()}
     output = Path(args.output or f".harness/runs/{args.run_id}.json")
     output = output if output.is_absolute() else repo / output
     if output.exists() and not args.force:
@@ -2343,6 +2381,10 @@ A moved file counts twice: list the old path and the new path.
         goal_budget = 0 if cap is None else int(cap) - int(state.get("codex_tokens_used", 0))
         goal = (f"If your runtime exposes the native goal tool, create a goal for this exact ticket with token budget "
                 f"{goal_budget}; the manifest remains authoritative.\n") if goal_budget > 0 else ""
+        note = rework_note(Path(state["repo"]), manifest) if state.get("repo") else None
+        if note:
+            goal += (f"This run is a rework of run {manifest['rework']['of']}. The operator's rework note:\n"
+                     f"{note}\n")
         return common + goal + f"""Implement the smallest complete change, run {manifest['verify']['command']},
 and make atomic local commits only. Leave the worktree clean. HEAD must advance beyond {base}.
 Use status completed or blocked; do not mark your own work accepted.{feedback}"""
@@ -3508,6 +3550,8 @@ def parser() -> argparse.ArgumentParser:
     prep.add_argument("--template")
     prep.add_argument("--output")
     prep.add_argument("--force", action="store_true")
+    prep.add_argument("--rework-of", help="a finished run this new run reworks")
+    prep.add_argument("--note", help="the operator's rework note, a file in the repository (with --rework-of)")
     prep.set_defaults(func=prepare)
     specs = sub.add_parser("check-specs", help="pipeline guard: accepted specs point at their "
                                               "research and review receipt and record a route")

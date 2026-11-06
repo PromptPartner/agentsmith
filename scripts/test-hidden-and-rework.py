@@ -210,5 +210,72 @@ class HiddenTestsTests(Fixture):
         self.assertEqual(codex["filesystem"][str(hidden)], "none")
 
 
+class ReworkNoteTests(Fixture):
+    NOTE = "Keep the fixed value, but also handle an empty file: the operator saw it fail in review."
+
+    def finished_run(self, run_id: str, status: str) -> None:
+        folder = self.repo / ".git/agentsmith-runs" / run_id
+        folder.mkdir(parents=True)
+        (folder / "state.json").write_text(json.dumps({"run_id": run_id, "status": status}), encoding="utf-8")
+
+    def prepare(self, run_id: str, rework_of: str, note: str = "notes/rework.md") -> subprocess.CompletedProcess[str]:
+        template = self.root / "template.json"
+        template.write_text(json.dumps(self.manifest("x")), encoding="utf-8")
+        return self.controller("prepare", "--run-id", run_id, "--spec", "docs/specs/task.md", "--ticket", "IMP-2",
+                               "--template", str(template), "--rework-of", rework_of, "--note", note)
+
+    def write_note(self, text: str | None = None) -> None:
+        (self.repo / "notes").mkdir(exist_ok=True)
+        (self.repo / "notes/rework.md").write_text(text or self.NOTE + "\n", encoding="utf-8")
+
+    def test_a_rework_is_a_new_run_with_the_note_pinned_by_hash(self) -> None:
+        self.finished_run("first", "accepted")
+        self.write_note()
+        prepared = self.prepare("second", "first")
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        manifest = json.loads((self.repo / ".harness/runs/second.json").read_text(encoding="utf-8"))
+        digest = hashlib.sha256((self.repo / "notes/rework.md").read_bytes()).hexdigest()
+        self.assertEqual(manifest["rework"], {"of": "first", "note_path": "notes/rework.md", "note_sha256": digest})
+        self.assertEqual(json.loads((self.repo / ".git/agentsmith-runs/first/state.json").read_text())["status"],
+                         "accepted", "the accepted run is never reopened")
+
+    @unittest.skipUnless(sandbox_available(), "a real run needs the macOS or Linux role sandbox")
+    def test_the_maker_receives_the_note_and_a_changed_note_refuses(self) -> None:
+        self.finished_run("first", "escalated")
+        self.write_note()
+        self.assertEqual(self.prepare("second", "first").returncode, 0)
+        self.git(self.repo, "add", ".")
+        self.git(self.repo, "commit", "-qm", "test: rework contract")
+        started = self.controller("start", ".harness/runs/second.json")
+        self.assertEqual(started.returncode, 0, started.stderr)
+        maker = next(prompt for prompt in self.prompts() if "independent checker" not in prompt)
+        self.assertIn(self.NOTE, maker)
+        self.assertIn("rework of run first", maker)
+        self.write_note("A different instruction.\n")
+        self.assertEqual(self.prepare("third", "first").returncode, 0)
+        self.git(self.repo, "add", ".")
+        self.git(self.repo, "commit", "-qm", "test: third")
+        self.write_note("Edited after prepare.\n")
+        refused = self.controller("start", ".harness/runs/third.json")
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("rework note changed since prepare", refused.stderr)
+        self.assertFalse((self.repo / ".git/agentsmith-runs/third/state.json").exists())
+
+    def test_only_a_finished_run_can_be_reworked_and_never_in_place(self) -> None:
+        self.write_note()
+        self.finished_run("busy", "making")
+        refused = self.prepare("next", "busy")
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("run busy is making; only a finished run", refused.stderr)
+        refused = self.prepare("next", "unknown")
+        self.assertIn("no run state for unknown", refused.stderr)
+        self.finished_run("done", "accepted")
+        refused = self.prepare("done", "done")
+        self.assertIn("a rework is a new run", refused.stderr)
+        refused = self.prepare("next", "done", note="notes/missing.md")
+        self.assertIn("rework note", refused.stderr)
+        self.assertFalse((self.repo / ".harness/runs/next.json").exists())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

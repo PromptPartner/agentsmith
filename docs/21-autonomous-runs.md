@@ -29,6 +29,19 @@ manifest while a model or effort is blank or a placeholder (`<...>`, `REPLACE-WI
 `port:3000`, `db:local/test`, or `service:redis`; omit it in an older manifest or use an empty list
 when the run reserves none.
 
+**Rework.** When a finished run needs another pass, prepare a new run with the operator's note:
+
+```text
+python3 .agentsmith/autonomous-run.py prepare --run-id <new-id> --spec docs/specs/<name>.md \
+  --ticket <ticket> --rework-of <finished-run-id> --note <file in the repository>
+```
+
+The run it reworks must be finished (`accepted`, `escalated` or `interrupted`), and it is never
+reopened: a rework is always a new run with a new ID. The manifest pins the note by path and
+SHA-256 in `rework`, and `start` and `resume` refuse when the note changed after `prepare`.
+The maker receives the note through its prompt, marked as a rework of the earlier run. A note
+may be at most 16 KB.
+
 ## What runs overnight
 
 `python3 .agentsmith/autonomous-run.py start <manifest>` creates a sibling git worktree on an

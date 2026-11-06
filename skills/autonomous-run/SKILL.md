@@ -57,6 +57,9 @@ Keep `max_attempts` at 3. Every runtime a role uses needs its cap (`codex_goal_t
 `claude_max_usd`); zero or a missing cap refuses at `prepare` and `start`. Only the operator may
 choose `"unbounded"` instead, and only with `budget_rationale` saying who chose it and why.
 
+To rework a finished run, prepare a new run with `--rework-of <run-id> --note <file>`; the note is
+pinned by hash and goes to the maker. Never reopen an accepted run.
+
 ## Start and supervise
 
 Only after explicit operator authorization:
