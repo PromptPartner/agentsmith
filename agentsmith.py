@@ -9104,13 +9104,16 @@ def cmd_risk(args: argparse.Namespace) -> int:
         print(f"[error] risk classify: {exc}", file=sys.stderr)
         return 2
     text = risk_map.to_json(report) if args.json else risk_map.render_text(report)
-    # Bytes, not text mode: Windows would turn each newline into CRLF and break byte identity.
+    # Bytes, not text mode: Windows would turn each newline into CRLF. JSON is written as ASCII
+    # whatever the console encoding (UTF-16 would add a byte-order mark and double every byte);
+    # the text report follows the console so a person can read it.
     stream = getattr(sys.stdout, "buffer", None)
     if stream is None:
         sys.stdout.write(text)
     else:
         sys.stdout.flush()
-        stream.write(text.encode(sys.stdout.encoding or "utf-8", "backslashreplace"))
+        stream.write(text.encode("ascii") if args.json
+                     else text.encode(sys.stdout.encoding or "utf-8", "backslashreplace"))
         stream.flush()
     return 0
 

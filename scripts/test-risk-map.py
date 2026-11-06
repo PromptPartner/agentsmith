@@ -399,6 +399,19 @@ class CliTests(RepoCase):
         ) % (base, head, "be8addd6e793a425e446b870bb8820b3b29dd90f")
         self.assertEqual(first.stdout.decode("ascii"), expected)
 
+    def test_json_bytes_do_not_depend_on_the_console_encoding(self) -> None:
+        base = self.base_with_policy()
+        head = self.repo.commit({"docs/a.md": b"b\n"}, "docs")
+        outputs = set()
+        for encoding in ("utf-8", "cp1252", "utf-16", "utf-32"):
+            result = subprocess.run([sys.executable, str(CORE), "risk", "classify", "--target", str(self.repo.root),
+                                     "--base", base, "--head", head, "--json"], capture_output=True,
+                                    env={**CLEAN_ENV, "PYTHONIOENCODING": encoding})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            outputs.add(result.stdout)
+        self.assertEqual(len(outputs), 1, outputs)
+        self.assertTrue(next(iter(outputs)).startswith(b'{"base": '))
+
     def test_text_output_names_tier_and_lenses(self) -> None:
         base = self.base_with_policy()
         head = self.repo.commit({"src/auth/login.py": b"ok = 1\n"}, "auth")
