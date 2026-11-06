@@ -501,18 +501,39 @@ EXPORT_SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 
-def redact(value: Any, patterns: tuple[tuple[str, re.Pattern[str]], ...], counter: list[int]) -> Any:
-    """Replace the home folder with ~ and secret-like text with a marker, in every string."""
+def home_pattern() -> re.Pattern[str] | None:
+    """Match the home folder however a tool prints it: either separator, doubled when escaped, any
+    letter case, with the `\\\\?\\` prefix or as Git Bash's `/c/`. Only whole folder names match."""
+    homes = {str(Path.home()), str(Path.home().resolve()),
+             os.environ.get("HOME", ""), os.environ.get("USERPROFILE", "")}
+    spellings = []
+    for home in homes:
+        parts = [part for part in re.split(r"[\\/]+", home) if part]
+        drive = re.fullmatch(r"([A-Za-z]):", parts[0]) if parts else None
+        rest = parts[1:] if drive else parts
+        if not rest:
+            continue
+        head = rf"(?:[\\/]{{2,4}}\?[\\/]{{1,2}})?(?:{drive[1]}:|/{drive[1]}(?=[\\/]))" if drive else ""
+        spellings.append(head + "".join(r"[\\/]+" + re.escape(part) for part in rest))
+    if not spellings:
+        return None
+    alternatives = "|".join(sorted(spellings, key=len, reverse=True))
+    return re.compile(rf"(?<!\w)(?:{alternatives})(?!\w|[.-]\w)", re.IGNORECASE)
+
+
+def redact(value: Any, patterns: tuple[tuple[str, re.Pattern[str]], ...], counter: list[int],
+           home: re.Pattern[str] | None = None) -> Any:
+    """Replace the home folder with ~ and secret-like text with a marker, in every string. The
+    separator after the home folder stays as written, so `C:\\Users\\me\\x` becomes `~\\x`."""
     if isinstance(value, dict):
-        return {key: redact(item, patterns, counter) for key, item in value.items()}
+        return {key: redact(item, patterns, counter, home) for key, item in value.items()}
     if isinstance(value, list):
-        return [redact(item, patterns, counter) for item in value]
+        return [redact(item, patterns, counter, home) for item in value]
     if not isinstance(value, str):
         return value
-    for home in {str(Path.home().resolve()), str(Path.home())}:
-        if home and home != "/" and home in value:
-            counter[0] += value.count(home)
-            value = value.replace(home, "~")
+    if home is not None:
+        value, count = home.subn("~", value)
+        counter[0] += count
     for name, pattern in patterns:
         value, count = pattern.subn(f"[redacted: {name}]", value)
         counter[0] += count
@@ -529,7 +550,7 @@ def export(repo: Path, target: Path,
     if target.exists() and (not target.is_dir() or any(target.iterdir())):
         raise FactoryError(f"{target} exists and is not an empty folder")
     counter = [0]
-    data = redact(collect_export(repo), (*EXPORT_SECRET_PATTERNS, *secret_patterns), counter)
+    data = redact(collect_export(repo), (*EXPORT_SECRET_PATTERNS, *secret_patterns), counter, home_pattern())
     target.mkdir(parents=True, exist_ok=True)
     for run in data["runs"]:
         (target / f"run-{run['run_id']}.json").write_text(json.dumps(run, indent=2, sort_keys=True) + "\n",
