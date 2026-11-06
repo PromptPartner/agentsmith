@@ -659,16 +659,28 @@ class AutonomousStateTests(unittest.TestCase):
             shared = {"TMPDIR": "/tmp/shared-by-every-role", "XDG_CACHE_HOME": "/tmp/shared-cache",
                       "TEMP": "/tmp/shared-by-every-role", "TMP": "/tmp/shared-by-every-role",
                       "XDG_CONFIG_HOME": "/tmp/shared-config", "XDG_DATA_HOME": "/tmp/shared-data",
-                      "HOME": str(shared_home), "PATH": os.environ.get("PATH", "")}
+                      "HOME": str(shared_home), "USERPROFILE": str(shared_home),
+                      "PATH": os.environ.get("PATH", "")}
+            def windows_home() -> Path:
+                # Windows resolves the home folder from USERPROFILE and ignores HOME; emulate that
+                # on every host, so this fixture fails here the way it failed on Windows.
+                if "USERPROFILE" not in os.environ:
+                    raise RuntimeError("Could not determine home directory.")
+                return Path(os.environ["USERPROFILE"])
+
             with mock.patch.dict(os.environ, shared, clear=True), \
+                    mock.patch.object(Path, "home", side_effect=windows_home), \
                     mock.patch.object(CONTROLLER, "state_root", return_value=root / "runs"), \
                     mock.patch.object(CONTROLLER, "resolved_git_path", return_value=root / ".git"), \
                     mock.patch.object(CONTROLLER, "effective_autocrlf", return_value="false"), \
                     mock.patch.object(CONTROLLER, "build_native_command", return_value=["true"]), \
                     mock.patch.object(CONTROLLER, "supervised_process", side_effect=capture):
+                before = dict(os.environ)
                 for role in ("maker", "checker"):
                     with self.assertRaises(Observed):
                         CONTROLLER.launch_role(state, manifest, role, role)
+                # The checker's folders live only in the role's copy of the environment.
+                self.assertEqual(dict(os.environ), before)
         maker, checker = observed["maker"], observed["checker"]
         self.assertEqual(maker["TMPDIR"], "/tmp/shared-by-every-role")
         # The checker keeps HOME, which its client needs to sign in; everything tools resolve
@@ -688,7 +700,10 @@ class AutonomousStateTests(unittest.TestCase):
         for value in checker.values():
             self.assertFalse(value.startswith("/tmp/shared"), value)
         self.assertFalse(Path(checker["TMPDIR"]).exists(), "the checker folder outlived the checker")
-        self.assertLess(len(checker["CLAUDE_CODE_TMPDIR"]), 64, "a long path makes Claude fall back")
+        if os.name != "nt":
+            # Under /tmp it stays short; Windows temp paths are longer, and native roles are
+            # refused there.
+            self.assertLess(len(checker["CLAUDE_CODE_TMPDIR"]), 64, "a long path makes Claude fall back")
         if resolved:
             self.assertEqual(resolved["maker"], str(shared_home / ".npm"))
             self.assertTrue(Path(resolved["checker"]).is_relative_to(scratch), resolved["checker"])
