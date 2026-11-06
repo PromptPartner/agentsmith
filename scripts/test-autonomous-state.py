@@ -2247,6 +2247,23 @@ class AutonomousStateTests(unittest.TestCase):
         with self.assertRaisesRegex(CONTROLLER.RunError, "risk_tier must be one of A, B, C, human"):
             CONTROLLER.validate_manifest(manifest, ROOT)
 
+    def test_calibration_receipts_are_keyed_by_prompt_and_out_of_the_roles_reach(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith calibration key ") as temporary:
+            repo = Path(temporary)
+            self.committed_fixture(repo, {"a.txt": "a\n"})
+            checker = {"runtime": "claude", "model": "m", "effort": "high"}
+            self.assertEqual(CONTROLLER.calibration_status(repo, checker), {"status": "none"})
+            path = CONTROLLER.calibration_path(repo, "claude", "m", "high")
+            CONTROLLER.write_json(path, {"status": "passed", "calibrated_at": "2026-11-06T10:00:00+00:00"})
+            self.assertEqual(CONTROLLER.calibration_status(repo, checker)["status"], "passed")
+            self.assertEqual(CONTROLLER.calibration_status(repo, {**checker, "model": "other"}), {"status": "none"})
+            # A changed checker prompt is a different checker: the old calibration no longer matches.
+            with mock.patch.object(CONTROLLER, "checker_prompt_sha256", return_value="f" * 64):
+                self.assertEqual(CONTROLLER.calibration_status(repo, checker), {"status": "none"})
+            state = {"repo": str(repo), "manifest_path": str(repo / "m.json"), "spec_path": "s.md"}
+            self.assertIn(path.parent, CONTROLLER.trusted_paths(state))
+            self.assertRegex(CONTROLLER.checker_prompt_sha256(), r"\A[0-9a-f]{64}\Z")
+
     def test_a_commit_after_verification_refuses_acceptance(self) -> None:
         # The checks passed at one commit; a run branch that moved afterwards would hand the
         # operator unverified code under an "accepted" record.

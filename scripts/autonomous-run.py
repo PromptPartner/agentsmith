@@ -32,10 +32,12 @@ from typing import Any
 try:
     from native_launcher import (
         build_native_command,
+        client_version,
         codex_permissions,
         claude_sandbox_settings,
         toml_inline,
         minimal_environment,
+        native_command_prefix,
         native_environment,
         usage_metrics as shared_usage_metrics,
     )
@@ -43,10 +45,12 @@ except ModuleNotFoundError:  # source-tree execution from scripts/
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from native_launcher import (
         build_native_command,
+        client_version,
         codex_permissions,
         claude_sandbox_settings,
         toml_inline,
         minimal_environment,
+        native_command_prefix,
         native_environment,
         usage_metrics as shared_usage_metrics,
     )
@@ -1188,6 +1192,9 @@ def verification_binding(state: dict[str, Any], manifest: dict[str, Any], head: 
             "controller": file_digest(Path(__file__)),
             "launcher": file_digest(Path(build_native_command.__code__.co_filename)),
         },
+        # Record-only: the latest calibration of this checker client, model and prompt.
+        "checker_calibration": calibration_status(Path(state.get("repo") or worktree),
+                                                  (manifest.get("roles") or {}).get("checker") or {}),
     }
 
 
@@ -1393,7 +1400,7 @@ def _git_metadata_once(repo: Path, *, known_peers: dict[str, Any] | None = None)
     branch_log = Path("logs") / branch_ref if branch_ref else None
     for path in sorted(item for item in common.rglob("*") if item.is_file()):
         rel = path.relative_to(common)
-        if rel.parts[0] == "agentsmith-runs":
+        if rel.parts[0] in {"agentsmith-runs", "agentsmith-calibrations"}:
             continue
         if rel.parts[0] == "objects":
             objects.append((rel.as_posix(), file_digest(path)))
@@ -1803,7 +1810,11 @@ def preflight_verifier_sandbox() -> None:
 def trusted_paths(state: dict[str, Any]) -> list[Path]:
     repo = Path(state['repo'])
     runtime = Path(claude_sandbox_settings.__code__.co_filename).resolve()
-    return [state_root(repo), Path(state['manifest_path']), repo / state['spec_path'],
+    # Calibration receipts are controller evidence like run state. The folder must exist so that
+    # every sandbox can name it.
+    calibrations = state_root(repo).parent / "agentsmith-calibrations"
+    calibrations.mkdir(exist_ok=True)
+    return [state_root(repo), calibrations, Path(state['manifest_path']), repo / state['spec_path'],
             Path(__file__).resolve().parent, runtime.parent]
 
 
@@ -2911,6 +2922,203 @@ def resume(args: argparse.Namespace) -> int:
             release_lifecycle_lock(run_dir, token)
 
 
+# Checker calibration: the configured checker client and model judge two built-in candidates with
+# known labels. A clean change must be accepted with valid citations; a change whose tests pass
+# but which breaks the spec (an injected defect the verifier cannot see) must be rejected.
+CALIBRATION_SPEC = """# Spec: add two numbers
+
+`src/calc.py` defines `add(a, b)`, which returns the sum of `a` and `b` for any integers.
+
+Acceptance criteria:
+1. `add(2, 3)` returns 5 and `add(-1, 1)` returns 0.
+2. A test in `tests/test_calc.py` checks the sum.
+"""
+CALIBRATION_TEST = """import sys
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from calc import add
+
+
+class AddTests(unittest.TestCase):
+    def test_add(self):
+        self.assertEqual(add({left}, {right}), {result})
+
+
+if __name__ == "__main__":
+    unittest.main()
+"""
+CALIBRATION_CANDIDATES = (
+    # label, expected verdict, implementation, (left, right, result) for its own test
+    ("clean", "accepted", "def add(a, b):\n    return a + b\n", (2, 3, 5)),
+    ("defect", "rejected", "def add(a, b):\n    return a * b\n", (2, 2, 4)),
+)
+CALIBRATION_VERIFY = "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v"
+
+
+def calibration_manifest(checker: dict[str, Any], limits: dict[str, Any]) -> dict[str, Any]:
+    return {"run_id": "checker-calibration", "implementation_ticket": "CALIBRATION",
+            "spec_path": "docs/specs/calc.md", "verify": {"command": CALIBRATION_VERIFY},
+            "scope": {"allowed_paths": ["src/**", "tests/**"], "denied_paths": [], "resources": []},
+            "roles": {"checker": dict(checker)}, "limits": dict(limits)}
+
+
+def checker_prompt_sha256() -> str:
+    """The checker prompt template with fixed inputs: it changes only when the prompt does."""
+    state = {"run_id": "checker-calibration", "base_head": "0" * 40, "attempt": 1}
+    manifest = calibration_manifest({}, {})
+    return hashlib.sha256(role_prompt(state, manifest, "checker").encode("utf-8")).hexdigest()
+
+
+def calibration_path(repo: Path, runtime: str, model: str, effort: str) -> Path:
+    key = hashlib.sha256(json.dumps([runtime, model, effort, checker_prompt_sha256()]).encode()).hexdigest()
+    return state_root(repo).parent / "agentsmith-calibrations" / f"{key[:32]}.json"
+
+
+def calibration_status(repo: Path, checker: dict[str, Any]) -> dict[str, Any]:
+    """The latest calibration for this checker client, model, effort and prompt. Record-only."""
+    try:
+        path = calibration_path(repo, str(checker.get("runtime")), str(checker.get("model")),
+                                str(checker.get("effort")))
+        record = load_json(path) if path.is_file() else None
+    except (OSError, RunError):
+        return {"status": "unreadable"}
+    if record is None:
+        return {"status": "none"}
+    return {"status": record.get("status"), "calibrated_at": record.get("calibrated_at"),
+            "client_version": record.get("client_version"), "receipt": str(path)}
+
+
+def calibration_fixture(root: Path) -> tuple[Path, str, dict[str, str]]:
+    repo = root / "fixture"
+    repo.mkdir()
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+
+    def fixture_git(*args: str) -> str:
+        result = subprocess.run(["git", "-c", "user.name=AgentSmith calibration",
+                                 "-c", "user.email=user@example.com", "-c", "commit.gpgsign=false",
+                                 *args], cwd=repo, env=environment, capture_output=True, text=True, check=False)
+        if result.returncode:
+            raise RunError(f"cannot build the calibration fixture: {result.stderr.strip()}")
+        return result.stdout.strip()
+
+    fixture_git("init", "-q")
+    (repo / "docs/specs").mkdir(parents=True)
+    (repo / "docs/specs/calc.md").write_text(CALIBRATION_SPEC, encoding="utf-8")
+    (repo / "src").mkdir()
+    (repo / "src/calc.py").write_text("def add(a, b):\n    raise NotImplementedError\n", encoding="utf-8")
+    fixture_git("add", "-A")
+    fixture_git("commit", "-qm", "calibration: spec and stub")
+    base = fixture_git("rev-parse", "HEAD")
+    heads = {}
+    for label, _expected, implementation, (left, right, result) in CALIBRATION_CANDIDATES:
+        fixture_git("checkout", "-q", "--detach", base)
+        (repo / "src/calc.py").write_text(implementation, encoding="utf-8")
+        (repo / "tests").mkdir(exist_ok=True)
+        (repo / "tests/test_calc.py").write_text(
+            CALIBRATION_TEST.format(left=left, right=right, result=result), encoding="utf-8")
+        fixture_git("add", "-A")
+        fixture_git("commit", "-qm", f"calibration: {label} candidate")
+        heads[label] = fixture_git("rev-parse", "HEAD")
+    fixture_git("checkout", "-q", "--detach", base)
+    return repo, base, heads
+
+
+def calibrate_case(repo: Path, base: str, head: str, label: str, attempt: int, manifest: dict[str, Any],
+                   usage: dict[str, Any]) -> dict[str, Any]:
+    worktree = repo.parent / f"candidate-{label}"
+    added = run(["git", "worktree", "add", "-q", "--detach", str(worktree), head], repo)
+    if added.returncode:
+        raise RunError(f"cannot create the {label} calibration worktree: {added.stderr.strip()}")
+    run_dir = state_root(repo) / "checker-calibration"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    state = {"run_id": "checker-calibration", "repo": str(repo), "worktree": str(worktree),
+             "state_path": str(run_dir / "state.json"), "manifest_path": str(repo / "manifest.json"),
+             "spec_path": manifest["spec_path"], "base_head": base, "attempt": attempt,
+             "deadline_epoch": time.time() + int(manifest["limits"]["wall_minutes"]) * 60,
+             "claude_cost_usd": usage["claude_cost_usd"], "codex_tokens_used": usage["codex_tokens_used"],
+             "active_pid": None}
+    verify = sandboxed_verify(CALIBRATION_VERIFY, worktree, 300, verifier_env(), state=state)
+    verify_output = f"exit={verify.returncode}\nSTDOUT:\n{verify.stdout}\nSTDERR:\n{verify.stderr}"
+    verify_log = run_dir / f"attempt-{attempt}-verify.txt"
+    verify_log.write_text(verify_output, encoding="utf-8")
+    evidence = verifier_evidence(verify_log, worktree, ignored_paths(worktree))
+    outcome: dict[str, Any] = {"label": label, "candidate": head, "verify_exit": verify.returncode}
+    try:
+        receipt = launch_role(state, manifest, "checker",
+                              role_prompt(state, manifest, "checker", verify_output=verify_output,
+                                          evidence_files=sorted(evidence)),
+                              role_worktree=worktree)
+    except RunError as exc:
+        outcome.update(verdict="error", detail=str(exc)[:300])
+        receipt = None
+    finally:
+        usage.update(claude_cost_usd=state.get("claude_cost_usd", 0.0),
+                     codex_tokens_used=state.get("codex_tokens_used", 0))
+    if receipt is not None:
+        changed = changed_paths(worktree, base)
+        if git(worktree, "rev-parse", "HEAD") != head or git(worktree, "status", "--porcelain"):
+            outcome.update(verdict="changed-worktree", detail="the checker changed its worktree")
+        elif receipt["commit"] != head or sorted(receipt["changed_paths"]) != sorted(changed):
+            # A receipt that does not name the candidate is the checker's mistake, not the host's.
+            outcome.update(verdict="invalid-receipt", detail=(
+                f"the checker receipt names {receipt['commit'][:12]} with {receipt['changed_paths']}; "
+                f"the candidate is {head[:12]} with {changed}")[:300])
+        elif receipt["status"] == "accepted":
+            defect = (citation_problem(receipt, evidence, verify_log, worktree, attempt)
+                      if acceptance_ready(verify.returncode, receipt) else "acceptance is not ready")
+            outcome.update(verdict="accepted-without-valid-evidence" if defect else "accepted",
+                           **({"detail": defect} if defect else {}))
+        else:
+            outcome.update(verdict=receipt["status"])
+        outcome["receipt_sha256"] = hashlib.sha256(json.dumps(receipt, sort_keys=True).encode()).hexdigest()
+    run(["git", "worktree", "remove", "--force", str(worktree)], repo)
+    return outcome
+
+
+def calibrate(args: argparse.Namespace) -> int:
+    """Run the configured checker against the labelled candidates and record the result.
+    Record-only: no run depends on it yet. 0 passed, 1 failed, 2 could not run."""
+    repo = repo_root(Path.cwd())
+    assert_autonomy_not_paused(repo)
+    manifest = load_json(Path(args.manifest).resolve())
+    checker = (manifest.get("roles") or {}).get("checker") or {}
+    if checker.get("runtime") not in {"claude", "codex"}:
+        raise RunError("roles.checker.runtime must be claude or codex")
+    unset = [f"roles.checker.{key}" for key in ("model", "effort")
+             if not isinstance(checker.get(key), str) or PLACEHOLDER_SETTING.search(checker[key])]
+    if unset:
+        raise RunError(f"{', '.join(unset)} must be explicit before calibration")
+    limits = {"max_attempts": 1, "wall_minutes": args.wall_minutes,
+              "claude_max_usd": args.max_usd, "codex_goal_tokens": args.max_tokens}
+    cal_manifest = calibration_manifest(checker, limits)
+    validate_budgets({"limits": limits, "roles": {"checker": checker}})
+    require_native_role_sandbox()
+    usage = {"claude_cost_usd": 0.0, "codex_tokens_used": 0}
+    with tempfile.TemporaryDirectory(prefix="agentsmith-calibration-") as temporary:
+        fixture, base, heads = calibration_fixture(Path(temporary).resolve())
+        cases = []
+        for attempt, (label, expected, _implementation, _test) in enumerate(CALIBRATION_CANDIDATES, 1):
+            outcome = calibrate_case(fixture, base, heads[label], label, attempt, cal_manifest, usage)
+            outcome.update(expected=expected, correct=outcome["verdict"] == expected)
+            cases.append(outcome)
+    errors = [case for case in cases if case["verdict"] == "error"]
+    status = "error" if errors else "passed" if all(case["correct"] for case in cases) else "failed"
+    command = native_command_prefix(checker["runtime"])
+    record = {"schema_version": 1, "status": status, "calibrated_at": now(),
+              "client": checker["runtime"], "model": checker["model"], "effort": checker["effort"],
+              "client_version": client_version(command),
+              "checker_prompt_sha256": checker_prompt_sha256(), "cases": cases, **usage}
+    path = calibration_path(repo, checker["runtime"], checker["model"], checker["effort"])
+    write_json(path, record)
+    for case in cases:
+        print(f"{case['label']}: expected {case['expected']}, checker {case['verdict']}"
+              + (f" ({case['detail']})" if case.get("detail") else ""))
+    print(f"calibration {status}: {path}")
+    return {"passed": 0, "failed": 1}.get(status, 2)
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description="Finite local Claude/Codex maker-checker runs")
     sub = result.add_subparsers(dest="command", required=True)
@@ -2936,6 +3144,13 @@ def parser() -> argparse.ArgumentParser:
     begin.add_argument("--graph", help="committed work-graph path authorizing a pinned effective base")
     begin.add_argument("--effective-base", help="exact graph-owned root or dependency checkpoint commit OID")
     begin.set_defaults(func=start)
+    calibration = sub.add_parser("calibrate", help="judge two labelled candidates with the configured "
+                                                     "checker and record the result (record-only)")
+    calibration.add_argument("manifest", help="a run manifest whose roles.checker names the client and model")
+    calibration.add_argument("--max-usd", type=float, default=1.0, help="Claude spend cap for the calibration")
+    calibration.add_argument("--max-tokens", type=int, default=400000, help="Codex token cap for the calibration")
+    calibration.add_argument("--wall-minutes", type=int, default=20)
+    calibration.set_defaults(func=calibrate)
     for name, func in (("status", status_cmd), ("stop", stop), ("resume", resume)):
         item = sub.add_parser(name)
         item.add_argument("run_id", nargs="?" if name == "status" else None)

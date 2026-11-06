@@ -100,6 +100,24 @@ example from a process a role left running, refuses acceptance: the run escalate
 checked commit and where the branch is now. `accepted_commit` in the run state, the
 `run_accepted` event and `candidate_commit` in the verification receipt all name that one commit.
 
+**Checker calibration.** `python3 .agentsmith/autonomous-run.py calibrate <manifest>` tests the
+checker that the manifest names (`roles.checker`: client, model and effort) on two built-in
+candidates with known answers. The clean candidate implements a small spec correctly and must be
+accepted with valid citations. The other candidate has an injected defect: its own test passes,
+so the verifier cannot see the defect, but the code breaks the spec, and the checker must reject
+it. Each candidate goes through the real verifier sandbox and the real checker launch. The command
+writes a calibration receipt to the repository's Git folder, under `agentsmith-calibrations/`. The
+receipt records the status, the date, the client and its version, the model, the effort, the hash
+of the checker prompt template, each candidate's verdict and the spend. The status is `passed`
+(both verdicts right), `failed` (a wrong verdict, an acceptance whose citations do not hold, or a
+receipt that does not name the candidate) or `error` (the client could not run). The exit code is
+0, 1 or 2 to match. `--max-usd` (default 1.0) caps Claude spend, `--max-tokens` (default 400,000)
+caps Codex tokens and `--wall-minutes` (default 20) caps time. Every later run records the latest
+calibration for its checker client, model, effort and prompt hash as `checker_calibration` in its
+verification receipt, or `{"status": "none"}` when none matches. A changed prompt template needs a
+new calibration. This is a record only: no run waits for or depends on a calibration yet. Roles
+cannot write the calibration folder.
+
 **The run receipt records the risk tier.** At acceptance the controller classifies the change from
 the base commit to the accepted commit, as `agentsmith risk classify` does (see
 [the risk map](29-risk-map.md)), with the policy committed at the base, so a candidate that edits
