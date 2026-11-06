@@ -408,6 +408,67 @@ An accepted run prints the branch, commit, worktree, and evidence for human revi
 run prints the exact boundary that stopped it. Nothing leaves the machine until the operator
 separately authorizes the relevant external action.
 
+## Landing an accepted run
+
+The controller never pushes, opens a pull request or merges, and no role has network access or
+credentials. Landing is an attended step that the operator approves (see the autonomous-run
+skill). `deliver` prepares it:
+
+```text
+python3 .agentsmith/autonomous-run.py deliver <run-id> --dry-run [--json]
+```
+
+It refuses, and names every reason, unless all of these hold:
+
+- the run is `accepted`, and its branch `agentsmith/<run-id>` still points at the accepted commit;
+- the verification receipt names that commit, the checker receipt still matches its recorded
+  hash and accepts that commit, and the receipt records that the citations were checked;
+- the verifier log still matches its recorded hash, and the citations that quote it still hold
+  (files the verifier left in its disposable worktree are gone; they were checked at acceptance);
+- the run manifest is unchanged since the run started;
+- the base branch (`--base-branch`, by default the remote's `HEAD`) has been fetched, and the
+  accepted diff still applies to it (`git merge-tree`, Git 2.38 or later).
+
+It then recomputes the risk tier from the base commit with the base policy, and the recorded tier
+can only rise: the result is the highest of the recorded, recomputed and declared tiers. It
+reports how many commits the accepted commit is behind the base branch. It prints the exact push
+command, `git push origin <accepted-commit>:refs/heads/agentsmith/<run-id>`, and a pull-request
+title and body built only from receipts:
+
+- the tier and its lenses;
+- the verifier and checker evidence;
+- the checker calibration status;
+- the budgets used;
+- the base staleness;
+- the eligibility line.
+
+Text that a model wrote, the maker summary and the checker evidence, sits in code blocks, so no
+link, Markdown or `@`-mention in it takes effect. The body names no local path.
+
+### Auto-merge eligibility
+
+The body ends with one line, bound to the exact head commit:
+
+```text
+Auto-merge eligible: yes|no for <sha> — tier A: met; no floor path: met; ...
+```
+
+It lists six facts, each `met` or `unmet` with the reason:
+
+1. the tier is A;
+2. no changed path is on the risk map's fixed floor;
+3. the checker accepted with valid citations;
+4. a passing calibration matches this checker (client, model, effort and prompt);
+5. the head equals the accepted commit;
+6. CI is green for this commit.
+
+The answer is `yes` only when all six are met. At dry-run time there is no CI yet, so the last
+fact reads `pending CI` and the answer is `no`. After CI, run
+`deliver <run-id> --eligibility --sha <sha>`: it repeats every check, reads CI with
+`agentsmith ci watch` (or a saved `ci watch --json` report given with `--ci-report`), and prints
+the line and body again. The line is information only: a human merges, and nothing in this
+release merges automatically.
+
 ## Parallel work graphs
 
 `agentsmith graph validate --graph <repository-relative-json>` checks a clean, committed graph and

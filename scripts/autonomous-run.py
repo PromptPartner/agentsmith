@@ -2450,6 +2450,8 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
                       if claims_acceptance else None)
             if defect:
                 proof["checker_defect"] = defect
+            elif claims_acceptance:
+                proof["citations"] = "valid"  # what `deliver` requires before it prints a push command
             write_json(proof_path, proof)
         if defect:
             # An acceptance whose evidence does not hold is a checker defect, not an acceptance:
@@ -2946,6 +2948,228 @@ def resume(args: argparse.Namespace) -> int:
             release_lifecycle_lock(run_dir, token)
 
 
+# Delivery: the controller checks an accepted run and prints what an operator needs to land it. It
+# never pushes, opens a pull request or merges; roles have no network and no credentials, so the
+# push happens in an attended step (skills/autonomous-run/SKILL.md).
+ELIGIBILITY_FACTS = ("tier A", "no floor path", "checker accepted with valid citations",
+                     "passing calibration for this checker", "head equals the accepted commit",
+                     "CI green for this commit")
+
+
+def fenced(text: str) -> str:
+    """Model-written text in a code block: no Markdown, links or @-mentions take effect there."""
+    clean = "".join(char if char.isprintable() or char == "\n" else " " for char in text)
+    return "```text\n" + clean.replace("```", "` ` `").strip() + "\n```"
+
+
+def base_staleness(repo: Path, remote: str, base: str, accepted: str) -> tuple[dict[str, Any], str | None]:
+    ref = f"refs/remotes/{remote}/{base}"
+    if not git(repo, "rev-parse", "--verify", "--quiet", ref, check=False):
+        return {}, f"{ref} is missing; fetch {remote} first, or name the branch with --base-branch"
+    behind = int(git(repo, "rev-list", "--count", f"{accepted}..{ref}") or 0)
+    # `git merge-tree --write-tree` (Git 2.38+) merges without touching any worktree: 0 is clean,
+    # 1 is a conflict. Anything else means this Git cannot tell.
+    merged = run(["git", "merge-tree", "--write-tree", "--quiet", ref, accepted], repo)
+    if merged.returncode not in {0, 1}:
+        return {}, f"cannot tell whether the accepted diff applies to {remote}/{base} (needs Git 2.38 or later)"
+    staleness = {"base": f"{remote}/{base}", "behind": behind, "applies": merged.returncode == 0}
+    if merged.returncode == 1:
+        return staleness, f"the accepted diff does not apply to {remote}/{base}; rework the run on the new base"
+    return staleness, None
+
+
+def delivery_checks(repo: Path, state: dict[str, Any], remote: str, base: str | None) -> dict[str, Any]:
+    """Every check `deliver` makes. Any mismatch refuses, with all reasons at once."""
+    run_id = state.get("run_id")
+    if state.get("status") != "accepted":
+        raise RunError(f"deliver refused: run {run_id} is {state.get('status')}, not accepted")
+    problems: list[str] = []
+    accepted, branch = str(state.get("accepted_commit")), str(state.get("branch"))
+    run_dir = Path(state["state_path"]).parent
+    tip = git(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}", check=False)
+    if tip != accepted:
+        problems.append(f"branch {branch} is at {tip[:12] or 'nothing'}, not the accepted commit {accepted[:12]}")
+    manifest_path = Path(state["manifest_path"])
+    if not manifest_path.is_file() or hashlib.sha256(manifest_path.read_bytes()).hexdigest() != state.get("manifest_sha256"):
+        problems.append("the run manifest changed since the run started")
+    try:
+        proof = load_json(Path(str(state.get("verification_receipt"))))
+    except RunError:
+        raise RunError("deliver refused: the verification receipt is missing or unreadable") from None
+    if proof.get("candidate_commit") != accepted:
+        problems.append(f"the verification receipt names {str(proof.get('candidate_commit'))[:12]}, "
+                        f"not the accepted commit {accepted[:12]}")
+    receipt_path = run_dir / f"attempt-{state.get('attempt')}-checker-receipt.json"
+    if file_digest(receipt_path) != proof.get("checker_receipt_sha256"):
+        problems.append("the checker receipt no longer matches its recorded hash")
+        checker: dict[str, Any] = {}
+    else:
+        checker = load_json(receipt_path)
+        if checker.get("status") != "accepted" or checker.get("commit") != accepted:
+            problems.append("the checker receipt is not an acceptance of the accepted commit")
+    if proof.get("citations") != "valid":
+        problems.append("the verification receipt does not record checked citations")
+    # The verifier log is still in the run folder: hash it again and re-check the citations that
+    # quote it. Files the verifier left in its disposable worktree are gone; their hashes were
+    # checked at acceptance.
+    log = run_dir / f"attempt-{state.get('attempt')}-verify.txt"
+    index = proof.get("evidence_files") if isinstance(proof.get("evidence_files"), dict) else {}
+    if log.name not in index or file_digest(log) != index.get(log.name):
+        problems.append(f"{log.name} changed after the verifier finished")
+    elif checker:
+        quoting_log = [item for item in checker.get("evidence", [])
+                       if isinstance(item, str) and f" :: {log.name}" in item]
+        if quoting_log:
+            problem = citation_problem({"evidence": quoting_log}, {log.name: index[log.name]}, log,
+                                       run_dir / "no-worktree", int(state.get("attempt", 0)))
+            if problem:
+                problems.append(f"a citation no longer holds: {problem}")
+    manifest = load_json(manifest_path) if manifest_path.is_file() else {}
+    base = base or default_branch(repo, remote)
+    staleness: dict[str, Any] = {}
+    if base is None:
+        problems.append(f"cannot tell the base branch: {remote}/HEAD is not set; pass --base-branch")
+    else:
+        staleness, problem = base_staleness(repo, remote, base, accepted)
+        if problem:
+            problems.append(problem)
+    if problems:
+        raise RunError("deliver refused: " + "; ".join(problems))
+    import risk_map
+    recorded = (state.get("risk") or {}).get("tier") if isinstance(state.get("risk"), dict) else None
+    try:
+        report = risk_map.classify_range(repo, str(state["base_head"]), accepted)
+    except (risk_map.PolicyError, risk_map.RiskError) as exc:
+        raise RunError(f"deliver refused: cannot recompute the risk tier: {exc}") from None
+    declared = manifest.get("risk_tier")
+    tier = risk_map.raise_tier(report["tier"], recorded if recorded in risk_map.TIERS else "A")
+    tier = risk_map.raise_tier(tier, declared if declared in risk_map.TIERS else "A")
+    floor = sorted(row["path"] for row in report["paths"] if any(reason.startswith("floor:") for reason in row["matched"]))
+    return {"state": state, "proof": proof, "checker": checker, "manifest": manifest, "accepted": accepted,
+            "branch": branch, "staleness": staleness,
+            "tier": {"tier": tier, "recorded": recorded, "recomputed": report["tier"], "declared": declared,
+                     "lenses": report["lenses"], "policy_blob": report["policy"]["blob"], "floor_paths": floor},
+            "calibration": calibration_status(repo, (manifest.get("roles") or {}).get("checker") or {})}
+
+
+def default_branch(repo: Path, remote: str) -> str | None:
+    head = git(repo, "symbolic-ref", "--quiet", "--short", f"refs/remotes/{remote}/HEAD", check=False)
+    return head.split("/", 1)[1] if head.startswith(f"{remote}/") else None
+
+
+def eligibility(checks: dict[str, Any], sha: str, ci: dict[str, Any] | None) -> dict[str, Any]:
+    """D2: informational only. "yes" needs every fact; nothing merges because of it."""
+    tier = checks["tier"]
+    calibration = checks["calibration"].get("status")
+    if ci is None:
+        ci_fact = (None, "pending CI")
+    elif ci.get("sha") != sha:
+        ci_fact = (False, f"unmet (the report is for {str(ci.get('sha'))[:12]})")
+    else:
+        ci_fact = (ci.get("state") == "green", "met" if ci.get("state") == "green" else f"unmet ({ci.get('state')})")
+    facts = [
+        (tier["tier"] == "A", f"unmet ({tier['tier']})"),
+        (not tier["floor_paths"], f"unmet ({', '.join(tier['floor_paths'][:3])})"),
+        (True, ""),  # delivery_checks already refused anything else
+        (calibration == "passed", f"unmet ({calibration})"),
+        (sha == checks["accepted"], f"unmet ({sha[:12]} is not {checks['accepted'][:12]})"),
+        ci_fact,
+    ]
+    rows = [{"fact": name, "met": met, "detail": "met" if met else detail}
+            for name, (met, detail) in zip(ELIGIBILITY_FACTS, facts)]
+    eligible = all(row["met"] is True for row in rows)
+    line = (f"Auto-merge eligible: {'yes' if eligible else 'no'} for {sha} — "
+            + "; ".join(f"{row['fact']}: {row['detail']}" for row in rows))
+    return {"eligible": eligible, "sha": sha, "facts": rows, "line": line}
+
+
+def delivery_body(checks: dict[str, Any], verdict: dict[str, Any]) -> str:
+    state, proof, checker, manifest = checks["state"], checks["proof"], checks["checker"], checks["manifest"]
+    tier, limits, staleness = checks["tier"], manifest.get("limits") or {}, checks["staleness"]
+    maker = state.get("maker_receipt") or {}
+    calibration = checks["calibration"]
+    lines = [
+        f"## Autonomous run {state['run_id']}",
+        "",
+        f"Implementation ticket: {manifest.get('implementation_ticket')}. Accepted commit `{checks['accepted']}` "
+        f"on base `{state.get('base_head')}`.",
+        "",
+        "### Maker summary",
+        fenced(str(maker.get("summary", ""))),
+        "",
+        "### Risk",
+        f"Tier **{tier['tier']}** (recorded {tier['recorded']}, recomputed now {tier['recomputed']}, "
+        f"declared {tier['declared'] or 'none'}). Lenses: {', '.join(tier['lenses']) or 'none'}. "
+        f"Policy blob at the base: `{tier['policy_blob'] or 'none'}`.",
+        "",
+        "### Verification",
+        f"Verifier exit {proof.get('exit_code')}; output `{proof.get('output_sha256')}`; "
+        f"{len(proof.get('evidence_files') or {})} evidence file(s) recorded by hash.",
+        "",
+        "### Checker",
+        f"Status {checker.get('status')}; every citation was checked at acceptance, and the ones that quote "
+        "the verifier log were checked again now.",
+        fenced("\n".join(f"- {item}" for item in checker.get("evidence", []))),
+        "",
+        "### Calibration",
+        f"Checker calibration: {calibration.get('status')}"
+        + (f" ({calibration.get('calibrated_at')})" if calibration.get("calibrated_at") else "") + ".",
+        "",
+        "### Budgets used",
+        f"Attempts: {state.get('attempt')} of {limits.get('max_attempts')}. Claude: "
+        f"{float(state.get('claude_cost_usd', 0.0)):.2f} USD of {limits.get('claude_max_usd')}. Codex: "
+        f"{state.get('codex_tokens_used')} tokens of {limits.get('codex_goal_tokens')}.",
+        "",
+        "### Base",
+        f"{staleness['behind']} commit{'s' if staleness['behind'] != 1 else ''} behind {staleness['base']}; "
+        "the accepted diff applies cleanly.",
+        "",
+        verdict["line"],
+        "",
+        "Auto-merge eligibility is information only: a human merges this pull request, and nothing in this "
+        "release merges automatically.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def deliver(args: argparse.Namespace) -> int:
+    """Check an accepted run and print its push command and pull-request text; never push."""
+    if not args.dry_run and not args.eligibility:
+        raise RunError("deliver only checks and prints: pass --dry-run, or --eligibility --sha <sha> after "
+                       "CI; the controller never pushes")
+    if args.eligibility and not (args.sha and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", args.sha)):
+        raise RunError("--eligibility needs --sha with the full lowercase commit SHA that CI ran")
+    repo = repo_root(Path.cwd())
+    checks = delivery_checks(repo, load_run(repo, args.run_id), args.remote, args.base_branch)
+    sha = args.sha if args.eligibility else checks["accepted"]
+    ci: dict[str, Any] | None = None
+    if args.eligibility:
+        if args.ci_report:
+            ci = load_json(Path(args.ci_report))
+        else:
+            import ci_watch  # read-only GitHub reads through gh, as `agentsmith ci watch` does
+            try:
+                ci = ci_watch.watch(ci_watch.Gh(), None, sha=sha)
+            except ci_watch.GhError as exc:
+                raise RunError(f"ci watch could not run: {exc}") from None
+    verdict = eligibility(checks, sha, ci)
+    summary = " ".join(str((checks["state"].get("maker_receipt") or {}).get("summary", "")).split())
+    title = (f"{checks['branch']}: {summary}"[:72]).rstrip()
+    report = {"run_id": args.run_id, "head": checks["accepted"], "branch": checks["branch"],
+              "push_command": f"git push {args.remote} {checks['accepted']}:refs/heads/{checks['branch']}",
+              "title": title, "body": delivery_body(checks, verdict), "tier": checks["tier"],
+              "staleness": checks["staleness"], "calibration": checks["calibration"], "eligibility": verdict}
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
+    print(f"deliver {args.run_id}: ready; nothing was pushed")
+    print(f"push: {report['push_command']}")
+    print(f"title: {title}")
+    print("body:")
+    print(report["body"], end="")
+    return 0
+
+
 # Checker calibration: the configured checker client and model judge two built-in candidates with
 # known labels. A clean change must be accepted with valid citations; a change whose tests pass
 # but which breaks the spec (an injected defect the verifier cannot see) must be rejected.
@@ -3171,6 +3395,18 @@ def parser() -> argparse.ArgumentParser:
     begin.add_argument("--graph", help="committed work-graph path authorizing a pinned effective base")
     begin.add_argument("--effective-base", help="exact graph-owned root or dependency checkpoint commit OID")
     begin.set_defaults(func=start)
+    landing = sub.add_parser("deliver", help="check an accepted run and print its push command and pull-request "
+                                             "text; it never pushes")
+    landing.add_argument("run_id")
+    landing.add_argument("--dry-run", action="store_true", help="check the run and print what landing needs")
+    landing.add_argument("--eligibility", action="store_true",
+                         help="re-evaluate the auto-merge eligibility line after CI for --sha")
+    landing.add_argument("--sha", help="the full commit SHA that CI ran (with --eligibility)")
+    landing.add_argument("--ci-report", help="a saved `agentsmith ci watch --json` report (default: run the watch)")
+    landing.add_argument("--remote", default="origin")
+    landing.add_argument("--base-branch", help="the branch the pull request targets (default: the remote's HEAD)")
+    landing.add_argument("--json", action="store_true")
+    landing.set_defaults(func=deliver)
     calibration = sub.add_parser("calibrate", help="judge two labelled candidates with the configured "
                                                      "checker and record the result (record-only)")
     calibration.add_argument("manifest", help="a run manifest whose roles.checker names the client and model")
