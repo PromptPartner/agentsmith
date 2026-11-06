@@ -1858,6 +1858,48 @@ class AutonomousStateTests(unittest.TestCase):
             with self.assertRaisesRegex(CONTROLLER.RunError, "temporary Git object file did not settle"):
                 CONTROLLER.git_metadata(repo)
 
+    def test_git_metadata_waits_for_a_transient_ref_lock_without_ignoring_packed_refs(self) -> None:
+        # Git's files backend holds packed-refs.lock during ordinary ref transactions: a sibling run's
+        # commit or `git worktree add` in the shared common directory, even when packed-refs itself
+        # does not change. A snapshot that caught the lock on one side reported protected metadata changed.
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        env.update(GIT_AUTHOR_NAME="Test", GIT_AUTHOR_EMAIL="test@example.com",
+                   GIT_COMMITTER_NAME="Test", GIT_COMMITTER_EMAIL="test@example.com")
+        with tempfile.TemporaryDirectory(prefix="agentsmith ref lock ") as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True, env=env)
+            (repo / "README.md").write_text("fixture\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, env=env)
+            subprocess.run(["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-qm", "fixture"],
+                           check=True, env=env)
+            # Runs snapshot from their own linked worktree; the lock appears in the shared common directory.
+            worktree = Path(temporary) / "run"
+            subprocess.run(["git", "-C", str(repo), "worktree", "add", "-qb", "agentsmith/run", str(worktree)],
+                           check=True, env=env)
+            before = CONTROLLER.git_metadata(worktree)
+            for name in ("packed-refs.lock", "HEAD.lock", "config.lock"):
+                with self.subTest(lock=name):
+                    lock = repo / ".git" / name
+                    lock.write_bytes(b"a ref transaction in progress")
+                    clear = threading.Timer(0.15, lock.unlink)
+                    clear.start()
+                    try:
+                        after = CONTROLLER.git_metadata(worktree)
+                    finally:
+                        clear.join()
+                    CONTROLLER.validate_git_unchanged(before, after, "sibling")
+            # A lock that never clears is not settled metadata: fail closed and name it.
+            stale = repo / ".git" / "packed-refs.lock"
+            stale.write_bytes(b"left behind")
+            with self.assertRaisesRegex(CONTROLLER.RunError, "packed-refs.lock"):
+                CONTROLLER.git_metadata(worktree)
+            stale.unlink()
+            # A real change to packed-refs is still caught: the file itself is compared.
+            subprocess.run(["git", "-C", str(repo), "pack-refs", "--all"], check=True, env=env)
+            with self.assertRaisesRegex(CONTROLLER.RunError, "protected_files"):
+                CONTROLLER.validate_git_unchanged(before, CONTROLLER.git_metadata(worktree), "sibling")
+
     def test_maker_metadata_recognizes_exact_peer_that_starts_and_ends_mid_window(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith peer window ") as temporary:
             repo = Path(temporary) / "repo"

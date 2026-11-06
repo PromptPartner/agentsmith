@@ -72,11 +72,24 @@ been authorized, so the entries are kept here.
   subcommand help should expose only each operation's valid flags. Fixed 2026-10-26: `discover`
   and `apply` are subcommands with their own flags. `VerifyHelpTests` in `test-verify-receipts.py`
   failed before and pass after; wrong-operation flags still exit 2.
-- [ ] 2026-09-22 — A local macOS `agentsmith verify` run failed at the parallel work-graph
+- [x] 2026-09-22 — A local macOS `agentsmith verify` run failed at the parallel work-graph
   lifecycle fixture when a child snapshot classified transient `packed-refs.lock` as protected
   Git metadata. Both child worktrees were clean afterward. The focused fixture and the full
   31-phase gate passed on rerun. The exact writer and safe snapshot exclusion need diagnosis.
-- [ ] 2026-09-21 — Hosted macOS native lifecycle intermittently failed its cleanup-preview test
+  Root cause, 2026-11-06: Git's files ref backend holds `packed-refs.lock` in the shared common
+  directory during ordinary ref transactions, even when `packed-refs` does not change. A probe
+  with Apple Git 2.54 saw the lock during every `git commit`, `git worktree add -b` and
+  `git worktree add --detach`. A sibling child's commit could therefore put the lock into one of
+  this child's two snapshots only. It recurred in push run `42240813808` (`884ab3c`, macOS
+  compatibility, `test_cleanup_preview_retains_foreign_and_source_artifacts`, child reason
+  "runtime changed protected Git metadata: protected_files: packed-refs.lock"). Fixed: a
+  snapshot is now taken only when no Git `*.lock` is held in the common directory; it retries for
+  up to 2 seconds and then fails closed, naming the lock. `packed-refs`, `config` and `HEAD`
+  themselves are still compared. `test_git_metadata_waits_for_a_transient_ref_lock_without_ignoring_packed_refs`
+  failed before (three locks reported as changed metadata; a stale lock not refused) and passes
+  after, and it checks that a real `packed-refs` change is still caught. Racing a real sibling
+  `git commit` loop against 150 snapshot pairs gave 11 false changes before and 0 after.
+- [x] 2026-09-21 — Hosted macOS native lifecycle intermittently failed its cleanup-preview test
   in run `35607452415`, although the same suite passed in that run's compatibility job and in
   five local targeted attempts. Run `35605909782` had passed both paths. The exact failing
   assertion is not yet known. A later docs-only push run `35610061317` failed in the macOS
@@ -100,7 +113,13 @@ been authorized, so the entries are kept here.
   traceback paths or output. Manual workflow run `35697924409` passed the macOS native and
   compatibility lifecycle on commit `13bfb84`; its hosted aggregate accepted all three native
   reports from tree `a9e84ec`. The original failure did not recur, so keep this issue open
-  until its failing assertion is captured.
+  until its failing assertion is captured. 2026-11-06: the same test failed in push run
+  `42240813808` with the child reason "runtime changed protected Git metadata: protected_files:
+  packed-refs.lock": graph `start` failed because one child escalated on a sibling's transient
+  ref lock, the cause fixed in the 2026-09-22 entry above. The 2026-09-21 artifact itself cannot
+  be re-read, so that run's assertion stays unconfirmed; the stop/resume object repacking has its
+  own mitigation above. Marked fixed on that evidence; reopen if the cleanup-preview test fails
+  for another reason.
 - [ ] 2026-09-21 — PR run `35641860248` exposed a macOS false negative in the new Git
   text-conversion regression: `git status` sometimes trusted cached index metadata immediately
   after the test changed `core.autocrlf`, so it reported a clean worktree even though the

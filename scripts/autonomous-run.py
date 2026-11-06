@@ -1241,24 +1241,31 @@ def git_metadata(repo: Path, *, known_peers: dict[str, Any] | None = None) -> di
     """Take a stable snapshot; never exempt a persistent non-object from tamper checks.
 
     Parallel Git commits briefly create tmp_obj files and maintenance.lock in the
-    shared object store. Retry while those exact temporary names exist, then fail
-    closed if they do not settle. All committed objects and other Git metadata
-    remain compared.
+    shared object store, and Git's files ref backend holds lock files such as
+    packed-refs.lock during ordinary ref transactions (a peer's commit or
+    `git worktree add`), even when packed-refs itself does not change. Retry while
+    any of these exist, so a snapshot is only taken when no Git lock is held, then
+    fail closed if they do not settle. The locked files themselves (packed-refs,
+    config, HEAD) and all committed objects remain compared.
     """
     deadline = time.monotonic() + 2
+    locks: list[str] = []
     while True:
         try:
             snapshot = _git_metadata_once(repo, known_peers=known_peers)
         except FileNotFoundError:
-            # A peer may have renamed its temporary object during the scan.
+            # A peer may have renamed its temporary object or released its lock during the scan.
             snapshot = None
         if snapshot is not None:
             temporary = [path for path, _ in snapshot["existing_objects"]
                          if (path == "objects/maintenance.lock" or re.fullmatch(
                              r"objects/(?:[0-9a-f]{2}|pack)/tmp_(?:obj|pack|idx|rev)_[^/]+", path))]
-            if not temporary:
+            locks = [path for path, _ in snapshot["protected_files"] if path.endswith(".lock")]
+            if not temporary and not locks:
                 return snapshot
         if time.monotonic() >= deadline:
+            if snapshot is not None and locks:
+                raise RunError("Git lock file did not clear before metadata validation: " + ", ".join(locks[:8]))
             raise RunError("temporary Git object file did not settle before metadata validation")
         time.sleep(0.02)
 
