@@ -199,6 +199,8 @@ class PureClassifyTests(unittest.TestCase):
         bad = (
             b"{", b"[]", json.dumps({"rules": []}).encode(),
             json.dumps({"schema_version": 2, "rules": []}).encode(),
+            json.dumps({"schema_version": True, "rules": []}).encode(),
+            json.dumps({"schema_version": 1.0, "rules": []}).encode(),
             policy({"paths": ["docs/**"], "tier": "D"}),
             policy({"paths": ["docs/**"], "tier": "a"}),
             policy({"paths": [], "tier": "A"}),

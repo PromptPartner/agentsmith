@@ -134,7 +134,8 @@ def load_policy(data: bytes | None) -> dict[str, Any]:
         raise PolicyError(f"policy is not valid JSON: {exc}") from None
     if not isinstance(policy, dict) or set(policy) != {"schema_version", "rules"}:
         raise PolicyError("policy must be an object with exactly schema_version and rules")
-    if policy["schema_version"] != SCHEMA_VERSION or not isinstance(policy["rules"], list):
+    if type(policy["schema_version"]) is not int or policy["schema_version"] != SCHEMA_VERSION \
+            or not isinstance(policy["rules"], list):
         raise PolicyError(f"policy needs schema_version {SCHEMA_VERSION} and a rules array")
     rules = []
     for number, rule in enumerate(policy["rules"], start=1):
