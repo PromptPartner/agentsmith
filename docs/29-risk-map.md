@@ -1,0 +1,122 @@
+# Risk map
+
+`agentsmith risk classify` reports how risky a change is. It reads the paths that changed between
+two commits and returns a **tier** and the **lenses** (specialist reviews) that the change
+triggers. The tier comes from a policy file that you commit. It does not come from the agent that
+wrote the change.
+
+```sh
+agentsmith risk classify --base main --head my-branch
+agentsmith risk classify --base 1a2b3c4 --head 5d6e7f8 --json
+```
+
+The command is read-only. It writes no file and contacts no service. Today the tier is a report:
+it does not skip any review, and nothing merges automatically because of it.
+
+## Tiers
+
+Tiers are ordered from lowest to highest risk. The result of a change is the highest tier of any
+path it touches.
+
+| Tier | Meaning | Typical paths |
+|---|---|---|
+| `A` | Low risk inside an accepted direction | Documentation, tests, small tooling |
+| `B` | Needs the operator's agreement for the area | Application code, user-facing text and locales |
+| `C` | The operator reviews every change | Authentication, permissions, dependencies, billing logic |
+| `human` | Outside what the policy can classify; the operator reviews it in person | Unmatched paths and the fixed floor below |
+
+## The policy file
+
+The policy is `.harness/risk-policy.json`. A starting point is
+[`templates/risk-policy.json`](../templates/risk-policy.json): copy it to
+`.harness/risk-policy.json`, adapt the paths to your project, and commit it.
+
+```json
+{
+  "schema_version": 1,
+  "rules": [
+    {"paths": ["docs/**", "**/*.md"], "tier": "A"},
+    {"paths": ["src/**"], "tier": "B"},
+    {"paths": ["src/auth/**"], "tier": "C", "lenses": ["security"]}
+  ]
+}
+```
+
+- Each rule has `paths` (one or more globs), a `tier` (`A`, `B`, `C` or `human`) and optional
+  `lenses` (lowercase ids such as `security`). Other keys are an error.
+- Globs start at the repository root. `*` and `?` match inside one folder name; `**` matches any
+  number of whole folders, including none, so `docs/**` also covers an entry named `docs`.
+  `*.md` matches only Markdown files at the root; use `**/*.md` for any depth. Use `/` as the
+  separator. Matching takes time proportional to the pattern and path lengths, so no pattern can
+  stall a classification.
+- Every rule that matches a path counts, and the highest tier wins. Rule order does not matter, so
+  a broad rule cannot hide a stricter one. The lenses of all matching rules add up.
+- Names match ignoring case, because macOS and Windows open `Src/Auth` for `src/auth`, and
+  ignoring trailing dots and spaces in each name, because Windows opens `AGENTS.md.` for `AGENTS.md`.
+- A path that matches no rule is `human`.
+
+**The policy is read at `--base`.** A change that edits the policy is still classified by the
+policy it started from, so a candidate cannot relax the rules that judge it. Pass the commit the
+work started from as `--base`. If the base commit has no policy, every path is `human`. If the
+policy at the base is invalid, the command exits with status 2 and prints nothing on standard
+output.
+
+## The fixed floor
+
+Some paths are `human` whatever the policy says. The floor is part of the program, not of the
+policy, so no policy can remove it. Names match ignoring case and trailing dots and spaces.
+
+| Floor | Paths |
+|---|---|
+| Agent instructions | `AGENTS.md`, `AGENTS.override.md`, `CLAUDE.md`, `CLAUDE.local.md`, `GEMINI.md` at any depth; anything inside a `.claude/`, `.codex/`, `.agents/` or `.cursor/` folder |
+| Continuous integration | `.github/workflows` and `.github/actions` and anything inside them, any `CODEOWNERS` file |
+| Harness | `.harness/**` (including the policy itself), `.agentsmith/**`, `agentsmith.py`, `scripts/autonomous-run.py`, `native_launcher.py`, `work_graph.py`, `windows_verifier_sandbox.py`, `risk_map.py`, `scripts/verify*` |
+| Credentials | Names starting with `.env` or `id_`, names ending in `.pem` or `_key`, a `secrets` folder and anything inside it |
+| Migrations | A `migrations` folder and anything inside it |
+
+The floor errs toward review. The credential names can match ordinary files, such as
+`id_utils.py`; such a change is `human` and the operator reviews it.
+
+## What counts as changed
+
+Every added, modified, deleted or type-changed path counts. A renamed or copied file counts by its
+old path **and** its new path, so moving a file out of a strict area keeps the strict tier, and
+moving one into a floor path is `human`. Copies are found among all files at the base, changed or
+not, so copying a protected file elsewhere counts the protected source too. That search compares
+each new file with every file at the base and can take a while in a large repository.
+
+Copy detection relies on Git's similarity check (at least half the content alike). Content that
+is copied by hand and then changed beyond that, or spread over several files, cannot be traced to
+its source; such a change is classified by its new paths only.
+
+A symlink or a submodule (Git calls it a gitlink) on either side of a change is at least `C`, with
+`type:symlink` or `type:submodule` in `matched`. Its effect lies outside the diff: a link points
+at another file, and a submodule pulls in another repository at a new commit. Neither can be
+classified from its path alone, but both are ordinary in many projects, so they need the
+operator's review every time rather than the `human` floor. A folder entry on the floor, such as a
+submodule placed at `.github/workflows`, is `human` like the folder's contents.
+
+A range with no changed paths is `human`, because nothing was classified.
+
+## A tier can be raised, never lowered
+
+A reviewer may decide that a change is riskier than its paths suggest. A recorded tier can be
+raised to a higher one, but never lowered; programs use `risk_map.raise_tier(recorded, proposed)`,
+which returns the higher of the two.
+
+## JSON report
+
+`--json` prints one line of ASCII JSON with sorted keys and sorted paths. The same range gives
+the same bytes on macOS, Linux and Windows.
+
+```json
+{"base": "<commit>", "head": "<commit>", "lenses": ["security"],
+ "paths": [{"lenses": ["security"], "matched": ["rule:2", "rule:3"], "path": "src/auth/login.py", "tier": "C"}],
+ "policy": {"blob": "<policy blob id at base, or null>", "path": ".harness/risk-policy.json"},
+ "schema_version": 1, "tier": "C"}
+```
+
+`matched` names the reasons for each path: `rule:N` is the Nth rule in the policy (counting from
+1), `floor:<category>` is a floor entry, `type:symlink` and `type:submodule` mark special entries,
+`unreadable-name` marks a name that is not valid UTF-8 (always `human`; its bytes appear as
+`\udcXX` escapes), and `unmatched` means no rule matched.
