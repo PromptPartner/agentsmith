@@ -8183,8 +8183,7 @@ def acquire_verify_lock(root: Path, *, wait: bool = False, poll_seconds: float =
                 holder, age = {}, 0.0
             pid = holder.get("pid") if isinstance(holder, dict) else None
             if (pid is not None and not verify_process_is_live(pid)) or (pid is None and age > VERIFY_LOCK_EMPTY_SECONDS):
-                with contextlib.suppress(FileNotFoundError):
-                    path.unlink()  # the holder is gone; reclaim its lock
+                remove_verify_lock_file(path)  # the holder is gone; reclaim its lock
                 continue
             if not wait:
                 raise VerifyLockHeld(
@@ -8200,6 +8199,22 @@ def acquire_verify_lock(root: Path, *, wait: bool = False, poll_seconds: float =
         return path
 
 
+def remove_verify_lock_file(path: Path, *, timeout: float = 5.0) -> None:
+    """Delete a lock file, retrying a sharing denial: Windows refuses to delete a file that another
+    process has open, such as a waiting gate that is reading who holds it."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            path.unlink()
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
+
+
 def release_verify_lock(path: Path | None) -> None:
     if path is None:
         return
@@ -8209,8 +8224,7 @@ def release_verify_lock(path: Path | None) -> None:
     except (OSError, ValueError):
         return
     if isinstance(holder, dict) and holder.get("pid") == os.getpid():
-        with contextlib.suppress(FileNotFoundError):
-            path.unlink()
+        remove_verify_lock_file(path)
 
 
 def cmd_verify(args: argparse.Namespace) -> int:

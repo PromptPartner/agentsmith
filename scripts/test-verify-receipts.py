@@ -673,7 +673,8 @@ class VerifyLockTests(unittest.TestCase):
         for command in self.runners():
             with self.subTest(runner=command[1]):
                 self.hold(os.getpid())
-                release = threading.Timer(1.0, self.lock.unlink)
+                # The holder releases as a real gate does, retrying a Windows sharing denial.
+                release = threading.Timer(1.0, AGENTSMITH.remove_verify_lock_file, (self.lock,))
                 release.start()
                 started = time.monotonic()
                 try:
@@ -706,6 +707,34 @@ class VerifyLockTests(unittest.TestCase):
         result = self.run_gate(self.runners()[0])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.marker.read_text(encoding="utf-8"), "xx")
+
+    def test_a_sharing_denial_on_delete_is_retried(self) -> None:
+        # Windows refuses to delete a file another process has open: a waiting gate reading the lock
+        # while the holder releases it, or while a stale lock is reclaimed.
+        real_unlink = Path.unlink
+        denials = {"left": 2}
+
+        def busy_unlink(path: Path, missing_ok: bool = False) -> None:
+            if path.name == "agentsmith-verify.lock" and denials["left"]:
+                denials["left"] -= 1
+                raise PermissionError(13, "The process cannot access the file because it is being used by another process")
+            real_unlink(path, missing_ok=missing_ok)
+
+        self.hold(os.getpid())
+        with mock.patch.object(Path, "unlink", busy_unlink):
+            AGENTSMITH.release_verify_lock(self.lock)
+        self.assertFalse(self.lock.exists())
+        gone = subprocess.Popen([sys.executable, "-c", "pass"])
+        gone.wait()
+        self.hold(gone.pid)
+        denials["left"] = 2
+        with mock.patch.object(Path, "unlink", busy_unlink), mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AGENTSMITH_VERIFY_LOCK", None)
+            taken = AGENTSMITH.acquire_verify_lock(self.root)
+        try:
+            self.assertEqual(json.loads(self.lock.read_text(encoding="utf-8"))["pid"], os.getpid())
+        finally:
+            AGENTSMITH.release_verify_lock(taken)
 
     def test_a_receipt_names_its_tree_and_a_different_tree_is_refused(self) -> None:
         record = self.root.parent / "receipt"
