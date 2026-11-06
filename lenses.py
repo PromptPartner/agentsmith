@@ -9,6 +9,7 @@ change triggers and the review depth; `brief` renders the prompt for an attended
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -273,6 +274,11 @@ def _manifest(repo: Path, create: bool = False) -> Path:
     return path
 
 
+def finding_id(candidate: str, source: str, location: str, evidence: str) -> str:
+    """A stable id for one finding: the same source citing the same thing in the same candidate."""
+    return hashlib.sha256("\0".join((candidate, source, location, evidence)).encode("utf-8")).hexdigest()[:16]
+
+
 def row_problem(row: Any) -> str | None:
     """Why a manifest row is not a valid triage row, or None."""
     if not isinstance(row, dict):
@@ -294,6 +300,8 @@ def row_problem(row: Any) -> str | None:
     for key in ("fix", "reproduction"):
         if row.get(key) is not None and not isinstance(row[key], str):
             return f"{key} is not text"
+    if row.get("id") != finding_id(row["candidate"], row["source"], row["location"], row["evidence"]):
+        return "id does not match the finding"
     return None
 
 
@@ -303,7 +311,7 @@ def read_rows(repo: Path) -> tuple[list[dict[str, Any]], list[str]]:
     path = _manifest(Path(repo))
     if not path.is_file():
         return [], []
-    rows, warnings = [], []
+    rows, warnings, seen = [], [], set()
     for number, raw in enumerate(path.read_bytes().split(b"\n"), start=1):
         if not raw.strip():
             continue
@@ -313,9 +321,12 @@ def read_rows(repo: Path) -> tuple[list[dict[str, Any]], list[str]]:
             warnings.append(f"manifest line {number} skipped: not JSON text")
             continue
         problem = row_problem(row)
+        if problem is None and row["id"] in seen:
+            problem = f"duplicate of finding {row['id']}"
         if problem:
             warnings.append(f"manifest line {number} skipped: {problem}")
         else:
+            seen.add(row["id"])
             rows.append(row)
     return rows, warnings
 
@@ -337,12 +348,16 @@ def record(repo: Path, base: str, head: str, *, source: str, evidence: str, deci
         raise LensError("--checker belongs to lens findings only")
     base_id, head_id = risk_map._commit(repo, base), risk_map._commit(repo, head)
     location = check_citation(repo, head_id, evidence)
+    identity = finding_id(head_id, source, location, evidence)
     moment = now() if callable(now) else dt.datetime.now(dt.timezone.utc).timestamp()
-    row = {"schema_version": SCHEMA_VERSION, "candidate": head_id, "base": base_id, "source": source,
+    row = {"schema_version": SCHEMA_VERSION, "id": identity, "candidate": head_id, "base": base_id, "source": source,
            "location": location, "evidence": evidence, "decision": decision, "rationale": rationale.strip(),
            "checker": checker, "fix": fix, "reproduction": reproduction,
            "recorded_at": dt.datetime.fromtimestamp(moment, dt.timezone.utc).isoformat(timespec="seconds")}
     existing, _ = read_rows(repo)
+    # One row per finding: a repeated record would inflate every count it reaches.
+    if any(other["id"] == identity for other in existing):
+        raise LensError(f"this finding is already recorded as {identity}")
     row["confidence"] = confidence(row, existing + [row])
     path = _manifest(repo, create=True)
     try:

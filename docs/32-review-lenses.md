@@ -89,6 +89,10 @@ the record cannot be redirected into the tracked tree. Write the rows before fix
   source, not a bot, at the same place in the same candidate) raises it one step; a bot's
   assertion never raises anything.
 
+Each row has an `id`, a hash of the candidate, source, location and evidence. `lens record`
+refuses a finding that is already recorded, so a retry cannot inflate the counts; a copy that
+reaches the file anyway, for example by an edit by hand, is skipped by `lens report` with a warning.
+
 Disagreement between sources is allowed; an unexplained omission is not.
 
 `lens report` reads only valid rows: a line that is not JSON text or lacks a field a row needs is

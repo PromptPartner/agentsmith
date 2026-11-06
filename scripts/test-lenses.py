@@ -273,6 +273,22 @@ class RecordTests(LensCase):
             self.record()
         self.assertEqual((tracked / "manifest.jsonl").read_text(encoding="utf-8"), "tracked content\n")
 
+    def test_a_finding_is_recorded_once(self) -> None:
+        first = self.record()
+        self.assertRegex(first["id"], r"^[0-9a-f]{16}$")
+        with self.assertRaisesRegex(lenses.LensError, f"already recorded as {first['id']}"):
+            self.record(rationale="retried")
+        # The same place from another source is a different finding, not a duplicate.
+        self.record(source="checker", checker=None, rationale="the checker saw it too")
+        # A copy that reaches the file anyway (an edit by hand) is skipped, so it cannot change the counts.
+        manifest = self.repo.common / "agentsmith-lenses" / "manifest.jsonl"
+        lines = manifest.read_text(encoding="utf-8").splitlines()
+        manifest.write_text("\n".join(lines + [lines[0]] * 8) + "\n", encoding="utf-8")
+        rows, warnings = lenses.read_rows(self.repo.root)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(len([warning for warning in warnings if "duplicate" in warning]), 8)
+        self.assertEqual(lenses.report(rows, warnings)["missed_by_checker"], 1)
+
     def test_rows_need_a_one_line_rationale_and_lens_rows_say_what_the_checker_did(self) -> None:
         for fields in ({"rationale": ""}, {"rationale": "two\nlines"}, {"decision": "maybe"},
                        {"checker": None}, {"source": "someone"}):
