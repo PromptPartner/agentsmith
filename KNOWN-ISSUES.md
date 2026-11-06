@@ -3,6 +3,16 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [ ] 2026-11-06 — Found while fixing the export redaction on Windows: `evaluate.py`'s
+  `redact()` replaces only the home folder exactly as `Path.home()` spells it, followed by the
+  native separator. On Windows the same folder written with `/`, in another letter case, with the
+  `\\?\` prefix, as Git Bash's `/c/Users/...` or with doubled backslashes stays in the normalized
+  evaluation summary. `factory export` now matches all of these; the evaluator does not reuse it.
+- [ ] 2026-11-06 — Coverage gap: `scripts/test-factory.py` skips two tests on Windows. The fake
+  `gh` is a POSIX script, so the test that `factory numbers --target` reads CI for the target's
+  repository and not the current folder's never runs there; the real readiness preflight test
+  needs the macOS or Linux sandbox, so the Windows sandbox preflight is never run by it. Windows
+  CI passing says nothing about either path on Windows.
 - [ ] 2026-11-06 — Measured with `agentsmith factory readiness` on this repository: the latest
   `compatibility (windows-latest)` job took 38 of its 45 timeout minutes (84%), over the 70%
   headroom. A slower runner can time it out. Over 2026-10-01 to 2026-11-06 the default branch was
