@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -262,6 +263,15 @@ class RangeTests(RepoCase):
         head = self.repo.commit({"docs/a.md": b"b\n"}, "docs")
         with self.assertRaisesRegex(risk_map.PolicyError, "not a regular file"):
             risk_map.classify_range(self.repo.root, base, head)
+
+    def test_inherited_git_dir_does_not_redirect_the_target(self) -> None:
+        # Git exports GIT_DIR to hooks and `rebase --exec` commands; --target must still win.
+        base = self.base_with_policy()
+        other = Fixture(Path(self.temporary.name) / "other")
+        other.commit({"x.txt": b"x\n"}, "other")
+        with mock.patch.dict(os.environ, {"GIT_DIR": str(other.root / ".git"), "GIT_WORK_TREE": str(other.root)}):
+            report = risk_map.classify_range(self.repo.root, base, base)
+        self.assertEqual((report["base"], report["policy"]["blob"] is not None), (base, True))
 
     def test_policy_absent_at_base_is_human(self) -> None:
         base = self.repo.commit({"docs/a.md": b"a\n"}, "base")

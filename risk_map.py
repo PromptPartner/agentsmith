@@ -7,6 +7,7 @@ it. Every changed path counts, and a rename or copy counts by its old and its ne
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -18,6 +19,12 @@ POLICY_PATH = ".harness/risk-policy.json"
 TIERS = ("A", "B", "C", "human")
 LENS_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 MAX_POLICY_BYTES = 256 * 1024
+# `git rev-parse --local-env-vars`: settings that point Git at a repository other than --target.
+REPOSITORY_ENV = frozenset({
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX",
+    "GIT_SHALLOW_FILE", "GIT_COMMON_DIR"})
 
 # The floor. Names compare ignoring case, because macOS and Windows open `claude.md` for
 # `CLAUDE.md`. Agent instructions count at any depth, as the autonomous-run controller treats them.
@@ -176,8 +183,10 @@ def parse_name_status(raw: bytes) -> list[str]:
 
 
 def _git(repo: Path, *args: str) -> bytes:
+    # Hooks and `rebase --exec` export GIT_DIR and friends; they would redirect `-C repo`.
+    env = {key: value for key, value in os.environ.items() if key not in REPOSITORY_ENV}
     try:
-        result = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, timeout=60)
+        result = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, timeout=60, env=env)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RiskError(f"git failed: {exc}") from None
     if result.returncode:
