@@ -2977,6 +2977,63 @@ def unsafe_name(repo: Path, kind: str, name: str) -> str | None:
     return f"{name!r} is not a safe {kind} name: use {allowed}, starting with a letter or digit"
 
 
+# A copy of SECRET_PATTERNS in agentsmith.py, which the installed controller cannot import;
+# scripts/test-deliver.py keeps the two equal.
+SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("PEM private key", re.compile(r"BEGIN [A-Z ]*PRIVATE KEY")),
+    ("AWS access key id", re.compile(r"AKIA[0-9A-Z]{16}")),
+    ("AWS temporary access key id", re.compile(r"ASIA[0-9A-Z]{16}")),
+    ("GitHub token", re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}")),
+    ("Slack token", re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}")),
+    ("OpenAI-style key", re.compile(r"sk-[A-Za-z0-9]{20,}")),
+    ("Anthropic-style key", re.compile(r"sk-ant-[A-Za-z0-9_-]{20,}")),
+    ("Google API key", re.compile(r"AIza[0-9A-Za-z_-]{35}")),
+    (
+        "assigned secret literal",
+        re.compile(
+            r"\b(password|passwd|pwd|secret|token|api[_-]?key)[\"' ]*[:=]\s*[\"'][^\"' \t]{8,}",
+            re.IGNORECASE,
+        ),
+    ),
+)
+# As in scripts/leak-gate.sh: a home folder names one machine and one user.
+HOME_PATH = re.compile(r"(?:[A-Za-z]:\\Users\\|/(?:home|Users)/)[A-Za-z0-9_-][A-Za-z0-9._-]*")
+
+
+def without_local_paths(text: str, repo: Path) -> str:
+    """Paths in the repository become repo-relative; home and temporary folders become ~ and $TMPDIR."""
+    roots = {str(path): "" for path in (repo, repo.resolve(), state_root(repo).parent.parent)}
+    for folder, name in ((Path.home(), "~"), (Path(tempfile.gettempdir()), "$TMPDIR")):
+        roots.update({str(folder): name + "/", str(folder.resolve()): name + "/"})
+    for root in sorted(roots, key=len, reverse=True):
+        if root not in ("", "/"):
+            text = text.replace(root + "/", roots[root]).replace(root, roots[root].rstrip("/") or ".")
+    return HOME_PATH.sub("~", text)
+
+
+def leak_problems(fields: dict[str, str], allow: tuple[re.Pattern[str], ...] = ()) -> list[str]:
+    """The secret scanner's patterns over the final pull-request text, one finding per field.
+    `allow` holds the repository's .harness/secret-scan.allow rules, which skip a whole line."""
+    problems = []
+    for field, text in fields.items():
+        lines = [line for line in text.splitlines() if not any(rule.search(line) for rule in allow)]
+        hit = next((name for name, pattern in SECRET_PATTERNS for line in lines if pattern.search(line)), None)
+        if hit:
+            problems.append(f"the pull-request {field} holds a likely secret ({hit})")
+        elif any(HOME_PATH.search(line) for line in lines):
+            problems.append(f"the pull-request {field} names a home folder")
+    return problems
+
+
+def secret_allow_rules(repo: Path) -> tuple[re.Pattern[str], ...]:
+    path = repo / ".harness" / "secret-scan.allow"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
+        return tuple(re.compile(line) for line in lines if line.strip() and not line.lstrip().startswith("#"))
+    except (OSError, UnicodeError, re.error) as exc:
+        raise RunError(f"deliver refused: cannot read {path.name}: {exc}") from None
+
+
 def push_command(remote: str, sha: str, branch: str) -> str:
     """Text for a person to run in a POSIX shell (sh, bash, zsh); the controller never runs it."""
     return "git push " + " ".join(shlex.quote(value) for value in (remote, f"{sha}:refs/heads/{branch}"))
@@ -3073,7 +3130,7 @@ def delivery_checks(repo: Path, state: dict[str, Any], remote: str, base: str | 
     tier = risk_map.raise_tier(tier, declared if declared in risk_map.TIERS else "A")
     floor = sorted(row["path"] for row in report["paths"] if any(reason.startswith("floor:") for reason in row["matched"]))
     return {"state": state, "proof": proof, "checker": checker, "manifest": manifest, "accepted": accepted,
-            "branch": branch, "staleness": staleness,
+            "branch": branch, "staleness": staleness, "paths": changed_paths(repo, str(state["base_head"]), accepted),
             "tier": {"tier": tier, "recorded": recorded, "recomputed": report["tier"], "declared": declared,
                      "lenses": report["lenses"], "policy_blob": report["policy"]["blob"], "floor_paths": floor},
             "calibration": calibration_status(repo, (manifest.get("roles") or {}).get("checker") or {})}
@@ -3113,7 +3170,6 @@ def eligibility(checks: dict[str, Any], sha: str, ci: dict[str, Any] | None) -> 
 def delivery_body(checks: dict[str, Any], verdict: dict[str, Any]) -> str:
     state, proof, checker, manifest = checks["state"], checks["proof"], checks["checker"], checks["manifest"]
     tier, limits, staleness = checks["tier"], manifest.get("limits") or {}, checks["staleness"]
-    maker = state.get("maker_receipt") or {}
     calibration = checks["calibration"]
     lines = [
         f"## Autonomous run {state['run_id']}",
@@ -3121,8 +3177,8 @@ def delivery_body(checks: dict[str, Any], verdict: dict[str, Any]) -> str:
         f"Implementation ticket: {manifest.get('implementation_ticket')}. Accepted commit `{checks['accepted']}` "
         f"on base `{state.get('base_head')}`.",
         "",
-        "### Maker summary",
-        fenced(str(maker.get("summary", ""))),
+        "### Changed paths",
+        fenced("\n".join(f"- {path}" for path in checks["paths"])),
         "",
         "### Risk",
         f"Tier **{tier['tier']}** (recorded {tier['recorded']}, recomputed now {tier['recomputed']}, "
@@ -3180,12 +3236,17 @@ def deliver(args: argparse.Namespace) -> int:
             except ci_watch.GhError as exc:
                 raise RunError(f"ci watch could not run: {exc}") from None
     verdict = eligibility(checks, sha, ci)
-    summary = " ".join(str((checks["state"].get("maker_receipt") or {}).get("summary", "")).split())
-    title = (f"{checks['branch']}: {summary}"[:72]).rstrip()
+    # Only structured receipt fields, with no local path; the maker's free-text summary stays out.
+    title = without_local_paths(f"{checks['manifest'].get('implementation_ticket')}: {checks['branch']}", repo)[:72]
+    body = without_local_paths(delivery_body(checks, verdict), repo)
+    leaks = leak_problems({"title": title, "body": body}, secret_allow_rules(repo))
+    if leaks:
+        raise RunError("deliver refused: " + "; ".join(leaks))
+    calibration = {key: value for key, value in checks["calibration"].items() if key != "receipt"}
     report = {"run_id": args.run_id, "head": checks["accepted"], "branch": checks["branch"],
               "push_command": push_command(args.remote, checks["accepted"], checks["branch"]),
-              "title": title, "body": delivery_body(checks, verdict), "tier": checks["tier"],
-              "staleness": checks["staleness"], "calibration": checks["calibration"], "eligibility": verdict}
+              "title": title, "body": body, "tier": checks["tier"],
+              "staleness": checks["staleness"], "calibration": calibration, "eligibility": verdict}
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
         return 0

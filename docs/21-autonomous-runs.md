@@ -439,8 +439,10 @@ The push command is for a POSIX shell (sh, bash, zsh), and every value in it is 
 accepts remote and branch names that a shell would run, such as `origin;id`, so `deliver` also
 refuses a remote, run branch or base branch whose name uses anything other than letters, digits,
 `.`, `_`, `-` (and `/` in a branch), or that `git check-ref-format` rejects. A name that passes
-needs no quoting, so the same command also works in PowerShell. The pull-request text holds:
+needs no quoting, so the same command also works in PowerShell. The pull-request title is the
+implementation ticket and the run branch. The body holds:
 
+- the paths that Git reports as changed;
 - the tier and its lenses;
 - the verifier and checker evidence;
 - the checker calibration status;
@@ -448,8 +450,12 @@ needs no quoting, so the same command also works in PowerShell. The pull-request
 - the base staleness;
 - the eligibility line.
 
-Text that a model wrote, the maker summary and the checker evidence, sits in code blocks, so no
-link, Markdown or `@`-mention in it takes effect. The body names no local path.
+The maker's free-text summary is left out. The only text that a model wrote is the checker
+evidence, and it sits in a code block with the changed paths, so no link, Markdown or `@`-mention
+in it takes effect. Paths inside the repository become repo-relative, and home and temporary
+folders become `~` and `$TMPDIR`, so neither the text nor the `--json` report names a local path.
+The secret scanner's patterns then run over the final title and body (honouring
+`.harness/secret-scan.allow`), and a likely secret refuses delivery and names the field.
 
 ### Auto-merge eligibility
 

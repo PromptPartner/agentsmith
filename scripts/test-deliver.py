@@ -234,6 +234,45 @@ class DeliverTests(unittest.TestCase):
         self.assertEqual(report["staleness"], {"base": "origin/main", "behind": 1, "applies": True})
         self.assertIn("1 commit behind origin/main", report["body"])
 
+    def add_evidence(self, repo: Path, *items: str) -> None:
+        """Extra checker evidence that quotes no log, so only its hash binds it, as at acceptance."""
+        run_dir = repo / ".git/agentsmith-runs/deliver"
+        receipt = run_dir / "attempt-1-checker-receipt.json"
+        value = json.loads(receipt.read_text(encoding="utf-8"))
+        value["evidence"] += list(items)
+        receipt.write_text(json.dumps(value), encoding="utf-8")
+        proof_path = Path(self.state(repo)["verification_receipt"])
+        proof = json.loads(proof_path.read_text(encoding="utf-8"))
+        proof["checker_receipt_sha256"] = hashlib.sha256(receipt.read_bytes()).hexdigest()
+        proof_path.write_text(json.dumps(proof), encoding="utf-8")
+
+    def test_the_pull_request_text_names_no_local_path_and_no_model_summary(self) -> None:
+        repo = self.accepted_run()
+        # Split so that the leak gate, which scans this file, does not read them as real home folders.
+        mac_home, linux_home = "/Users/" + "alice", "/home/" + "alice"
+        CONTROLLER.write_json(CONTROLLER.calibration_path(repo, "claude", "fixture-model", "high"),
+                              {"status": "passed", "calibrated_at": "2026-11-06T09:00:00+00:00"})
+        path = repo / ".git/agentsmith-runs/deliver/state.json"
+        state = json.loads(path.read_text(encoding="utf-8"))
+        state["maker_receipt"]["summary"] = f"see {mac_home}/private/strategy.md @alice private-doc:BOARD-42"
+        path.write_text(json.dumps(state), encoding="utf-8")
+        self.add_evidence(repo, f"edited :: {repo}/src/change.txt", f"notes in {linux_home}/notes.md")
+        result = self.deliver(repo, "--dry-run", "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        text = report["title"] + "\n" + report["body"]
+        for private in (mac_home, linux_home, "@alice", "private-doc:BOARD-42", "strategy.md"):
+            self.assertNotIn(private, text)
+        self.assertIn("edited :: src/change.txt", report["body"])
+        self.assertIn("notes in ~/notes.md", report["body"])
+        self.assertIn("- src/change.txt", report["body"], "the body lists the changed paths Git reports")
+        self.assertNotIn(str(self.root), result.stdout, "neither the text nor the JSON names a local path")
+
+    def test_refuses_pull_request_text_that_holds_a_likely_secret(self) -> None:
+        repo = self.accepted_run()
+        self.add_evidence(repo, "token seen: " + "gh" + "p_" + "A1b2" * 9)
+        self.refused(repo, "the pull-request body holds a likely secret (GitHub token)")
+
     # --- refusals ----------------------------------------------------------------------------
 
     def test_deliver_never_pushes(self) -> None:
@@ -332,6 +371,19 @@ class LandingContractTests(unittest.TestCase):
     def test_the_push_command_quotes_every_value_for_a_posix_shell(self) -> None:
         command = CONTROLLER.push_command("my remote", "a" * 40, "agentsmith/x;id")
         self.assertEqual(shlex.split(command), ["git", "push", "my remote", "a" * 40 + ":refs/heads/agentsmith/x;id"])
+
+    def test_the_leak_check_names_the_field_and_uses_the_secret_scanner_patterns(self) -> None:
+        token = "AK" + "IA" + "ABCDEFGHIJKLMNOP"
+        self.assertEqual(CONTROLLER.leak_problems({"title": f"IMP-1 {token}", "body": "clean"}),
+                         ["the pull-request title holds a likely secret (AWS access key id)"])
+        self.assertEqual(CONTROLLER.leak_problems({"title": "IMP-1", "body": "clean"}), [])
+        # The installed controller cannot import agentsmith.py, so it carries a copy; keep it equal.
+        spec = importlib.util.spec_from_file_location("agentsmith_core_for_deliver", ROOT / "agentsmith.py")
+        assert spec and spec.loader
+        core = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(core)
+        self.assertEqual([(name, pattern.pattern, pattern.flags) for name, pattern in CONTROLLER.SECRET_PATTERNS],
+                         [(name, pattern.pattern, pattern.flags) for name, pattern in core.SECRET_PATTERNS])
 
     def test_the_controller_has_no_push_or_pull_request_code_path(self) -> None:
         source = CONTROLLER_PATH.read_text(encoding="utf-8")
