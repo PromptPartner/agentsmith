@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Work-graph command surface without launching agents or mutating Git."""
 
+import _fixture_git  # first: keeps every Git fixture out of an inherited repository
+_fixture_git.isolate()
 from pathlib import Path
 import subprocess
 import sys

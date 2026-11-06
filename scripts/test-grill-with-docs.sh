@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "$(dirname "$0")/_fixture_git.sh"  # first: keeps every Git fixture out of an inherited repository
 # Regression guard for the repository-grilling workflow: self-contained instructions, durable
 # decisions, and an explicit single-session boundary with Wayfinder.
 set -uo pipefail
