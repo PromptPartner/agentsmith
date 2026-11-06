@@ -20,6 +20,9 @@ import risk_map  # noqa: E402
 
 CORE = ROOT / "agentsmith.py"
 POLICY = risk_map.POLICY_PATH
+# Hooks and `rebase --exec` export GIT_DIR and friends; a fixture that inherits them writes into
+# the enclosing repository instead of its temporary one.
+CLEAN_ENV = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
 # Fixed identity and dates make the fixture commits, and so the JSON, identical on every host.
 GIT_ENV = {
     "GIT_AUTHOR_NAME": "Fixture", "GIT_AUTHOR_EMAIL": "user@example.com",
@@ -37,7 +40,7 @@ class Fixture:
 
     def __init__(self, root: Path) -> None:
         self.root = root
-        self.env = {**os.environ, **GIT_ENV}
+        self.env = {**CLEAN_ENV, **GIT_ENV}
         root.mkdir(parents=True)
         self.git("init", "-q", "-b", "main")
         self.git("config", "core.autocrlf", "false")
@@ -197,7 +200,7 @@ class RepoCase(unittest.TestCase):
 
     def cli(self, *args: str) -> subprocess.CompletedProcess[bytes]:
         return subprocess.run([sys.executable, str(CORE), "risk", "classify", "--target", str(self.repo.root), *args],
-                              capture_output=True, env={**os.environ, "PYTHONIOENCODING": "cp1252"})
+                              capture_output=True, env={**CLEAN_ENV, "PYTHONIOENCODING": "cp1252"})
 
     def base_with_policy(self) -> str:
         self.base_policy = policy(
@@ -334,6 +337,25 @@ class CliTests(RepoCase):
         self.assertEqual(result.stdout, b"")
         self.assertIn(POLICY.encode(), result.stderr)
 
+
+
+class HygieneTests(unittest.TestCase):
+    def test_fixtures_ignore_an_inherited_git_dir(self) -> None:
+        # Run under `git rebase --exec`, this suite once inherited GIT_DIR, re-initialized the
+        # enclosing repository as bare and committed fixtures onto its branch.
+        with tempfile.TemporaryDirectory(prefix="agentsmith risk sentinel ") as temporary:
+            sentinel = Path(temporary) / "sentinel"
+            subprocess.run(["git", "init", "-q", str(sentinel)], env=CLEAN_ENV, check=True)
+            config = (sentinel / ".git" / "config").read_bytes()
+            result = subprocess.run(
+                [sys.executable, __file__, "RangeTests.test_empty_range_is_human", "CliTests.test_text_output_names_tier_and_lenses"],
+                env={**os.environ, "GIT_DIR": str(sentinel / ".git"), "GIT_WORK_TREE": str(sentinel)},
+                capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((sentinel / ".git" / "config").read_bytes(), config)
+            objects = subprocess.run(["git", "-C", str(sentinel), "count-objects"], env=CLEAN_ENV,
+                                     capture_output=True, check=True).stdout
+            self.assertTrue(objects.startswith(b"0 objects"), objects)
 
 if __name__ == "__main__":
     unittest.main()
