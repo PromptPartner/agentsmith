@@ -325,6 +325,15 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(confidence, ["high", "high", "medium", "medium", "medium", "medium", "low", "high", "high"])
         self.assertEqual(report["trial"], {"candidates_needed": 20, "noise_limit": 0.2, "met": False})
 
+    def test_the_trial_threshold_uses_the_exact_noise_rate(self) -> None:
+        # 999 of 4996 lens findings skipped: 0.19996 is under 20%, though it rounds to 0.2.
+        rows = [self.row(f"c{index % 20}", "lens:security", f"a.py:{index}", "skip" if index < 999 else "act",
+                         "missed" if index == 999 else "found") for index in range(4996)]
+        report = lenses.report(rows)
+        self.assertLess(report["noise_rate"], 0.2)
+        self.assertTrue(report["trial"]["met"], report["trial"])
+        self.assertIn("noise: 20%", lenses.render_report(report))  # rounding is for display only
+
     def test_an_empty_record_reports_zero_without_dividing(self) -> None:
         report = lenses.report([])
         self.assertEqual((report["noise_rate"], report["missed_by_checker"], report["trial"]["met"]), (None, 0, False))

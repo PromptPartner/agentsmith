@@ -394,7 +394,8 @@ def report(rows: list[dict[str, Any]], warnings: list[str] | tuple[str, ...] = (
     lens_rows = [row for row in rows if str(row.get("source", "")).startswith("lens:")]
     acted = [row for row in lens_rows if row.get("decision") == "act"]
     candidates = len({row.get("candidate") for row in rows})
-    noise = round((len(lens_rows) - len(acted)) / len(lens_rows), 4) if lens_rows else None
+    # Exact: the trial threshold compares this value; only the text report rounds it.
+    noise = (len(lens_rows) - len(acted)) / len(lens_rows) if lens_rows else None
     missed = sum(1 for row in acted if row.get("checker") == "missed")
     by_lens: dict[str, dict[str, int]] = {}
     for row in lens_rows:
