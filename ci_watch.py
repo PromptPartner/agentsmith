@@ -165,8 +165,12 @@ def _category(job: dict[str, Any], view: dict[str, Any], others: list[dict[str, 
               base: dict[str, Any] | None) -> str:
     if job.get("conclusion") in ENVIRONMENT_CONCLUSIONS:
         return "environment"
-    failed = [step for step in job.get("steps") or [] if step.get("conclusion") not in PASSING | {None, ""}]
-    if failed and SETUP_STEP.fullmatch(failed[0].get("name", "")):
+    # Environment only when the runner failed before any project step ran: every step up to and
+    # including the first failure is runner setup. Once the project's own steps have run, a later
+    # failure (an artifact upload, a post step) is the change's first suspect, so it is red-at-diff.
+    steps = sorted(job.get("steps") or [], key=lambda step: step.get("number") or 0)
+    first = next((index for index, step in enumerate(steps) if step.get("conclusion") not in PASSING | {None, ""}), None)
+    if first is not None and all(SETUP_STEP.fullmatch(step.get("name") or "") for step in steps[:first + 1]):
         return "environment"
     if base and any(other.get("name") == job.get("name") and other.get("conclusion") == "failure"
                     for other in base.get("jobs") or []):

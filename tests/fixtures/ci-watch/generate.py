@@ -46,15 +46,17 @@ def step(number, name, conclusion="success", status="completed", start=1.0, end=
             "startedAt": ts(start), "status": status}
 
 
-def job(job_id, name, conclusion="success", status="completed", failed_step=None, start=1.0, end=5.0):
+def job(job_id, name, conclusion="success", status="completed", failed_step=None, start=1.0, end=5.0, ran=()):
     steps = [step(1, "Set up job", start=start, end=start + 0.1),
              step(2, "Run actions/checkout@v7", start=start + 0.1, end=start + 0.2)]
+    # Steps that passed before the failing one, for example the project's tests.
+    steps += [step(3 + index, name_, start=start + 0.2, end=start + 0.3) for index, name_ in enumerate(ran)]
     if failed_step == "Set up job":
         steps = [step(1, "Set up job", "failure", start=start, end=start + 0.1)]
     elif status != "completed":
         steps.append(step(3, "Python core compiles", status="in_progress", start=start + 0.2))
     else:
-        steps.append(step(3, failed_step or "Python core compiles",
+        steps.append(step(3 + len(ran), failed_step or "Python core compiles",
                           "failure" if failed_step else "success", start=start + 0.2, end=end))
     return {"completedAt": ts(end) if status == "completed" else "0001-01-01T00:00:00Z",
             "conclusion": conclusion if status == "completed" else "", "databaseId": job_id, "name": name,
@@ -134,6 +136,13 @@ write("flaky", "Attempt 2 fails a job that passed in attempt 1 of the same run; 
                                        "run_attempt": 1, "started_at": ts(1.0), "completed_at": ts(4.0), "steps": []}]}]})
 write("environment", "The runner failed in 'Set up job' before any project step ran.",
       {"state": "environment", "exit": 13}, [completed_failure(failing_jobs(failed="Set up job"))])
+write("environment-setup-action", "A setup action (setup-python) failed before any project step ran.",
+      {"state": "environment", "exit": 13}, [completed_failure(failing_jobs(failed="Run actions/setup-python@v6"))])
+write("post-test-artifact", "The project's tests ran and passed, then uploading an artifact failed: the change is "
+      "the first suspect, so this is not environment.", {"state": "red-at-diff", "exit": 10},
+      [completed_failure([job(500, UBUNTU, "failure", failed_step="Run actions/upload-artifact@v7",
+                              ran=("Python core compiles", "Risk map contracts and byte-identical JSON")),
+                          job(501, MAC)])])
 write("environment-timeout", "A job hit the hosted timeout (conclusion timed_out).",
       {"state": "environment", "exit": 13}, [completed_failure(failing_jobs(conclusion="timed_out"))])
 stalled_view = view(100, "push", "queued", "", [], created=-40.0, updated=-40.0)

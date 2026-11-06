@@ -40,7 +40,7 @@ branch is the repository's default branch unless `--base` names another one.
 | `red-at-diff` | 10 | A job failed in the project's own steps, and it does not fail on the base branch. |
 | `red-on-base` | 11 | The failing job also fails on the base branch's latest completed push run of the same workflow. |
 | `flaky` | 12 | The failing job passed on an earlier attempt of the same run, or in another run of the same workflow and event for this commit. |
-| `environment` | 13 | A job timed out, was cancelled, could not start, or failed in a runner setup step (`Set up job`, checkout, `setup-*`, cache or artifact actions) before the project's commands ran. |
+| `environment` | 13 | A job timed out, was cancelled, or could not start, or it failed while every step so far was runner setup (`Set up job`, checkout, `setup-*`, cache or artifact actions), so none of the project's own steps had run. |
 | `runner-stalled` | 14 | A run that is queued or in progress has shown no progress (no job or step started or finished) for `--stall-minutes` (default 30). |
 | `no-run-registered` | 15 | No run exists for the commit 5 minutes after the watch started, or when the cap is reached. |
 | `conflict` | 16 | The pull request conflicts with its base. |
@@ -53,6 +53,11 @@ wrong, or a read from GitHub failed.
 When jobs fail for different reasons, the state is the most actionable one, in this order:
 `red-at-diff`, `red-on-base`, `environment`, `flaky`. Every failing job is still listed with its
 own category in the report.
+
+A failure after the project's own steps have run is `red-at-diff`, even in a setup-like step
+such as an artifact upload or a post step. The watch cannot tell a broken artifact path or a
+test that leaves bad files behind from a storage outage, and the change is the first suspect once
+its commands have run; calling it `environment` would invite a rerun that hides a real defect.
 
 `flaky` is detected without rerunning anything. A `pull_request` run tests the merge of the
 change with its base, so a job that passes on the `push` run and fails on the `pull_request` run
