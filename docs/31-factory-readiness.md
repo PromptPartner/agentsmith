@@ -30,7 +30,7 @@ exit status is 0 when every check passes and 1 otherwise.
 | Check | Passes when |
 |---|---|
 | Default branch green | Every completed push run on the default branch in the last `--green-days` days (default 7) is green, and there is at least one. |
-| CI headroom | For each of Windows, macOS and Linux, the latest job of each workflow stays under `--headroom` (default 70%) of its `timeout-minutes`. The operating system comes from the job name, and the timeout from the workflow file at the base: a number, or the `matrix.os == '<os>' && <a> \|\| <b>` form; otherwise GitHub's default of 360 minutes. |
+| CI headroom | For each of Windows, macOS and Linux, the latest job of each workflow stays under `--headroom` (default 70%) of its `timeout-minutes`. The operating system comes from the job name, and the timeout from the workflow file at the base: a number, or the `matrix.os == '<os>' && <a> \|\| <b>` form; a job without the key has GitHub's default of 360 minutes. When the workflow, the job or the value cannot be read, the timeout is unknown and the check fails. |
 | Checker can execute on this host | The checker and verifier sandboxes run one command, as `start` checks before a run. Needs `--manifest`. |
 | Checker calibration passed | A passing calibration matches the manifest's checker (client, model, effort and checker prompt); see `calibrate` in [autonomous runs](21-autonomous-runs.md). |
 | Kill switch tested | At least one `autonomy_pause_refused` event is recorded with its facts: the refused command, the run or graph ID, the marker at `.harness/AUTONOMY_PAUSED` of this checkout or its main checkout, the marker's modification time (no later than the refusal) and a time that is not in the future. |

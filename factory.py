@@ -285,9 +285,10 @@ def job_os(name: str) -> str | None:
     return next((system for system, words in OPERATING_SYSTEMS if any(word in folded for word in words)), None)
 
 
-def job_timeout(workflow: str, job_name: str) -> int:
-    """The timeout-minutes that applies to a job, read from the workflow text. Handles a literal and
-    the `matrix.os == 'x' && A || B` form; anything else falls back to GitHub's 360 minutes."""
+def job_timeout(workflow: str, job_name: str) -> int | None:
+    """The timeout-minutes that applies to a job, read from the workflow text: a literal, or the
+    `matrix.os == 'x' && A || B` form. A job found without the key has GitHub's 360 minutes. None
+    when the workflow, the job or the value cannot be read: headroom then fails closed."""
     blocks = re.split(r"\n  (?=[A-Za-z0-9_-]+:\s*\n)", workflow)
     best = None
     for block in blocks[1:]:
@@ -297,7 +298,7 @@ def job_timeout(workflow: str, job_name: str) -> int:
             best = block
             break
     if best is None:
-        return GITHUB_DEFAULT_TIMEOUT_MINUTES
+        return None
     value = re.search(r"\n    timeout-minutes:\s*(.+)", best)
     if not value:
         return GITHUB_DEFAULT_TIMEOUT_MINUTES
@@ -307,7 +308,7 @@ def job_timeout(workflow: str, job_name: str) -> int:
     choice = re.fullmatch(r"\$\{\{\s*matrix\.os\s*==\s*'([^']+)'\s*&&\s*(\d+)\s*\|\|\s*(\d+)\s*\}\}", text)
     if choice:
         return int(choice.group(2)) if choice.group(1) in job_name else int(choice.group(3))
-    return GITHUB_DEFAULT_TIMEOUT_MINUTES
+    return None
 
 
 # --- readiness ---------------------------------------------------------------------------------
@@ -390,6 +391,10 @@ def readiness(repo: Path, *, controller: Any, gh: Any | None, manifest: dict[str
                         continue
                     minutes = (ended - began).total_seconds() / 60
                     limit = job_timeout(workflow, str(job.get("name")))
+                    if limit is None:
+                        rows.append(f"{system} {job.get('name')}: {minutes:.0f} min, timeout unknown")
+                        tight.append(rows[-1])
+                        continue
                     rows.append(f"{system} {job.get('name')}: {minutes:.0f} of {limit} min")
                     if minutes >= headroom * limit:
                         tight.append(rows[-1])

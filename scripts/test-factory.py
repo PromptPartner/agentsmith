@@ -375,6 +375,19 @@ class FactoryTests(unittest.TestCase):
         unnamed = self.readiness(manifest=None)
         self.assertIn("checker calibration passed", self.failing(unnamed))
 
+    def test_an_unknown_timeout_fails_the_headroom_check(self) -> None:
+        self.git("rm", "-q", ".github/workflows/verify.yml")
+        self.git("commit", "-qm", "workflow not at the base")
+        headroom = next(item for item in self.readiness()["checks"] if item["name"] == "CI headroom")
+        self.assertEqual(headroom["status"], "fail", headroom)
+        self.assertIn("timeout unknown", headroom["evidence"])
+        self.assertEqual(factory.job_timeout("", "compatibility (windows-latest)"), None)
+        self.assertEqual(factory.job_timeout(WORKFLOW.replace("timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 20 }}",
+                                                              "timeout-minutes: ${{ inputs.minutes }}"),
+                                             "compatibility (windows-latest)"), None)
+        no_key = WORKFLOW.replace("    timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 20 }}\n", "")
+        self.assertEqual(factory.job_timeout(no_key, "compatibility (windows-latest)"), 360)
+
     def test_readiness_reads_the_base_commit_and_the_kill_switch_record(self) -> None:
         (self.repo / ".harness/lenses.json").unlink()
         (self.repo / ".harness/verify.conf").write_text("tests :: python3 -m unittest\n", encoding="utf-8")
