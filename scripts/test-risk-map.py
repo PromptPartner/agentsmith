@@ -257,5 +257,53 @@ class RangeTests(RepoCase):
         self.assertEqual((report["tier"], report["paths"]), ("human", []))
 
 
+class CliTests(RepoCase):
+    def test_json_is_byte_identical_on_every_host(self) -> None:
+        base = self.base_with_policy()
+        self.repo.move("src/notes.md", "docs/nötes and spaces.md")
+        head = self.repo.commit({"src/auth/login.py": None, "src/app.py": b"x = 2\n"}, "mixed change")
+        first = self.cli("--base", base, "--head", head, "--json")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(first.stdout, self.cli("--base", base, "--head", head, "--json").stdout)
+        self.assertNotIn(b"\r", first.stdout)
+        self.assertNotIn(str(self.repo.root).encode("utf-8"), first.stdout)
+        # The fixture pins identity, dates and bytes, so commit ids are the same on every host,
+        # and the expected report is a literal: CI compares the same bytes on all three systems.
+        self.assertEqual((base, head), ("fbd3381c15669c158cfeaf5f777bb6c066988742",
+                                        "4cc7b6e44b8ec0a4c25354f8597ddb07219fd96e"))
+        expected = (
+            '{"base": "%s", "head": "%s", "lenses": ["security"], "paths": ['
+            '{"lenses": [], "matched": ["rule:1"], "path": "docs/n\\u00f6tes and spaces.md", "tier": "A"}, '
+            '{"lenses": [], "matched": ["rule:2"], "path": "src/app.py", "tier": "B"}, '
+            '{"lenses": ["security"], "matched": ["rule:2", "rule:3"], "path": "src/auth/login.py", "tier": "C"}, '
+            '{"lenses": [], "matched": ["rule:1", "rule:2"], "path": "src/notes.md", "tier": "B"}], '
+            '"policy": {"blob": "%s", "path": ".harness/risk-policy.json"}, "schema_version": 1, "tier": "C"}\n'
+        ) % (base, head, "be8addd6e793a425e446b870bb8820b3b29dd90f")
+        self.assertEqual(first.stdout.decode("ascii"), expected)
+
+    def test_text_output_names_tier_and_lenses(self) -> None:
+        base = self.base_with_policy()
+        head = self.repo.commit({"src/auth/login.py": b"ok = 1\n"}, "auth")
+        result = self.cli("--base", base, "--head", head)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = result.stdout.decode("utf-8")
+        self.assertIn("tier: C", text)
+        self.assertIn("lenses: security", text)
+        self.assertIn("src/auth/login.py", text)
+
+    def test_bad_ref_and_bad_policy_fail_closed(self) -> None:
+        base = self.base_with_policy()
+        result = self.cli("--base", "no-such-ref", "--head", base, "--json")
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, b"")
+        self.assertIn(b"no-such-ref", result.stderr)
+        broken = self.repo.commit({POLICY: b"{"}, "break policy")
+        head = self.repo.commit({"docs/a.md": b"b\n"}, "docs")
+        result = self.cli("--base", broken, "--head", head, "--json")
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, b"")
+        self.assertIn(POLICY.encode(), result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
