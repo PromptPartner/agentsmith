@@ -6,13 +6,14 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import shutil
 import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -261,14 +262,44 @@ class FactoryTests(unittest.TestCase):
         target = self.repo.parent / "export"
         summary = factory.export(self.repo, target)
         text = (target / "run-leaky.json").read_text(encoding="utf-8")
-        self.assertNotIn(str(Path.home()), text)
-        self.assertIn("~/projects/client-repo-leaky", text)
+        self.assertNotIn(json.dumps(str(Path.home()))[1:-1], text)  # as JSON writes it, \\ on Windows
+        expected = "~" + os.sep + os.path.join("projects", "client-repo-leaky")  # the separator stays as written
+        self.assertEqual(json.loads(text)["state"]["worktree"], expected)
         self.assertNotIn(token, text)
         self.assertNotIn("FAKE_TEST_VALUE_12345", text)
         self.assertIn("[redacted:", text)
         self.assertGreaterEqual(summary["redactions"], 2)
         self.assertEqual(json.loads((target / "factory.json").read_text(encoding="utf-8"))["redactions"],
                          summary["redactions"])
+
+    def test_export_redacts_every_windows_form_of_the_home_folder(self) -> None:
+        class WindowsHome(PureWindowsPath):
+            def resolve(self) -> "WindowsHome":
+                return self
+
+        name = "you"  # the folder names below are built from it, so no real one is written down
+        forms = {rf"C:\Users\{name}\projects\repo": r"~\projects\repo",
+                 f"C:/Users/{name}/projects/repo": "~/projects/repo",
+                 rf"c:\users\{name.upper()}\notes.txt": r"~\notes.txt",
+                 rf"\\?\C:\Users\{name}\cache": r"~\cache",
+                 f"/c/Users/{name}/bin": "~/bin",
+                 rf"C:\\Users\\{name}\\escaped": r"~\\escaped",
+                 rf"C:\Users\{name}": "~",
+                 rf"ends in C:\Users\{name}.": "ends in ~.",
+                 rf"C:\Users\{name}.old\x": rf"C:\Users\{name}.old\x",
+                 rf"C:\Users\{name}2\other": rf"C:\Users\{name}2\other"}
+        self.add_run("windows", "accepted")
+        state_path = self.runs / "windows/state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["paths"] = list(forms)
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        target = self.repo.parent / "export"
+        with mock.patch.object(factory.Path, "home", return_value=WindowsHome(f"C:/Users/{name}")), \
+                mock.patch.dict(os.environ, {"HOME": f"C:/Users/{name}", "USERPROFILE": rf"C:\Users\{name}"}):
+            summary = factory.export(self.repo, target)
+        exported = json.loads((target / "run-windows.json").read_text(encoding="utf-8"))["state"]["paths"]
+        self.assertEqual(exported, list(forms.values()))
+        self.assertGreaterEqual(summary["redactions"], len(forms) - 2)
 
     # --- readiness ----------------------------------------------------------------------------
 
