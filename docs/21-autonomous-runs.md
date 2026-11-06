@@ -59,7 +59,11 @@ instructions for its own judge. The rule covers a file named `AGENTS.md`, `AGENT
 depth, not only at the root: Claude Code loads a nested `CLAUDE.md` when it reads files in that
 folder, and it finds nested `.claude/skills`. Names match ignoring case, because macOS and Windows
 open `claude.md` when a client asks for `CLAUDE.md`. Adding, editing, deleting and moving all
-count. If a task really needs one of these files changed, for example documentation that happens
+count. Symbolic links count too, in the base and in the candidate: when `AGENTS.md` links to
+`src/rules.txt`, or `.claude` links to a folder, the target is protected like the instruction
+file itself, through chains of links. Adding, retargeting or removing a link that points at a
+protected file is refused. An untouched link such as `CLAUDE.md -> AGENTS.md` keeps working. A
+link that points outside the repository is not followed; keep instruction files inside it. If a task really needs one of these files changed, for example documentation that happens
 to be named `AGENTS.md`, make that change yourself in a reviewed commit, then start the run from
 that commit. Neither `scope.allowed_paths` nor any other manifest field can allow it: the operator
 approves scope, and scope must not be able to widen what a maker may tell its checker.

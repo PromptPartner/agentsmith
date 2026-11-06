@@ -16,6 +16,7 @@ import importlib.util
 import json
 import math
 import os
+import posixpath
 import re
 import signal
 import shutil
@@ -1063,6 +1064,59 @@ def agent_instruction_path(path: str) -> bool:
     return parts[-1] in AGENT_INSTRUCTION_FILES or any(part in AGENT_CONFIGURATION_FOLDERS for part in parts)
 
 
+def symbolic_links(worktree: Path, commit: str) -> dict[str, str | None]:
+    """Each symbolic link in a commit, with the repository path it points to (None outside it)."""
+    links: dict[str, str | None] = {}
+    for entry in run(["git", "ls-tree", "-r", "-z", "--full-tree", commit], worktree).stdout.split("\0"):
+        meta, _, path = entry.partition("\t")
+        fields = meta.split()
+        if len(fields) != 3 or fields[0] != "120000":
+            continue
+        target = subprocess.run(["git", "cat-file", "blob", fields[2]], cwd=worktree, capture_output=True,
+                                check=False).stdout.decode("utf-8", errors="replace")
+        joined = posixpath.normpath(posixpath.join(posixpath.dirname(path), target))
+        outside = target.startswith("/") or joined == ".." or joined.startswith("../")
+        links[path] = None if outside else joined
+    return links
+
+
+def link_protected_targets(links: dict[str, str | None]) -> dict[str, str]:
+    """Repository paths an instruction link reads through, mapped to that link, following chains.
+    Each key is case-folded, because the checkout may be on a case-insensitive disk."""
+    folded = {path.casefold(): target for path, target in links.items()}
+    protected: dict[str, str] = {}
+    for link in links:
+        if not agent_instruction_path(link):
+            continue
+        target = links[link]
+        for _ in range(40):  # the depth at which the operating system gives up as well
+            if target is None or target.casefold() in protected:
+                break
+            protected[target.casefold()] = link
+            target = folded.get(target.casefold())
+    return protected
+
+
+def link_reason(path: str, protected: dict[str, str], links: list[dict[str, str | None]]) -> str | None:
+    """Why a changed path reaches agent instructions through a symbolic link, if it does."""
+    folded = path.casefold()
+    for target, link in protected.items():
+        if folded == target or folded.startswith(target + "/"):
+            return f"{path} (read through {link})"
+    for version in links:
+        if path not in version:
+            continue
+        chain = {key.casefold(): value for key, value in version.items()}
+        target = version[path]
+        for _ in range(40):
+            if target is None:
+                break
+            if agent_instruction_path(target) or target.casefold() in protected:
+                return f"{path} (a link to {target})"
+            target = chain.get(target.casefold())
+    return None
+
+
 def validate_verification_changes(worktree: Path, base: str, head: str,
                                   manifest: dict[str, Any]) -> None:
     """Reject policy edits, agent-instruction edits, and edits/deletions of the approved
@@ -1071,14 +1125,21 @@ def validate_verification_changes(worktree: Path, base: str, head: str,
     if not isinstance(extra, list) or any(not isinstance(path, str) or not path for path in extra):
         raise RunError("verify.protected_paths must be an array of nonempty path globs")
     baseline = set(git_paths(worktree, "ls-tree", "-r", "--name-only", base))
+    # A symbolic link such as AGENTS.md -> src/rules.txt makes its target an instruction file too,
+    # in the base and in the candidate; adding, moving or removing a link to one also counts.
+    versions = [symbolic_links(worktree, base), symbolic_links(worktree, head)]
+    reached = {**link_protected_targets(versions[0]), **link_protected_targets(versions[1])}
     protected = []
     instructions = []
     for path in git_paths(worktree, "diff", "--name-only", "--no-renames", base, head):
         patterns = (*VERIFICATION_POLICY_PATHS, *extra)
         if path in baseline:
             patterns += BASELINE_TEST_PATHS
+        through_link = link_reason(path, reached, versions)
         if agent_instruction_path(path):
             instructions.append(path)
+        elif through_link:
+            instructions.append(through_link)
         elif path == manifest.get("spec_path") or any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns):
             protected.append(path)
     if protected or instructions:

@@ -3,6 +3,14 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [x] 2026-11-06 — Found by independent review of the 2026-11-05 instruction-file fix: a
+  symbolic link carried instructions past it. With `AGENTS.md -> src/rules.txt` in the base, a
+  maker edited only `src/rules.txt` inside its scope, and the checker read the edit through
+  `AGENTS.md`. Link targets of instruction files are now protected too, in the base and the
+  candidate, through chains and linked folders and ignoring case; adding, retargeting or removing
+  a link to a protected file is refused. `test_symbolic_links_cannot_carry_instructions_past_the_protection`
+  (8 cases) and the `linked-rules` fake-client case failed before and pass after. A link that
+  points outside the repository is not followed.
 - [x] 2026-11-05 — Autonomous runs had no circuit breaker for infrastructure failures. A role
   client that lost its network or sign-in ended the whole run at once, and nothing told a work
   graph to stop starting children on the same failing host. Now a known failure (a fixed list
