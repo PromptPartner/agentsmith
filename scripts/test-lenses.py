@@ -252,6 +252,27 @@ class RecordTests(LensCase):
         report = lenses.report(*lenses.read_rows(self.repo.root))
         self.assertEqual((report["findings"], report["invalid_rows"]), (2, 5))
 
+    @unittest.skipIf(os.name == "nt", "creating symbolic links needs extra rights on Windows")
+    def test_a_linked_manifest_folder_or_file_is_refused(self) -> None:
+        # A link planted in the Git directory would turn the record into a write to a tracked file.
+        tracked = self.repo.root / "tracked"
+        tracked.mkdir()
+        (tracked / "manifest.jsonl").write_text("tracked content\n", encoding="utf-8")
+        self.repo.commit({"tracked/keep.txt": b"x\n"}, "tracked folder")
+        folder = self.repo.common / "agentsmith-lenses"
+        folder.symlink_to(tracked, target_is_directory=True)
+        with self.assertRaisesRegex(lenses.LensError, "symbolic link"):
+            self.record()
+        self.assertEqual((tracked / "manifest.jsonl").read_text(encoding="utf-8"), "tracked content\n")
+        with self.assertRaisesRegex(lenses.LensError, "symbolic link"):
+            lenses.read_rows(self.repo.root)
+        folder.unlink()
+        folder.mkdir()
+        (folder / "manifest.jsonl").symlink_to(tracked / "manifest.jsonl")
+        with self.assertRaisesRegex(lenses.LensError, "symbolic link"):
+            self.record()
+        self.assertEqual((tracked / "manifest.jsonl").read_text(encoding="utf-8"), "tracked content\n")
+
     def test_rows_need_a_one_line_rationale_and_lens_rows_say_what_the_checker_did(self) -> None:
         for fields in ({"rationale": ""}, {"rationale": "two\nlines"}, {"decision": "maybe"},
                        {"checker": None}, {"source": "someone"}):

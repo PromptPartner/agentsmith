@@ -77,7 +77,8 @@ checks the citation against the head commit and refuses a row whose citation doe
 ## The trial record
 
 `lens record` appends one row per finding to `agentsmith-lenses/manifest.jsonl` under the Git
-common directory, outside the tracked tree. Write the rows before fixing anything. Each row has:
+common directory, outside the tracked tree. A symbolic link at that folder or file is refused, so
+the record cannot be redirected into the tracked tree. Write the rows before fixing anything. Each row has:
 
 - `source` (`lens:<id>`, `checker`, `human` or `bot:<name>`), `location` and `evidence`;
 - `decision`: `act`, `skip` (with a reason), or `skip-silently` (style only; the code is correct);

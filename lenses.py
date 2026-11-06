@@ -253,9 +253,24 @@ def check_citation(repo: Path, head: str, evidence: str) -> str:
     return f"{path}:{line}" if line else path
 
 
-def _manifest(repo: Path) -> Path:
-    common = risk_map._git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").decode("utf-8").strip()
-    return Path(common) / "agentsmith-lenses" / "manifest.jsonl"
+def _manifest(repo: Path, create: bool = False) -> Path:
+    """The trial record's path under the Git common directory. A symbolic link at the folder or the
+    file is refused: planted in the Git directory, it would turn the record into a write elsewhere,
+    for example to a tracked file."""
+    common = Path(risk_map._git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+                  .decode("utf-8").strip()).resolve()
+    folder = common / "agentsmith-lenses"
+    path = folder / "manifest.jsonl"
+    for item in (folder, path):
+        if item.is_symlink():
+            raise LensError(f"{item} is a symbolic link; the trial record stays in the Git directory, so remove it")
+    if create:
+        folder.mkdir(exist_ok=True)
+        if folder.is_symlink() or not folder.is_dir():
+            raise LensError(f"{folder} is not a plain folder")
+    if folder.exists() and not folder.resolve().is_relative_to(common):
+        raise LensError(f"{folder} resolves outside the Git directory")
+    return path
 
 
 def row_problem(row: Any) -> str | None:
@@ -329,9 +344,13 @@ def record(repo: Path, base: str, head: str, *, source: str, evidence: str, deci
            "recorded_at": dt.datetime.fromtimestamp(moment, dt.timezone.utc).isoformat(timespec="seconds")}
     existing, _ = read_rows(repo)
     row["confidence"] = confidence(row, existing + [row])
-    path = _manifest(repo)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8", newline="\n") as handle:
+    path = _manifest(repo, create=True)
+    try:
+        # No-follow where the platform has it: a link created after the check is still refused.
+        descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o644)
+    except OSError as exc:
+        raise LensError(f"cannot open the trial record {path}: {exc}") from None
+    with os.fdopen(descriptor, "a", encoding="utf-8", newline="\n") as handle:
         handle.write(json.dumps(row, sort_keys=True, ensure_ascii=True) + "\n")
     return row
 
