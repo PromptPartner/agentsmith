@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import _fixture_git  # first: keeps every Git fixture out of an inherited repository
+_fixture_git.isolate()
 import os
 from pathlib import Path
 import re

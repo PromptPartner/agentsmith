@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "$(dirname "$0")/_fixture_git.sh"  # first: keeps every Git fixture out of an inherited repository
 # test-ui-design-reminder.sh — non-regression suite for hooks/ui-design-reminder.sh.
 #
 # This is the core/60 guard for the design-system feature: the reason the harness now nudges on UI

@@ -8,6 +8,8 @@ migration the default mode reports unmet production checks as GAPs but exits cle
 
 from __future__ import annotations
 
+import _fixture_git  # first: keeps every Git fixture out of an inherited repository
+_fixture_git.isolate()
 import argparse
 import json
 import os

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Local Markdown recall boundaries and startup references."""
+import _fixture_git  # first: keeps every Git fixture out of an inherited repository
+_fixture_git.isolate()
 from pathlib import Path
 import json
 import os

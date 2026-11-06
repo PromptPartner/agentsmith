@@ -8,6 +8,8 @@ FVL-05 implement the frozen interfaces.
 
 from __future__ import annotations
 
+import _fixture_git  # first: keeps every Git fixture out of an inherited repository
+_fixture_git.isolate()
 import datetime as dt
 import difflib
 import hashlib

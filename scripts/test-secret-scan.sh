@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "$(dirname "$0")/_fixture_git.sh"  # first: keeps every Git fixture out of an inherited repository
 # Compatibility launcher for the cross-platform Python scanner test suite.
 set -eu
 

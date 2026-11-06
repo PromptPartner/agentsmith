@@ -3,6 +3,15 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [x] 2026-11-06 — Test scripts run directly from a hook, `git rebase --exec` or a wrapper passed the
+  inherited `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and related variables to their Git
+  fixtures, which then worked on that repository instead of their temporary ones. Every
+  `scripts/test-*` file now clears them first: Python tests call `_fixture_git.isolate()`, shell
+  tests source `scripts/_fixture_git.sh`, with one list of variables that a test keeps equal.
+  `scripts/test-fixture-git-env.py` runs a Python and a shell fixture test with `GIT_DIR` pointing
+  at a sentinel repository: both changed the sentinel before and leave it unchanged after, and a
+  coverage check names any test script that lacks the call.
+
 - [ ] 2026-10-20 — Native Windows `test_deleted_git_lock_does_not_fail_acl_cleanup` failed once
   with `verifier did not start` in verify run `39429936983`, attempt 1, job
   `compatibility (windows-latest)`, on master `d56a0d5`. Attempt 2 on the same commit passed, and

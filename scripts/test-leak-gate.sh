@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "$(dirname "$0")/_fixture_git.sh"  # first: keeps every Git fixture out of an inherited repository
 # test-leak-gate.sh — non-regression suite for scripts/leak-gate.sh.
 #
 # Guards two properties that must hold together:

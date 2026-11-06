@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Evidence classification regressions; no provider requests."""
+import _fixture_git  # first: keeps every Git fixture out of an inherited repository
+_fixture_git.isolate()
 import importlib.util
 from pathlib import Path
 import tempfile
