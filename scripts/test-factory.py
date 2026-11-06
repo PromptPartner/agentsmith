@@ -87,6 +87,7 @@ class FactoryTests(unittest.TestCase):
         (self.repo / ".github/workflows/verify.yml").write_text(WORKFLOW, encoding="utf-8")
         self.git("add", ".")
         self.git("commit", "-qm", "base")
+        self.git("remote", "add", "origin", "https://github.com/owner/project.git")
         self.runs = self.repo / ".git/agentsmith-runs"
 
     def git(self, *args: str) -> str:
@@ -331,6 +332,45 @@ class FactoryTests(unittest.TestCase):
                           base="main", now=NOW)
         factory.numbers(self.repo, now=NOW, ci_runs=[])
         self.assertEqual(snapshot(), before)
+
+    @unittest.skipIf(os.name == "nt", "the fake gh is a POSIX script")
+    def test_the_cli_reads_ci_for_the_target_not_the_current_folder(self) -> None:
+        self.add_run("one", "accepted")
+        self.git("remote", "set-url", "origin", "git@github.com:owner/target-project.git")
+        bin_dir = self.repo.parent / "bin"
+        bin_dir.mkdir()
+        calls = self.repo.parent / "gh-calls.log"
+        (bin_dir / "gh").write_text(f"""#!{sys.executable}
+import json, sys
+args = sys.argv[1:]
+open({str(calls)!r}, "a").write(json.dumps(args) + "\\n")
+if args[:2] == ["auth", "status"]:
+    raise SystemExit(0)
+if args[:2] == ["repo", "view"] and "nameWithOwner" in args:
+    print(json.dumps({{"nameWithOwner": "someone/the-current-folder"}}))
+elif args[:2] == ["repo", "view"]:
+    print(json.dumps({{"defaultBranchRef": {{"name": "main"}}}}))
+else:
+    print(json.dumps([{{"total_count": 0, "workflow_runs": []}}]))
+""", encoding="utf-8")
+        (bin_dir / "gh").chmod(0o755)
+        env = {**CLEAN_ENV, "PATH": str(bin_dir) + os.pathsep + CLEAN_ENV.get("PATH", "")}
+        result = subprocess.run([sys.executable, str(ROOT / "agentsmith.py"), "factory", "numbers", "--json",
+                                 "--target", str(self.repo)], cwd=ROOT, env=env, capture_output=True, text=True,
+                                check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        logged = [json.loads(line) for line in calls.read_text(encoding="utf-8").splitlines()]
+        api = [args for args in logged if args[0] == "api"]
+        self.assertTrue(api and all("repos/owner/target-project/" in args[-1] for args in api), logged)
+        self.assertFalse([args for args in logged if "nameWithOwner" in args], "the current folder's repository")
+
+    def test_the_github_repository_comes_from_the_targets_origin(self) -> None:
+        for url, slug in (("git@github.com:owner/name.git", "owner/name"), ("https://github.com/owner/name", "owner/name"),
+                          ("ssh://git@github.com/owner/name.git", "owner/name"), ("https://gitlab.com/owner/name", None)):
+            with self.subTest(url=url):
+                self.git("remote", "remove", "origin") if self.git("remote") else None
+                self.git("remote", "add", "origin", url)
+                self.assertEqual(factory.github_slug(self.repo), slug)
 
     def test_the_cli_reports_without_gh(self) -> None:
         # gh with an empty configuration is not signed in, on every runner: the CI number says so.

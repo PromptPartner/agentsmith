@@ -9138,8 +9138,12 @@ def cmd_factory(args: argparse.Namespace) -> int:
             print(f"exported to {factory.export(repo, Path(args.directory))}")
             return 0
         gh, gh_error = ci_watch.Gh(), None
+        # CI is read for the target's own GitHub repository, never for the current folder's.
+        slug = factory.github_slug(repo)
         try:
             gh.check()
+            if slug is None:
+                raise ci_watch.GhError(f"the origin remote of {repo} is not a GitHub repository")
         except ci_watch.GhError as exc:
             gh, gh_error = None, str(exc)
         if args.factory_command == "numbers":
@@ -9147,8 +9151,8 @@ def cmd_factory(args: argparse.Namespace) -> int:
             runs = None
             if gh is not None:
                 try:
-                    base = args.base or gh.default_branch(gh.repo())
-                    runs = factory.ci_runs(gh, gh.repo(), base, start)
+                    base = args.base or gh.default_branch(slug)
+                    runs = factory.ci_runs(gh, slug, base, start)
                 except ci_watch.GhError as exc:
                     gh_error = str(exc)
             report = factory.numbers(repo, since=args.since, ci_runs=runs, ci_error=gh_error)
@@ -9162,7 +9166,7 @@ def cmd_factory(args: argparse.Namespace) -> int:
                 base = head or "HEAD"
             report = factory.readiness(repo, controller=factory.load_controller(repo), gh=gh, manifest=manifest,
                                        base=base, green_days=args.green_days, headroom=args.headroom,
-                                       gh_error=gh_error)
+                                       gh_error=gh_error, repo_slug=slug)
     except (factory.FactoryError, OSError, ValueError) as exc:
         print(f"[error] factory: {exc}", file=sys.stderr)
         return 2

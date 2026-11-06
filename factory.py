@@ -54,6 +54,15 @@ def common_dir(repo: Path) -> Path:
     return (path if path.is_absolute() else repo / path).resolve()
 
 
+def github_slug(repo: Path, remote: str = "origin") -> str | None:
+    """owner/name of the target's GitHub remote, so CI is read for that repository and not for
+    whatever repository the current folder belongs to. None when the remote is not on GitHub."""
+    url = git(repo, "remote", "get-url", remote, check=False)
+    match = re.fullmatch(r"(?:git@github\.com:|ssh://git@github\.com/|https://(?:[^@/]+@)?github\.com/)"
+                         r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?", url)
+    return match.group(1) if match else None
+
+
 def factory_dir(repo: Path) -> Path:
     return common_dir(repo) / "agentsmith-factory"
 
@@ -286,7 +295,7 @@ def load_controller(repo: Path) -> Any:
 
 def readiness(repo: Path, *, controller: Any, gh: Any | None, manifest: dict[str, Any] | None, base: str,
               green_days: int = 7, headroom: float = 0.7, now: datetime | None = None,
-              gh_error: str | None = None) -> dict[str, Any]:
+              gh_error: str | None = None, repo_slug: str | None = None) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
     checks = []
     base_commit = git(repo, "rev-parse", "--verify", "--quiet", base + "^{commit}", check=False)
@@ -298,7 +307,9 @@ def readiness(repo: Path, *, controller: Any, gh: Any | None, manifest: dict[str
         checks.append(check("CI headroom", False, reason, "install gh and run `gh auth login`"))
     else:
         try:
-            slug = gh.repo()
+            slug = repo_slug or github_slug(repo)
+            if slug is None:
+                raise FactoryError("the target's origin remote is not a GitHub repository")
             runs = ci_runs(gh, slug, branch, now - timedelta(days=green_days))
             failing = [run for run in runs if run.get("conclusion") not in PASSING]
             green = bool(runs) and not failing

@@ -17,8 +17,10 @@ agentsmith factory defect add <merged-commit-sha> --tier B [--note "what broke"]
 agentsmith factory minutes add <run-id> <minutes>
 ```
 
-`--target <repository>` points any of them at another checkout. Without `gh`, or when it is not
-signed in, the checks and numbers that need CI say so, and the rest still run.
+`--target <repository>` points any of them at another checkout. CI is read for the GitHub
+repository of that checkout's `origin` remote, never for the folder you run the command from.
+Without `gh`, when it is not signed in, or when `origin` is not on GitHub, the checks and numbers
+that need CI say so, and the rest still run.
 
 ## Readiness
 
