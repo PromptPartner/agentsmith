@@ -2312,6 +2312,27 @@ class AutonomousStateTests(unittest.TestCase):
                     index, log, worktree, 1)
             self.assertIsNotNone(problem)
 
+    def test_an_unreadable_calibration_receipt_never_affects_a_run(self) -> None:
+        # Calibration is record-only: whatever is in its file, a run records "unreadable" and goes on.
+        with tempfile.TemporaryDirectory(prefix="agentsmith calibration unreadable ") as temporary:
+            repo = Path(temporary)
+            self.committed_fixture(repo, {"a.txt": "a\n"})
+            checker = {"runtime": "claude", "model": "m", "effort": "high"}
+            path = CONTROLLER.calibration_path(repo, "claude", "m", "high")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            for content in (b"\xff\xfe not UTF-8", b"{not json", b"[1, 2]", b'{"status": 3}'):
+                with self.subTest(content=content):
+                    path.write_bytes(content)
+                    status = CONTROLLER.calibration_status(repo, checker)
+                    self.assertEqual(status, {"status": "unreadable"})
+                    proof = CONTROLLER.verification_binding(
+                        {"repo": str(repo), "worktree": str(repo), "base_head": "a" * 40,
+                         "spec_sha256": "s", "manifest_sha256": "m"},
+                        {"verify": {"command": "true"}, "roles": {"checker": checker}}, "b" * 40)
+                    self.assertEqual(proof["checker_calibration"], status)
+            path.write_bytes(b"\xff")
+            self.assertEqual(CONTROLLER.calibration_status(repo, checker), {"status": "unreadable"})
+
     def test_a_commit_after_verification_refuses_acceptance(self) -> None:
         # The checks passed at one commit; a run branch that moved afterwards would hand the
         # operator unverified code under an "accepted" record.

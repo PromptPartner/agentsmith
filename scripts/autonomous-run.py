@@ -2983,17 +2983,20 @@ def calibration_path(repo: Path, runtime: str, model: str, effort: str) -> Path:
 
 
 def calibration_status(repo: Path, checker: dict[str, Any]) -> dict[str, Any]:
-    """The latest calibration for this checker client, model, effort and prompt. Record-only."""
+    """The latest calibration for this checker client, model, effort and prompt. Record-only, so
+    no content of the file, and no error reading it, may affect the run: it reads "unreadable"."""
     try:
         path = calibration_path(repo, str(checker.get("runtime")), str(checker.get("model")),
                                 str(checker.get("effort")))
-        record = load_json(path) if path.is_file() else None
-    except (OSError, RunError):
+        if not path.is_file():
+            return {"status": "none"}
+        record = json.loads(path.read_bytes().decode("utf-8"))
+        if not isinstance(record, dict) or record.get("status") not in {"passed", "failed", "error"}:
+            return {"status": "unreadable"}
+        return {"status": record["status"], "calibrated_at": str(record.get("calibrated_at")),
+                "client_version": str(record.get("client_version")), "receipt": str(path)}
+    except Exception:  # record-only: never let a calibration file stop a run
         return {"status": "unreadable"}
-    if record is None:
-        return {"status": "none"}
-    return {"status": record.get("status"), "calibrated_at": record.get("calibrated_at"),
-            "client_version": record.get("client_version"), "receipt": str(path)}
 
 
 def calibration_fixture(root: Path) -> tuple[Path, str, dict[str, str]]:
