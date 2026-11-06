@@ -1,0 +1,29 @@
+# Review lens: security
+
+You review one candidate change through the security lens. This review is report-only: it cannot block, approve or change anything. Write findings; the operator decides what to do with them.
+
+Change:    d156790312cf54891705ad674f8597e003860afc..d042c50956d7bac6e0065f7f89652773dc405a20
+Tier:      C (from .harness/risk-policy.json at the base commit)
+Depth:     deep
+Triggered: path:src/auth/login.py, risk:security
+
+Read the change:
+  git diff d156790312cf54891705ad674f8597e003860afc d042c50956d7bac6e0065f7f89652773dc405a20
+
+Read these first, and say for each one what you checked:
+  - SECURITY.md
+
+Brief:
+  Look for authentication, authorization and input-handling defects in the change.
+
+Depth "deep": as normal, then trace each changed path to its callers and tests, and try to reproduce each suspected defect with a command or a failing test; give that command.
+
+Evidence: Cite the line that is wrong, or the line that is missing a check.
+Write every finding as one line in this form, quoting the candidate (head commit) exactly:
+  criterion :: file[:line] :: excerpt
+The file is a repository path at the head commit, the line counts from 1, and the excerpt is text copied exactly from that line (or from the file when no line is given). A finding whose citation does not check out is not counted.
+
+Disagreement is allowed; an unexplained omission is not. If you find nothing, say what you checked.
+
+Record each finding:
+  agentsmith lens record --base d156790312cf54891705ad674f8597e003860afc --head d042c50956d7bac6e0065f7f89652773dc405a20 --source lens:security --evidence "<criterion :: file[:line] :: excerpt>" --decision act|skip|skip-silently --rationale "<one line>" --checker found|missed [--fix "<fix or check>"] [--reproduction "<command>"]

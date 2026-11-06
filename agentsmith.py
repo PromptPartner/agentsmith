@@ -109,6 +109,7 @@ RUNTIME_FILES = (
     ".agentsmith/project_memory.py",
     ".agentsmith/config_audit.py",
     ".agentsmith/risk_map.py",
+    ".agentsmith/lenses.py",
     ".agentsmith/agentsmith",
     ".agentsmith/agentsmith.cmd",
     ".agentsmith/config/agents.json",
@@ -2002,7 +2003,7 @@ def copy_runtime(target: Path, *, dry_run: bool) -> Path:
             contained_copy(source, config_destination / source.name)
         for helper_name in ("native_launcher.py", "evaluate.py", "work_graph.py",
                             "windows_verifier_sandbox.py", "project_memory.py", "config_audit.py",
-                            "risk_map.py"):
+                            "risk_map.py", "lenses.py"):
             helper_source = ROOT / helper_name
             if helper_source.exists():
                 contained_copy(helper_source, destination.parent / helper_name)
@@ -9118,6 +9119,39 @@ def cmd_risk(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_lens(args: argparse.Namespace) -> int:
+    sys.dont_write_bytecode = True
+    import lenses
+    import risk_map
+    target = Path(args.target or os.getcwd()).expanduser()
+    try:
+        if args.lens_command == "plan":
+            report = lenses.plan(target, args.base, args.head, args.checker_class)
+            text = lenses.to_json(report) if args.json else lenses.render_plan(report)
+        elif args.lens_command == "brief":
+            text = lenses.brief(target, args.lens, args.base, args.head, args.checker_class)
+        elif args.lens_command == "record":
+            row = lenses.record(target, args.base, args.head, source=args.source, evidence=args.evidence,
+                                decision=args.decision, rationale=args.rationale, checker=args.checker,
+                                fix=args.fix, reproduction=args.reproduction)
+            text = lenses.to_json(row) if args.json else (
+                f"recorded {row['source']} at {row['location']} ({row['decision']}, confidence {row['confidence']})\n")
+        else:
+            report = lenses.report(lenses.read_rows(target))
+            text = lenses.to_json(report) if args.json else lenses.render_report(report)
+    except (lenses.LensError, risk_map.PolicyError, risk_map.RiskError) as exc:
+        print(f"[error] lens {args.lens_command}: {exc}", file=sys.stderr)
+        return 2
+    stream = getattr(sys.stdout, "buffer", None)
+    if stream is None:
+        sys.stdout.write(text)
+    else:
+        sys.stdout.flush()
+        stream.write(text.encode(sys.stdout.encoding or "utf-8", "backslashreplace"))
+        stream.flush()
+    return 0
+
+
 def memory_git_identity(target: Path) -> tuple[str | None, str | None]:
     values = []
     for arguments in (("symbolic-ref", "--short", "HEAD"), ("rev-parse", "--verify", "HEAD")):
@@ -9395,7 +9429,7 @@ def parser() -> argparse.ArgumentParser:
     )
     root.add_argument("--version", action="version", version=f"agentsmith {VERSION}")
     # Internal commands (hook, secret-scan, graph, wizard, evaluate, compatibility, agents,
-    # validate-integration, audit-config, risk) serve programs and CI: they keep working but stay out of
+    # validate-integration, audit-config, risk, lens) serve programs and CI: they keep working but stay out of
     # the root help, so the public surface stays small. docs/12-whats-built-in.md lists them.
     sub = root.add_subparsers(dest="command", metavar="{" + ",".join(PUBLIC_COMMANDS) + "}")
     install = sub.add_parser("install", help="install or update managed rules and adapters")
@@ -9536,6 +9570,36 @@ def parser() -> argparse.ArgumentParser:
     classify.add_argument("--head", required=True, help="commit to classify")
     classify.add_argument("--target", help="Git repository (default: current directory)")
     classify.add_argument("--json", action="store_true", help="schema-versioned, byte-stable report")
+    lens = sub.add_parser("lens", description="report-only review lenses: plan, brief, record, report")
+    lens_sub = lens.add_subparsers(dest="lens_command", required=True)
+    lens_plan = lens_sub.add_parser("plan", description="List the lenses a change triggers, from .harness/lenses.json "
+                                    "at --base, and the review depth from the tier and the checker class.")
+    lens_brief = lens_sub.add_parser("brief", description="Print the prompt for an attended checker session that "
+                                     "reviews the change through one triggered lens.")
+    lens_brief.add_argument("lens", help="lens id")
+    lens_record = lens_sub.add_parser("record", description="Append one triage row for one finding to the local "
+                                      "trial record under the Git common directory. The evidence must cite the head "
+                                      "commit as 'criterion :: file[:line] :: excerpt'.")
+    for command in (lens_plan, lens_brief, lens_record):
+        command.add_argument("--base", required=True, help="commit the change starts from; its lens file applies")
+        command.add_argument("--head", required=True, help="the candidate commit")
+    for command in (lens_plan, lens_brief):
+        command.add_argument("--checker-class", choices=("small", "standard", "frontier"), default="standard",
+                             help="class of the checker model; it sets the review depth with the tier")
+    lens_record.add_argument("--source", required=True, help="lens:<id>, checker, human or bot:<name>")
+    lens_record.add_argument("--evidence", required=True, help="criterion :: file[:line] :: excerpt")
+    lens_record.add_argument("--decision", required=True, choices=("act", "skip", "skip-silently"))
+    lens_record.add_argument("--rationale", required=True, help="one line")
+    lens_record.add_argument("--checker", choices=("found", "missed"),
+                             help="for a lens finding: did the single checker report it")
+    lens_record.add_argument("--fix", help="the fix or check, if any")
+    lens_record.add_argument("--reproduction", help="a command that reproduces the defect")
+    lens_report = lens_sub.add_parser("report", description="Noise rate and defects missed by the single checker, "
+                                      "counted from the trial record.")
+    for command in (lens_plan, lens_brief, lens_record, lens_report):
+        command.add_argument("--target", help="Git repository (default: current directory)")
+    for command in (lens_plan, lens_record, lens_report):
+        command.add_argument("--json", action="store_true", help="schema-versioned output")
     memory = sub.add_parser("memory", help="search and read bounded local Markdown memory")
     # `memory startup` is the hook's internal entry point, so it stays out of the listed choices.
     memory_commands = memory.add_subparsers(dest="memory_command", required=True, metavar="{search,read}")
@@ -9573,7 +9637,7 @@ def parser() -> argparse.ArgumentParser:
 def normalize_legacy_argv(argv: list[str]) -> list[str]:
     if not argv:
         return ["install", "--wizard"]
-    commands = {"install", "update", "agents", "doctor", "status", "profiles", "wizard", "compatibility", "verify", "validate-integration", "graph", "demo", "resume", "handoff", "new-feedback", "new-research", "secret-scan", "hook", "memory", "audit-config", "risk", "evaluate"}
+    commands = {"install", "update", "agents", "doctor", "status", "profiles", "wizard", "compatibility", "verify", "validate-integration", "graph", "demo", "resume", "handoff", "new-feedback", "new-research", "secret-scan", "hook", "memory", "audit-config", "risk", "lens", "evaluate"}
     if argv[0] in commands or argv[0] in {"-h", "--help", "--version"}:
         return argv
     if "--doctor" in argv:
@@ -10063,6 +10127,8 @@ def run(argv: list[str] | None = None) -> int:
         return cmd_audit_config(args)
     if args.command == "risk":
         return cmd_risk(args)
+    if args.command == "lens":
+        return cmd_lens(args)
     if args.command == "memory":
         return cmd_memory(args)
     if args.command == "hook":
