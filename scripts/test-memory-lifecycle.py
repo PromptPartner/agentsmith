@@ -60,6 +60,24 @@ class Lifecycle(unittest.TestCase):
         for config in (self.target/'.claude/settings.json', self.target/'.codex/hooks.json'):
             if config.exists(): self.assertNotIn('hook memory-startup',config.read_text())
 
+    @unittest.skipIf(os.name == 'nt', 'the slow Git stand-in is a shell script')
+    def test_a_slow_git_still_finds_the_handoff(self):
+        # macOS run 42276115183: the hook printed nothing. Reading the branch had a 0.25 s limit, and
+        # a cold or loaded runner can take longer to start git (on macOS /usr/bin/git is an xcrun
+        # shim); without the branch no handoff matches, so the context was silently empty.
+        import shutil
+        shim = self.base / 'slow-git'
+        shim.mkdir()
+        (shim / 'git').write_text(f'#!/bin/sh\nsleep 0.5\nexec {shutil.which("git")} "$@"\n')
+        (shim / 'git').chmod(0o755)
+        self.install('--with-memory-startup')
+        groups = json.loads((self.target/'.claude/settings.json').read_text())['hooks']['SessionStart']
+        command = [g for g in groups if any('hook memory-startup' in h.get('command','') for h in g['hooks'])][0]['hooks'][0]['command']
+        slow = {**self.env, 'PATH': str(shim) + os.pathsep + self.env['PATH']}
+        observed = subprocess.run(command, shell=True, cwd=self.target, env=slow, input=self.payload(), text=True, capture_output=True)
+        self.assertEqual(observed.returncode, 0, observed.stderr)
+        self.assertIn('handoff.md', observed.stdout, f'stdout={observed.stdout!r} stderr={observed.stderr!r}')
+
     def test_project_decline_preserves_other_project_registration(self):
         self.install('--with-memory-startup')
         other = self.base / 'other'
@@ -98,5 +116,23 @@ class Watchdog(unittest.TestCase):
         with patch('sys.stdin',io.StringIO(payload)), patch.object(a.subprocess,'run',side_effect=subprocess.TimeoutExpired('recall',2)), redirect_stdout(output):
             self.assertEqual(a.cmd_memory_startup_hook(args),0)
         self.assertIn('timed out',json.loads(output.getvalue())['hookSpecificOutput']['additionalContext'])
+
+    def test_a_git_timeout_is_reported_not_silent(self):
+        import io
+        from unittest.mock import patch
+        from contextlib import redirect_stdout
+        sys.path.insert(0,str(ROOT))
+        import agentsmith as a
+        with patch.object(a.subprocess,'run',side_effect=subprocess.TimeoutExpired('git',a.MEMORY_GIT_TIMEOUT_SECONDS)):
+            self.assertEqual(a.memory_git_identity(ROOT),(None,None,True))
+        args=a.parser().parse_args(['memory','startup','--target',str(ROOT),'--json'])
+        output=io.StringIO()
+        with patch.object(a,'memory_git_identity',return_value=(None,None,True)), \
+                patch('project_memory.startup',return_value={'schema_version':1,'operation':'startup','references':[],'complete':True,'diagnostics':[],'output':''}), \
+                redirect_stdout(output):
+            a.cmd_memory(args)
+        report=json.loads(output.getvalue())
+        self.assertFalse(report['complete'])
+        self.assertIn('did not answer in time',report['output'])
 
 if __name__=='__main__': unittest.main()
