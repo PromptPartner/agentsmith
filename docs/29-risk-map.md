@@ -80,7 +80,13 @@ The floor errs toward review. The credential names can match ordinary files, suc
 
 Every added, modified, deleted or type-changed path counts. A renamed or copied file counts by its
 old path **and** its new path, so moving a file out of a strict area keeps the strict tier, and
-moving one into a floor path is `human`. A range with no changed paths is `human`, because nothing
+moving one into a floor path is `human`. Copies are found among all files at the base, changed or
+not, so copying a protected file elsewhere counts the protected source too. That search compares
+each new file with every file at the base and can take a while in a large repository.
+
+Copy detection relies on Git's similarity check (at least half the content alike). Content that
+is copied by hand and then changed beyond that, or spread over several files, cannot be traced to
+its source; such a change is classified by its new paths only. A range with no changed paths is `human`, because nothing
 was classified.
 
 ## A tier can be raised, never lowered

@@ -243,8 +243,11 @@ def classify_range(repo: Path, base: str, head: str) -> dict[str, Any]:
         policy = load_policy(data)
     except PolicyError as exc:
         raise PolicyError(f"{POLICY_PATH} at {base_id[:12]}: {exc}") from None
-    # Plumbing ignores user diff configuration; -M pairs renames so both paths are reported.
-    changes = _git(repo, "diff-tree", "-r", "-z", "-M", "--no-commit-id", "--name-status", base_id, head_id)
+    # Plumbing ignores most user diff configuration. -M and -C pair renames and copies so both paths
+    # are reported; --find-copies-harder also checks unmodified files as copy sources, and -l0
+    # stops a configured rename limit from silently skipping that search.
+    changes = _git(repo, "diff-tree", "-r", "-z", "-M", "-C", "--find-copies-harder", "-l0",
+                   "--no-commit-id", "--name-status", base_id, head_id)
     report = classify(parse_name_status(changes), policy)
     return {"schema_version": SCHEMA_VERSION, "base": base_id, "head": head_id,
             "policy": {"path": POLICY_PATH, "blob": blob}, **report}

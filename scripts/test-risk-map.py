@@ -259,6 +259,21 @@ class RangeTests(RepoCase):
         self.assertEqual(report["tier"], "C")
         self.assertEqual(report["lenses"], ["security"])
 
+    def test_copy_of_a_protected_file_counts_by_its_source(self) -> None:
+        # The source of a copy is unchanged, so only copy detection over unmodified files sees it.
+        body = b"".join(b"line %d of a credential-like file\n" % number for number in range(40))
+        base = self.repo.commit({POLICY: policy({"paths": ["**"], "tier": "A"}), "secrets/token.txt": body,
+                                 "src/auth/login.py": body.replace(b"credential", b"login")}, "base")
+        head = self.repo.commit({"docs/token.txt": body, "docs/login.py": body.replace(b"credential", b"login")
+                                 + b"one more line\n"}, "copy")
+        report = risk_map.classify_range(self.repo.root, base, head)
+        self.assertEqual([row["path"] for row in report["paths"]],
+                         ["docs/login.py", "docs/token.txt", "secrets/token.txt", "src/auth/login.py"])
+        self.assertEqual(report["tier"], "human")
+        # A user's rename-limit setting must not switch copy detection off.
+        self.repo.git("config", "diff.renameLimit", "1")
+        self.assertEqual(risk_map.to_json(risk_map.classify_range(self.repo.root, base, head)), risk_map.to_json(report))
+
     def test_candidate_cannot_relax_its_own_policy(self) -> None:
         base = self.base_with_policy()
         head = self.repo.commit({
