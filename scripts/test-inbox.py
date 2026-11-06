@@ -165,6 +165,20 @@ class OriginBaseTests(InboxCase):
         self.assertTrue(any("origin/release" in warning for warning in report["warnings"]), report["warnings"])
 
 
+class PullRequestClaimTests(InboxCase):
+    def test_without_issues_the_next_step_does_not_claim_there_is_no_pull_request(self) -> None:
+        accepted = self.repo.branch("agentsmith/acc", self.base, {"src/a.py": b"a\n"})
+        self.repo.run_state("acc", status="accepted", base_head=self.base, accepted_commit=accepted)
+        step = self.rows(self.collect())[("accepted", "acc")]["next_step"]
+        self.assertIn("--issues", step)
+        self.assertNotIn("open a pull request;", step)
+        # Pushed to a branch on a remote: point at that branch, do not tell the operator to push again.
+        self.repo.git("update-ref", "refs/remotes/origin/agentsmith/acc", accepted)
+        step = self.rows(self.collect())[("accepted", "acc")]["next_step"]
+        self.assertIn("origin/agentsmith/acc", step)
+        self.assertNotIn("push it", step)
+
+
 class ContradictionTests(InboxCase):
     def test_rows_that_contradict_git_are_dropped_with_a_warning(self) -> None:
         self.repo.run_state("gone", status="escalated", base_head=self.base, reason="x")

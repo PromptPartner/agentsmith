@@ -19,7 +19,7 @@ agentsmith inbox release 12
 | `escalated` | An autonomous run stopped at a boundary it may not cross. The next step quotes its reason. | Its branch and base commit exist. |
 | `dead` | A run is unfinished (`prepared`, `making`, `checking`, `retrying`, `resuming`) but neither its controller nor its role process is alive. | Its branch and base commit exist. |
 | `interrupted` | A run was stopped and can be resumed or discarded. | Its branch and base commit exist. |
-| `accepted` | A run's accepted commit has not landed: it is not reachable from the origin base branch, and (with `--issues`) no open pull request has it as its head. | The commit exists and its branch still contains it. |
+| `accepted` | A run's accepted commit has not landed: it is not reachable from the origin base branch, and (with `--issues`) no open pull request has it as its head. Without `--issues` the next step says that no pull request was checked; a commit already on a remote branch is named, with no advice to push it again. | The commit exists and its branch still contains it. |
 | `integration` | A work graph's verified integration candidate waits for your approval. | The candidate commit exists and its branch still contains it. |
 | `spec` | A spec under `docs/specs/` is not accepted (for example `status: draft`). Only you accept a spec. | Read from `HEAD` and the working tree; an uncommitted one says so. |
 | `manifest` | A run manifest under `.harness/runs/` has no run yet: it is uncommitted, its spec is not accepted, or it is ready for you to start. | Read from `HEAD` and the working tree. |

@@ -207,6 +207,20 @@ class _Collector:
                              "cannot be checked as landed, so all of it is listed")
         return None
 
+    def _landing_step(self, commit: str, branch: str) -> str:
+        """Say what is known about the commit's way to the base, and nothing that was not checked."""
+        pushed = [name for name in (_git(self.repo, "for-each-ref", "--contains", commit, "--format=%(refname:short)",
+                                         "refs/remotes") or "").splitlines() if name and not name.endswith("/HEAD")]
+        start = f"review accepted commit {commit[:12]} on {branch}"
+        if pushed:
+            where = ", ".join(sorted(pushed)[:3])
+            return (f"{start}; it is pushed as {where}: open or check its pull request"
+                    + ("" if self.gh is not None else " (run with --issues to read open pull requests)"))
+        if self.gh is not None:
+            return f"{start}, then push it and open a pull request; no open pull request has it as head"
+        return (f"{start}, then push it and open a pull request, unless one is already open "
+                "(not checked; run with --issues to read open pull requests)")
+
     def _landed(self, commit: str) -> bool:
         return bool(self.origin_base and _contains(self.repo, commit, self.origin_base)) or commit in self.pr_heads
 
@@ -272,8 +286,7 @@ class _Collector:
             elif not _contains(self.repo, commit, tip):
                 self.warnings.append(f"run {name}: dropped, branch {branch} no longer contains accepted commit {commit[:12]}")
             elif not self._landed(commit):
-                self.add("accepted", name, since, f"review accepted commit {commit[:12]} on {branch}, then push it "
-                         "and open a pull request; nothing lands by itself", self._tier(base, commit))
+                self.add("accepted", name, since, self._landing_step(commit, branch), self._tier(base, commit))
             return
         if status not in TERMINAL_RUN and status not in UNFINISHED_RUN:
             self.warnings.append(f"run {name}: dropped, unknown status {status!r}")
