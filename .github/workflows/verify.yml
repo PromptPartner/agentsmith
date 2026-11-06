@@ -21,7 +21,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    # Windows runs took 21-30 minutes in October 2026, and four hit a 30-minute cap mid-step.
+    # Windows runs took 21-30 minutes in October 2026, and four hit a 30-minute cap mid-step; by
+    # November they took 26-41 (p50 35). The work-graph lifecycle now runs in windows-work-graph.
     timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 20 }}
     steps:
       - uses: actions/checkout@v7
@@ -59,16 +60,12 @@ jobs:
           python scripts/test-work-graph-release-evidence.py
       - name: Work-graph local lifecycle on native macOS
         if: runner.os == 'macOS'
+        timeout-minutes: 15
         run: python scripts/test-work-graph-dispatch.py
       - name: Windows verifier file and network boundary
         if: runner.os == 'Windows'
+        timeout-minutes: 5
         run: python scripts/test-windows-verifier-sandbox.py
-      - name: Work-graph lifecycle under native report environment on Windows
-        if: runner.os == 'Windows'
-        run: python -c 'import runpy, subprocess, sys; env = runpy.run_path("scripts/work-graph-release-evidence.py")["environment"](); raise SystemExit(subprocess.call([sys.executable, "scripts/test-work-graph-dispatch.py", "GraphDispatchTests.test_parallel_roots_and_dependent_checkpoint"], env=env))'
-      - name: Work-graph local lifecycle on native Windows
-        if: runner.os == 'Windows'
-        run: python scripts/test-work-graph-dispatch.py
       - name: Capability effects and local memory contracts
         run: |
           python scripts/test-capability-effects.py
@@ -76,6 +73,7 @@ jobs:
           python scripts/test-memory-lifecycle.py
           python scripts/test-config-audit.py
       - name: Stable release updater
+        timeout-minutes: 12
         run: python scripts/test-update.py
       - name: Installer ownership and containment
         run: python scripts/test-installer-safety.py
@@ -91,6 +89,7 @@ jobs:
           python scripts/test-qualification-containment.py
           python scripts/test-qualification-recovery.py
       - name: Cross-platform autonomous state fixtures
+        timeout-minutes: 5
         run: python scripts/test-autonomous-state.py
       - name: Cross-platform doctor fixtures
         run: python scripts/test-doctor.py
@@ -110,6 +109,7 @@ jobs:
           if ($errors) { $errors | ForEach-Object { Write-Error $_.Message }; exit 1 }
           & ./setup.ps1 --version
       - name: Record native First Verified Loop evidence
+        timeout-minutes: 15
         run: python scripts/first-loop-release-evidence.py record --expected-commit "${{ github.sha }}" --output-root "${{ runner.temp }}" --output "${{ runner.temp }}/native-${{ runner.os }}.json"
       - name: Upload native First Verified Loop evidence
         uses: actions/upload-artifact@v7
@@ -118,12 +118,39 @@ jobs:
           path: ${{ runner.temp }}/native-${{ runner.os }}.json
           retention-days: 14
 
+  # The Windows work-graph lifecycle took about 14 of the Windows compatibility job's 26-41 minutes
+  # (p50 35, cap 45). It runs here in parallel, with the same checks; only its job is new.
+  windows-work-graph:
+    name: work-graph lifecycle (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Work-graph lifecycle under native report environment on Windows
+        timeout-minutes: 6
+        run: python -c 'import runpy, subprocess, sys; env = runpy.run_path("scripts/work-graph-release-evidence.py")["environment"](); raise SystemExit(subprocess.call([sys.executable, "scripts/test-work-graph-dispatch.py", "GraphDispatchTests.test_parallel_roots_and_dependent_checkpoint"], env=env))'
+      - name: Work-graph local lifecycle on native Windows
+        timeout-minutes: 25
+        run: python scripts/test-work-graph-dispatch.py
+
   fvl08-release-evidence:
     name: aggregate native First Verified Loop evidence
-    needs: [compatibility, posix-guardrails]
+    needs: [compatibility, posix-guardrails, windows-work-graph]
+    # This job is a required check; the Windows work-graph job is not. Running it whenever the run was
+    # not cancelled, and failing on any unsuccessful need, keeps that job gating the merge: a job skipped
+    # because a need failed would count as passing.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Every gating job succeeded
+        if: needs.compatibility.result != 'success' || needs.posix-guardrails.result != 'success' || needs.windows-work-graph.result != 'success'
+        run: |
+          echo "compatibility=${{ needs.compatibility.result }} posix-guardrails=${{ needs.posix-guardrails.result }} windows-work-graph=${{ needs.windows-work-graph.result }}"
+          exit 1
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:

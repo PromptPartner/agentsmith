@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -177,6 +178,31 @@ class WorkGraphReleaseEvidenceTests(unittest.TestCase):
         result = self.aggregate(paths, output.name)
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(target.exists())
+
+    def test_windows_work_graph_runs_beside_compatibility_and_still_gates_the_merge(self) -> None:
+        # The Windows compatibility job ran 26-41 minutes (p50 35) against its 45-minute cap; the
+        # work-graph lifecycle alone took about 14 of them. It runs as its own Windows job in
+        # parallel, and the required aggregate job fails, rather than skips, when that job fails.
+        workflow = (ROOT / ".github/workflows/verify.yml").read_text(encoding="utf-8")
+        body = "\n" + workflow.split("\njobs:\n", 1)[1]
+        jobs = {chunk.split(":", 1)[0]: chunk for chunk in re.split(r"\n  (?=[a-z0-9-]+:\n)", body)[1:]}
+        compatibility, windows = jobs["compatibility"], jobs["windows-work-graph"]
+        self.assertNotIn("Work-graph local lifecycle on native Windows", compatibility)
+        self.assertNotIn("native report environment on Windows", compatibility)
+        self.assertIn("runs-on: windows-latest", windows)
+        self.assertIn("name: Work-graph local lifecycle on native Windows", windows)
+        self.assertIn("GraphDispatchTests.test_parallel_roots_and_dependent_checkpoint", windows)
+        aggregate = jobs["fvl08-release-evidence"]
+        self.assertIn("needs: [compatibility, posix-guardrails, windows-work-graph]", aggregate)
+        self.assertIn("if: ${{ !cancelled() }}", aggregate)
+        self.assertIn("needs.windows-work-graph.result != 'success'", aggregate)
+        # A step that can hang fails fast with its own name instead of eating the job's cap.
+        for step in ("Work-graph local lifecycle on native Windows", "Work-graph local lifecycle on native macOS",
+                     "Record native First Verified Loop evidence", "Stable release updater",
+                     "Windows verifier file and network boundary", "Cross-platform autonomous state fixtures"):
+            with self.subTest(step=step):
+                block = workflow.split(f"- name: {step}\n", 1)[1].split("\n      - ", 1)[0]
+                self.assertRegex(block, r"timeout-minutes: \d+")
 
     def test_manual_workflow_records_each_native_host_and_aggregates_matching_reports(self) -> None:
         workflow = (ROOT / ".github/workflows/verify.yml").read_text(encoding="utf-8")

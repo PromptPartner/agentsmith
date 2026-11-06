@@ -3,6 +3,21 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [x] 2026-11-06 — The Windows compatibility job ran close to its cap: over the 24 latest verify
+  runs (push and pull request, 2026-10-26 to 2026-11-06) it took p50 35.3, p90 38.0 and at most
+  40.8 minutes against a 45-minute cap, and a factory multiplies CI load. Slowest Windows steps
+  (median / p90 minutes): work-graph local lifecycle 12.8 / 13.9; record native First Verified
+  Loop evidence 8.2 / 9.2; stable release updater 5.6 / 6.2; work-graph lifecycle under the native
+  report environment 1.4 / 1.6; doctor fixtures 1.3 / 1.4; every other step under 1. The two
+  work-graph lifecycle steps now run in their own parallel Windows job,
+  `work-graph lifecycle (windows-latest)`, with the same commands, so no check is dropped. The
+  required `aggregate native First Verified Loop evidence` job needs it and fails, rather than
+  skips, when it fails, so it still gates the merge without a ruleset change. Steps that can hang
+  have their own `timeout-minutes`, about 1.6 to 5 times their slowest observed run. Expected
+  Windows compatibility time: about 21 minutes at p50 (35.3 minus 14.2), with the new job about
+  15; to be confirmed by the first hosted runs. `test_windows_work_graph_runs_beside_compatibility_and_still_gates_the_merge`
+  failed before and passes after.
+
 - [ ] 2026-10-20 — Native Windows `test_deleted_git_lock_does_not_fail_acl_cleanup` failed once
   with `verifier did not start` in verify run `39429936983`, attempt 1, job
   `compatibility (windows-latest)`, on master `d56a0d5`. Attempt 2 on the same commit passed, and
