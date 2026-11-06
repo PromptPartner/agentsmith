@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib.util
 import json
@@ -486,6 +487,45 @@ class DeliverTests(unittest.TestCase):
         self.refused(repo, "the accepted diff does not apply to origin/main")
 
 
+def command_words(node: ast.AST) -> list[str]:
+    """The literal words of a command argument. A string counts only when it reads as a command
+    (one word, or starting with `git ` or `gh `), so a message that mentions git push does not."""
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return [word for item in node.elts for word in command_words(item)]
+    if isinstance(node, ast.Starred):
+        return command_words(node.value)
+    if isinstance(node, ast.JoinedStr):  # an f-string: its literal parts, with a gap for each value
+        text = "".join(part.value if isinstance(part, ast.Constant) else " {} " for part in node.values)
+    elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+        text = node.value
+    else:
+        return []
+    words = text.split()
+    return words if len(words) == 1 or words[:1] in (["git"], ["gh"]) else []
+
+
+def push_or_pull_request_commands(source: str) -> list[tuple[int, str]]:
+    """Every call, list or tuple whose literal words run `git ... push` or `gh ... pr create|merge`.
+    A call counts its function name too, so a helper call such as git(repo, "push") is found."""
+    found: dict[int, str] = {}
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Call):
+            name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+            words = [name] + [word for arg in [*node.args, *(item.value for item in node.keywords)]
+                              for word in command_words(arg)]
+        elif isinstance(node, (ast.List, ast.Tuple)):
+            words = command_words(node)
+        else:
+            continue
+        for index, word in enumerate(words):
+            rest = words[index + 1:]
+            pull_request = rest[rest.index("pr") + 1:] if word == "gh" and "pr" in rest else []
+            if (word == "git" and "push" in rest) or {"create", "merge"} & set(pull_request):
+                found.setdefault(node.lineno, " ".join(words))
+                break
+    return sorted(found.items())
+
+
 class LandingContractTests(unittest.TestCase):
     """The attended landing step: the controller prints, a person approves, the skill pushes."""
 
@@ -508,9 +548,24 @@ class LandingContractTests(unittest.TestCase):
 
     def test_the_controller_has_no_push_or_pull_request_code_path(self) -> None:
         source = CONTROLLER_PATH.read_text(encoding="utf-8")
-        self.assertNotRegex(source, r'\[\s*"git"\s*,\s*"push"')
-        self.assertNotRegex(source, r'\[\s*"gh"\s*,\s*"pr"')
+        self.assertEqual(push_or_pull_request_commands(source), [])
         self.assertNotIn("network_access=true", source)
+
+    def test_the_guard_finds_a_push_or_pull_request_command_in_any_spelling(self) -> None:
+        source = textwrap.dedent("""\
+            import subprocess
+            def forbidden(repo, remote):
+                subprocess.run(['git', 'push', 'origin', 'HEAD'])
+                subprocess.run(('gh', 'pr', 'create'))
+                git(repo, "push", remote)
+                command = ["gh", "pr", "merge", "7"]
+                subprocess.run(f"git -C {repo} push", shell=True)
+            def allowed(repo):
+                git(repo, "ls-remote", "origin")
+                subprocess.run(["gh", "pr", "view", "7"])
+                raise RuntimeError("the controller never runs git push")
+            """)
+        self.assertEqual([line for line, _ in push_or_pull_request_commands(source)], [3, 4, 5, 6, 7])
 
     def test_the_skill_lands_the_exact_commit_after_one_question(self) -> None:
         skill = (ROOT / "skills/autonomous-run/SKILL.md").read_text(encoding="utf-8")
