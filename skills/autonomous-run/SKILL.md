@@ -109,8 +109,30 @@ Resume revalidates a checkpointed candidate and reruns verification/checking in 
 Dirty or unreceipted maker commits require operator review. Raw logs survive controller crashes;
 earlier invocations are archived. Report `usage_accounting_incomplete` when a crash leaves
 unreported spend unknown. A surviving role process group must be stopped before recovery.
-An accepted run ends at a local commit for human review: never push, open a PR, merge, deploy,
-rewrite history, or write to Linear from this workflow.
+An accepted run ends at a local commit for human review. Do not push, open a pull request, merge,
+deploy, rewrite history, or write to Linear from the run itself; landing is the separate attended
+step below, and only with the operator's yes.
+
+## Land an accepted run (attended)
+
+Roles have no network and no credentials, and the controller never pushes. Landing happens here,
+in an attended session, with one yes from the operator:
+
+1. Run `python3 .agentsmith/autonomous-run.py deliver <run-id> --dry-run`. If it refuses, report
+   the reasons and stop.
+2. Show the operator the push command, the pull-request title and body, the tier, the base
+   staleness and the `Auto-merge eligible` line.
+3. Ask once: "Push <accepted-sha> to agentsmith/<run-id> and open a pull request with this body?"
+   Anything but a clear yes ends the step. The yes covers only this push and this pull request.
+4. Push the exact accepted commit, never a moving branch name:
+   `git push origin <accepted-sha>:refs/heads/agentsmith/<run-id>`.
+5. Save the body to a file and open the pull request:
+   `gh pr create --base <base-branch> --head agentsmith/<run-id> --title "<title>" --body-file <file>`.
+6. Run `agentsmith ci watch --pr <number>` and report its one end state and next step. Do not fix,
+   rerun or comment on CI from this step.
+7. After a green watch, run `deliver <run-id> --eligibility --sha <accepted-sha>` and report the
+   eligibility line. It is information only. A human merges; never merge, approve or enable
+   auto-merge from this step.
 
 ## Report
 

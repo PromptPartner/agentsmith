@@ -308,5 +308,26 @@ class DeliverTests(unittest.TestCase):
         self.refused(repo, "the accepted diff does not apply to origin/main")
 
 
+class LandingContractTests(unittest.TestCase):
+    """The attended landing step: the controller prints, a person approves, the skill pushes."""
+
+    def test_the_controller_has_no_push_or_pull_request_code_path(self) -> None:
+        source = CONTROLLER_PATH.read_text(encoding="utf-8")
+        self.assertNotRegex(source, r'\[\s*"git"\s*,\s*"push"')
+        self.assertNotRegex(source, r'\[\s*"gh"\s*,\s*"pr"')
+        self.assertNotIn("network_access=true", source)
+
+    def test_the_skill_lands_the_exact_commit_after_one_question(self) -> None:
+        skill = (ROOT / "skills/autonomous-run/SKILL.md").read_text(encoding="utf-8")
+        section = skill.split("## Land an accepted run (attended)", 1)
+        self.assertEqual(len(section), 2, "the skill needs the attended landing step")
+        step = section[1].split("\n## ", 1)[0]
+        for required in ("deliver <run-id> --dry-run", "Ask once", "git push origin <accepted-sha>:refs/heads/agentsmith/<run-id>",
+                         "gh pr create", "--body-file", "agentsmith ci watch --pr <number>", "one end state",
+                         "A human merges", "never merge"):
+            self.assertIn(required, step)
+        self.assertNotIn("never push, open a PR", skill, "the old blanket rule contradicts the landing step")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
