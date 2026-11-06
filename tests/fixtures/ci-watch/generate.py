@@ -30,10 +30,12 @@ def pr(mergeable="MERGEABLE", state="BLOCKED", rollup="SUCCESS", head=SHA):
                                    "status": "COMPLETED", "conclusion": rollup}]}
 
 
-def listed(run_id, event, status, conclusion="", attempt=1, created=0.5, updated=0.5):
-    return {"attempt": attempt, "conclusion": conclusion, "createdAt": ts(created), "databaseId": run_id,
-            "event": event, "headBranch": "fix/verify-git-env-isolation", "headSha": SHA, "name": "verify",
-            "status": status, "updatedAt": ts(updated), "workflowDatabaseId": WORKFLOW, "workflowName": "verify"}
+def listed(run_id, event, status, conclusion="", attempt=1, created=0.5, updated=0.5,
+           branch="fix/verify-git-env-isolation", head_repo=REPO):
+    # The REST shape of GET /repos/{repo}/actions/runs?head_sha=..., as `gh api` returns it.
+    return {"conclusion": conclusion or None, "created_at": ts(created), "event": event, "head_branch": branch,
+            "head_repository": {"full_name": head_repo}, "head_sha": SHA, "id": run_id, "name": "verify",
+            "run_attempt": attempt, "status": status, "updated_at": ts(updated), "workflow_id": WORKFLOW}
 
 
 def step(number, name, conclusion="success", status="completed", start=1.0, end=1.1):

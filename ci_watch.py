@@ -97,8 +97,27 @@ class Gh:
         return self._json("pr", "view", str(number), "--repo", repo, "--json",
                           "headRefOid,baseRefName,mergeable,mergeStateStatus,state")
 
+    def _pages(self, endpoint: str, key: str) -> list[dict[str, Any]]:
+        """Every item of a paginated REST list (GET). A list shorter than its total_count fails closed."""
+        pages = self._json("api", "--paginate", "--slurp", endpoint)
+        if not isinstance(pages, list) or not all(isinstance(page, dict) for page in pages):
+            raise GhError(f"gh api {endpoint.split('?')[0]} returned an unexpected shape")
+        items = [item for page in pages for item in page.get(key) or []]
+        total = max([page.get("total_count", 0) for page in pages] or [0])
+        if len(items) < total:
+            raise GhError(f"read {len(items)} of {total} {key.replace('_', ' ')} from {endpoint.split('?')[0]}; "
+                          "a partial list cannot decide an end state")
+        return items
+
     def runs(self, repo: str, sha: str) -> list[dict[str, Any]]:
-        return self._json("run", "list", "--repo", repo, "--commit", sha, "--limit", "100", "--json", RUN_FIELDS)
+        # REST, paginated: `gh run list` stops at its --limit and would hide later runs.
+        return [{"databaseId": run.get("id"), "attempt": run.get("run_attempt"), "status": run.get("status"),
+                 "conclusion": run.get("conclusion") or "", "event": run.get("event"), "headSha": run.get("head_sha"),
+                 "headBranch": run.get("head_branch"),
+                 "headRepository": (run.get("head_repository") or {}).get("full_name"),
+                 "workflowDatabaseId": run.get("workflow_id"), "workflowName": run.get("name"),
+                 "createdAt": run.get("created_at"), "updatedAt": run.get("updated_at")}
+                for run in self._pages(f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100", "workflow_runs")]
 
     def run(self, repo: str, run_id: int) -> dict[str, Any]:
         return self._json("run", "view", str(run_id), "--repo", repo, "--json", RUN_FIELDS.replace("databaseId,", "") + ",jobs")

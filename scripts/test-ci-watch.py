@@ -48,7 +48,15 @@ class FakeGh:
             return self.reply(value)
         if verb == ("run", "list") and "--commit" in argv:
             self.poll_index = min(self.poll_index + 1, len(fixture["polls"]) - 1)
-            return self.reply(fixture["polls"][self.poll_index]["runs"])
+            limit = int(argv[argv.index("--limit") + 1]) if "--limit" in argv else 20
+            return self.reply([camel_run(run) for run in fixture["polls"][self.poll_index]["runs"]][:limit])
+        if argv[1] == "api" and "/actions/runs?head_sha=" in argv[-1]:
+            self.poll_index = min(self.poll_index + 1, len(fixture["polls"]) - 1)
+            poll = fixture["polls"][self.poll_index]
+            runs = poll["runs"]
+            total = poll.get("registered", len(runs))
+            pages = [runs[start:start + 100] for start in range(0, len(runs), 100)] or [[]]
+            return self.reply([{"total_count": total, "workflow_runs": page} for page in pages])
         if verb == ("run", "list") and "--branch" in argv:
             return self.reply(fixture["base"]["list"])
         if verb == ("run", "view"):
@@ -57,13 +65,21 @@ class FakeGh:
                 return self.reply(fixture["base"]["view"])
             return self.reply(fixture["polls"][max(self.poll_index, 0)]["views"][run_id])
         if argv[1] == "api":
-            key = "/".join(argv[2].split("?")[0].split("/")[5:8:2])
+            key = "/".join(argv[-1].split("?")[0].split("/")[5:8:2])
             return self.reply(fixture["attempts"][key])
         raise AssertionError(f"unexpected gh call: {argv}")
 
     @staticmethod
     def reply(value: object) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess([], 0, value if isinstance(value, str) else json.dumps(value), "")
+
+
+def camel_run(run: dict) -> dict:
+    """The same run as `gh run list --json` shows it."""
+    return {"attempt": run["run_attempt"], "conclusion": run["conclusion"] or "", "createdAt": run["created_at"],
+            "databaseId": run["id"], "event": run["event"], "headBranch": run["head_branch"], "headSha": run["head_sha"],
+            "name": run["name"], "status": run["status"], "updatedAt": run["updated_at"],
+            "workflowDatabaseId": run["workflow_id"], "workflowName": run["name"]}
 
 
 class Clock:
@@ -122,13 +138,13 @@ class StateTests(unittest.TestCase):
         self.assertNotIn("statusCheckRollup", flattened)
         self.assertNotIn(" checks", flattened)
         # It kept polling through the polls with no run instead of reporting the empty list as green.
-        self.assertGreaterEqual(len([argv for argv in fake.calls if "--commit" in argv]), 4)
+        self.assertGreaterEqual(len([argv for argv in fake.calls if "head_sha=" in argv[-1]]), 4)
 
     def test_runs_for_other_commits_are_ignored(self) -> None:
         fixture = json.loads((FIXTURES / "green.json").read_text(encoding="utf-8"))
         for poll in fixture["polls"]:
             for run in poll["runs"]:
-                run["headSha"] = "0" * 40
+                run["head_sha"] = "0" * 40
         fake, clock = FakeGh(fixture), Clock(fixture["start"])
         report = ci_watch.watch(ci_watch.Gh(runner=fake, which=lambda _: "gh"), fixture["repo"], pr=67,
                                 cap_seconds=120, stall_seconds=1800, poll_seconds=30, now=clock.now, sleep=clock.sleep)
@@ -167,6 +183,40 @@ class StateTests(unittest.TestCase):
                                 cap_seconds=60, stall_seconds=1800, poll_seconds=30, now=clock.now, sleep=clock.sleep)
         self.assertEqual(report["state"], "cap-reached", report)
         self.assertLessEqual(report["elapsed_seconds"], 61)
+
+    def many_runs(self, failing_last: bool, registered: int | None = None) -> dict:
+        fixture = json.loads((FIXTURES / "red-at-diff.json").read_text(encoding="utf-8"))
+        poll = fixture["polls"][0]
+        template_run, passing_view = poll["runs"][0], json.loads(json.dumps(poll["views"]["100"]))
+        for job in passing_view["jobs"]:
+            job["conclusion"] = "success"
+            for step in job["steps"]:
+                step["conclusion"] = "success"
+        passing_view["conclusion"] = "success"
+        # The passing runs belong to another workflow, so they do not make the failure look flaky.
+        passing_view["workflowDatabaseId"] = template_run["workflow_id"] + 1
+        runs, views = [], {}
+        for index in range(101):
+            run_id = 1000 + index
+            failing = failing_last and index == 100
+            runs.append({**template_run, "id": run_id, "conclusion": "failure" if failing else "success",
+                         "workflow_id": template_run["workflow_id"] + (0 if failing else 1)})
+            views[str(run_id)] = poll["views"]["100"] if failing else passing_view
+        fixture["polls"] = [{"runs": runs, "views": views, **({"registered": registered} if registered else {})}]
+        return fixture
+
+    def watch_fixture(self, fixture: dict) -> dict:
+        clock = Clock(fixture["start"])
+        return ci_watch.watch(ci_watch.Gh(runner=FakeGh(fixture), which=lambda _: "gh"), fixture["repo"], pr=67,
+                              cap_seconds=600, stall_seconds=1800, poll_seconds=30, now=clock.now, sleep=clock.sleep)
+
+    def test_every_registered_run_is_read_past_one_hundred(self) -> None:
+        # The 101st run fails; a watch that reads only 100 runs reports green.
+        self.assertEqual(self.watch_fixture(self.many_runs(failing_last=True))["state"], "red-at-diff")
+
+    def test_a_partial_run_list_fails_closed(self) -> None:
+        with self.assertRaisesRegex(ci_watch.GhError, "read 101 of 102"):
+            self.watch_fixture(self.many_runs(failing_last=False, registered=102))
 
     def test_exit_codes_are_distinct_and_documented(self) -> None:
         codes = [ci_watch.STATES[state][0] for state in ci_watch.STATES]

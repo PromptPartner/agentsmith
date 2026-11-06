@@ -63,5 +63,8 @@ is not counted as flaky: the base may be the difference. A rerun needs the opera
 its `id`, `workflow`, `event`, `attempt`, `status`, `conclusion` and `failing_jobs` (each with
 `id`, `name` and `category`).
 
-The gh calls it makes are `gh auth status`, `gh repo view`, `gh pr view`, `gh run list`,
-`gh run view` and one read-only `gh api` request for the jobs of earlier run attempts.
+The gh calls it makes are `gh auth status`, `gh repo view`, `gh pr view`, `gh run list` (the
+base branch's latest run), `gh run view`, and read-only `gh api --paginate` requests for the
+commit's runs and the jobs of earlier run attempts. Lists are read in full, page by page; when
+GitHub reports more items than were read, the watch stops with exit status 2 rather than decide
+on a partial list.

@@ -108,18 +108,20 @@
   {
    "runs": [
     {
-     "attempt": 1,
-     "conclusion": "",
-     "createdAt": "2026-11-06T15:00:30Z",
-     "databaseId": 100,
+     "conclusion": null,
+     "created_at": "2026-11-06T15:00:30Z",
      "event": "push",
-     "headBranch": "fix/verify-git-env-isolation",
-     "headSha": "884ab3cfbaf1b05e7557712c2108a99b0284c9fe",
+     "head_branch": "fix/verify-git-env-isolation",
+     "head_repository": {
+      "full_name": "PromptPartner/agentsmith"
+     },
+     "head_sha": "884ab3cfbaf1b05e7557712c2108a99b0284c9fe",
+     "id": 100,
      "name": "verify",
+     "run_attempt": 1,
      "status": "in_progress",
-     "updatedAt": "2026-11-06T15:01:00Z",
-     "workflowDatabaseId": 365097755,
-     "workflowName": "verify"
+     "updated_at": "2026-11-06T15:01:00Z",
+     "workflow_id": 365097755
     }
    ],
    "views": {
@@ -212,32 +214,36 @@
   {
    "runs": [
     {
-     "attempt": 1,
      "conclusion": "success",
-     "createdAt": "2026-11-06T15:00:30Z",
-     "databaseId": 100,
+     "created_at": "2026-11-06T15:00:30Z",
      "event": "push",
-     "headBranch": "fix/verify-git-env-isolation",
-     "headSha": "884ab3cfbaf1b05e7557712c2108a99b0284c9fe",
+     "head_branch": "fix/verify-git-env-isolation",
+     "head_repository": {
+      "full_name": "PromptPartner/agentsmith"
+     },
+     "head_sha": "884ab3cfbaf1b05e7557712c2108a99b0284c9fe",
+     "id": 100,
      "name": "verify",
+     "run_attempt": 1,
      "status": "completed",
-     "updatedAt": "2026-11-06T15:05:00Z",
-     "workflowDatabaseId": 365097755,
-     "workflowName": "verify"
+     "updated_at": "2026-11-06T15:05:00Z",
+     "workflow_id": 365097755
     },
     {
-     "attempt": 1,
      "conclusion": "success",
-     "createdAt": "2026-11-06T15:00:30Z",
-     "databaseId": 101,
+     "created_at": "2026-11-06T15:00:30Z",
      "event": "pull_request",
-     "headBranch": "fix/verify-git-env-isolation",
-     "headSha": "884ab3cfbaf1b05e7557712c2108a99b0284c9fe",
+     "head_branch": "fix/verify-git-env-isolation",
+     "head_repository": {
+      "full_name": "PromptPartner/agentsmith"
+     },
+     "head_sha": "884ab3cfbaf1b05e7557712c2108a99b0284c9fe",
+     "id": 101,
      "name": "verify",
+     "run_attempt": 1,
      "status": "completed",
-     "updatedAt": "2026-11-06T15:05:00Z",
-     "workflowDatabaseId": 365097755,
-     "workflowName": "verify"
+     "updated_at": "2026-11-06T15:05:00Z",
+     "workflow_id": 365097755
     }
    ],
    "views": {
