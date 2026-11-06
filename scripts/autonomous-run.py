@@ -860,7 +860,18 @@ def rework_note(repo: Path, manifest: dict[str, Any]) -> str | None:
     data = path.read_bytes()
     if hashlib.sha256(data).hexdigest() != rework["note_sha256"]:
         raise RunError("rework note changed since prepare; prepare a new run with the new note")
-    return data.decode("utf-8", errors="replace").strip()
+    return note_text_problem(data, str(rework["note_path"])).strip()
+
+
+def note_text_problem(data: bytes, shown: str) -> str:
+    """The note as text. It reaches the maker as a process argument, which cannot hold NUL."""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = "\0"
+    if "\0" in text:
+        raise RunError(f"rework note {shown} must be UTF-8 text without NUL characters")
+    return text
 
 
 HIDDEN_PASS_MARKER = "AGENTSMITH-HIDDEN-PASS"
@@ -1220,6 +1231,7 @@ def prepare(args: argparse.Namespace) -> int:
             raise RunError(f"rework note {args.note} must be a file inside the repository")
         if note.stat().st_size > MAX_REWORK_NOTE_BYTES:
             raise RunError(f"rework note {args.note} is larger than {MAX_REWORK_NOTE_BYTES // 1024} KB")
+        note_text_problem(note.read_bytes(), args.note)
         manifest["rework"] = {"of": args.rework_of, "note_path": note.relative_to(repo).as_posix(),
                               "note_sha256": hashlib.sha256(note.read_bytes()).hexdigest()}
     output = Path(args.output or f".harness/runs/{args.run_id}.json")

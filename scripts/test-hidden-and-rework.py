@@ -378,6 +378,17 @@ class ReworkNoteTests(Fixture):
         self.assertIn("rework note changed since prepare", refused.stderr)
         self.assertFalse((self.repo / ".git/agentsmith-runs/third/state.json").exists())
 
+    def test_a_note_must_be_text_without_nul(self) -> None:
+        self.finished_run("done", "accepted")
+        (self.repo / "notes").mkdir()
+        for name, data in (("nul.md", b"fix it\x00 now\n"), ("binary.md", b"\xff\xfe\x00broken")):
+            with self.subTest(note=name):
+                (self.repo / "notes" / name).write_bytes(data)
+                refused = self.prepare("next", "done", note=f"notes/{name}")
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn("must be UTF-8 text without NUL characters", refused.stderr)
+                self.assertFalse((self.repo / ".harness/runs/next.json").exists())
+
     def test_only_a_finished_run_can_be_reworked_and_never_in_place(self) -> None:
         self.write_note()
         self.finished_run("busy", "making")
