@@ -80,7 +80,7 @@ class UpdateCheckTests(unittest.TestCase):
             if not destination.exists():
                 shutil.copytree(ROOT / directory, destination)
         for helper in ("native_launcher.py", "evaluate.py", "work_graph.py",
-                       "windows_verifier_sandbox.py", "project_memory.py", "config_audit.py"):
+                       "windows_verifier_sandbox.py", "project_memory.py", "config_audit.py", "risk_map.py"):
             shutil.copy2(ROOT / helper, self.seed / helper)
         (self.seed / "VERSION").write_text(version + "\n", encoding="utf-8")
         runtime = CORE.read_text(encoding="utf-8")
