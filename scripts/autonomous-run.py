@@ -1968,9 +1968,11 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
             environment = checker_environment(environment, scratch)
         result, error = supervised_process(cmd, worktree, timeout, environment, state, prefix)
     stdout, stderr = result.stdout, result.stderr
+    denials = permission_denials(stdout) if runtime == "claude" else None
     write_json(run_dir / (prefix + '-exit.json'),
                {'role': role, 'runtime': runtime, 'exit_code': result.returncode,
-                'model': role_cfg['model'], 'effort': role_cfg['effort']})
+                'model': role_cfg['model'], 'effort': role_cfg['effort'],
+                **({'permission_denials': denials} if denials is not None else {})})
     record_role_usage(state, runtime, role, stdout)
     if error is not None:
         if isinstance(error, subprocess.TimeoutExpired):
@@ -2002,7 +2004,27 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
                                         f"({signature})", signature)
         raise RunError(f"{runtime} {role} exited {result.returncode}: {stderr[-500:].strip()}")
     assert receipt is not None
+    if role == "checker" and receipt["status"] == "accepted" and denials:
+        # A read-only checker has no allowed use for an edit, a write, network or a connector, so
+        # one denied call means its investigation left its contract: its acceptance is not used.
+        # A rejection stays a rejection. Codex reports no denials, so this covers Claude only.
+        raise InfrastructureFailure(f"claude checker accepted after {denials} denied tool call(s)",
+                                    "permission-denials")
     return receipt
+
+
+def permission_denials(stdout: str) -> int:
+    """The denied tool calls Claude Code lists in its final result (`permission_denials`)."""
+    count = 0
+    for line in stdout.splitlines():
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(record, dict) and record.get("type") == "result" and isinstance(
+                record.get("permission_denials"), list):
+            count = len(record["permission_denials"])
+    return count
 
 
 # Known infrastructure failures of a role client, matched only against the client's stderr and
@@ -2067,8 +2089,11 @@ def launch_role_with_breaker(state: dict[str, Any], manifest: dict[str, Any], ro
                     state["repeat_attempt"] = True
                 repeated = ("the same infrastructure failure twice in a row" if streak[-1] == streak[-2]
                             else f"{len(streak)} infrastructure failures in a row")
+                advice = ("read why the checker tried denied actions in its log, then resume"
+                          if failure.signature == "permission-denials"
+                          else "fix the host, network or client sign-in, then resume")
                 raise RunError(f"{repeated} ({failure.signature}) in the {role}: {failure}; no attempt "
-                               "was spent; fix the host, network or client sign-in, then resume") from failure
+                               f"was spent; {advice}") from failure
             problem = retry_problem() if retry_problem is not None else None
             if problem:
                 raise RunError(f"{failure}; not relaunched because {problem}") from failure

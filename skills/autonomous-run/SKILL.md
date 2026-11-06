@@ -72,7 +72,8 @@ failed attempts, invalid state, denied scope, immutable-deadline or reported-bud
 Git metadata drift, protected verification edits, or checker mutation escalates instead of widening authority.
 A known infrastructure failure (network, sign-in, overload, sandbox start, client crash) relaunches
 the role without spending an attempt; the same failure twice in a row stops the run, and a work
-graph then starts no new child. Report the named failure; the operator fixes it and resumes. Verification
+graph then starts no new child. A Claude checker that accepts after a denied tool call is not
+trusted and is relaunched the same way. Report the named failure; the operator fixes it and resumes. Verification
 fails closed unless macOS `sandbox-exec` or Linux `bubblewrap` is available. Before creating
 anything, `start` runs one trivial sandboxed command per role and one through the verifier
 sandbox; if the host cannot run them, it refuses and names the role and reason.

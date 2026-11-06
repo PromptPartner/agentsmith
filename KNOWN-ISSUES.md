@@ -36,11 +36,16 @@ been authorized, so the entries are kept here.
   `test_repeated_infrastructure_failure_stops_new_child_launches` (child `b` started after the
   breaker stopped `a`) failed before and pass after; `crash-unknown` shows unknown failures are
   unchanged.
-- [ ] 2026-11-05 — Repeated permission denials inside a role do not stop the role. Claude Code's
-  `json` output lists `permission_denials` only in the final result, and per-denial
-  `permission_denied` messages need `--output-format stream-json --verbose`, a launch change that
-  needs native qualification. Codex `exec --json` documents no denial event (checked
-  2026-11-05). Until then, the attempt cap and wall clock bound a role that keeps being denied.
+- [ ] 2026-11-05 — Permission denials do not stop a role while it runs. Claude Code lists single
+  `permission_denied` messages only with `--output-format stream-json --verbose`, a launch change
+  that needs native qualification, and Codex `exec --json` documents no denial event (checked
+  2026-11-05), so Codex roles are not covered at all. Partly fixed 2026-11-06 after independent
+  review: the final `permission_denials` of a Claude role are counted and recorded, and a Claude
+  checker that accepts after any denial is relaunched as the infrastructure failure
+  `permission-denials`; twice in a row stops the run
+  (`test_an_accepting_checker_with_permission_denials_is_not_trusted` and the `checker-denials`
+  fake-client case failed before and pass after). The attempt cap and wall clock still bound a
+  role that keeps being denied.
 - [x] 2026-11-05 — Autonomous-run roles shared writable temporary and cache folders. Every
   verifier used the fixed home `/tmp/agentsmith-verifier-home` and the controller's `TMPDIR`, and
   every checker inherited the maker's `TMPDIR`, `XDG_CACHE_HOME` and Claude Code's per-user

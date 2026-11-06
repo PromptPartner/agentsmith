@@ -712,6 +712,55 @@ class AutonomousStateTests(unittest.TestCase):
                 self.assertIsNone(signature(1, stdout, ""))
         self.assertIsNone(signature(1, "", "something the controller does not know"))
 
+    def test_an_accepting_checker_with_permission_denials_is_not_trusted(self) -> None:
+        # Claude reports denied tool calls in its final result. A read-only checker that needed a
+        # denied action (an edit, a write, network or a connector) broke its contract while
+        # investigating, so its acceptance is not used; a repeat stops the run.
+        def claude_result(status: str, denials: int) -> str:
+            receipt = {"status": status, "summary": "checker", "commit": "a" * 40, "changed_paths": [],
+                       "evidence": ["checked"], "unresolved": [], "next_state": status}
+            return json.dumps({"type": "result", "is_error": False, "total_cost_usd": 0.01,
+                               "permission_denials": [{"tool_name": "Edit", "tool_use_id": str(index)}
+                                                      for index in range(denials)],
+                               "structured_output": receipt})
+
+        def launch(role: str, status: str, denials: int) -> tuple[Any, dict[str, Any], Path]:
+            temporary = Path(tempfile.mkdtemp(prefix="agentsmith denials "))
+            self.addCleanup(shutil.rmtree, temporary, True)
+            (temporary / "run").mkdir()
+            state = {"worktree": str(temporary), "repo": str(temporary), "attempt": 1,
+                     "state_path": str(temporary / "run/state.json"), "deadline_epoch": time.time() + 30,
+                     "manifest_path": str(temporary / "manifest.json"), "spec_path": "spec.md"}
+            manifest = {"roles": {role: {"runtime": "claude", "model": "fixture", "effort": "high"}},
+                        "limits": {"claude_max_usd": 5}}
+            output = subprocess.CompletedProcess([], 0, claude_result(status, denials), "")
+            with mock.patch.object(CONTROLLER, "state_root", return_value=temporary / "runs"), \
+                    mock.patch.object(CONTROLLER, "resolved_git_path", return_value=temporary / ".git"), \
+                    mock.patch.object(CONTROLLER, "effective_autocrlf", return_value="false"), \
+                    mock.patch.object(CONTROLLER, "build_native_command", return_value=["true"]), \
+                    mock.patch.object(CONTROLLER, "supervised_process", return_value=(output, None)):
+                try:
+                    outcome: Any = CONTROLLER.launch_role_with_breaker(state, manifest, role, "prompt")
+                except CONTROLLER.RunError as exc:
+                    outcome = exc
+            return outcome, state, temporary / "run"
+
+        outcome, state, run_dir = launch("checker", "accepted", 8)
+        self.assertIsInstance(outcome, CONTROLLER.RunError, outcome)
+        self.assertIn("same infrastructure failure twice in a row (permission-denials)", str(outcome))
+        self.assertEqual(state["infrastructure_stop"], "permission-denials")
+        outcome, _, _ = launch("checker", "accepted", 1)
+        self.assertIsInstance(outcome, CONTROLLER.RunError, "one denial is enough to distrust an acceptance")
+        # A rejection stays a rejection, and a maker's denials are recorded, not judged here: its
+        # candidate still goes through the verifier and a checker.
+        outcome, _, _ = launch("checker", "rejected", 8)
+        self.assertEqual(outcome["status"], "rejected")
+        outcome, _, run_dir = launch("maker", "completed", 3)
+        self.assertEqual(outcome["status"], "completed")
+        self.assertEqual(json.loads((run_dir / "attempt-1-maker-exit.json").read_text())["permission_denials"], 3)
+        outcome, _, _ = launch("checker", "accepted", 0)
+        self.assertEqual(outcome["status"], "accepted")
+
     def test_circuit_breaker_bounds_relaunches_and_respects_a_changed_worktree(self) -> None:
         receipt = {"status": "completed"}
 

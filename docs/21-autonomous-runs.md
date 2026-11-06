@@ -276,9 +276,17 @@ cause, then `resume`; resuming starts the count again and reruns the same attemp
 failure still costs no attempt. In a work graph, a child stopped this way
 halts new child launches (see [parallel work graphs](24-parallel-work-graphs.md)).
 
-Repeated permission denials inside a role do not stop it yet. Claude reports denials only in
-its final result unless the run streams events, and Codex documents no denial event, so the
-controller cannot count them while the role runs.
+Permission denials are counted when a Claude role ends: Claude Code lists the tool calls it
+denied in its final result (`permission_denials`), and the controller records the number in the
+role's exit record. A Claude checker that accepts after even one denied call is not trusted. A
+read-only checker has no allowed use for an edit, a write, network or a connector, so a denial
+means its investigation left its contract. The controller treats that as the infrastructure
+failure `permission-denials` and starts a fresh checker. The same result twice in a row stops the
+run. A checker that rejects keeps its rejection. A maker's denials are only recorded, because the
+verifier and the checker still judge its candidate. The verifier is a plain shell command with no
+tool permissions, so it has no denials to report. Two gaps remain. Nothing stops a role while it
+runs, because Claude reports single denials only in streamed output (`stream-json`), which these
+roles do not use. And Codex documents no denial event, so Codex roles are not covered.
 
 ## Operations and recovery
 

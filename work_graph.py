@@ -883,7 +883,7 @@ def _run_graph(contract: dict[str, Any], state: dict[str, Any], directory: Path,
                 signature = child.get("infrastructure_stop") if child else None
                 if isinstance(signature, str) and re.fullmatch(r"[a-z0-9-]{1,64}", signature):
                     halted = (f"child {run_id} stopped on a repeated infrastructure failure ({signature}); "
-                              "no new child was started; fix the host, then resume the child and the graph")
+                              "no new child was started; fix the cause, then resume the child and the graph")
                 reason = child_failure_reason(child, process.returncode, stderr)
                 if child is None:
                     dispatch = next(item for item in reversed(state["dispatches"])

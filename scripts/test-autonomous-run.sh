@@ -61,6 +61,7 @@ make_fake() {
     '  if [ "$mode" = reject-once ] && [ "$count" -eq 1 ]; then status=rejected; fi' \
     '  if [ "$mode" = always-reject ]; then status=rejected; fi' \
     '  paths_json="[\"src/change.txt\"]"; if [ -f "$fake_root/paths_json" ]; then paths_json="$(<"$fake_root/paths_json")"; fi' \
+    '  if [ "$mode" = checker-denials ] && [ -z "$receipt" ]; then printf "{\"type\":\"result\",\"total_cost_usd\":0.25,\"permission_denials\":[{\"tool_name\":\"Edit\"}],\"structured_output\":{\"status\":\"accepted\",\"summary\":\"checker accepted\",\"commit\":\"%s\",\"changed_paths\":[\"src/change.txt\"],\"evidence\":[\"fake check\"],\"unresolved\":[],\"next_state\":\"accepted\"}}\n" "$(git rev-parse HEAD)"; exit 0; fi' \
     '  emit "{\"status\":\"$status\",\"summary\":\"checker $status\",\"commit\":\"$(git rev-parse HEAD)\",\"changed_paths\":$paths_json,\"evidence\":[\"fake check\"],\"unresolved\":[],\"next_state\":\"$status\"}"' \
     'else' \
     '  if [ "$mode" = slow ]; then sleep 20; fi' \
@@ -1117,6 +1118,16 @@ import json, sys
 state = json.load(open(sys.argv[1]))
 assert (state['status'], state['attempt']) == ('accepted', 1), (state['status'], state['attempt'])
 assert 'infrastructure_stop' not in state and 'repeat_attempt' not in state
+PY
+
+repo="$(new_repo checker-denials)"; make_fake "$repo/../fake"; manifest "$repo" checker-denials
+if (cd "$repo" && invoke "$repo" checker-denials start .harness/runs/checker-denials.json >../out 2>../err); then
+  bad 'a Claude checker that accepted after a denied tool call was trusted'
+else ok 'a Claude checker that accepts after denied tool calls is not trusted'; fi
+assert 'the stop names the denials' grep -q 'twice in a row (permission-denials) in the checker' "$repo/../err"
+assert 'the checker exit record counts the denials' python3 - "$repo/.git/agentsmith-runs/checker-denials/attempt-1-checker-exit.json" <<'PY'
+import json, sys
+assert json.load(open(sys.argv[1]))['permission_denials'] == 1
 PY
 
 repo="$(new_repo crash-unknown)"; make_fake "$repo/../fake"; manifest "$repo" crash-unknown
