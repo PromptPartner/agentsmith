@@ -60,7 +60,11 @@ def floor_reasons(path: str) -> list[str]:
 def _glob(pattern: str) -> re.Pattern[str]:
     """Compile a root-anchored glob: `*` and `?` stay inside one folder, `**` crosses folders."""
     out = []
-    segments = pattern.casefold().split("/")
+    segments = []
+    for segment in pattern.casefold().split("/"):
+        # Repeated `**` means the same as one, and each extra one multiplies regex backtracking.
+        if not (segment == "**" and segments[-1:] == ["**"]):
+            segments.append(segment)
     for index, segment in enumerate(segments):
         last = index == len(segments) - 1
         if segment == "**":

@@ -10,6 +10,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -99,6 +100,14 @@ class PureClassifyTests(unittest.TestCase):
         self.assertEqual(risk_map.classify(["docs/deep/a.txt"], rules)["tier"], "human")
         self.assertEqual(risk_map.classify(["a.md"], rules)["tier"], "B")
         self.assertEqual(risk_map.classify(["x/y/a.md"], rules)["tier"], "B")
+
+    def test_repeated_double_star_matches_like_one_and_stays_fast(self) -> None:
+        # Each extra `**` multiplied the regex backtracking; twelve could hang classification.
+        rules = self.rules({"paths": ["/".join(["**"] * 12) + "/x"], "tier": "A"})
+        self.assertEqual(risk_map.classify(["x", "a/b/x"], rules)["tier"], "A")
+        started = time.monotonic()
+        self.assertEqual(risk_map.classify(["/".join(["a"] * 40) + "/y"], rules)["tier"], "human")
+        self.assertLess(time.monotonic() - started, 1.0)
 
     def test_rules_match_ignoring_case(self) -> None:
         # macOS and Windows open Src/Auth/x.py in the folder a rule for src/auth/** describes.
