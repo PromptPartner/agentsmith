@@ -958,8 +958,9 @@ def run_hidden_tests(state: dict[str, Any], manifest: dict[str, Any], candidate:
         extract_tree(Path(str(hidden["repo"])).expanduser().resolve(), hidden["commit"], suite)
         run(["git", "init", "-q", str(workspace)], workspace)  # the verifier sandbox expects a Git folder
         argv = [item.replace("{hidden}", str(suite)).replace("{token}", token) for item in hidden["command"]]
+        # No shared /tmp: code the hidden tests run must not leave the suite where a later role reads.
         result = sandboxed_verify(shlex.join(argv), workspace, max(1, remaining_seconds(state, manifest)),
-                                  verifier_env(), read_dirs=(suite,))
+                                  verifier_env(), read_dirs=(suite,), shared_tmp=False)
     output = hashlib.sha256((result.stdout + "\0" + result.stderr).encode("utf-8", "replace")).hexdigest()
     passed = result.returncode == 0 and f"{HIDDEN_PASS_MARKER} {token}" in result.stdout.splitlines()
     return {**record, "status": "pass" if passed else "fail", "exit_code": result.returncode,
@@ -1794,10 +1795,12 @@ def checker_environment(env: dict[str, str], scratch: Path) -> dict[str, str]:
 
 def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str],
                      *, state: dict[str, Any] | None = None,
-                     read_dirs: tuple[Path, ...] = ()) -> subprocess.CompletedProcess[str]:
+                     read_dirs: tuple[Path, ...] = (),
+                     shared_tmp: bool = True) -> subprocess.CompletedProcess[str]:
     """Run the human-approved verifier with no network and no writes outside its worktree and a
     private home, temporary and cache folder that exists only for this run of the verifier.
-    `read_dirs` are extra folders it may read but not write (the hidden suite)."""
+    `read_dirs` are extra folders it may read but not write (the hidden suite). With `shared_tmp`
+    off, it may not write the shared /tmp either (Linux never allows that)."""
     common = resolved_git_path(cwd, "--git-common-dir")
     if sys.platform == "win32" and read_dirs:
         return subprocess.CompletedProcess([], 126, "", "hidden tests need the macOS or Linux verifier sandbox")
@@ -1809,12 +1812,12 @@ def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str],
     with private_scratch("agentsmith-verify-") as scratch:
         return posix_sandboxed_verify(command, cwd, common, timeout,
                                       private_tool_environment(env, scratch, home=True), scratch, state,
-                                      tuple(path.resolve() for path in read_dirs))
+                                      tuple(path.resolve() for path in read_dirs), shared_tmp)
 
 
 def posix_sandboxed_verify(command: str, cwd: Path, common: Path, timeout: int, env: dict[str, str],
                            scratch: Path, state: dict[str, Any] | None,
-                           read_dirs: tuple[Path, ...] = ()) -> subprocess.CompletedProcess[str]:
+                           read_dirs: tuple[Path, ...] = (), shared_tmp: bool = True) -> subprocess.CompletedProcess[str]:
     if sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").exists():
         escaped = str(cwd).replace('"', '\\"')
         escaped_common = str(common).replace('"', '\\"')
@@ -1832,7 +1835,7 @@ def posix_sandboxed_verify(command: str, cwd: Path, common: Path, timeout: int, 
             f'(require-not (subpath {json.dumps(str(scratch), ensure_ascii=False)}))))',
             f'(allow file-write* (subpath "{escaped}"))',
             f'(allow file-write* (subpath {json.dumps(str(scratch), ensure_ascii=False)}))',
-            '(allow file-write* (subpath "/tmp") (subpath "/private/tmp"))',
+            *(['(allow file-write* (subpath "/tmp") (subpath "/private/tmp"))'] if shared_tmp else []),
             '(allow file-write* (literal "/dev/null") (literal "/dev/dtracehelper"))',
             *[f'(deny file-write* (subpath {json.dumps(str(path.resolve()), ensure_ascii=False)}))'
               for path in protected],

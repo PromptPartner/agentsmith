@@ -452,6 +452,9 @@ it to the hidden harness. The run passes only when the command exits 0 and print
 test ran. This stops a candidate that ends the test process early with success, but candidate code
 that the tests import runs in the same process and could read the token from its arguments: the
 marker is a guard against accidents and early exits, not a boundary against a deliberate attack.
+The hidden run may write only its own copy and its private home and temporary folders, all
+removed afterwards: unlike the ordinary macOS verifier, it may not write the shared `/tmp`, so
+code the hidden tests run cannot leave the suite where a later maker could read it.
 Neither copy is a worktree that a role sees. The verification receipt records `hidden_tests`: `pass`, `fail` or
 `skipped` (with the tier and the listed tiers), the commit, the exit code, the time taken and a
 hash of the output. The output itself is not stored anywhere a role can read it.

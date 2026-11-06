@@ -224,6 +224,22 @@ class HiddenTestsTests(Fixture):
         no_token = {"repo": str(hidden), "commit": commit, "command": ["sh", "{hidden}/check.sh"], "tiers": ["C"]}
         self.assertIn("{token}", CONTROLLER.hidden_tests_problem(self.manifest("x", hidden_tests=no_token), self.repo) or "")
 
+    def test_the_hidden_run_cannot_leave_files_in_shared_temporary_folders(self) -> None:
+        # Candidate code that the hidden tests run could copy the suite to /tmp for a later maker.
+        drop = Path("/tmp") / f"agentsmith-hidden-drop-{os.getpid()}"
+        self.addCleanup(lambda: drop.unlink(missing_ok=True))
+        hidden, commit = self.hidden_repo()
+        script = (hidden / "check.sh").read_text(encoding="utf-8")
+        (hidden / "check.sh").write_text(f"cp \"$0\" {drop} 2>/dev/null\n" + script, encoding="utf-8")
+        self.git(hidden, "add", ".")
+        self.git(hidden, "-c", "user.name=Hidden", "-c", "user.email=user@example.com", "commit", "-qm", "drop")
+        commit = self.git(hidden, "rev-parse", "HEAD")
+        self.commit_manifest("drop", **self.hidden(hidden, commit))
+        started = self.controller("start", ".harness/runs/drop.json")
+        self.assertEqual(started.returncode, 0, started.stderr)
+        self.assertFalse(drop.exists(), "the hidden run wrote into shared /tmp")
+        self.assertEqual(self.proof("drop")["hidden_tests"]["status"], "pass")
+
     def test_roles_cannot_read_the_hidden_clone(self) -> None:
         hidden = Path("/hidden/clone")
         claude = CONTROLLER.claude_sandbox_settings(self.repo, hidden_read_paths=[hidden])
@@ -266,6 +282,25 @@ class HiddenCloneTests(Fixture):
         standalone = self.root / "standalone"
         subprocess.run(["git", "init", "-q", str(standalone)], env=self.env, check=True)
         self.assertIsNone(self.problem(standalone, self.commit_hidden(standalone)))
+
+
+class HiddenPolicyTests(Fixture):
+    def test_the_macos_policy_for_hidden_runs_grants_no_shared_tmp(self) -> None:
+        from unittest import mock
+        captured = []
+
+        def capture(args, *_rest):
+            captured.append(args)
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        with mock.patch.object(CONTROLLER.sys, "platform", "darwin"), \
+                mock.patch.object(CONTROLLER.Path, "exists", return_value=True), \
+                mock.patch.object(CONTROLLER, "verifier_process", side_effect=capture):
+            CONTROLLER.sandboxed_verify("true", self.repo, 10, CONTROLLER.verifier_env())
+            CONTROLLER.sandboxed_verify("true", self.repo, 10, CONTROLLER.verifier_env(), shared_tmp=False)
+        shared, private = (args[2] for args in captured)
+        self.assertIn('(allow file-write* (subpath "/tmp") (subpath "/private/tmp"))', shared)
+        self.assertNotIn('(subpath "/tmp")', private)
 
 
 class ReworkNoteTests(Fixture):
