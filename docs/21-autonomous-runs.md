@@ -433,7 +433,7 @@ the manifest:
 
 ```json
 "hidden_tests": {"repo": "/absolute/path/to/private-tests", "commit": "<full commit sha>",
-                 "command": ["python3", "-m", "pytest", "{hidden}"], "tiers": ["C"]}
+                 "command": ["python3", "{hidden}/run_hidden.py", "{token}"], "tiers": ["C"]}
 ```
 
 `prepare`, `start` and `resume` refuse when the clone is missing or inside the repository or run
@@ -442,9 +442,17 @@ standalone repository: its Git folder inside it, not a worktree of the run's rep
 objects borrowed from or lent to another repository (`objects/info/alternates`). Otherwise the
 hidden commit's objects would sit where a maker can read them with `git show`. When the verifier
 passes and the run's risk tier (computed as at acceptance) is in `tiers`, the controller copies
-the candidate's files and that commit's files into a fresh temporary folder and runs `command`
-in the verifier sandbox; `{hidden}` names the folder with the hidden tests. Neither copy is a
-worktree that a role sees. The verification receipt records `hidden_tests`: `pass`, `fail` or
+the candidate's files and that commit's files into two separate folders in a fresh temporary
+folder and runs `command` in the verifier sandbox, with the candidate's copy as its working
+folder. `{hidden}` names the hidden suite's folder, which the run can read but not write, and no
+candidate file can join it; a candidate path under `.agentsmith-hidden-tests/` is refused like
+other protected inputs. `{token}` is a random token made for this run, and the command must pass
+it to the hidden harness. The run passes only when the command exits 0 and prints
+`AGENTSMITH-HIDDEN-PASS <token>` on a line of its own, which the harness does when every hidden
+test ran. This stops a candidate that ends the test process early with success, but candidate code
+that the tests import runs in the same process and could read the token from its arguments: the
+marker is a guard against accidents and early exits, not a boundary against a deliberate attack.
+Neither copy is a worktree that a role sees. The verification receipt records `hidden_tests`: `pass`, `fail` or
 `skipped` (with the tier and the listed tiers), the commit, the exit code, the time taken and a
 hash of the output. The output itself is not stored anywhere a role can read it.
 

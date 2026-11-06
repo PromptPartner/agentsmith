@@ -863,6 +863,7 @@ def rework_note(repo: Path, manifest: dict[str, Any]) -> str | None:
     return data.decode("utf-8", errors="replace").strip()
 
 
+HIDDEN_PASS_MARKER = "AGENTSMITH-HIDDEN-PASS"
 HIDDEN_HINT = ("hidden acceptance tests failed; re-read the spec's acceptance criteria and check the cases "
                "the visible tests do not cover")
 
@@ -906,6 +907,9 @@ def hidden_tests_problem(manifest: dict[str, Any], repo: Path) -> str | None:
     command = hidden["command"]
     if not isinstance(command, list) or not command or not all(isinstance(item, str) and item for item in command):
         return "hidden_tests.command must be a non-empty list of arguments; {hidden} names the tests folder"
+    if not any("{token}" in item for item in command):
+        return (f"hidden_tests.command must pass {{token}} to the hidden harness, which prints "
+                f"'{HIDDEN_PASS_MARKER} <token>' on a line of its own when every hidden test ran")
     tiers = hidden["tiers"]
     if not isinstance(tiers, list) or not tiers or any(tier not in RISK_TIERS for tier in tiers):
         return f"hidden_tests.tiers must list tiers from {', '.join(RISK_TIERS)}"
@@ -944,18 +948,23 @@ def run_hidden_tests(state: dict[str, Any], manifest: dict[str, Any], candidate:
     if tier not in hidden["tiers"]:
         return {**record, "status": "skipped"}
     started = time.monotonic()
+    # The suite and the candidate sit in separate folders, so no candidate file can join the suite,
+    # and the suite is read-only to the run. A pass needs the harness's own marker with a token made
+    # for this run, not just exit 0, so an early exit from candidate code does not pass.
+    token = uuid.uuid4().hex
     with private_scratch("agentsmith-hidden-") as scratch:
-        workspace = scratch / "candidate"
+        workspace, suite = scratch / "candidate", scratch / "suite"
         extract_tree(Path(state["worktree"]), candidate, workspace)
-        tests = workspace / ".agentsmith-hidden-tests"
-        extract_tree(Path(str(hidden["repo"])).expanduser().resolve(), hidden["commit"], tests)
+        extract_tree(Path(str(hidden["repo"])).expanduser().resolve(), hidden["commit"], suite)
         run(["git", "init", "-q", str(workspace)], workspace)  # the verifier sandbox expects a Git folder
-        argv = [item.replace("{hidden}", str(tests)) for item in hidden["command"]]
+        argv = [item.replace("{hidden}", str(suite)).replace("{token}", token) for item in hidden["command"]]
         result = sandboxed_verify(shlex.join(argv), workspace, max(1, remaining_seconds(state, manifest)),
-                                  verifier_env())
+                                  verifier_env(), read_dirs=(suite,))
     output = hashlib.sha256((result.stdout + "\0" + result.stderr).encode("utf-8", "replace")).hexdigest()
-    return {**record, "status": "pass" if result.returncode == 0 else "fail", "exit_code": result.returncode,
-            "duration_seconds": round(time.monotonic() - started, 1), "output_sha256": output}
+    passed = result.returncode == 0 and f"{HIDDEN_PASS_MARKER} {token}" in result.stdout.splitlines()
+    return {**record, "status": "pass" if passed else "fail", "exit_code": result.returncode,
+            "marker_seen": passed, "duration_seconds": round(time.monotonic() - started, 1),
+            "output_sha256": output}
 
 
 UNBOUNDED = "unbounded"
@@ -1239,6 +1248,8 @@ VERIFICATION_POLICY_PATHS = (
     ".agentsmith/**", ".harness/**", ".github/workflows/**",
     "scripts/verify*", "scripts/autonomous-run.py", "native_launcher.py",
     "agentsmith.py", "windows_verifier_sandbox.py",
+    # Never part of a candidate: the name the hidden acceptance suite once used inside the copy.
+    ".agentsmith-hidden-tests", ".agentsmith-hidden-tests/**",
 )
 BASELINE_TEST_PATHS = ("test_*.py", "*_test.py", "tests/**", "test/**",
                        "**/tests/**", "**/test/**", "**/test_*.py", "**/*_test.py",
@@ -1782,10 +1793,14 @@ def checker_environment(env: dict[str, str], scratch: Path) -> dict[str, str]:
 
 
 def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str],
-                     *, state: dict[str, Any] | None = None) -> subprocess.CompletedProcess[str]:
+                     *, state: dict[str, Any] | None = None,
+                     read_dirs: tuple[Path, ...] = ()) -> subprocess.CompletedProcess[str]:
     """Run the human-approved verifier with no network and no writes outside its worktree and a
-    private home, temporary and cache folder that exists only for this run of the verifier."""
+    private home, temporary and cache folder that exists only for this run of the verifier.
+    `read_dirs` are extra folders it may read but not write (the hidden suite)."""
     common = resolved_git_path(cwd, "--git-common-dir")
+    if sys.platform == "win32" and read_dirs:
+        return subprocess.CompletedProcess([], 126, "", "hidden tests need the macOS or Linux verifier sandbox")
     if sys.platform == "win32":
         # The Windows verifier points HOME, USERPROFILE, APPDATA, TEMP and TMP at the disposable
         # worktree and LOCALAPPDATA at a temporary AppContainer profile, both private to it.
@@ -1793,11 +1808,13 @@ def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str],
         return run_verifier(command, cwd, common, timeout, env)
     with private_scratch("agentsmith-verify-") as scratch:
         return posix_sandboxed_verify(command, cwd, common, timeout,
-                                      private_tool_environment(env, scratch, home=True), scratch, state)
+                                      private_tool_environment(env, scratch, home=True), scratch, state,
+                                      tuple(path.resolve() for path in read_dirs))
 
 
 def posix_sandboxed_verify(command: str, cwd: Path, common: Path, timeout: int, env: dict[str, str],
-                           scratch: Path, state: dict[str, Any] | None) -> subprocess.CompletedProcess[str]:
+                           scratch: Path, state: dict[str, Any] | None,
+                           read_dirs: tuple[Path, ...] = ()) -> subprocess.CompletedProcess[str]:
     if sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").exists():
         escaped = str(cwd).replace('"', '\\"')
         escaped_common = str(common).replace('"', '\\"')
@@ -1832,7 +1849,7 @@ def posix_sandboxed_verify(command: str, cwd: Path, common: Path, timeout: int, 
         if not home.is_relative_to(temporary):
             args += ["--tmpfs", str(home)]
         directories: set[Path] = set()
-        for target in (cwd.resolve(), common, scratch):
+        for target in (cwd.resolve(), common, scratch, *read_dirs):
             for mount_root in (temporary, home):
                 if target.is_relative_to(mount_root):
                     current = mount_root
@@ -1845,7 +1862,9 @@ def posix_sandboxed_verify(command: str, cwd: Path, common: Path, timeout: int, 
         if not home.is_relative_to(temporary):
             args += ["--remount-ro", str(home)]
         args += ["--bind", str(cwd), str(cwd), "--ro-bind", str(common), str(common),
-                 "--bind", str(scratch), str(scratch), "--dev", "/dev", "--proc", "/proc",
+                 "--bind", str(scratch), str(scratch),
+                 *[item for path in read_dirs for item in ("--ro-bind", str(path), str(path))],
+                 "--dev", "/dev", "--proc", "/proc",
                  "--chdir", str(cwd), "/bin/bash", "-c", command]
         return verifier_process(args, cwd, timeout, env, state)
     return subprocess.CompletedProcess([], 126, "", "no supported fail-closed verifier sandbox")

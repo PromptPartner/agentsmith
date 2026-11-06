@@ -126,19 +126,20 @@ class Fixture(unittest.TestCase):
 
 @unittest.skipUnless(sandbox_available(), "a real run needs the macOS or Linux role sandbox")
 class HiddenTestsTests(Fixture):
-    def hidden_repo(self, expected: str = "fixed") -> tuple[Path, str]:
+    def hidden_repo(self, expected: str = "fixed", no_marker: bool = False) -> tuple[Path, str]:
         hidden = self.root / "private-hidden-tests"
         hidden.mkdir()
         self.git(hidden, "init", "-q", "-b", "main")
         (hidden / "check.sh").write_text(
-            f"# {SECRET}: human-written acceptance check\ngrep -q '^{expected}$' src/change0.txt\n", encoding="utf-8")
+            f"# {SECRET}: human-written acceptance check\ngrep -q '^{expected}$' src/change0.txt || exit 1\n"
+            + ("" if no_marker else 'echo "AGENTSMITH-HIDDEN-PASS $1"\n'), encoding="utf-8")
         self.git(hidden, "add", ".")
         self.git(hidden, "-c", "user.name=Hidden", "-c", "user.email=user@example.com", "commit", "-qm", "hidden")
         return hidden, self.git(hidden, "rev-parse", "HEAD")
 
     def hidden(self, hidden: Path, commit: str, tiers=("C",)) -> dict:
-        return {"hidden_tests": {"repo": str(hidden), "commit": commit, "command": ["sh", "{hidden}/check.sh"],
-                                 "tiers": list(tiers)}}
+        return {"hidden_tests": {"repo": str(hidden), "commit": commit,
+                                 "command": ["sh", "{hidden}/check.sh", "{token}"], "tiers": list(tiers)}}
 
     def proof(self, run_id: str, attempt: int = 1) -> dict:
         return json.loads((self.repo / f".git/agentsmith-runs/{run_id}/attempt-{attempt}-verify.json").read_text(
@@ -200,6 +201,28 @@ class HiddenTestsTests(Fixture):
                                    "IMP-2", "--template", str(template))
         self.assertNotEqual(prepared.returncode, 0)
         self.assertIn("hidden_tests.repo must be outside", prepared.stderr)
+
+    def test_a_pass_needs_the_hidden_harness_marker_not_just_exit_zero(self) -> None:
+        hidden, commit = self.hidden_repo(no_marker=True)
+        self.commit_manifest("nomarker", **self.hidden(hidden, commit))
+        started = self.controller("start", ".harness/runs/nomarker.json")
+        self.assertNotEqual(started.returncode, 0)
+        self.assertEqual(self.proof("nomarker")["hidden_tests"]["status"], "fail")
+
+    def test_the_candidate_cannot_contribute_to_the_hidden_suite(self) -> None:
+        manifest = self.manifest("x")
+        manifest["scope"]["allowed_paths"] = ["src/**", ".agentsmith-hidden-tests/**"]
+        base = self.git(self.repo, "rev-parse", "HEAD")
+        planted = self.repo / ".agentsmith-hidden-tests"
+        planted.mkdir()
+        (planted / "test_aaa.py").write_text("import os\nos._exit(0)\n", encoding="utf-8")
+        self.git(self.repo, "add", ".")
+        self.git(self.repo, "commit", "-qm", "candidate plants a hidden-suite file")
+        with self.assertRaisesRegex(CONTROLLER.RunError, "protected verification inputs"):
+            CONTROLLER.validate_verification_changes(self.repo, base, "HEAD", manifest)
+        hidden, commit = self.hidden_repo()
+        no_token = {"repo": str(hidden), "commit": commit, "command": ["sh", "{hidden}/check.sh"], "tiers": ["C"]}
+        self.assertIn("{token}", CONTROLLER.hidden_tests_problem(self.manifest("x", hidden_tests=no_token), self.repo) or "")
 
     def test_roles_cannot_read_the_hidden_clone(self) -> None:
         hidden = Path("/hidden/clone")
