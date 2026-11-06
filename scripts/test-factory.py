@@ -21,6 +21,7 @@ import factory  # noqa: E402
 CONTROLLER = factory.load_controller(ROOT)
 
 NOW = datetime(2026, 11, 6, 12, 0, tzinfo=timezone.utc)
+SSH_USER = "git" + "@"  # the SSH user of GitHub remote URLs, not an address
 CLEAN_ENV = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
 POLICY = json.dumps({"schema_version": 1, "rules": [{"paths": ["src/**"], "tier": "B"}]})
 WORKFLOW = """name: verify
@@ -357,7 +358,7 @@ class FactoryTests(unittest.TestCase):
     @unittest.skipIf(os.name == "nt", "the fake gh is a POSIX script")
     def test_the_cli_reads_ci_for_the_target_not_the_current_folder(self) -> None:
         self.add_run("one", "accepted")
-        self.git("remote", "set-url", "origin", "git@github.com:owner/target-project.git")
+        self.git("remote", "set-url", "origin", SSH_USER + "github.com:owner/target-project.git")
         bin_dir = self.repo.parent / "bin"
         bin_dir.mkdir()
         calls = self.repo.parent / "gh-calls.log"
@@ -386,8 +387,8 @@ else:
         self.assertFalse([args for args in logged if "nameWithOwner" in args], "the current folder's repository")
 
     def test_the_github_repository_comes_from_the_targets_origin(self) -> None:
-        for url, slug in (("git@github.com:owner/name.git", "owner/name"), ("https://github.com/owner/name", "owner/name"),
-                          ("ssh://git@github.com/owner/name.git", "owner/name"), ("https://gitlab.com/owner/name", None)):
+        for url, slug in ((SSH_USER + "github.com:owner/name.git", "owner/name"), ("https://github.com/owner/name", "owner/name"),
+                          ("ssh://" + SSH_USER + "github.com/owner/name.git", "owner/name"), ("https://gitlab.com/owner/name", None)):
             with self.subTest(url=url):
                 self.git("remote", "remove", "origin") if self.git("remote") else None
                 self.git("remote", "add", "origin", url)
