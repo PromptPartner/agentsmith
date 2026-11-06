@@ -169,6 +169,20 @@ class ContradictionTests(InboxCase):
         self.assertEqual(len(report["warnings"]), 5, report["warnings"])
 
 
+class MalformedStateTests(InboxCase):
+    def test_a_malformed_run_state_becomes_a_warning_and_other_rows_stay(self) -> None:
+        self.repo.branch("agentsmith/good", self.base, {"src/a.py": b"a\n"})
+        self.repo.run_state("good", status="escalated", base_head=self.base, reason="needs operator")
+        for name, fields in (("list-status", {"status": []}), ("dict-branch", {"status": "escalated", "branch": {}}),
+                             ("odd-pid", {"status": "making", "active_pid": [1]}),
+                             ("odd-times", {"status": "interrupted", "updated_at": [], "base_head": 5})):
+            self.repo.run_state(name, **{"base_head": self.base, **fields})
+        report = self.collect()
+        self.assertEqual([(row["kind"], row["id"]) for row in report["rows"]], [("escalated", "good")], report)
+        for name in ("list-status", "dict-branch", "odd-pid", "odd-times"):
+            self.assertTrue(any(warning.startswith(f"run {name}:") for warning in report["warnings"]), report["warnings"])
+
+
 class NoWriteTests(InboxCase):
     def snapshot(self) -> dict[str, str]:
         files = {}

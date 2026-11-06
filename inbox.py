@@ -230,10 +230,15 @@ class _Collector:
             except Exception as exc:
                 self.warnings.append(f"run {entry.name}: dropped, its state cannot be read: {_one_line(exc)}")
                 continue
-            self._run_row(entry.name, state, owner, controller)
+            try:
+                self._run_row(entry.name, state, owner, controller)
+            except Exception as exc:  # one malformed run must not hide every other row
+                self.warnings.append(f"run {entry.name}: dropped, its state holds unexpected values: {_one_line(exc)}")
 
     def _run_row(self, name: str, state: dict[str, Any], owner: dict[str, Any] | None, controller: Any) -> None:
         status, branch = state.get("status"), state.get("branch")
+        if not isinstance(status, str):
+            raise ValueError(f"status is {type(status).__name__}, not text")
         if (owner and controller.process_is_live(owner.get("pid"))) or \
                 (state.get("active_pid") and controller.process_is_live(state.get("active_pid"))):
             return  # running: it waits on nobody yet
