@@ -56,13 +56,13 @@ make_fake() {
     '  if [ "$mode" = checker-slow ]; then printf "{\"type\":\"result\",\"total_cost_usd\":0.125}\n"; sleep 60 & printf "%s" "$!" > "$fake_root/child-pid"; wait; fi' \
     '  if [ "$mode" = plant-cache ]; then token="$(cat "$fake_root/plant-token")"; for seen in "${TMPDIR:-/tmp}/$token" "${CLAUDE_CODE_TMPDIR:-/tmp}/claude-$(id -u)/$token" "${XDG_CACHE_HOME:-/nonexistent}/$token"; do if [ -e "$seen" ]; then printf "%s\n" "$seen" >> "$fake_root/checker-saw-plant"; mode=always-reject; fi; done; fi' \
     '  vlog="$(printf "%s" "$prompt" | grep -o "attempt-[0-9]*-verify.txt" | head -1 || true)"' \
-    '  cite="verification passed :: $vlog :: exit=0"' \
+    '  cite="verification passed :: $vlog :: fixture verification passed"' \
     '  if [ "$mode" = checker-no-citation ]; then cite="looks good to me"; fi' \
     '  if [ "$mode" = checker-fabricated ]; then cite="all tests pass :: test-report.xml :: 12 passed"; fi' \
     '  if [[ "$mode" == calibrate-* ]]; then' \
     '    status=accepted; [ "$mode" = calibrate-reject ] && status=rejected' \
     '    if [ "$mode" = calibrate-correct ] && grep -q "a \* b" src/calc.py; then status=rejected; fi' \
-    '    vcite="the tests pass :: $vlog :: Ran 1 test"' \
+    '    vcite="the tests pass :: $vlog :: test_add (test_calc.AddTests"' \
     '    emit "{\"status\":\"$status\",\"summary\":\"calibration $status\",\"commit\":\"$(git rev-parse HEAD)\",\"changed_paths\":$(listed_paths diff --name-only --no-renames),\"evidence\":[\"$vcite\"],\"unresolved\":[],\"next_state\":\"$status\"}"' \
     '    exit 0' \
     '  fi' \
@@ -153,7 +153,8 @@ value.update(run_id=run_id, spec_path='docs/specs/test.md', implementation_ticke
 for role in value['roles'].values():
     role['model'] = 'fixture-model'
 value['scope']['allowed_paths'] = ['src/**']
-value['verify']['command'] = 'git rev-parse HEAD >/dev/null && test -f src/change.txt'
+value['verify']['command'] = ('git rev-parse HEAD >/dev/null && test -f src/change.txt '
+                              '&& echo "fixture verification passed for src/change.txt"')
 value['limits'].update(max_attempts=3, wall_minutes=2)
 path = repo / '.harness' / 'runs' / f'{run_id}.json'
 path.write_text(json.dumps(value, indent=2) + '\n')
@@ -1147,7 +1148,7 @@ PY
 python3 - "$repo/.harness/runs/late-commit.json" <<'PY'
 import json, pathlib, sys
 p = pathlib.Path(sys.argv[1]); v = json.loads(p.read_text())
-v['verify']['command'] = 'sleep 3 && test -f src/change.txt'
+v['verify']['command'] = 'sleep 3 && test -f src/change.txt && echo "fixture verification passed"'
 p.write_text(json.dumps(v, indent=2) + '\n')
 PY
 git -C "$repo" add . && git -C "$repo" commit -qm 'test: slow verifier'
@@ -1171,7 +1172,8 @@ import json, pathlib, sys
 p = pathlib.Path(sys.argv[1]); v = json.loads(p.read_text())
 token = sys.argv[2]
 v['verify']['command'] = (f'test ! -e "$HOME/.cache/{token}" && test ! -e "$TMPDIR/{token}" '
-                          f'&& test ! -e "$XDG_CACHE_HOME/{token}" && test -f src/change.txt')
+                          f'&& test ! -e "$XDG_CACHE_HOME/{token}" && test -f src/change.txt '
+                          f'&& echo "fixture verification passed"')
 v['limits']['max_attempts'] = 1
 p.write_text(json.dumps(v, indent=2) + '\n')
 PY

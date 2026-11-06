@@ -234,7 +234,7 @@ class GraphDispatchTests(unittest.TestCase):
                        "changed_paths": [changed],
                        "evidence": ["fake test evidence"] if not checker else [
                            "verification passed :: " + re.search(r"attempt-[0-9]+-verify[.]txt", prompt).group(0)
-                           + " :: exit=0"],
+                           + " :: fixture verification passed"],
                        "unresolved": [], "next_state": status}
             if receipt_path is not None:
                 receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
@@ -256,7 +256,8 @@ class GraphDispatchTests(unittest.TestCase):
             manifest.update(run_id=run_id, spec_path="docs/specs/accepted.md", implementation_ticket=f"IMP-{run_id}")
             manifest["scope"]["allowed_paths"] = [f"src/{run_id}/**"]
             manifest["verify"]["command"] = (
-                f'"{sys.executable}" -c "from pathlib import Path; assert Path(\'src/{run_id}/change.txt\').is_file()"'
+                f'"{sys.executable}" -c "from pathlib import Path; assert Path(\'src/{run_id}/change.txt\').is_file(); '
+                f'print(\'fixture verification passed\')"'
             )
             manifest["limits"].update(wall_minutes=2, codex_goal_tokens=1000, claude_max_usd=1)
             path = self.repo / ".harness/runs" / f"{run_id}.json"
@@ -640,7 +641,8 @@ class GraphDispatchTests(unittest.TestCase):
             manifest_path = self.repo / node["manifest_path"]
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["scope"]["allowed_paths"] = ["src/shared.txt"]
-            manifest["verify"]["command"] = f'"{sys.executable}" -c "from pathlib import Path; assert Path(\'src/shared.txt\').is_file()"'
+            manifest["verify"]["command"] = (f'"{sys.executable}" -c "from pathlib import Path; '
+                                             f'assert Path(\'src/shared.txt\').is_file(); print(\'fixture verification passed\')"')
             payload = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
             manifest_path.write_bytes(payload)
             node["manifest_sha256"] = hashlib.sha256(payload).hexdigest()

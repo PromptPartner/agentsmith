@@ -2141,6 +2141,12 @@ def launch_role_with_breaker(state: dict[str, Any], manifest: dict[str, Any], ro
 MAX_EVIDENCE_FILES = 200
 MAX_EVIDENCE_BYTES = 8 * 1024 * 1024
 CITATION_FORM = "criterion :: file[:line] :: excerpt"
+# A heuristic floor, not proof that the excerpt supports the criterion: it must hold at least
+# this many visible characters besides the lines the harness itself writes into every log, and
+# sit within this many lines of the cited line.
+MIN_EXCERPT_CHARACTERS = 12
+LINE_WINDOW = 2
+HARNESS_LOG_TEXT = re.compile(r"exit=-?[0-9]+|STDOUT:|STDERR:")
 VERIFY_LOG = re.compile(r"attempt-([0-9]+)-verify\.txt")
 
 
@@ -2182,15 +2188,18 @@ def citation_problem(checker: dict[str, Any], index: dict[str, str], verify_log:
             return f"evidence item {number} cites {name}, which can no longer be read"
         if hashlib.sha256(data).hexdigest() != index[name]:
             return f"evidence item {number} cites {name}, which changed after the verifier finished"
-        if len(excerpt) < 3:
-            return f"evidence item {number} quotes no excerpt from {name}"
+        if len(re.sub(r"\s", "", HARNESS_LOG_TEXT.sub("", excerpt))) < MIN_EXCERPT_CHARACTERS:
+            return (f"evidence item {number} quotes too little of {name}: an excerpt needs at least "
+                    f"{MIN_EXCERPT_CHARACTERS} characters besides the log's exit, STDOUT and STDERR lines")
         text = data.decode("utf-8", errors="replace")
         if line is not None:
             lines = text.splitlines()
             if line > len(lines):
                 return f"evidence item {number} cites line {line} of {name}, which has {len(lines)} lines"
-            if excerpt not in lines[line - 1]:
-                return f"evidence item {number} quotes {excerpt[:60]!r}, which is not on line {line} of {name}"
+            window = "\n".join(lines[max(0, line - 1 - LINE_WINDOW):line + LINE_WINDOW])
+            if excerpt not in window:
+                return (f"evidence item {number} quotes {excerpt[:60]!r}, which is not within "
+                        f"{LINE_WINDOW} lines of line {line} of {name}")
         elif excerpt not in text:
             return f"evidence item {number} quotes {excerpt[:60]!r}, which is not in {name}"
     return None

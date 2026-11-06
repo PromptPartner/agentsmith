@@ -2137,7 +2137,7 @@ class AutonomousStateTests(unittest.TestCase):
                     CONTROLLER.signal.raise_signal(CONTROLLER.signal.SIGTERM)
             evidence = ["fake evidence"] if role == "maker" else (
                 checker_evidence if checker_evidence is not None
-                else [f"verification passed :: attempt-{state['attempt']}-verify.txt:1 :: exit=0"])
+                else [f"verification passed :: attempt-{state['attempt']}-verify.txt:3 :: fixture verification passed"])
             return {"status": status, "summary": role,
                     "commit": head["value"] if role == "maker" else state["candidate_commit"],
                     "changed_paths": ["a.txt"], "evidence": evidence, "unresolved": [],
@@ -2147,7 +2147,8 @@ class AutonomousStateTests(unittest.TestCase):
         def fake_checker_worktree(*args: Any):
             yield args[-1]
 
-        verified = subprocess.CompletedProcess([], 0, "", "")
+        verified = subprocess.CompletedProcess(
+            [], 0, "fixture verification passed: a.txt\n" + "".join(f"filler {n}\n" for n in range(1, 6)), "")
         with contextlib.ExitStack() as fakes:
             for name, value in {
                 "git": fake_git, "git_phase": fake_phase, "launch_role": fake_role,
@@ -2181,10 +2182,13 @@ class AutonomousStateTests(unittest.TestCase):
         cases = {
             "no citation": ["looks good to me"],
             "fabricated file": ["tests pass :: attempt-1-junit.xml :: 12 passed"],
-            "another attempt": ["tests pass :: attempt-7-verify.txt :: exit=0"],
+            "another attempt": ["tests pass :: attempt-7-verify.txt :: fixture verification passed"],
             "excerpt not in the file": ["tests pass :: attempt-1-verify.txt :: 12 passed, 0 failed"],
-            "excerpt not on the cited line": ["tests pass :: attempt-1-verify.txt:2 :: exit=0"],
-            "line past the end": ["tests pass :: attempt-1-verify.txt:99 :: exit=0"],
+            "excerpt far from the cited line": ["tests pass :: attempt-1-verify.txt:8 :: fixture verification passed"],
+            "line past the end": ["tests pass :: attempt-1-verify.txt:99 :: fixture verification passed"],
+            "only the harness's own log header": ["tests pass :: attempt-1-verify.txt :: exit=0\nSTDOUT:"],
+            "a header word": ["tests pass :: attempt-1-verify.txt :: STDOUT:"],
+            "too short to be evidence": ["tests pass :: attempt-1-verify.txt :: passed:"],
         }
         for label, evidence in cases.items():
             with self.subTest(case=label), tempfile.TemporaryDirectory(prefix="agentsmith citation ") as temporary:
@@ -2197,8 +2201,8 @@ class AutonomousStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="agentsmith citation ok ") as temporary:
             outcome, durable, events = self.run_with_fake_roles(
                 Path(temporary), max_attempts=1, checker_status="accepted",
-                checker_evidence=["verification passed :: attempt-1-verify.txt :: exit=0",
-                                  "second criterion :: attempt-1-verify.txt:1 :: exit=0"])
+                checker_evidence=["verification passed :: attempt-1-verify.txt :: fixture verification passed",
+                                  "near the line :: attempt-1-verify.txt:5 :: fixture verification passed: a.txt"])
             self.assertEqual((outcome, durable["status"]), (0, "accepted"))
             self.assertNotIn("checker_defect", events)
 
@@ -2206,7 +2210,7 @@ class AutonomousStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="agentsmith citation files ") as temporary:
             root = Path(temporary)
             log = root / "attempt-2-verify.txt"
-            log.write_text("exit=0\nSTDOUT:\nran 12 tests\n", encoding="utf-8")
+            log.write_text("exit=0\nSTDOUT:\nran 12 tests in 0.4 seconds\n", encoding="utf-8")
             worktree = root / "check"
             (worktree / "reports").mkdir(parents=True)
             (worktree / "reports/junit.xml").write_text('<testsuite tests="12" failures="0"/>\n', encoding="utf-8")
@@ -2218,7 +2222,7 @@ class AutonomousStateTests(unittest.TestCase):
                 receipt = {"status": "accepted", "evidence": list(evidence)}
                 return CONTROLLER.citation_problem(receipt, index, log, worktree, 2)
 
-            self.assertIsNone(problem("tests ran :: attempt-2-verify.txt:3 :: ran 12 tests",
+            self.assertIsNone(problem("tests ran :: attempt-2-verify.txt:3 :: ran 12 tests in 0.4",
                                       'no failures :: reports/junit.xml :: failures="0"'))
             self.assertIn("did not produce", problem("big file :: big.bin :: xxx"))
             self.assertIn("checker accepted without citing any evidence", problem())

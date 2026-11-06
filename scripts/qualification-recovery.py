@@ -155,7 +155,7 @@ if role == 'maker':
  subprocess.run(['git','commit','-qm','test(fixture): satisfy bounded red check'],check=True)
  if cfg.get('hold') == 'post-commit': gate('post-commit')
 commit = subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
-payload = {'status':'completed' if role == 'maker' else 'accepted','summary':'deterministic fixture','commit':commit,'changed_paths':['src/change.txt'],'evidence':['fixture verifier checks fixed value'] if role == 'maker' else ['verifier passed :: '+re.search(r'attempt-[0-9]+-verify[.]txt',sys.argv[-1]).group(0)+' :: exit=0'],'unresolved':[],'next_state':'checking' if role == 'maker' else 'accepted'}
+payload = {'status':'completed' if role == 'maker' else 'accepted','summary':'deterministic fixture','commit':commit,'changed_paths':['src/change.txt'],'evidence':['fixture verifier checks fixed value'] if role == 'maker' else ['verifier passed :: '+re.search(r'attempt-[0-9]+-verify[.]txt',sys.argv[-1]).group(0)+' :: red check now green'],'unresolved':[],'next_state':'checking' if role == 'maker' else 'accepted'}
 if '-o' in sys.argv: pathlib.Path(sys.argv[sys.argv.index('-o')+1]).write_text(json.dumps(payload))
 else: print(json.dumps({'type':'result','total_cost_usd':0.125,'structured_output':payload}),flush=True)
 '''
