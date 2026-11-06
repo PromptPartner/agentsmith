@@ -16,9 +16,11 @@ import platform
 import re
 import shlex
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -610,6 +612,155 @@ class EmptyVerificationTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("no-such-phase", result.stdout + result.stderr)
 
+
+
+class VerifyLockTests(unittest.TestCase):
+    """Two gates in one worktree (two agents, a hook and a manual run) interleave fixtures and receipts.
+    One per-worktree lock under the worktree's Git directory lets only one run at a time."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory(prefix="agentsmith verify lock ")
+        self.root = Path(self.temporary.name) / "project"
+        (self.root / ".harness").mkdir(parents=True)
+        self.env = {key: value for key, value in os.environ.items() if not key.startswith(("GIT_", "AGENTSMITH_VERIFY"))}
+        self.env.update(GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="user@example.com",
+                        GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="user@example.com")
+        # Git for Windows' system configuration turns on core.autocrlf, while the evidence recorder
+        # runs this test with system configuration off. Played here on every system: the fixture's
+        # own Git calls see autocrlf=true, the in-process checks do not.
+        windows_like = Path(self.temporary.name) / "windows-system.gitconfig"
+        windows_like.write_text("[core]\n\tautocrlf = true\n", encoding="utf-8")
+        self.env["GIT_CONFIG_SYSTEM"] = str(windows_like)
+        self.git("init", "-q")
+        # Clean by construction: line endings are pinned in the repository itself, which outranks
+        # system and global configuration, so every process reads the same bytes as committed.
+        self.git("config", "core.autocrlf", "false")
+        self.git("config", "core.safecrlf", "false")
+        self.marker = self.root.parent / "phase-ran"
+        # A checkout made with autocrlf=true holds CRLF text, as the Windows runner's copy of verify.sh does.
+        (self.root / "notes.txt").write_bytes(b"one\r\ntwo\r\n")
+        command = shell_command(sys.executable, "-c", f"open({str(self.marker)!r}, 'a').write('x')")
+        (self.root / ".harness" / "verify.conf").write_text(f"mark :: {command}\n", encoding="utf-8")
+        # verify.sh finds its project from its own location, so the fixture carries a committed copy.
+        (self.root / "scripts").mkdir()
+        (self.root / "scripts" / "verify.sh").write_bytes((ROOT / "scripts" / "verify.sh").read_bytes())
+        self.git("add", ".")
+        self.git("-c", "commit.gpgsign=false", "commit", "-qm", "fixture")
+        self.lock = Path(self.git("rev-parse", "--absolute-git-dir")) / "agentsmith-verify.lock"
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def git(self, *arguments: str) -> str:
+        return subprocess.run(["git", "-C", str(self.root), *arguments], env=self.env, capture_output=True,
+                              text=True, check=True).stdout.strip()
+
+    def hold(self, pid: int) -> None:
+        self.lock.write_text(json.dumps({"pid": pid, "started_at": "2026-11-06T10:00:00Z", "runner": "test"}),
+                             encoding="utf-8")
+
+    def runners(self) -> list[list[str]]:
+        found = [[sys.executable, str(CORE), "verify", "--target", str(self.root)]]
+        if os.name != "nt" and shutil.which("bash"):
+            found.append(["bash", str(self.root / "scripts" / "verify.sh")])
+        return found
+
+    def run_gate(self, command: list[str], *extra: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([*command, *extra], cwd=self.root, env=self.env, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=60)
+
+    def test_a_second_gate_in_the_same_worktree_fails_fast_and_names_the_holder(self) -> None:
+        for command in self.runners():
+            with self.subTest(runner=command[1]):
+                self.hold(os.getpid())  # this test process is alive
+                result = self.run_gate(command)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn(f"pid {os.getpid()}", result.stdout + result.stderr)
+                self.assertIn("2026-11-06T10:00:00Z", result.stdout + result.stderr)
+                self.assertFalse(self.marker.exists())
+                self.assertTrue(self.lock.exists())  # the holder's lock is left alone
+                self.lock.unlink()
+
+    def test_wait_runs_after_the_holder_releases(self) -> None:
+        for command in self.runners():
+            with self.subTest(runner=command[1]):
+                self.hold(os.getpid())
+                # The holder releases as a real gate does, retrying a Windows sharing denial.
+                release = threading.Timer(1.0, AGENTSMITH.remove_verify_lock_file, (self.lock,))
+                release.start()
+                started = time.monotonic()
+                try:
+                    result = self.run_gate(command, "--wait")
+                finally:
+                    release.join()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertGreaterEqual(time.monotonic() - started, 0.9)
+                self.assertTrue(self.marker.exists())
+                self.assertFalse(self.lock.exists())
+                self.marker.unlink()
+
+    def test_a_lock_left_by_a_dead_process_is_reclaimed(self) -> None:
+        for command in self.runners():
+            with self.subTest(runner=command[1]):
+                gone = subprocess.Popen([sys.executable, "-c", "pass"])
+                gone.wait()
+                self.hold(gone.pid)
+                result = self.run_gate(command)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertTrue(self.marker.exists())
+                self.assertFalse(self.lock.exists())
+                self.marker.unlink()
+
+    def test_a_gate_started_by_the_holder_does_not_wait_for_itself(self) -> None:
+        # A phase that runs the gate on the same worktree (for example a runner's own tests).
+        inner = shell_command(sys.executable, str(CORE), "verify", "--target", str(self.root), "--only", "mark")
+        conf = (self.root / ".harness" / "verify.conf").read_text(encoding="utf-8")
+        (self.root / ".harness" / "verify.conf").write_text(conf + f"nested :: {inner}\n", encoding="utf-8")
+        result = self.run_gate(self.runners()[0])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.marker.read_text(encoding="utf-8"), "xx")
+
+    def test_a_sharing_denial_on_delete_is_retried(self) -> None:
+        # Windows refuses to delete a file another process has open: a waiting gate reading the lock
+        # while the holder releases it, or while a stale lock is reclaimed.
+        real_unlink = Path.unlink
+        denials = {"left": 2}
+
+        def busy_unlink(path: Path, missing_ok: bool = False) -> None:
+            if path.name == "agentsmith-verify.lock" and denials["left"]:
+                denials["left"] -= 1
+                raise PermissionError(13, "The process cannot access the file because it is being used by another process")
+            real_unlink(path, missing_ok=missing_ok)
+
+        self.hold(os.getpid())
+        with mock.patch.object(Path, "unlink", busy_unlink):
+            AGENTSMITH.release_verify_lock(self.lock)
+        self.assertFalse(self.lock.exists())
+        gone = subprocess.Popen([sys.executable, "-c", "pass"])
+        gone.wait()
+        self.hold(gone.pid)
+        denials["left"] = 2
+        with mock.patch.object(Path, "unlink", busy_unlink), mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AGENTSMITH_VERIFY_LOCK", None)
+            taken = AGENTSMITH.acquire_verify_lock(self.root)
+        try:
+            self.assertEqual(json.loads(self.lock.read_text(encoding="utf-8"))["pid"], os.getpid())
+        finally:
+            AGENTSMITH.release_verify_lock(taken)
+
+    def test_a_receipt_names_its_tree_and_a_different_tree_is_refused(self) -> None:
+        record = self.root.parent / "receipt"
+        result = self.run_gate(self.runners()[0], "--record", str(record), "--tree-class", "disposable-fixture")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        receipt = json.loads((record / "receipt.json").read_text(encoding="utf-8"))
+        self.assertEqual(receipt["git"]["tree"], self.git("rev-parse", "HEAD^{tree}"))
+        self.assertIsNone(AGENTSMITH.verification_receipt_problem(receipt, self.root))
+        (self.root / "added.txt").write_text("changed\n", encoding="utf-8")
+        self.git("add", "added.txt")
+        self.assertIn("tree", AGENTSMITH.verification_receipt_problem(receipt, self.root))
+        self.git("-c", "commit.gpgsign=false", "commit", "-qm", "another tree")
+        self.assertIn("tree", AGENTSMITH.verification_receipt_problem(receipt, self.root))
+        self.assertIn("tree", AGENTSMITH.verification_receipt_problem({**receipt, "git": {}}, self.root))
 
 if __name__ == "__main__":
     unittest.main()

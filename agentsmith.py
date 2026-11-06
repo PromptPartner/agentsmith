@@ -146,6 +146,10 @@ class CliError(RuntimeError):
     pass
 
 
+class VerifyLockHeld(CliError):
+    """Another verification gate holds this worktree's lock (exit 2)."""
+
+
 def say(message: str) -> None:
     print(f"» {message}")
 
@@ -7980,7 +7984,27 @@ def verification_git_metadata(root: Path) -> dict[str, Any]:
         check=False,
     )
     result["dirty"] = bool(status.stdout) if status.returncode == 0 else None
+    # The tree of the tracked state (the index), so a receipt can be tied to exactly one tree.
+    result["tree"] = git_value("write-tree")
     return result
+
+
+def verification_receipt_problem(receipt: dict[str, Any], root: Path) -> str | None:
+    """Why a recorded receipt does not prove the tree at `root` now, or None.
+
+    A receipt binds the tree of the tracked state and the dirty flag it ran on. A receipt from
+    another tree, or from a dirty tree, never stands for this one."""
+    recorded = receipt.get("git") if isinstance(receipt.get("git"), dict) else {}
+    if not recorded.get("tree"):
+        return "the receipt names no tree, so it cannot be tied to this one"
+    if recorded.get("dirty") is not False:
+        return "the receipt ran on a tree with uncommitted changes"
+    current = verification_git_metadata(root)
+    if current.get("dirty") is not False:
+        return "this worktree has uncommitted changes"
+    if current.get("tree") != recorded["tree"]:
+        return f"the receipt is for tree {recorded['tree'][:12]}, not this tree {str(current.get('tree'))[:12]}"
+    return None
 
 
 def write_verification_receipt(path: Path, receipt: dict[str, Any]) -> None:
@@ -8095,6 +8119,114 @@ def recorded_verify_phase(command: str, root: Path, stdout_path: Path,
     return return_code, categories
 
 
+VERIFY_LOCK_NAME = "agentsmith-verify.lock"
+# A lock file that stays empty this long is a writer that died between creating and filling it.
+VERIFY_LOCK_EMPTY_SECONDS = 10
+
+
+def verify_process_is_live(pid: Any) -> bool:
+    try:
+        number = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if number <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        handle = kernel32.OpenProcess(0x1000, False, number)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ctypes.get_last_error() != 87  # only "no such process" proves it gone
+        try:
+            code = wintypes.DWORD()
+            return not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(number, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def verify_lock_path(root: Path) -> Path:
+    """One lock per worktree, in its own Git directory; outside Git, in the project's .harness folder."""
+    found = subprocess.run(["git", "-C", str(root), "rev-parse", "--absolute-git-dir"], capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", check=False)
+    if found.returncode == 0 and found.stdout.strip():
+        return Path(found.stdout.strip()) / VERIFY_LOCK_NAME
+    return root / ".harness" / "verify.lock"
+
+
+def acquire_verify_lock(root: Path, *, wait: bool = False, poll_seconds: float = 0.5) -> Path | None:
+    """Hold the worktree's verification lock, or fail fast naming its holder (wait with --wait).
+    Two gates in one worktree interleave fixtures and receipts. A gate that the holder itself
+    started (a phase that runs the gate again) shares the holder's lock instead of waiting for it."""
+    path = verify_lock_path(root)
+    if os.environ.get("AGENTSMITH_VERIFY_LOCK") == str(path):
+        return None
+    while True:
+        try:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            try:
+                text = path.read_text(encoding="utf-8")
+                holder = json.loads(text) if text.strip() else {}
+                age = time.time() - path.stat().st_mtime
+            except FileNotFoundError:
+                continue  # released between the two calls
+            except (OSError, ValueError):
+                holder, age = {}, 0.0
+            pid = holder.get("pid") if isinstance(holder, dict) else None
+            if (pid is not None and not verify_process_is_live(pid)) or (pid is None and age > VERIFY_LOCK_EMPTY_SECONDS):
+                remove_verify_lock_file(path)  # the holder is gone; reclaim its lock
+                continue
+            if not wait:
+                raise VerifyLockHeld(
+                    f"another verification gate is running in this worktree: pid {pid}, started "
+                    f"{holder.get('started_at', 'at an unknown time') if isinstance(holder, dict) else 'at an unknown time'}"
+                    f" ({path}); wait for it to finish, or pass --wait")
+            time.sleep(poll_seconds)
+            continue
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps({"pid": os.getpid(), "started_at": verify_timestamp(),
+                                     "runner": "agentsmith verify", "target": str(root)}) + "\n")
+        os.environ["AGENTSMITH_VERIFY_LOCK"] = str(path)  # phases started by this gate share it
+        return path
+
+
+def remove_verify_lock_file(path: Path, *, timeout: float = 5.0) -> None:
+    """Delete a lock file, retrying a sharing denial: Windows refuses to delete a file that another
+    process has open, such as a waiting gate that is reading who holds it."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            path.unlink()
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
+
+
+def release_verify_lock(path: Path | None) -> None:
+    if path is None:
+        return
+    os.environ.pop("AGENTSMITH_VERIFY_LOCK", None)
+    try:
+        holder = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if isinstance(holder, dict) and holder.get("pid") == os.getpid():
+        remove_verify_lock_file(path)
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
     action = getattr(args, "verify_action", None)
     if action == "discover":
@@ -8142,6 +8274,15 @@ def cmd_verify(args: argparse.Namespace) -> int:
         return 0
     if not phases:
         raise CliError(f"{empty}; a run that executes no phase proves nothing, so it cannot pass")
+    lock = acquire_verify_lock(root, wait=getattr(args, "wait", False))
+    try:
+        return execute_verification(args, root, conf, phases, tree_class)
+    finally:
+        release_verify_lock(lock)
+
+
+def execute_verification(args: argparse.Namespace, root: Path, conf: Path, phases: list[tuple[str, str]],
+                         tree_class: str | None) -> int:
     if args.record:
         record_dir = Path(args.record).expanduser()
         if not record_dir.is_absolute():
@@ -9437,6 +9578,8 @@ def parser() -> argparse.ArgumentParser:
     verify.add_argument("--only")
     verify.add_argument("--list", action="store_true")
     verify.add_argument("--record", metavar="DIRECTORY")
+    verify.add_argument("--wait", action="store_true",
+                        help="if another gate is running in this worktree, wait for it instead of failing")
     verify.add_argument(
         "--tree-class",
         choices=("clean-clone", "disposable-fixture", "linked-worktree", "operator-worktree"),
