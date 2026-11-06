@@ -116,7 +116,8 @@ caps Codex tokens and `--wall-minutes` (default 20) caps time. Every later run r
 calibration for its checker client, model, effort and prompt hash as `checker_calibration` in its
 verification receipt, or `{"status": "none"}` when none matches. A changed prompt template needs a
 new calibration. This is a record only: no run waits for or depends on a calibration yet. Roles
-cannot write the calibration folder.
+cannot write the calibration folder. In a measured run on 2026-11-06, a small model (`haiku` at low
+effort) failed calibration because its receipts did not name the candidate commit.
 
 **The run receipt records the risk tier.** At acceptance the controller classifies the change from
 the base commit to the accepted commit, as `agentsmith risk classify` does (see

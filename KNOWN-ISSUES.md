@@ -3,6 +3,12 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [ ] 2026-11-06 — Measured: a small model does not follow the checker's receipt format. A real
+  `autonomous-run calibrate` of Claude Code 2.1.319 with `haiku` at low effort failed both labelled
+  candidates (three runs, about $0.04 in total): its receipts named `HEAD`, an empty value or free
+  text instead of the candidate commit, and listed no changed paths, so neither verdict counted.
+  The calibration receipt records this as `invalid-receipt`. Calibrate a stronger checker model
+  before relying on it, or simplify what the receipt asks for; nothing enforces calibration yet.
 - [x] 2026-11-06 — Found by independent review of the 2026-11-05 cache fix: the checker still
   shared `TEMP`, `TMP`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `HOME` with the maker, and `npm config
   get cache` resolved to the shared `HOME/.npm`. The checker now gets fresh folders for all of
