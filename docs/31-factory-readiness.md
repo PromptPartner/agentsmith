@@ -65,7 +65,10 @@ A landed change is an accepted run here: what happens after the pull request is 
 
 The defect and minutes logs are the operator's input, in `agentsmith-factory/` in the Git folder.
 Agent roles cannot write there. `defect add` takes the full commit SHA of the merged change and
-its tier; `minutes add` takes a run ID and the minutes a person spent on it.
+its tier; `minutes add` takes a run ID and the minutes a person spent on it. Rows are checked again when
+they are read: a row without a valid time, a defect without a full commit SHA or a known tier, or
+minutes that are not a number from above 0 to 1,440 is skipped, and `numbers` reports how many
+rows it skipped.
 
 `factory export <folder>` writes one JSON file per run (its state, events and receipts) and one for
 the factory logs, to a folder outside the Git folder that is empty or does not exist yet. Use it to

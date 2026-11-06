@@ -179,6 +179,25 @@ class FactoryTests(unittest.TestCase):
         with self.assertRaisesRegex(factory.FactoryError, "is after now"):
             factory.numbers(self.repo, since="2027-01-01", now=NOW, ci_runs=[])
 
+    def test_invalid_log_rows_are_skipped_and_counted(self) -> None:
+        for index in range(5):
+            self.add_run(f"ok-{index}", "accepted", tier="B")
+            factory.add_minutes(self.repo, f"ok-{index}", 10, now=NOW)
+        at = (NOW - timedelta(hours=1)).isoformat(timespec="seconds")
+        for row in ({"at": at, "run_id": "ok-0", "minutes": -1000000}, {"at": at, "run_id": "ok-1", "minutes": True},
+                    {"at": at, "run_id": "ok-2", "minutes": "60"}, {"at": "2099-01-01T00:00:00+00:00", "run_id": "ok-3",
+                                                                      "minutes": 30}, {"run_id": "ok-4", "minutes": 30}):
+            factory.append_log(self.repo, "minutes", row)
+        for row in ({"at": at, "tier": "B"}, {"at": at, "sha": "abc", "tier": "B"}, {"at": at, "sha": "d" * 40, "tier": "Z"},
+                    {"at": "2099-01-01T00:00:00+00:00", "sha": "d" * 40, "tier": "B"}):
+            factory.append_log(self.repo, "defects", row)
+        report = factory.numbers(self.repo, now=NOW, ci_runs=[])
+        self.assertEqual(self.number(report, "human minutes per landed change")["value"], 10.0)
+        self.assertEqual(self.number(report, "defects found after merge, per tier")["value"]["B"]["defects"], 0)
+        self.assertIn("skipped 5 invalid minutes row(s)", report["warnings"])
+        self.assertIn("skipped 4 invalid defects row(s)", report["warnings"])
+        self.assertIn("skipped 5 invalid minutes row(s)", factory.render(report))
+
     def test_too_few_cases_say_insufficient_data(self) -> None:
         for index in range(3):
             self.add_run(f"few-{index}", "accepted")

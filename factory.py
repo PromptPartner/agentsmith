@@ -183,7 +183,24 @@ def numbers(repo: Path, *, since: str | None = None, now: datetime | None = None
         risk = run["state"].get("risk")
         return risk.get("tier") if isinstance(risk, dict) and risk.get("tier") in TIERS else "unknown"
 
-    defects = [item for item in read_jsonl(factory_dir(repo) / "defects.jsonl") if within(item.get("at"), start, end)]
+    warnings: list[str] = []
+
+    def valid_rows(name: str, valid: Callable[[dict[str, Any]], bool]) -> list[dict[str, Any]]:
+        """Operator logs are checked as they are read; an invalid row is skipped and counted."""
+        rows_read = read_jsonl(factory_dir(repo) / f"{name}.jsonl")
+        kept = [item for item in rows_read if valid(item)]
+        if len(kept) < len(rows_read):
+            warnings.append(f"skipped {len(rows_read) - len(kept)} invalid {name} row(s)")
+        return kept
+
+    def stamped(item: dict[str, Any]) -> bool:
+        moment = parse_time(item.get("at"))
+        return moment is not None and moment <= end
+
+    defects = [item for item in valid_rows("defects", lambda item: stamped(item) and item.get("tier") in TIERS
+                                           and isinstance(item.get("sha"), str)
+                                           and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", item["sha"]) is not None)
+               if within(item.get("at"), start, end)]
     per_tier = {}
     for name in (*TIERS, "unknown"):
         landed = sum(1 for run in accepted if tier(run) == name)
@@ -198,9 +215,10 @@ def numbers(repo: Path, *, since: str | None = None, now: datetime | None = None
                        round(total_touches / len(accepted), 3) if accepted else None, "touches", start, end,
                        f"{total_touches} escalation, interruption and resume event(s) in accepted runs"))
     minutes: dict[str, float] = {}
-    for item in read_jsonl(factory_dir(repo) / "minutes.jsonl"):
-        if isinstance(item.get("minutes"), (int, float)) and not isinstance(item.get("minutes"), bool):
-            minutes[str(item.get("run_id"))] = minutes.get(str(item.get("run_id")), 0.0) + float(item["minutes"])
+    for item in valid_rows("minutes", lambda item: stamped(item) and isinstance(item.get("run_id"), str)
+                           and isinstance(item.get("minutes"), (int, float)) and not isinstance(item.get("minutes"), bool)
+                           and 0 < item["minutes"] <= 24 * 60):
+        minutes[item["run_id"]] = minutes.get(item["run_id"], 0.0) + float(item["minutes"])
     logged = [run for run in accepted if run["id"] in minutes]
     rows.append(number("human minutes per landed change", len(logged),
                        round(sum(minutes[run["id"]] for run in logged) / len(logged), 1) if logged else None,
@@ -237,7 +255,7 @@ def numbers(repo: Path, *, since: str | None = None, now: datetime | None = None
                        f"change(s)" + (f"; {unknown} run(s) with unknown spend left out" if unknown else "")))
     return {"schema_version": SCHEMA_VERSION, "window": {"since": start.isoformat(timespec="seconds"),
                                                          "until": end.isoformat(timespec="seconds")},
-            "minimum_sample": MIN_SAMPLE, "numbers": rows, "unreadable_runs": unreadable}
+            "minimum_sample": MIN_SAMPLE, "numbers": rows, "unreadable_runs": unreadable, "warnings": warnings}
 
 
 # --- CI reads (read-only, through gh) ---------------------------------------------------------
@@ -558,4 +576,6 @@ def render(report: dict[str, Any]) -> str:
                      f"[n={row['n']}] {row['detail']}")
     for name in report.get("unreadable_runs", []):
         lines.append(f"  unreadable run: {name}")
+    for warning in report.get("warnings", []):
+        lines.append(f"  warning: {warning}")
     return "\n".join(lines) + "\n"
