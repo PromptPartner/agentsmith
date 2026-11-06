@@ -54,7 +54,7 @@ emulate hooks or MCP to make matrix cells green.
 | `agentsmith profiles list [--json]` | List the shipped work profiles from their source files and name each verification preset. |
 | `agentsmith profiles recommend [--target <path>] [--json]` | Rank deterministic profile choices from repository evidence without calling a model or changing files. |
 | `agentsmith profiles switch --target <path> --profile <name[,name...]> [--dry-run]` | Preview or update only managed instructions and the existing profile selection; preserve foreign instruction bytes and custom verification. |
-| `agentsmith verify [--record <directory> --tree-class <class>]` | Run `.harness/verify.conf`; optionally retain a redacted receipt naming the tested tree class. |
+| `agentsmith verify [--wait] [--record <directory> --tree-class <class>]` | Run `.harness/verify.conf`, one gate per worktree at a time; optionally retain a redacted receipt naming the tested tree and tree class. |
 | `agentsmith verify discover [--target <path>] [--json] [--save <plan>]` | Build a read-only, schema-v1 coverage plan from allow-listed detectors; repository commands and hint bodies are never run. |
 | `agentsmith verify apply --plan <plan> [--target <path>] [--dry-run]` | Preview or apply a current target-bound plan, preserving foreign config and backing up changed bytes. |
 | `agentsmith handoff` | Scaffold durable session memory with branch/HEAD/dirty facts. |

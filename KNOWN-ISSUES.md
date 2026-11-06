@@ -3,6 +3,15 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [x] 2026-11-06 — Two verification gates could run in one worktree at once (two agents, or a hook
+  and a manual run) and interleave fixtures and receipts, and a recorded receipt named the commit
+  and dirty flag but not the tested tree. `agentsmith verify` and `scripts/verify.sh` now share a
+  per-worktree lock in the worktree's Git directory: a second gate fails fast naming the holder's
+  pid and start time, `--wait` waits, a dead holder's lock is reclaimed, and a gate started by the
+  holder shares its lock. Receipts record `git write-tree`, and `verification_receipt_problem()`
+  refuses a receipt from another or a dirty tree. `VerifyLockTests` in `test-verify-receipts.py`
+  failed before and pass after.
+
 - [ ] 2026-10-20 — Native Windows `test_deleted_git_lock_does_not_fail_acl_cleanup` failed once
   with `verifier did not start` in verify run `39429936983`, attempt 1, job
   `compatibility (windows-latest)`, on master `d56a0d5`. Attempt 2 on the same commit passed, and
