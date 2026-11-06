@@ -202,12 +202,24 @@ def numbers(repo: Path, *, since: str | None = None, now: datetime | None = None
                            {"hours": round(red / 3600, 2), "share": round(red / max(1.0, (end - start).total_seconds()), 3)},
                            "hours and share of the window", start, end,
                            f"from {len(completed)} completed push run(s) on the default branch"))
-    usd = sum(float(run["state"].get("claude_cost_usd") or 0.0) for run in in_window)
-    tokens = sum(int(run["state"].get("codex_tokens_used") or 0) for run in in_window)
-    rows.append(number("spend per landed change", len(accepted),
-                       {"claude_usd": round(usd / len(accepted), 2), "codex_tokens": round(tokens / len(accepted))}
-                       if accepted else None, "per landed change", start, end,
-                       f"all spend of {len(in_window)} run(s) in the window over {len(accepted)} landed change(s)"))
+    def spend_known(run: dict[str, Any]) -> bool:
+        state = run["state"]
+        return (not state.get("usage_accounting_incomplete")
+                and all(isinstance(state.get(key), (int, float)) and not isinstance(state.get(key), bool)
+                        and state[key] >= 0 for key in ("claude_cost_usd", "codex_tokens_used")))
+
+    # Unknown spend is not zero: those runs are left out, and the number says how many.
+    known = [run for run in in_window if spend_known(run)]
+    known_accepted = [run for run in accepted if spend_known(run)]
+    usd = sum(float(run["state"]["claude_cost_usd"]) for run in known)
+    tokens = sum(int(run["state"]["codex_tokens_used"]) for run in known)
+    unknown = len(in_window) - len(known)
+    rows.append(number("spend per landed change", len(known_accepted),
+                       {"claude_usd": round(usd / len(known_accepted), 2),
+                        "codex_tokens": round(tokens / len(known_accepted))} if known_accepted else None,
+                       "per landed change", start, end,
+                       f"all known spend of {len(known)} run(s) in the window over {len(known_accepted)} landed "
+                       f"change(s)" + (f"; {unknown} run(s) with unknown spend left out" if unknown else "")))
     return {"schema_version": SCHEMA_VERSION, "window": {"since": start.isoformat(timespec="seconds"),
                                                          "until": end.isoformat(timespec="seconds")},
             "minimum_sample": MIN_SAMPLE, "numbers": rows, "unreadable_runs": unreadable}

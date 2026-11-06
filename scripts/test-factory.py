@@ -96,11 +96,12 @@ class FactoryTests(unittest.TestCase):
                               check=True).stdout.strip()
 
     def add_run(self, run_id: str, status: str, *, hours_ago: float = 24, touches: int = 0, tier: str = "B",
-            usd: float = 1.0, tokens: int = 1000) -> None:
+            usd: float | None = 1.0, tokens: int = 1000) -> None:
         folder = self.runs / run_id
         folder.mkdir(parents=True)
-        state = {"run_id": run_id, "status": status, "started_at": stamp(hours_ago), "claude_cost_usd": usd,
-                 "codex_tokens_used": tokens, "risk": {"tier": tier}}
+        state = {"run_id": run_id, "status": status, "started_at": stamp(hours_ago), "risk": {"tier": tier}}
+        if usd is not None:
+            state.update(claude_cost_usd=usd, codex_tokens_used=tokens)
         (folder / "state.json").write_text(json.dumps(state), encoding="utf-8")
         events = [{"event": "run_started"}] + [{"event": "run_escalated"}, {"event": "run_resumed"}][:touches] + (
             [{"event": "run_accepted"}] if status == "accepted" else [])
@@ -142,6 +143,21 @@ class FactoryTests(unittest.TestCase):
         for row in report["numbers"]:
             self.assertEqual(row["window"], report["window"], row["name"])
             self.assertIn("n", row)
+
+    def test_unknown_spend_is_reported_and_left_out(self) -> None:
+        for index in range(5):
+            self.add_run(f"known-{index}", "accepted", usd=2.0, tokens=100)
+        self.add_run("unknown", "accepted", usd=None)
+        incomplete = self.runs / "known-4/state.json"
+        state = json.loads(incomplete.read_text(encoding="utf-8"))
+        state["usage_accounting_incomplete"] = True
+        incomplete.write_text(json.dumps(state), encoding="utf-8")
+        spend = self.number(factory.numbers(self.repo, now=NOW, ci_runs=[]), "spend per landed change")
+        self.assertEqual((spend["status"], spend["n"]), ("insufficient data", 4))
+        self.assertIn("2 run(s) with unknown spend left out", spend["detail"])
+        self.add_run("known-5", "accepted", usd=2.0, tokens=100)
+        spend = self.number(factory.numbers(self.repo, now=NOW, ci_runs=[]), "spend per landed change")
+        self.assertEqual((spend["n"], spend["value"]), (5, {"claude_usd": 2.0, "codex_tokens": 100}))
 
     def test_too_few_cases_say_insufficient_data(self) -> None:
         for index in range(3):

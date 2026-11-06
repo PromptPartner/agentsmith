@@ -57,7 +57,7 @@ counts in the window when it started there.
 | Operator touches per landed change | `run_escalated`, `run_interrupted` and `run_resumed` events of the runs that reached acceptance, per accepted run. Delivery consents will count too once they are recorded. |
 | Human minutes per landed change | The operator's minutes log, over the landed changes that have minutes logged. |
 | Time the default branch spends red | Completed push runs on the default branch: the hours, and the share of the window, during which the latest run of any workflow was failing. |
-| Spend per landed change | All Claude USD and Codex tokens of every run in the window, divided by the landed changes. |
+| Spend per landed change | All Claude USD and Codex tokens of every run in the window, divided by the landed changes. A run whose spend is missing or marked incomplete is left out of both sides and counted in the detail; unknown spend is never counted as zero. |
 
 A landed change is an accepted run here: what happens after the pull request is up to a person.
 
