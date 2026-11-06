@@ -68,6 +68,12 @@ to be named `AGENTS.md`, make that change yourself in a reviewed commit, then st
 that commit. Neither `scope.allowed_paths` nor any other manifest field can allow it: the operator
 approves scope, and scope must not be able to widen what a maker may tell its checker.
 
+These checks, and the scope check, read every commit from the base to the candidate, not only the
+end-to-end diff. A path that one commit adds and a later commit removes, or a protected file that
+one commit edits and the next restores, is still in the history that would be pushed: a secret, or
+a rewritten `AGENTS.md`, in an intermediate commit. The refusal names the path and the first commit
+that touched it. Symbolic links are read in every one of those commits as well.
+
 Controller verification writes the raw exit code and stdout/stderr to `attempt-N-verify.txt` and
 an adjacent JSON receipt. That receipt binds the candidate and base commits, spec and manifest
 hashes, verification policy and configuration hashes, controller/launcher hashes, output hash,

@@ -1039,6 +1039,25 @@ def changed_paths(worktree: Path, base: str, head: str = "HEAD") -> list[str]:
     return git_paths(worktree, "diff", "--name-only", "--no-renames", f"{base}..{head}")
 
 
+def history_commits(worktree: Path, base: str, head: str) -> list[str]:
+    """Every commit from base (exclusive) to head, oldest first."""
+    return [line for line in git(worktree, "rev-list", "--reverse", f"{base}..{head}").splitlines() if line]
+
+
+def history_paths(worktree: Path, base: str, head: str) -> dict[str, str]:
+    """Every path that any commit from base to head adds, changes or deletes, mapped to the first
+    commit that touched it. The candidate's history is what would be pushed, so a path a later commit
+    removes again still counts. Moves count by both paths (no rename detection); a merge counts
+    against each of its parents."""
+    touched: dict[str, str] = {}
+    for commit in history_commits(worktree, base, head):
+        parents = git(worktree, "rev-list", "--parents", "-n", "1", commit).split()[1:]
+        for parent in parents or ["4b825dc642cb6eb9a060e54bf8d69288fbee4904"]:  # the empty tree
+            for path in git_paths(worktree, "diff", "--name-only", "--no-renames", parent, commit):
+                touched.setdefault(path, commit)
+    return touched
+
+
 # These are controller policy, even when the maker scope is broad. Additional project
 # acceptance inputs belong in verify.protected_paths in the operator-approved manifest.
 VERIFICATION_POLICY_PATHS = (
@@ -1126,22 +1145,32 @@ def validate_verification_changes(worktree: Path, base: str, head: str,
         raise RunError("verify.protected_paths must be an array of nonempty path globs")
     baseline = set(git_paths(worktree, "ls-tree", "-r", "--name-only", base))
     # A symbolic link such as AGENTS.md -> src/rules.txt makes its target an instruction file too,
-    # in the base and in the candidate; adding, moving or removing a link to one also counts.
-    versions = [symbolic_links(worktree, base), symbolic_links(worktree, head)]
-    reached = {**link_protected_targets(versions[0]), **link_protected_targets(versions[1])}
+    # in the base, in the candidate and in every commit between; adding, moving or removing a link
+    # to one also counts.
+    commits = history_commits(worktree, base, head)
+    versions = [symbolic_links(worktree, commit) for commit in [base, *commits, head]]
+    reached: dict[str, str] = {}
+    for version in versions:
+        reached.update(link_protected_targets(version))
+    # Every commit counts, not only the end-to-end diff: a protected input edited in one commit and
+    # restored in the next is in the history that would be pushed.
+    touched = {path: None for path in git_paths(worktree, "diff", "--name-only", "--no-renames", base, head)}
+    for path, commit in history_paths(worktree, base, head).items():
+        touched.setdefault(path, commit)
     protected = []
     instructions = []
-    for path in git_paths(worktree, "diff", "--name-only", "--no-renames", base, head):
+    for path, commit in touched.items():
+        shown = path if commit is None else f"{path} (commit {commit[:12]})"
         patterns = (*VERIFICATION_POLICY_PATHS, *extra)
         if path in baseline:
             patterns += BASELINE_TEST_PATHS
         through_link = link_reason(path, reached, versions)
         if agent_instruction_path(path):
-            instructions.append(path)
+            instructions.append(shown)
         elif through_link:
-            instructions.append(through_link)
+            instructions.append(through_link if commit is None else f"{through_link} (commit {commit[:12]})")
         elif path == manifest.get("spec_path") or any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns):
-            protected.append(path)
+            protected.append(shown)
     if protected or instructions:
         detail = ([shown_paths(protected)] if protected else []) + (
             ["agent instructions: " + shown_paths(instructions)] if instructions else [])
@@ -2266,6 +2295,11 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
         bad = [path for path in paths if not path_allowed(path, manifest)]
         if bad:
             raise RunError(f"maker changed paths outside scope: {shown_paths(bad)}")
+        # Every commit counts: a file added in one commit and deleted in a later one is not in the
+        # end-to-end diff, but the history that would be pushed still carries it.
+        for path, commit in history_paths(worktree, state["base_head"], after_head).items():
+            if not path_allowed(path, manifest):
+                raise RunError(f"maker changed paths outside scope in commit {commit[:12]}: {shown_paths([path])}")
         ignored_added = sorted(ignored_paths(worktree) - before_ignored)
         ignored_bad = [path for path in ignored_added if not path_allowed(path, manifest)]
         if ignored_bad:

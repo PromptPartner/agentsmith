@@ -84,7 +84,8 @@ instructions at any depth (`AGENTS.md`, `AGENTS.override.md`, `CLAUDE.md`, `CLAU
 `GEMINI.md`, and `.claude/`, `.codex/`, `.agents/`, `.cursor/` folders), because the checker loads
 them from the candidate; if a task needs one changed, the operator commits that change first. A moved
 file counts as two changed paths, the old one and the new one; both must be inside the allowed
-scope. Add custom acceptance inputs via `verify.protected_paths`; changing
+scope. Every commit in the candidate's history counts, not only the end-to-end diff:
+a path added and later removed still refuses the run. Add custom acceptance inputs via `verify.protected_paths`; changing
 protected inputs requires separate operator review outside this run. New regression tests remain
 allowed. Both roles receive trusted-path write restrictions through their native policies; Codex uses a
 strict named filesystem profile, and Claude combines Bash denyWrite with file-tool Edit denials.
