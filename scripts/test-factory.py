@@ -18,6 +18,8 @@ sys.path.insert(0, str(ROOT))
 import ci_watch  # noqa: E402
 import factory  # noqa: E402
 
+CONTROLLER = factory.load_controller(ROOT)
+
 NOW = datetime(2026, 11, 6, 12, 0, tzinfo=timezone.utc)
 CLEAN_ENV = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
 POLICY = json.dumps({"schema_version": 1, "rules": [{"paths": ["src/**"], "tier": "B"}]})
@@ -191,7 +193,49 @@ class FactoryTests(unittest.TestCase):
 
     # --- readiness ----------------------------------------------------------------------------
 
-    def ready_inputs(self, **changes) -> dict:
+    def refuse_once(self) -> None:
+        """A real kill-switch drill: the controller refuses a start while the marker exists."""
+        marker = self.repo / ".harness/AUTONOMY_PAUSED"
+        marker.touch()
+        try:
+            with self.assertRaises(CONTROLLER.RunError):
+                CONTROLLER.assert_autonomy_not_paused(self.repo, action="start", run_id="drill")
+        finally:
+            marker.unlink()
+
+    def kill_switch(self, *events: dict) -> dict:
+        log = self.repo / ".git/agentsmith-factory/events.jsonl"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("".join(json.dumps(item) + "\n" for item in events), encoding="utf-8")
+        report = self.readiness_without_drill()
+        return next(item for item in report["checks"] if item["name"] == "kill switch tested")
+
+    def readiness_without_drill(self) -> dict:
+        values = self.ready_inputs(drill=False)
+        gh = ci_watch.Gh(runner=FakeRunner(values["runs"], values["jobs"]), which=lambda _: "gh")
+        return factory.readiness(self.repo, controller=values["controller"], gh=gh, manifest=values["manifest"],
+                                 base="main", now=datetime.now(timezone.utc))
+
+    def test_a_forged_kill_switch_record_is_not_evidence(self) -> None:
+        self.refuse_once()
+        real = json.loads((self.repo / ".git/agentsmith-factory/events.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+        self.assertEqual(self.kill_switch(real)["status"], "pass")
+        forged = [
+            {"event": "autonomy_pause_refused"},
+            {**real, "marker": str(self.repo.parent / "elsewhere/AUTONOMY_PAUSED")},
+            {**real, "marker_mtime_ns": None},
+            {**real, "marker_mtime_ns": int((NOW + timedelta(days=1)).timestamp() * 1e9)},
+            {**real, "action": "fly"},
+            {**real, "run_id": ""},
+            {**real, "at": "2099-01-01T00:00:00+00:00"},
+        ]
+        for event in forged:
+            with self.subTest(event=event):
+                result = self.kill_switch(event)
+                self.assertEqual(result["status"], "fail", result)
+                self.assertIn("0 refusal(s) recorded with their facts", result["evidence"])
+
+    def ready_inputs(self, drill: bool = True, **changes) -> dict:
         jobs = {9: [job("compatibility (windows-latest)", 20), job("compatibility (macos-latest)", 8),
                     job("compatibility (ubuntu-latest)", 6)]}
         runs = [ci_run(9, "success", 6)]
@@ -199,8 +243,8 @@ class FactoryTests(unittest.TestCase):
                                      preflight_sandboxes=lambda *_args, **_kwargs: None,
                                      calibration_status=lambda *_args: {"status": "passed",
                                                                         "calibrated_at": "2026-11-05T09:00:00+00:00"})
-        factory.append_log(self.repo, "events", {"at": "2026-11-05T10:00:00+00:00", "event": "autonomy_pause_refused",
-                                                 "action": "start", "run_id": "drill"})
+        if drill:
+            self.refuse_once()
         values = {"runs": runs, "jobs": jobs, "controller": controller,
                   "manifest": {"roles": {"checker": {"runtime": "claude", "model": "m", "effort": "high"}}}}
         values.update(changes)
@@ -210,7 +254,7 @@ class FactoryTests(unittest.TestCase):
         values = self.ready_inputs(**changes)
         gh = ci_watch.Gh(runner=FakeRunner(values["runs"], values["jobs"]), which=lambda _: "gh")
         return factory.readiness(self.repo, controller=values["controller"], gh=values.get("gh", gh),
-                                 manifest=values["manifest"], base="main", now=NOW,
+                                 manifest=values["manifest"], base="main", now=datetime.now(timezone.utc),
                                  gh_error=values.get("gh_error"))
 
     def failing(self, report: dict) -> dict[str, str]:

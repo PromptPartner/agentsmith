@@ -180,8 +180,12 @@ def assert_autonomy_not_paused(repo: Path, *, action: str = "work", run_id: str 
         for name in names:
             if name.casefold() == wanted:
                 # The evidence that the kill switch works, for `agentsmith factory readiness`.
+                try:
+                    marker_mtime = (folder / name).stat().st_mtime_ns
+                except OSError:
+                    marker_mtime = None
                 record_factory_event(repo, "autonomy_pause_refused", action=action, run_id=run_id,
-                                     marker=str(folder / name))
+                                     marker=str((folder / name).resolve()), marker_mtime_ns=marker_mtime)
                 raise RunError(f"autonomy is paused by {folder / name}; remove it to allow new work "
                                "(live runs are not stopped; use stop <id>)")
 

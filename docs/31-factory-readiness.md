@@ -31,14 +31,16 @@ exit status is 0 when every check passes and 1 otherwise.
 | CI headroom | For each of Windows, macOS and Linux, the latest job of each workflow stays under `--headroom` (default 70%) of its `timeout-minutes`. The operating system comes from the job name, and the timeout from the workflow file at the base: a number, or the `matrix.os == '<os>' && <a> \|\| <b>` form; otherwise GitHub's default of 360 minutes. |
 | Checker can execute on this host | The checker and verifier sandboxes run one command, as `start` checks before a run. Needs `--manifest`. |
 | Checker calibration passed | A passing calibration matches the manifest's checker (client, model, effort and checker prompt); see `calibrate` in [autonomous runs](21-autonomous-runs.md). |
-| Kill switch tested | At least one `autonomy_pause_refused` event is recorded: `.harness/AUTONOMY_PAUSED` was seen to refuse new work. |
+| Kill switch tested | At least one `autonomy_pause_refused` event is recorded with its facts: the refused command, the run or graph ID, the marker at `.harness/AUTONOMY_PAUSED` of this checkout or its main checkout, the marker's modification time (no later than the refusal) and a time that is not in the future. |
 | Pipeline guard in the verifier | `.harness/verify.conf` at the base runs `autonomous-run.py check-specs`. |
 | Risk policy and lens file at the base | `.harness/risk-policy.json` is a valid [risk policy](29-risk-map.md) and `.harness/lenses.json` exists, both at the base. The lens file's format comes with the review lenses; until it is committed, this check fails. |
 | Receipts exportable | Every run's state, events and receipts read as JSON, so `factory export` can write them out of the Git folder. |
 
 To exercise the kill switch on purpose, create `.harness/AUTONOMY_PAUSED`, try a `start`, see it
 refused, and remove the file. The refusal is recorded in `agentsmith-factory/events.jsonl` in
-the Git folder.
+the Git folder. That log is local and anyone with write access to the Git folder can add to it, so
+a record is evidence, not proof: readiness checks the facts it can, and a bare or inconsistent
+record does not count.
 
 ## The six numbers
 

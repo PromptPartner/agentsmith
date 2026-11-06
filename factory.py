@@ -249,6 +249,29 @@ def check(name: str, passed: bool, evidence: str, next_step: str) -> dict[str, A
             "next_step": "none" if passed else next_step}
 
 
+REFUSING_ACTIONS = {"prepare", "start", "resume", "graph", "calibrate"}
+
+
+def refusal_holds(repo: Path, item: dict[str, Any], now: datetime) -> bool:
+    """A kill-switch refusal record with its facts: the command, a run or graph id where one is
+    refused, the marker at `.harness/AUTONOMY_PAUSED` of this checkout or its main checkout, the
+    marker's modification time, which cannot be later than the refusal, and a time not in the future."""
+    if item.get("event") != "autonomy_pause_refused" or item.get("action") not in REFUSING_ACTIONS:
+        return False
+    if item.get("action") != "calibrate" and not (isinstance(item.get("run_id"), str) and item["run_id"]):
+        return False
+    at = parse_time(item.get("at"))
+    mtime = item.get("marker_mtime_ns")
+    if at is None or at > now or isinstance(mtime, bool) or not isinstance(mtime, int) or mtime <= 0:
+        return False
+    if mtime > (at.timestamp() + 2) * 1e9:  # the marker existed before the refusal (2 s for clock rounding)
+        return False
+    marker = Path(str(item.get("marker", "")))
+    roots = {repo.resolve(), common_dir(repo).parent.resolve()}
+    return (marker.is_absolute() and marker.name.casefold() == "autonomy_paused"
+            and marker.parent.name == ".harness" and marker.parent.parent.resolve() in roots)
+
+
 def load_controller(repo: Path) -> Any:
     here = Path(__file__).resolve().parent
     for source in (here / "autonomous-run.py", here / "scripts" / "autonomous-run.py"):
@@ -332,12 +355,12 @@ def readiness(repo: Path, *, controller: Any, gh: Any | None, manifest: dict[str
                             f"{checker.get('runtime')} {checker.get('model')} ({checker.get('effort')}): "
                             f"{status.get('status')}" + (f" at {status['calibrated_at']}" if status.get("calibrated_at") else ""),
                             "run `autonomous-run.py calibrate <manifest>` with this checker"))
-    # 5. The kill switch has been seen to stop work.
-    refusals = [item for item in read_jsonl(factory_dir(repo) / "events.jsonl")
-                if item.get("event") == "autonomy_pause_refused"]
+    # 5. The kill switch has been seen to stop work. A local log is evidence, not proof: each record
+    # must carry the refusal's facts, and the facts that can be checked are.
+    refusals = [item for item in read_jsonl(factory_dir(repo) / "events.jsonl") if refusal_holds(repo, item, now)]
     checks.append(check("kill switch tested", bool(refusals),
-                        f"{len(refusals)} refusal(s) recorded" + (f", latest {refusals[-1].get('at')} "
-                                                                f"({refusals[-1].get('action')})" if refusals else ""),
+                        f"{len(refusals)} refusal(s) recorded with their facts"
+                        + (f", latest {refusals[-1].get('at')} ({refusals[-1].get('action')})" if refusals else ""),
                         "create .harness/AUTONOMY_PAUSED, try a start, see it refused, then remove the file"))
     # 6-7. What the base commit carries.
     def at_base(path: str) -> str | None:
