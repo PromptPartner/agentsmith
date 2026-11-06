@@ -90,8 +90,10 @@ nothing leaves a checker nothing to cite. These rules are a heuristic floor, not
 excerpt supports the criterion. Before
 acceptance, a check without any model reads every item. The acceptance is not trusted when an
 item has no citation, quotes too little, names a file that this attempt's verifier did not produce (for example a
-file from another attempt), names a file whose hash no longer matches, cites a line past the end,
-or quotes text that is not there. That is a checker defect. The attempt is then reworked like a
+file from another attempt), cites a line past the end,
+or quotes text that is not there. It is not trusted either when any recorded file, cited or
+not, no longer matches its hash: a process the verifier started may have kept writing after
+it finished. That is a checker defect. The attempt is then reworked like a
 rejection: the defect is recorded as a `checker_defect` event and as `checker_defect` in the
 verification receipt, and the next maker is told that the acceptance was not trusted. A rejection
 needs no citations. The receipt shape does not change, so a stored receipt stays valid, and a

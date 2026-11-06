@@ -2337,6 +2337,26 @@ class AutonomousStateTests(unittest.TestCase):
             path.write_bytes(b"\xff")
             self.assertEqual(CONTROLLER.calibration_status(repo, checker), {"status": "unreadable"})
 
+    def test_evidence_that_changes_after_the_verifier_finished_is_not_trusted(self) -> None:
+        # A verifier child that escaped its process group can keep writing after the hashes were
+        # taken. Any recorded evidence file that no longer matches makes the acceptance untrusted,
+        # even when the checker cited a different file.
+        with tempfile.TemporaryDirectory(prefix="agentsmith late evidence ") as temporary:
+            root = Path(temporary)
+            log = root / "attempt-1-verify.txt"
+            log.write_text("exit=0\nSTDOUT:\nfixture verification passed\n", encoding="utf-8")
+            worktree = root / "check"
+            worktree.mkdir()
+            report = worktree / "report.txt"
+            report.write_text("initial evidence\n", encoding="utf-8")
+            index = CONTROLLER.verifier_evidence(log, worktree, {"report.txt"})
+            report.write_text("late child evidence\n", encoding="utf-8")
+            problem = CONTROLLER.citation_problem(
+                {"evidence": ["verified :: attempt-1-verify.txt :: fixture verification passed"]},
+                index, log, worktree, 1)
+            self.assertIsNotNone(problem)
+            self.assertIn("report.txt changed after the verifier finished", problem)
+
     def test_a_commit_after_verification_refuses_acceptance(self) -> None:
         # The checks passed at one commit; a run branch that moved afterwards would hand the
         # operator unverified code under an "accepted" record.

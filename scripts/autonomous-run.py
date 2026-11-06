@@ -2166,6 +2166,19 @@ def citation_problem(checker: dict[str, Any], index: dict[str, str], verify_log:
     verifier produced, still match its recorded hash, and quote text that is in that file."""
     if not checker["evidence"]:
         return "checker accepted without citing any evidence"
+    # Read every recorded file once. A verifier child that left its process group can still be
+    # writing after the hashes were taken, so any recorded file that changed makes the checker's
+    # view of the evidence unreliable, whether or not it was cited. The checks below use these
+    # same bytes, so a write between hashing and quoting cannot supply a quote.
+    contents: dict[str, bytes] = {}
+    for name, digest in index.items():
+        path = verify_log if name == verify_log.name else checker_worktree / name
+        try:
+            contents[name] = path.read_bytes()
+        except OSError:
+            return f"{name} can no longer be read; the verifier evidence changed after it finished"
+        if hashlib.sha256(contents[name]).hexdigest() != digest:
+            return f"{name} changed after the verifier finished; a verifier process may still have been writing"
     for number, item in enumerate(checker["evidence"], 1):
         shown = repr(item[:80])
         parts = item.split(" :: ", 2)
@@ -2179,15 +2192,7 @@ def citation_problem(checker: dict[str, Any], index: dict[str, str], verify_log:
             if other and int(other.group(1)) != attempt:
                 return f"evidence item {number} cites {name} from attempt {other.group(1)}, not this attempt ({attempt})"
             return f"evidence item {number} cites {shown_paths([name])}, which this attempt's verifier did not produce"
-        path = verify_log if name == verify_log.name else checker_worktree / name
-        # Read once: the hash and the quote are checked against the same bytes, so a write that
-        # lands between the two cannot supply the quote.
-        try:
-            data = path.read_bytes()
-        except OSError:
-            return f"evidence item {number} cites {name}, which can no longer be read"
-        if hashlib.sha256(data).hexdigest() != index[name]:
-            return f"evidence item {number} cites {name}, which changed after the verifier finished"
+        data = contents[name]
         if len(re.sub(r"\s", "", HARNESS_LOG_TEXT.sub("", excerpt))) < MIN_EXCERPT_CHARACTERS:
             return (f"evidence item {number} quotes too little of {name}: an excerpt needs at least "
                     f"{MIN_EXCERPT_CHARACTERS} characters besides the log's exit, STDOUT and STDERR lines")
