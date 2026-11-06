@@ -13,6 +13,7 @@ import difflib
 import hashlib
 import html
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -2118,6 +2119,28 @@ class FVL08ReleaseEvidenceContracts(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("outside the repository", result.stderr)
         self.assertFalse(output.exists())
+
+    def test_a_failed_native_phase_prints_its_output_tail(self) -> None:
+        # The report keeps only output hashes; without the tail a CI failure said only "phase X failed".
+        script = ROOT / "scripts" / "first-loop-release-evidence.py"
+        spec = importlib.util.spec_from_file_location("first_loop_release_evidence_tail", script)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        failing = (("verify-receipts", ("python", "-c", "import sys; print('early line'); "
+                                        "print('\\n'.join(f'line {n}' for n in range(80))); "
+                                        "print('FAIL: test_x\\x1b[2J', file=sys.stderr); sys.exit(1)")),)
+        observed = iter(["a" * 40, "b" * 40, "", ""])
+        with tempfile.TemporaryDirectory(prefix="agentsmith fvl08 tail ") as temporary, \
+                mock.patch.object(module, "PHASES", failing), \
+                mock.patch.object(module, "git", side_effect=lambda *a, **k: next(observed)), \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as printed:
+            with self.assertRaisesRegex(module.EvidenceError, "phase verify-receipts failed"):
+                module.record(Path(temporary) / "report.json", Path(temporary), None)
+        tail = printed.getvalue()
+        self.assertIn("FAIL: test_x", tail)
+        self.assertIn("line 79", tail)
+        self.assertNotIn("early line", tail)  # a tail, not the whole output
+        self.assertNotIn("\x1b", tail)
 
     def test_native_git_observation_matches_a_windows_autocrlf_checkout(self) -> None:
         script = ROOT / "scripts" / "first-loop-release-evidence.py"
