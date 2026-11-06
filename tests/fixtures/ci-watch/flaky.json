@@ -1,30 +1,37 @@
 {
  "attempts": {
-  "100/1": {
-   "jobs": [
-    {
-     "completed_at": "2026-11-06T15:04:00Z",
-     "conclusion": "success",
-     "id": 400,
-     "name": "compatibility (ubuntu-latest)",
-     "run_attempt": 1,
-     "started_at": "2026-11-06T15:01:00Z",
-     "status": "completed",
-     "steps": []
-    },
-    {
-     "completed_at": "2026-11-06T15:04:00Z",
-     "conclusion": "failure",
-     "id": 401,
-     "name": "compatibility (macos-latest)",
-     "run_attempt": 1,
-     "started_at": "2026-11-06T15:01:00Z",
-     "status": "completed",
-     "steps": []
-    }
-   ],
-   "total_count": 2
-  }
+  "100/1": [
+   {
+    "jobs": [
+     {
+      "completed_at": "2026-11-06T15:04:00Z",
+      "conclusion": "failure",
+      "id": 401,
+      "name": "compatibility (macos-latest)",
+      "run_attempt": 1,
+      "started_at": "2026-11-06T15:01:00Z",
+      "status": "completed",
+      "steps": []
+     }
+    ],
+    "total_count": 2
+   },
+   {
+    "jobs": [
+     {
+      "completed_at": "2026-11-06T15:04:00Z",
+      "conclusion": "success",
+      "id": 400,
+      "name": "compatibility (ubuntu-latest)",
+      "run_attempt": 1,
+      "started_at": "2026-11-06T15:01:00Z",
+      "status": "completed",
+      "steps": []
+     }
+    ],
+    "total_count": 2
+   }
+  ]
  },
  "base": {
   "list": [

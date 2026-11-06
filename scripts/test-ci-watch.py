@@ -64,10 +64,28 @@ class FakeGh:
             if run_id == str(fixture["base"]["list"][0]["databaseId"]):
                 return self.reply(fixture["base"]["view"])
             return self.reply(fixture["polls"][max(self.poll_index, 0)]["views"][run_id])
+        if argv[1] == "api" and "/actions/workflows/" in argv[-1]:
+            listed = fixture["base"]["list"]
+            return self.pages([{"total_count": len(listed),
+                                "workflow_runs": [{"id": run["databaseId"], "head_sha": run["headSha"],
+                                                   "status": run["status"], "conclusion": run["conclusion"],
+                                                   "run_attempt": 1} for run in listed]}], argv)
         if argv[1] == "api":
-            key = "/".join(argv[-1].split("?")[0].split("/")[5:8:2])
-            return self.reply(fixture["attempts"][key])
+            run_id, attempt = argv[-1].split("?")[0].split("/")[5:8:2]
+            key = f"{run_id}/{attempt}"
+            if key in fixture["attempts"]:
+                return self.pages(fixture["attempts"][key], argv)
+            if fixture["base"]["list"] and run_id == str(fixture["base"]["list"][0]["databaseId"]):
+                view = fixture["base"]["view"]
+            else:
+                view = fixture["polls"][max(self.poll_index, 0)]["views"][run_id]
+            jobs = [rest_job(job) for job in view["jobs"]]
+            return self.pages([{"total_count": len(jobs), "jobs": jobs}], argv)
         raise AssertionError(f"unexpected gh call: {argv}")
+
+    def pages(self, pages: list, argv: list[str]) -> subprocess.CompletedProcess[str]:
+        # Like gh: --paginate --slurp returns every page in an array; without it, only the first page.
+        return self.reply(pages if "--slurp" in argv else pages[0])
 
     @staticmethod
     def reply(value: object) -> subprocess.CompletedProcess[str]:
@@ -80,6 +98,16 @@ def camel_run(run: dict) -> dict:
             "databaseId": run["id"], "event": run["event"], "headBranch": run["head_branch"], "headSha": run["head_sha"],
             "name": run["name"], "status": run["status"], "updatedAt": run["updated_at"],
             "workflowDatabaseId": run["workflow_id"], "workflowName": run["name"]}
+
+
+def rest_job(job: dict) -> dict:
+    """The same job as GET .../attempts/{n}/jobs shows it."""
+    snake = lambda value: None if value == "0001-01-01T00:00:00Z" else value  # noqa: E731
+    return {"id": job["databaseId"], "name": job["name"], "status": job["status"], "conclusion": job["conclusion"] or None,
+            "started_at": snake(job["startedAt"]), "completed_at": snake(job["completedAt"]),
+            "steps": [{"name": step["name"], "number": step["number"], "status": step["status"],
+                       "conclusion": step["conclusion"] or None, "started_at": snake(step["startedAt"]),
+                       "completed_at": snake(step["completedAt"])} for step in job["steps"]]}
 
 
 class Clock:
@@ -260,11 +288,17 @@ class GhTests(unittest.TestCase):
         with self.assertRaisesRegex(ci_watch.GhError, "gh auth login"):
             ci_watch.Gh(runner=runner, which=lambda _: "gh").check()
 
-    def test_attempt_jobs_are_normalised_to_run_view_shape(self) -> None:
+    def test_attempt_jobs_are_read_from_every_page_and_normalised(self) -> None:
         fixture = json.loads((FIXTURES / "flaky.json").read_text(encoding="utf-8"))
         jobs = ci_watch.Gh(runner=FakeGh(fixture), which=lambda _: "gh").attempt_jobs(fixture["repo"], 100, 1)
-        self.assertEqual(jobs[0]["name"], "compatibility (ubuntu-latest)")
-        self.assertEqual((jobs[0]["conclusion"], jobs[0]["completedAt"]), ("success", "2026-11-06T15:04:00Z"))
+        self.assertEqual([job["name"] for job in jobs], ["compatibility (macos-latest)", "compatibility (ubuntu-latest)"])
+        self.assertEqual((jobs[1]["conclusion"], jobs[1]["completedAt"]), ("success", "2026-11-06T15:04:00Z"))
+
+    def test_a_partial_job_list_fails_closed(self) -> None:
+        fixture = json.loads((FIXTURES / "flaky.json").read_text(encoding="utf-8"))
+        fixture["attempts"]["100/1"][1]["jobs"] = []
+        with self.assertRaisesRegex(ci_watch.GhError, "read 1 of 2 jobs"):
+            ci_watch.Gh(runner=FakeGh(fixture), which=lambda _: "gh").attempt_jobs(fixture["repo"], 100, 1)
 
 
 class CliTests(unittest.TestCase):

@@ -126,11 +126,12 @@ write("flaky", "Attempt 2 fails a job that passed in attempt 1 of the same run; 
       {"state": "flaky", "exit": 12},
       [{"runs": [listed(100, "push", "completed", "failure", attempt=2, updated=5.0)],
         "views": {"100": view(100, "push", "completed", "failure", failing_jobs(), attempt=2)}}],
-      attempts={"100/1": {"total_count": 2, "jobs": [
-          {"id": 400, "name": UBUNTU, "status": "completed", "conclusion": "success", "run_attempt": 1,
-           "started_at": ts(1.0), "completed_at": ts(4.0), "steps": []},
-          {"id": 401, "name": MAC, "status": "completed", "conclusion": "failure", "run_attempt": 1,
-           "started_at": ts(1.0), "completed_at": ts(4.0), "steps": []}]}})
+      # Two pages of attempt 1's jobs: the passing job that makes the failure flaky is on page two.
+      attempts={"100/1": [
+          {"total_count": 2, "jobs": [{"id": 401, "name": MAC, "status": "completed", "conclusion": "failure",
+                                       "run_attempt": 1, "started_at": ts(1.0), "completed_at": ts(4.0), "steps": []}]},
+          {"total_count": 2, "jobs": [{"id": 400, "name": UBUNTU, "status": "completed", "conclusion": "success",
+                                       "run_attempt": 1, "started_at": ts(1.0), "completed_at": ts(4.0), "steps": []}]}]})
 write("environment", "The runner failed in 'Set up job' before any project step ran.",
       {"state": "environment", "exit": 13}, [completed_failure(failing_jobs(failed="Set up job"))])
 write("environment-timeout", "A job hit the hosted timeout (conclusion timed_out).",

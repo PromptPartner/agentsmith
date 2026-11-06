@@ -38,7 +38,6 @@ SETUP_STEP = re.compile(r"(Set up job|Set up runner|Initialize containers|Run ac
                         r"download-artifact|upload-artifact)@.*)\Z")
 REGISTRATION_SECONDS = 300
 NO_TIME = "0001-01-01T00:00:00Z"
-RUN_FIELDS = "databaseId,attempt,status,conclusion,event,headSha,workflowDatabaseId,workflowName,createdAt,updatedAt"
 
 
 class GhError(RuntimeError):
@@ -120,21 +119,26 @@ class Gh:
                  "createdAt": run.get("created_at"), "updatedAt": run.get("updated_at")}
                 for run in self._pages(f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100", "workflow_runs")]
 
-    def run(self, repo: str, run_id: int) -> dict[str, Any]:
-        return self._json("run", "view", str(run_id), "--repo", repo, "--json", RUN_FIELDS.replace("databaseId,", "") + ",jobs")
-
     def attempt_jobs(self, repo: str, run_id: int, attempt: int) -> list[dict[str, Any]]:
-        # GET only. The REST shape is snake_case; return the shape `gh run view --json jobs` uses.
-        jobs = self._json("api", f"repos/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100")["jobs"]
+        """Every job of one run attempt, all pages, in the shape `gh run view --json jobs` uses."""
+        def when(value: Any) -> str:
+            return value or NO_TIME
         return [{"databaseId": job.get("id"), "name": job.get("name"), "status": job.get("status"),
-                 "conclusion": job.get("conclusion") or "", "startedAt": job.get("started_at") or NO_TIME,
-                 "completedAt": job.get("completed_at") or NO_TIME, "steps": job.get("steps") or []} for job in jobs]
+                 "conclusion": job.get("conclusion") or "", "startedAt": when(job.get("started_at")),
+                 "completedAt": when(job.get("completed_at")),
+                 "steps": [{"name": step.get("name"), "number": step.get("number"), "status": step.get("status"),
+                            "conclusion": step.get("conclusion") or "", "startedAt": when(step.get("started_at")),
+                            "completedAt": when(step.get("completed_at"))} for step in job.get("steps") or []]}
+                for job in self._pages(f"repos/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100", "jobs")]
 
     def base_run(self, repo: str, branch: str, workflow_id: int) -> dict[str, Any] | None:
-        listed = self._json("run", "list", "--repo", repo, "--branch", branch, "--workflow", str(workflow_id),
-                            "--event", "push", "--status", "completed", "--limit", "1", "--json",
-                            "databaseId,headSha,conclusion")
-        return self.run(repo, listed[0]["databaseId"]) if listed else None
+        """The base branch's latest completed push run of one workflow, with its jobs."""
+        listed = self._json("api", f"repos/{repo}/actions/workflows/{workflow_id}/runs?branch={branch}"
+                                   "&event=push&status=completed&per_page=1")
+        runs = (listed or {}).get("workflow_runs") or []
+        if not runs:
+            return None
+        return {"jobs": self.attempt_jobs(repo, runs[0]["id"], int(runs[0].get("run_attempt") or 1))}
 
 
 def _seconds(stamp: str | None) -> float | None:
@@ -254,7 +258,8 @@ def watch(gh: Gh, repo: str | None, *, pr: int | None = None, sha: str | None = 
                            and (head is None or (run.get("headBranch"), str(run.get("headRepository") or "").casefold())
                                 == (head[0], head[1].casefold()))),
                           key=lambda run: run["databaseId"])
-            views = {run["databaseId"]: read(gh.run, repo, run["databaseId"]) for run in runs}
+            views = {run["databaseId"]: {**run, "jobs": read(gh.attempt_jobs, repo, run["databaseId"],
+                                                                int(run.get("attempt") or 1))} for run in runs}
             listed, seen_runs = True, seen_runs or bool(runs)
             runs_report[:] = [{"id": run_id, "workflow": view.get("workflowName"), "event": view.get("event"),
                                "attempt": view.get("attempt"), "status": view.get("status"),
