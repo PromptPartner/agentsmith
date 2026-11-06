@@ -2074,7 +2074,8 @@ class AutonomousStateTests(unittest.TestCase):
     def run_with_fake_roles(self, common: Path, *, max_attempts: int, checker_status: str,
                             stop_during_checker: bool = False,
                             stop_maker_phase_wait_on_attempt: int = 0,
-                            move_branch_after_verify: bool = False) -> tuple[int, dict[str, Any], list[str]]:
+                            move_branch_after_verify: bool = False,
+                            checker_evidence: list[str] | None = None) -> tuple[int, dict[str, Any], list[str]]:
         """Drive the real attempt loop with Git and the roles replaced by fakes, so a stop can be
         delivered at an exact point of it."""
         directory = common / "controller"
@@ -2119,9 +2120,12 @@ class AutonomousStateTests(unittest.TestCase):
                 if stop_during_checker:
                     # Not os.kill: on Windows it ends this process instead of calling the handler.
                     CONTROLLER.signal.raise_signal(CONTROLLER.signal.SIGTERM)
+            evidence = ["fake evidence"] if role == "maker" else (
+                checker_evidence if checker_evidence is not None
+                else [f"verification passed :: attempt-{state['attempt']}-verify.txt:1 :: exit=0"])
             return {"status": status, "summary": role,
                     "commit": head["value"] if role == "maker" else state["candidate_commit"],
-                    "changed_paths": ["a.txt"], "evidence": ["fake evidence"], "unresolved": [],
+                    "changed_paths": ["a.txt"], "evidence": evidence, "unresolved": [],
                     "next_state": ""}
 
         @contextlib.contextmanager
@@ -2156,6 +2160,57 @@ class AutonomousStateTests(unittest.TestCase):
             outcome, durable, events = self.run_with_fake_roles(
                 Path(temporary), max_attempts=1, checker_status="accepted")
             self.assertEqual((outcome, durable["status"], events[-1]), (0, "accepted", "run_accepted"))
+
+    def test_an_acceptance_without_valid_citations_is_a_checker_defect(self) -> None:
+        # Every passed criterion cites this attempt's verifier output by file and excerpt. An
+        # acceptance whose citations do not check out is not trusted: the attempt is reworked.
+        cases = {
+            "no citation": ["looks good to me"],
+            "fabricated file": ["tests pass :: attempt-1-junit.xml :: 12 passed"],
+            "another attempt": ["tests pass :: attempt-7-verify.txt :: exit=0"],
+            "excerpt not in the file": ["tests pass :: attempt-1-verify.txt :: 12 passed, 0 failed"],
+            "excerpt not on the cited line": ["tests pass :: attempt-1-verify.txt:2 :: exit=0"],
+            "line past the end": ["tests pass :: attempt-1-verify.txt:99 :: exit=0"],
+        }
+        for label, evidence in cases.items():
+            with self.subTest(case=label), tempfile.TemporaryDirectory(prefix="agentsmith citation ") as temporary:
+                outcome, durable, events = self.run_with_fake_roles(
+                    Path(temporary), max_attempts=1, checker_status="accepted", checker_evidence=evidence)
+                self.assertEqual((outcome, durable["status"]), (2, "escalated"), label)
+                self.assertNotIn("run_accepted", events)
+                self.assertIn("checker_defect", events)
+                self.assertIn("attempt cap reached", durable["reason"])
+        with tempfile.TemporaryDirectory(prefix="agentsmith citation ok ") as temporary:
+            outcome, durable, events = self.run_with_fake_roles(
+                Path(temporary), max_attempts=1, checker_status="accepted",
+                checker_evidence=["verification passed :: attempt-1-verify.txt :: exit=0",
+                                  "second criterion :: attempt-1-verify.txt:1 :: exit=0"])
+            self.assertEqual((outcome, durable["status"]), (0, "accepted"))
+            self.assertNotIn("checker_defect", events)
+
+    def test_citations_may_name_files_the_verifier_left_and_must_match_their_hash(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith citation files ") as temporary:
+            root = Path(temporary)
+            log = root / "attempt-2-verify.txt"
+            log.write_text("exit=0\nSTDOUT:\nran 12 tests\n", encoding="utf-8")
+            worktree = root / "check"
+            (worktree / "reports").mkdir(parents=True)
+            (worktree / "reports/junit.xml").write_text('<testsuite tests="12" failures="0"/>\n', encoding="utf-8")
+            (worktree / "big.bin").write_bytes(b"x" * (CONTROLLER.MAX_EVIDENCE_BYTES + 1))
+            index = CONTROLLER.verifier_evidence(log, worktree, {"reports/junit.xml", "big.bin", "gone.txt"})
+            self.assertEqual(sorted(index), ["attempt-2-verify.txt", "reports/junit.xml"])
+
+            def problem(*evidence: str) -> str | None:
+                receipt = {"status": "accepted", "evidence": list(evidence)}
+                return CONTROLLER.citation_problem(receipt, index, log, worktree, 2)
+
+            self.assertIsNone(problem("tests ran :: attempt-2-verify.txt:3 :: ran 12 tests",
+                                      'no failures :: reports/junit.xml :: failures="0"'))
+            self.assertIn("did not produce", problem("big file :: big.bin :: xxx"))
+            self.assertIn("checker accepted without citing any evidence", problem())
+            (worktree / "reports/junit.xml").write_text('<testsuite tests="12" failures="3"/>\n', encoding="utf-8")
+            self.assertIn("changed after the verifier finished",
+                          problem('no failures :: reports/junit.xml :: failures="0"'))
 
     def test_a_commit_after_verification_refuses_acceptance(self) -> None:
         # The checks passed at one commit; a run branch that moved afterwards would hand the

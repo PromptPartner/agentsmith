@@ -2103,8 +2103,63 @@ def launch_role_with_breaker(state: dict[str, Any], manifest: dict[str, Any], ro
         return receipt
 
 
+# What a checker may cite: this attempt's verifier output log, plus files the verifier left in
+# the disposable worktree (ignored by Git), each recorded by hash when the verifier finished.
+MAX_EVIDENCE_FILES = 200
+MAX_EVIDENCE_BYTES = 8 * 1024 * 1024
+CITATION_FORM = "criterion :: file[:line] :: excerpt"
+VERIFY_LOG = re.compile(r"attempt-([0-9]+)-verify\.txt")
+
+
+def verifier_evidence(verify_log: Path, checker_worktree: Path, ignored: set[str]) -> dict[str, str]:
+    index = {verify_log.name: file_digest(verify_log)}
+    for relative in sorted(ignored)[:MAX_EVIDENCE_FILES]:
+        path = checker_worktree / relative
+        if path.is_file() and not path.is_symlink() and path.stat().st_size <= MAX_EVIDENCE_BYTES:
+            index[relative] = file_digest(path)
+    return index
+
+
+def citation_problem(checker: dict[str, Any], index: dict[str, str], verify_log: Path,
+                     checker_worktree: Path, attempt: int) -> str | None:
+    """Why an accepting checker's evidence does not hold, or None. No model is involved: each
+    evidence item must read `criterion :: file[:line] :: excerpt`, name a file this attempt's
+    verifier produced, still match its recorded hash, and quote text that is in that file."""
+    if not checker["evidence"]:
+        return "checker accepted without citing any evidence"
+    for number, item in enumerate(checker["evidence"], 1):
+        shown = repr(item[:80])
+        parts = item.split(" :: ", 2)
+        if len(parts) != 3 or not parts[0].strip():
+            return f"evidence item {number} ({shown}) is not '{CITATION_FORM}'"
+        location, excerpt = parts[1].strip(), parts[2].strip()
+        match = re.fullmatch(r"(.+?)(?::([1-9][0-9]{0,6}))?", location)
+        name, line = (match.group(1), int(match.group(2)) if match.group(2) else None) if match else (location, None)
+        if name not in index:
+            other = VERIFY_LOG.fullmatch(name)
+            if other and int(other.group(1)) != attempt:
+                return f"evidence item {number} cites {name} from attempt {other.group(1)}, not this attempt ({attempt})"
+            return f"evidence item {number} cites {shown_paths([name])}, which this attempt's verifier did not produce"
+        path = verify_log if name == verify_log.name else checker_worktree / name
+        if file_digest(path) != index[name]:
+            return f"evidence item {number} cites {name}, which changed after the verifier finished"
+        if len(excerpt) < 3:
+            return f"evidence item {number} quotes no excerpt from {name}"
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if line is not None:
+            lines = text.splitlines()
+            if line > len(lines):
+                return f"evidence item {number} cites line {line} of {name}, which has {len(lines)} lines"
+            if excerpt not in lines[line - 1]:
+                return f"evidence item {number} quotes {excerpt[:60]!r}, which is not on line {line} of {name}"
+        elif excerpt not in text:
+            return f"evidence item {number} quotes {excerpt[:60]!r}, which is not in {name}"
+    return None
+
+
 def role_prompt(state: dict[str, Any], manifest: dict[str, Any], role: str,
-                prior: dict[str, Any] | None = None, verify_output: str = "") -> str:
+                prior: dict[str, Any] | None = None, verify_output: str = "",
+                evidence_files: list[str] | None = None) -> str:
     spec = manifest["spec_path"]
     scope = manifest["scope"]
     base = state["base_head"]
@@ -2127,14 +2182,22 @@ A moved file counts twice: list the old path and the new path.
         return common + goal + f"""Implement the smallest complete change, run {manifest['verify']['command']},
 and make atomic local commits only. Leave the worktree clean. HEAD must advance beyond {base}.
 Use status completed or blocked; do not mark your own work accepted.{feedback}"""
+    verify_log = f"attempt-{state.get('attempt')}-verify.txt"
     return common + f"""You are the independent checker and default to REJECT. Do not edit files or commit.
 Inspect the committed diff from {base} to HEAD and the controller verification evidence.
 Try to falsify the acceptance criteria using read-only commands. Also reject when either answer is no:
 - Is this the smallest change that solves the stated problem? Name any part the spec does not need.
 - Did each new red test fail for the intended reason? Check that it asserts on the failure message
   or value the bug produces, not on a stub, an import error or an earlier gate.
-Controller verification output:
+Controller verification output (the file {verify_log}):
 {verify_output[-6000:]}
+To accept, cite evidence for every criterion that passed. Write each evidence item exactly as
+`{CITATION_FORM}`, where file is one of this attempt's verifier outputs:
+{json.dumps(evidence_files or [verify_log])}
+(files other than the output log are in your worktree), line is optional and counts from the
+start of the file, and excerpt is text
+copied exactly from that file, or from that line when you give one. The controller checks every
+citation without a model; an acceptance whose citations do not hold is not trusted.
 Use status accepted, rejected, or blocked."""
 
 
@@ -2295,13 +2358,17 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             if checker_status:
                 raise RunError("verifier modified tracked state")
             checker_ignored = ignored_paths(checker_worktree)
+            evidence = verifier_evidence(verify_path, checker_worktree, checker_ignored)
+            proof["evidence_files"] = evidence
+            write_json(proof_path, proof)
             checker_meta = git_metadata(checker_worktree)
             checker_error: Exception | None = None
             checker: dict[str, Any] | None = None
             try:
                 checker = launch_role_with_breaker(
                     state, manifest, "checker",
-                    role_prompt(state, manifest, "checker", verify_output=verify_output),
+                    role_prompt(state, manifest, "checker", verify_output=verify_output,
+                                evidence_files=sorted(evidence)),
                     role_worktree=checker_worktree)
             except Exception as exc:
                 checker_error = exc
@@ -2322,7 +2389,17 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             proof["checker_receipt_sha256"] = file_digest(
                 Path(state["state_path"]).parent / f"attempt-{state['attempt']}-checker-receipt.json")
             proof["checker_status"] = checker["status"]
+            defect = (citation_problem(checker, evidence, verify_path, checker_worktree, state["attempt"])
+                      if acceptance_ready(verify.returncode, checker) else None)
+            if defect:
+                proof["checker_defect"] = defect
             write_json(proof_path, proof)
+        if defect:
+            # An acceptance whose evidence does not hold is a checker defect, not an acceptance:
+            # the attempt is reworked like a rejection, and the next maker is told why.
+            event(state, "checker_defect", attempt=state["attempt"], reason=defect)
+            checker = {**checker, "status": "rejected", "unresolved": [
+                *checker["unresolved"], f"the checker's acceptance was not trusted: {defect}"]}
         if acceptance_ready(verify.returncode, checker):
             # A stop that arrived before the acceptance record still interrupts the run.
             raise_if_stopped(Path(state["state_path"]).parent)

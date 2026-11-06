@@ -77,6 +77,21 @@ to reject a change that is larger than the stated problem needs, and a red test 
 the wrong reason (a stub, an import error or an earlier gate instead of the bug's own failure
 message). Role exit codes are retained separately from structured receipts.
 
+**An acceptance must cite its evidence.** When the verifier finishes, the controller records by
+hash every file the checker may cite: this attempt's output log, `attempt-N-verify.txt`, and the
+files the verifier left in the disposable worktree that Git ignores (up to 200, each up to 8 MB).
+The list is `evidence_files` in the verification receipt. A checker that accepts writes each
+`evidence` item as `criterion :: file[:line] :: excerpt`. The line is optional and counts from the
+start of the file, and the excerpt is text copied exactly from that file or line. Before
+acceptance, a check without any model reads every item. The acceptance is not trusted when an
+item has no citation, names a file that this attempt's verifier did not produce (for example a
+file from another attempt), names a file whose hash no longer matches, cites a line past the end,
+or quotes text that is not there. That is a checker defect. The attempt is then reworked like a
+rejection: the defect is recorded as a `checker_defect` event and as `checker_defect` in the
+verification receipt, and the next maker is told that the acceptance was not trusted. A rejection
+needs no citations. The receipt shape does not change, so a stored receipt stays valid, and a
+checker whose evidence already uses this form passes as it is.
+
 Acceptance is bound to the exact commit the checks passed. Just before it records `accepted`,
 the controller confirms that the run branch and the run worktree's `HEAD` still point at that
 commit and that the worktree is clean, and it reads both commit IDs again after that clean

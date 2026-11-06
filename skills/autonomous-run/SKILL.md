@@ -88,7 +88,9 @@ scope. Add custom acceptance inputs via `verify.protected_paths`; changing
 protected inputs requires separate operator review outside this run. New regression tests remain
 allowed. Both roles receive trusted-path write restrictions through their native policies; Codex uses a
 strict named filesystem profile, and Claude combines Bash denyWrite with file-tool Edit denials.
-Native clients and the host remain trusted. Checkers inspect the controller verifier evidence.
+Native clients and the host remain trusted. Checkers inspect the controller verifier evidence,
+and an accepting checker cites it per criterion as `criterion :: file[:line] :: excerpt`; an
+acceptance whose citations do not check out is a checker defect and the attempt is reworked.
 
 Before `start` creates local Git or state artifacts, and before `resume` restarts work, the
 controller serializes a repository-local collision scan. Ancestor/descendant fixed prefixes from

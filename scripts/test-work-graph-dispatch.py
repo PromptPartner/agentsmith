@@ -231,7 +231,10 @@ class GraphDispatchTests(unittest.TestCase):
             commit = subprocess.run(["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
             status = "accepted" if checker else "completed"
             receipt = {"status": status, "summary": "fake role", "commit": commit,
-                       "changed_paths": [changed], "evidence": ["fake test evidence"],
+                       "changed_paths": [changed],
+                       "evidence": ["fake test evidence"] if not checker else [
+                           "verification passed :: " + re.search(r"attempt-[0-9]+-verify[.]txt", prompt).group(0)
+                           + " :: exit=0"],
                        "unresolved": [], "next_state": status}
             if receipt_path is not None:
                 receipt_path.write_text(json.dumps(receipt), encoding="utf-8")

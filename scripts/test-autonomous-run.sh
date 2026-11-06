@@ -54,6 +54,10 @@ make_fake() {
     '  if [ "$mode" = checker-ref ]; then git branch checker-escape; fi' \
     '  if [ "$mode" = checker-slow ]; then printf "{\"type\":\"result\",\"total_cost_usd\":0.125}\n"; sleep 60 & printf "%s" "$!" > "$fake_root/child-pid"; wait; fi' \
     '  if [ "$mode" = plant-cache ]; then token="$(cat "$fake_root/plant-token")"; for seen in "${TMPDIR:-/tmp}/$token" "${CLAUDE_CODE_TMPDIR:-/tmp}/claude-$(id -u)/$token" "${XDG_CACHE_HOME:-/nonexistent}/$token"; do if [ -e "$seen" ]; then printf "%s\n" "$seen" >> "$fake_root/checker-saw-plant"; mode=always-reject; fi; done; fi' \
+    '  vlog="$(printf "%s" "$prompt" | grep -o "attempt-[0-9]*-verify.txt" | head -1 || true)"' \
+    '  cite="verification passed :: $vlog :: exit=0"' \
+    '  if [ "$mode" = checker-no-citation ]; then cite="looks good to me"; fi' \
+    '  if [ "$mode" = checker-fabricated ]; then cite="all tests pass :: test-report.xml :: 12 passed"; fi' \
     '  count_file="$fake_root/counter"' \
     '  count=0; [ -f "$count_file" ] && count="$(<"$count_file")"' \
     '  count=$((count+1)); printf "%s" "$count" > "$count_file"' \
@@ -61,8 +65,8 @@ make_fake() {
     '  if [ "$mode" = reject-once ] && [ "$count" -eq 1 ]; then status=rejected; fi' \
     '  if [ "$mode" = always-reject ]; then status=rejected; fi' \
     '  paths_json="[\"src/change.txt\"]"; if [ -f "$fake_root/paths_json" ]; then paths_json="$(<"$fake_root/paths_json")"; fi' \
-    '  if [ "$mode" = checker-denials ] && [ -z "$receipt" ]; then printf "{\"type\":\"result\",\"total_cost_usd\":0.25,\"permission_denials\":[{\"tool_name\":\"Edit\"}],\"structured_output\":{\"status\":\"accepted\",\"summary\":\"checker accepted\",\"commit\":\"%s\",\"changed_paths\":[\"src/change.txt\"],\"evidence\":[\"fake check\"],\"unresolved\":[],\"next_state\":\"accepted\"}}\n" "$(git rev-parse HEAD)"; exit 0; fi' \
-    '  emit "{\"status\":\"$status\",\"summary\":\"checker $status\",\"commit\":\"$(git rev-parse HEAD)\",\"changed_paths\":$paths_json,\"evidence\":[\"fake check\"],\"unresolved\":[],\"next_state\":\"$status\"}"' \
+    '  if [ "$mode" = checker-denials ] && [ -z "$receipt" ]; then printf "{\"type\":\"result\",\"total_cost_usd\":0.25,\"permission_denials\":[{\"tool_name\":\"Edit\"}],\"structured_output\":{\"status\":\"accepted\",\"summary\":\"checker accepted\",\"commit\":\"%s\",\"changed_paths\":[\"src/change.txt\"],\"evidence\":[\"%s\"],\"unresolved\":[],\"next_state\":\"accepted\"}}\n" "$(git rev-parse HEAD)" "$cite"; exit 0; fi' \
+    '  emit "{\"status\":\"$status\",\"summary\":\"checker $status\",\"commit\":\"$(git rev-parse HEAD)\",\"changed_paths\":$paths_json,\"evidence\":[\"$cite\"],\"unresolved\":[],\"next_state\":\"$status\"}"' \
     'else' \
     '  if [ "$mode" = slow ]; then sleep 20; fi' \
     '  if [ "$mode" = collision-slow ]; then sleep 60; fi' \
@@ -1008,6 +1012,31 @@ assert state['status'] == 'accepted' and state['attempt'] == 1
 assert state['accepted_commit'] == state['candidate_commit']
 assert state['codex_tokens_used'] == 10
 PY
+
+echo 'autonomous-run — an acceptance must cite the verifier evidence'
+for mode in checker-no-citation checker-fabricated; do
+  repo="$(new_repo "$mode")"; make_fake "$repo/../fake"; manifest "$repo" "$mode"
+  python3 - "$repo/.harness/runs/$mode.json" <<'PY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); v = json.loads(p.read_text())
+v['limits']['max_attempts'] = 1
+p.write_text(json.dumps(v, indent=2) + '\n')
+PY
+  git -C "$repo" add . && git -C "$repo" commit -qm 'test: one attempt only'
+  if (cd "$repo" && invoke "$repo" "$mode" start ".harness/runs/$mode.json" >../out 2>../err); then
+    bad "$mode: an acceptance with bad citations was trusted"
+  else ok "$mode: an acceptance with bad citations is a checker defect, not an acceptance"; fi
+  assert "$mode: the defect is recorded with its reason" python3 - "$repo/.git/agentsmith-runs/$mode" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1]); state = json.load(open(root / 'state.json'))
+events = [json.loads(line) for line in open(root / 'events.jsonl')]
+defects = [e for e in events if e['event'] == 'checker_defect']
+assert state['status'] == 'escalated' and 'accepted_commit' not in state, state['status']
+assert len(defects) == 1 and ('not ' in defects[0]['reason']), defects
+proof = json.load(open(root / 'attempt-1-verify.json'))
+assert proof['checker_defect'] == defects[0]['reason'] and 'attempt-1-verify.txt' in proof['evidence_files']
+PY
+done
 
 echo 'autonomous-run — acceptance is bound to the commit the checks passed'
 repo="$(new_repo late-commit)"; make_fake "$repo/../fake"; manifest "$repo" late-commit

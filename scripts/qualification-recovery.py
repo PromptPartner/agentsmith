@@ -132,7 +132,7 @@ def validate_records(root, records, require_native=False, require_complete=False
 
 # Source embedded in this frozen runner is copied into every disposable fixture.
 AGENT = r'''#!/usr/bin/env python3
-import json, os, pathlib, subprocess, sys, time
+import json, os, pathlib, re, subprocess, sys, time
 root = pathlib.Path(__file__).resolve().parent
 cfg = json.loads((root/'config.json').read_text())
 role = 'checker' if 'independent checker' in sys.argv[-1] else 'maker'
@@ -155,7 +155,7 @@ if role == 'maker':
  subprocess.run(['git','commit','-qm','test(fixture): satisfy bounded red check'],check=True)
  if cfg.get('hold') == 'post-commit': gate('post-commit')
 commit = subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
-payload = {'status':'completed' if role == 'maker' else 'accepted','summary':'deterministic fixture','commit':commit,'changed_paths':['src/change.txt'],'evidence':['fixture verifier checks fixed value'],'unresolved':[],'next_state':'checking' if role == 'maker' else 'accepted'}
+payload = {'status':'completed' if role == 'maker' else 'accepted','summary':'deterministic fixture','commit':commit,'changed_paths':['src/change.txt'],'evidence':['fixture verifier checks fixed value'] if role == 'maker' else ['verifier passed :: '+re.search(r'attempt-[0-9]+-verify[.]txt',sys.argv[-1]).group(0)+' :: exit=0'],'unresolved':[],'next_state':'checking' if role == 'maker' else 'accepted'}
 if '-o' in sys.argv: pathlib.Path(sys.argv[sys.argv.index('-o')+1]).write_text(json.dumps(payload))
 else: print(json.dumps({'type':'result','total_cost_usd':0.125,'structured_output':payload}),flush=True)
 '''
