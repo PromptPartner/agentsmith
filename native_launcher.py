@@ -194,10 +194,12 @@ def parse_structured_output(receipt_path: Path | None, stdout: str, required: It
 
 
 def claude_sandbox_settings(cwd: Path, extra_write_dirs: Iterable[Path] = (), *, read_only: bool = False,
-                            protected_write_paths: Iterable[Path] = ()) -> dict[str, Any]:
+                            protected_write_paths: Iterable[Path] = (),
+                            hidden_read_paths: Iterable[Path] = ()) -> dict[str, Any]:
     writes = [] if read_only else [str(path) for path in extra_write_dirs]
     reads = [str(cwd), *[str(path) for path in extra_write_dirs]]
     protected = [str(path.resolve()) for path in protected_write_paths]
+    hidden = [str(path.resolve()) for path in hidden_read_paths]
     return {
         "sandbox": {
             "enabled": True,
@@ -207,7 +209,7 @@ def claude_sandbox_settings(cwd: Path, extra_write_dirs: Iterable[Path] = (), *,
             "filesystem": {
                 "allowWrite": writes,
                 "denyWrite": [*([str(cwd)] if read_only else []), *protected],
-                "denyRead": [str(Path.home())],
+                "denyRead": [str(Path.home()), *hidden],
                 "allowRead": reads,
             },
             "network": {"allowedDomains": [], "deniedDomains": ["*"]},
@@ -217,6 +219,7 @@ def claude_sandbox_settings(cwd: Path, extra_write_dirs: Iterable[Path] = (), *,
             + (["Edit", "Write", "NotebookEdit"] if read_only else [])
             + [f"Edit(/{path})" for path in protected]
             + [f"Edit(/{path}/**)" for path in protected]
+            + [rule for path in hidden for rule in (f"Read(/{path})", f"Read(/{path}/**)")]
         },
         "enableAllProjectMcpServers": False,
         "disableAllHooks": True,
@@ -224,7 +227,8 @@ def claude_sandbox_settings(cwd: Path, extra_write_dirs: Iterable[Path] = (), *,
 
 
 def codex_permissions(cwd: Path, extra_write_dirs: Iterable[Path] = (), *, read_only: bool = False,
-                      protected_write_paths: Iterable[Path] = ()) -> dict[str, Any]:
+                      protected_write_paths: Iterable[Path] = (),
+                      hidden_read_paths: Iterable[Path] = ()) -> dict[str, Any]:
     temporary_access = 'read' if read_only else 'write'
     filesystem = {':root': 'read', ':tmpdir': temporary_access, ':slash_tmp': temporary_access}
     if not read_only:
@@ -232,6 +236,8 @@ def codex_permissions(cwd: Path, extra_write_dirs: Iterable[Path] = (), *, read_
             filesystem[str(path.resolve())] = 'write'
     for path in protected_write_paths:
         filesystem[str(path.resolve())] = 'read'
+    for path in hidden_read_paths:
+        filesystem[str(path.resolve())] = 'none'  # no read either: hidden acceptance tests
     return {'filesystem': filesystem, 'network': {'enabled': False}}
 
 
@@ -257,13 +263,15 @@ def build_native_command(
     effort: str = "",
     claude_max_usd: float = 0.0,
     protected_write_paths: Iterable[Path] = (),
+    hidden_read_paths: Iterable[Path] = (),
 ) -> list[str]:
     if agent == "codex":
         protected = list(protected_write_paths)
         command = [*native_command_prefix(agent), "exec", "--json"]
         if protected:
             permissions = codex_permissions(cwd, extra_write_dirs, read_only=read_only,
-                                           protected_write_paths=protected)
+                                           protected_write_paths=protected,
+                                           hidden_read_paths=hidden_read_paths)
             command += ['--strict-config', '-c', 'default_permissions="agentsmith"',
                         '-c', 'permissions=' + toml_inline({'agentsmith': permissions})]
         else:

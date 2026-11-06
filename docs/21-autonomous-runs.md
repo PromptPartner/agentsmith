@@ -410,6 +410,35 @@ An accepted run prints the branch, commit, worktree, and evidence for human revi
 run prints the exact boundary that stopped it. Nothing leaves the machine until the operator
 separately authorizes the relevant external action.
 
+### Hidden acceptance tests (opt-in)
+
+A run can add acceptance tests that neither role ever sees. They must be written by a person and
+kept in a private local clone outside the repository and outside the run worktree. Name them in
+the manifest:
+
+```json
+"hidden_tests": {"repo": "/absolute/path/to/private-tests", "commit": "<full commit sha>",
+                 "command": ["python3", "-m", "pytest", "{hidden}"], "tiers": ["C"]}
+```
+
+`prepare`, `start` and `resume` refuse when the clone is missing or inside the repository or run
+worktree, when the commit does not exist there, or when a field is malformed. When the verifier
+passes and the run's risk tier (computed as at acceptance) is in `tiers`, the controller copies
+the candidate's files and that commit's files into a fresh temporary folder and runs `command`
+in the verifier sandbox; `{hidden}` names the folder with the hidden tests. Neither copy is a
+worktree that a role sees. The verification receipt records `hidden_tests`: `pass`, `fail` or
+`skipped` (with the tier and the listed tiers), the commit, the exit code, the time taken and a
+hash of the output. The output itself is not stored anywhere a role can read it.
+
+Hidden tests can only reject. A failure rejects the attempt without running the checker, and the
+next maker is told only that the hidden acceptance tests failed and to re-read the acceptance
+criteria, never the path, the tests or their output. A pass still needs the verifier and the
+checker. Both roles are denied reading the clone (Codex with a `none` filesystem rule, Claude
+with `denyRead` and `Read` deny rules). The manifest, which the maker's worktree contains, still
+names the clone's path and commit, so keep the clone private on this machine. This is opt-in and
+measured: the time each run spends on hidden tests is in its receipt, so you can decide whether
+they earn their cost.
+
 ## Landing an accepted run
 
 The controller never pushes, opens a pull request or merges, and no role has network access or

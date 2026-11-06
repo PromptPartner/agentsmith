@@ -19,6 +19,7 @@ import os
 import posixpath
 import re
 import signal
+import shlex
 import shutil
 import subprocess
 import sys
@@ -91,6 +92,10 @@ class InfrastructureFailure(RunError):
     def __init__(self, message: str, signature: str) -> None:
         super().__init__(message)
         self.signature = signature
+
+
+class HiddenTestsRejected(Exception):
+    """Internal: opt-in hidden acceptance tests rejected the candidate before any checker ran."""
 
 
 class RunInterrupted(RuntimeError):
@@ -835,6 +840,84 @@ def risk_record(repo: Path, base: str, head: str, declared: str | None) -> dict[
     return record
 
 
+HIDDEN_HINT = ("hidden acceptance tests failed; re-read the spec's acceptance criteria and check the cases "
+               "the visible tests do not cover")
+
+
+def hidden_tests_problem(manifest: dict[str, Any], repo: Path) -> str | None:
+    """Why a manifest's opt-in hidden acceptance tests cannot be used, or None (also when absent)."""
+    hidden = manifest.get("hidden_tests")
+    if hidden is None:
+        return None
+    if not isinstance(hidden, dict) or set(hidden) != {"repo", "commit", "command", "tiers"}:
+        return "hidden_tests needs exactly repo, commit, command and tiers"
+    clone = Path(str(hidden["repo"])).expanduser()
+    if not clone.is_absolute() or not clone.is_dir():
+        return "hidden_tests.repo must be an absolute path to a local clone"
+    clone = clone.resolve()
+    run_worktree = Path(manifest.get("worktree_path") or repo.parent / f"{repo.name}-{manifest.get('run_id')}").resolve()
+    for place in (repo.resolve(), run_worktree):
+        if clone == place or clone.is_relative_to(place) or place.is_relative_to(clone):
+            return f"hidden_tests.repo must be outside the repository and the run worktree ({place})"
+    commit = str(hidden["commit"])
+    if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit) or run(
+            ["git", "-C", str(clone), "cat-file", "-t", commit], repo).stdout.strip() != "commit":
+        return "hidden_tests.commit must be a full commit SHA that exists in hidden_tests.repo"
+    command = hidden["command"]
+    if not isinstance(command, list) or not command or not all(isinstance(item, str) and item for item in command):
+        return "hidden_tests.command must be a non-empty list of arguments; {hidden} names the tests folder"
+    tiers = hidden["tiers"]
+    if not isinstance(tiers, list) or not tiers or any(tier not in RISK_TIERS for tier in tiers):
+        return f"hidden_tests.tiers must list tiers from {', '.join(RISK_TIERS)}"
+    return None
+
+
+def hidden_read_paths(manifest: dict[str, Any]) -> list[Path]:
+    hidden = manifest.get("hidden_tests")
+    return [Path(str(hidden["repo"])).expanduser().resolve()] if isinstance(hidden, dict) else []
+
+
+def extract_tree(source: Path, commit: str, destination: Path) -> None:
+    """A commit's files, without its Git history, through `git archive` and a checked tar."""
+    archived = subprocess.run(["git", "-C", str(source), "archive", "--format=tar", commit],
+                              capture_output=True, check=False)
+    if archived.returncode:
+        raise RunError(f"cannot read commit {commit[:12]}: {archived.stderr.decode('utf-8', 'replace').strip()}")
+    destination.mkdir(parents=True, exist_ok=True)
+    import io
+    import tarfile
+    with tarfile.TarFile(fileobj=io.BytesIO(archived.stdout)) as archive:  # bytes, not text
+        for member in archive.getmembers():
+            name = Path(member.name)
+            if name.is_absolute() or ".." in name.parts or not (member.isfile() or member.isdir()):
+                raise RunError(f"commit {commit[:12]} holds {member.name!r}, which is not a plain file or folder")
+        archive.extractall(destination)
+
+
+def run_hidden_tests(state: dict[str, Any], manifest: dict[str, Any], candidate: str) -> dict[str, Any]:
+    """Opt-in hidden acceptance tests. They run in the verifier sandbox against a plain copy of the
+    candidate in a temporary folder, never in a worktree a role sees, and only their result, time
+    and output hash are kept: no output is stored where a maker could read it. They can only reject."""
+    hidden = manifest["hidden_tests"]
+    tier = risk_record(Path(state["worktree"]), state["base_head"], candidate, manifest.get("risk_tier"))["tier"]
+    record: dict[str, Any] = {"commit": hidden["commit"], "tier": tier, "tiers": hidden["tiers"]}
+    if tier not in hidden["tiers"]:
+        return {**record, "status": "skipped"}
+    started = time.monotonic()
+    with private_scratch("agentsmith-hidden-") as scratch:
+        workspace = scratch / "candidate"
+        extract_tree(Path(state["worktree"]), candidate, workspace)
+        tests = workspace / ".agentsmith-hidden-tests"
+        extract_tree(Path(str(hidden["repo"])).expanduser().resolve(), hidden["commit"], tests)
+        run(["git", "init", "-q", str(workspace)], workspace)  # the verifier sandbox expects a Git folder
+        argv = [item.replace("{hidden}", str(tests)) for item in hidden["command"]]
+        result = sandboxed_verify(shlex.join(argv), workspace, max(1, remaining_seconds(state, manifest)),
+                                  verifier_env())
+    output = hashlib.sha256((result.stdout + "\0" + result.stderr).encode("utf-8", "replace")).hexdigest()
+    return {**record, "status": "pass" if result.returncode == 0 else "fail", "exit_code": result.returncode,
+            "duration_seconds": round(time.monotonic() - started, 1), "output_sha256": output}
+
+
 UNBOUNDED = "unbounded"
 # The cap each runtime spends, and the type its value must have.
 RUNTIME_BUDGETS = {"codex": ("codex_goal_tokens", "a positive whole number of tokens"),
@@ -929,6 +1012,9 @@ def validate_manifest(manifest: dict[str, Any], repo: Path) -> tuple[Path, str]:
     if not isinstance(verify_config, dict) or not isinstance(verify_config.get("command"), str) or not verify_config["command"].strip():
         raise RunError("verify.command must name a required verification command")
     validate_budgets(manifest)
+    hidden = hidden_tests_problem(manifest, repo)
+    if hidden:
+        raise RunError(hidden)
     if "risk_tier" in manifest and manifest["risk_tier"] not in RISK_TIERS:
         raise RunError(f"risk_tier must be one of {', '.join(RISK_TIERS)}; it can only raise the computed tier")
     spec_rel = Path(str(manifest["spec_path"]))
@@ -1054,6 +1140,9 @@ def prepare(args: argparse.Namespace) -> int:
         raise RunError(f"{', '.join(unset)} are blank or placeholders; pass --maker-model and "
                        "--checker-model, or fill them in the template, before prepare writes a manifest")
     validate_budgets(manifest)
+    hidden = hidden_tests_problem(manifest, repo)
+    if hidden:
+        raise RunError(hidden)
     output = Path(args.output or f".harness/runs/{args.run_id}.json")
     output = output if output.is_absolute() else repo / output
     if output.exists() and not args.force:
@@ -1990,7 +2079,7 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
         cmd = build_native_command(
             "codex", prompt, worktree, schema_path, receipt_path,
             extra_write_dirs=maker_write_dirs, read_only=role == "checker",
-            protected_write_paths=protected,
+            protected_write_paths=protected, hidden_read_paths=hidden_read_paths(manifest),
             model=str(role_cfg.get("model", "")), effort=str(role_cfg.get("effort", "")),
         )
     else:
@@ -1999,7 +2088,7 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
             settings_path,
             claude_sandbox_settings(
                 worktree, maker_write_dirs, read_only=role == "checker",
-                protected_write_paths=protected,
+                protected_write_paths=protected, hidden_read_paths=hidden_read_paths(manifest),
             ),
         )
         # Claude Code enforces the remaining allowance inside the role (`--max-budget-usd`).
@@ -2435,16 +2524,29 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             checker_ignored = ignored_paths(checker_worktree)
             evidence = verifier_evidence(verify_path, checker_worktree, checker_ignored)
             proof["evidence_files"] = evidence
+            hidden_failed = False
+            if verify.returncode == 0 and manifest.get("hidden_tests") is not None:
+                proof["hidden_tests"] = run_hidden_tests(state, manifest, checker_head)
+                hidden_failed = proof["hidden_tests"]["status"] == "fail"
             write_json(proof_path, proof)
             checker_meta = git_metadata(checker_worktree)
             checker_error: Exception | None = None
             checker: dict[str, Any] | None = None
             try:
+                if hidden_failed:
+                    # Hidden tests only reject. The maker learns that they failed and nothing else;
+                    # no checker is spent on a candidate they rejected.
+                    event(state, "hidden_tests_failed", attempt=state["attempt"])
+                    raise HiddenTestsRejected()
                 checker = launch_role_with_breaker(
                     state, manifest, "checker",
                     role_prompt(state, manifest, "checker", verify_output=verify_output,
                                 evidence_files=sorted(evidence)),
                     role_worktree=checker_worktree)
+            except HiddenTestsRejected:
+                checker = {"status": "rejected", "summary": "hidden acceptance tests failed", "commit": checker_head,
+                           "changed_paths": paths, "evidence": [], "unresolved": [HIDDEN_HINT],
+                           "next_state": "rejected"}
             except Exception as exc:
                 checker_error = exc
             validate_git_unchanged(
@@ -2461,9 +2563,9 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             assert checker is not None
             if checker["commit"] != checker_head or sorted(checker["changed_paths"]) != sorted(paths):
                 raise RunError("checker receipt does not match the committed Git state")
-            proof["checker_receipt_sha256"] = file_digest(
-                Path(state["state_path"]).parent / f"attempt-{state['attempt']}-checker-receipt.json")
-            proof["checker_status"] = checker["status"]
+            proof["checker_receipt_sha256"] = (None if hidden_failed else file_digest(
+                Path(state["state_path"]).parent / f"attempt-{state['attempt']}-checker-receipt.json"))
+            proof["checker_status"] = "not run: hidden acceptance tests failed" if hidden_failed else checker["status"]
             # Every acceptance that would otherwise count is checked, including one with no or only
             # blank evidence: that is a checker defect with rework feedback, not a plain rejection.
             claims_acceptance = (verify.returncode == 0 and checker["status"] == "accepted"
