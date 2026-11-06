@@ -144,7 +144,24 @@ def shown_paths(paths: list[str]) -> str:
 PAUSE_MARKER = ".harness/AUTONOMY_PAUSED"
 
 
-def assert_autonomy_not_paused(repo: Path) -> None:
+def factory_root(repo: Path) -> Path:
+    """Operator-side records outside any run: kill-switch refusals, the post-merge defect log and
+    logged human minutes. Roles cannot write it, and Git metadata checks ignore it."""
+    return state_root(repo).parent / "agentsmith-factory"
+
+
+def record_factory_event(repo: Path, kind: str, **fields: Any) -> None:
+    """Best effort: a record that cannot be written must never change the decision it records."""
+    try:
+        root = factory_root(repo)
+        root.mkdir(exist_ok=True)
+        with (root / "events.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"at": now(), "event": kind, **fields}, sort_keys=True) + "\n")
+    except (OSError, RunError):
+        pass
+
+
+def assert_autonomy_not_paused(repo: Path, *, action: str = "work", run_id: str | None = None) -> None:
     """The operator's repository-wide kill switch: while the marker exists in this checkout or
     in the main checkout, no run is prepared, started or resumed. A live run keeps running;
     `stop <id>` ends it. Any entry in `.harness/` named AUTONOMY_PAUSED ignoring case counts,
@@ -162,6 +179,9 @@ def assert_autonomy_not_paused(repo: Path) -> None:
             raise RunError(f"cannot tell whether autonomy is paused: {folder}: {exc}") from exc
         for name in names:
             if name.casefold() == wanted:
+                # The evidence that the kill switch works, for `agentsmith factory readiness`.
+                record_factory_event(repo, "autonomy_pause_refused", action=action, run_id=run_id,
+                                     marker=str(folder / name))
                 raise RunError(f"autonomy is paused by {folder / name}; remove it to allow new work "
                                "(live runs are not stopped; use stop <id>)")
 
@@ -1004,7 +1024,7 @@ def graph_effective_base(repo: Path, graph_path: str, manifest_path: Path,
 
 def prepare(args: argparse.Namespace) -> int:
     repo = repo_root(Path.cwd())
-    assert_autonomy_not_paused(repo)
+    assert_autonomy_not_paused(repo, action="prepare", run_id=args.run_id)
     if args.template:
         source = Path(args.template).resolve()
     else:
@@ -1400,7 +1420,7 @@ def _git_metadata_once(repo: Path, *, known_peers: dict[str, Any] | None = None)
     branch_log = Path("logs") / branch_ref if branch_ref else None
     for path in sorted(item for item in common.rglob("*") if item.is_file()):
         rel = path.relative_to(common)
-        if rel.parts[0] in {"agentsmith-runs", "agentsmith-calibrations"}:
+        if rel.parts[0] in {"agentsmith-runs", "agentsmith-calibrations", "agentsmith-factory"}:
             continue
         if rel.parts[0] == "objects":
             objects.append((rel.as_posix(), file_digest(path)))
@@ -1814,7 +1834,9 @@ def trusted_paths(state: dict[str, Any]) -> list[Path]:
     # every sandbox can name it.
     calibrations = state_root(repo).parent / "agentsmith-calibrations"
     calibrations.mkdir(exist_ok=True)
-    return [state_root(repo), calibrations, Path(state['manifest_path']), repo / state['spec_path'],
+    factory = factory_root(repo)
+    factory.mkdir(exist_ok=True)
+    return [state_root(repo), calibrations, factory, Path(state['manifest_path']), repo / state['spec_path'],
             Path(__file__).resolve().parent, runtime.parent]
 
 
@@ -2550,7 +2572,7 @@ def run_controller(state: dict[str, Any], manifest: dict[str, Any]) -> int:
 
 def start(args: argparse.Namespace) -> int:
     repo = repo_root(Path.cwd())
-    assert_autonomy_not_paused(repo)
+    assert_autonomy_not_paused(repo, action="start", run_id=Path(args.manifest).stem)
     manifest_path = Path(args.manifest).resolve()
     manifest = load_json(manifest_path)
     spec_rel, spec_hash = validate_manifest(manifest, repo)
@@ -2867,7 +2889,7 @@ def recover_checker_worktree(state: dict[str, Any], manifest: dict[str, Any]) ->
 
 def resume(args: argparse.Namespace) -> int:
     repo = repo_root(Path.cwd())
-    assert_autonomy_not_paused(repo)
+    assert_autonomy_not_paused(repo, action="resume", run_id=args.run_id)
     state = load_run(repo, args.run_id)
     if state["status"] == "accepted":
         raise RunError("accepted runs do not resume")
@@ -3332,7 +3354,7 @@ def calibrate(args: argparse.Namespace) -> int:
     """Run the configured checker against the labelled candidates and record the result.
     Record-only: no run depends on it yet. 0 passed, 1 failed, 2 could not run."""
     repo = repo_root(Path.cwd())
-    assert_autonomy_not_paused(repo)
+    assert_autonomy_not_paused(repo, action="calibrate")
     manifest = load_json(Path(args.manifest).resolve())
     checker = (manifest.get("roles") or {}).get("checker") or {}
     if checker.get("runtime") not in {"claude", "codex"}:

@@ -350,7 +350,9 @@ Wayfinder spec flow remains available to every work type.
 or in the main checkout, `prepare`, `start` and `resume` refuse, and so do `agentsmith graph
 start` and `graph resume`. The refusal names the file. A run that is already live keeps running;
 use `stop <id>` to end it. Delete the file to allow new work again. The name matches ignoring
-case (`autonomy_paused` also pauses) on every filesystem, so the rule does not depend on the disk. Leave it untracked: graph
+case (`autonomy_paused` also pauses) on every filesystem, so the rule does not depend on the disk. Each
+refusal is recorded as an `autonomy_pause_refused` event in `agentsmith-factory/events.jsonl` in
+the Git folder, which `agentsmith factory readiness` reads as evidence that the switch works. Leave it untracked: graph
 validation ignores exactly this path, so `graph status` still works while autonomy is paused.
 
 `status <id>` reads controller state from the repository's git-common directory. `start` and
