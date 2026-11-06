@@ -124,7 +124,10 @@ class TriggerTests(LensCase):
                     {"schema_version": 1, "lenses": [{**LENSES["lenses"][0], "min_tier": "D"}]},
                     {"schema_version": 1, "lenses": [LENSES["lenses"][0], LENSES["lenses"][0]]},
                     {"schema_version": 1, "lenses": [{**LENSES["lenses"][0], "id": "Bad Id"}]},
-                    {"schema_version": 1, "lenses": [{**LENSES["lenses"][0], "must_read": ["/etc/passwd"]}]}):
+                    {"schema_version": 1, "lenses": [{**LENSES["lenses"][0], "must_read": ["/etc/passwd"]}]},
+                    *({"schema_version": 1, "lenses": [{**LENSES["lenses"][0], "must_read": [path]}]}
+                      for path in ("C:/Windows/win.ini", "c:secret.md", "//server/share/x.md", "../outside.md",
+                                   "docs/../../outside.md", "docs\\x.md"))):
             with self.subTest(bad=bad):
                 with self.assertRaises(lenses.LensError):
                     lenses.load_lenses(dump(bad))
@@ -175,6 +178,30 @@ class BriefTests(LensCase):
         # Every data line is prefixed, so no data line can equal the closing marker.
         self.assertTrue(all(line.startswith("  | ") for line in block.splitlines()[1:] if line))
         self.assertNotEqual(lenses.brief(self.repo.root, "security", self.base, head).count("CANDIDATE-DATA"), 0)
+
+    def test_must_read_documents_are_read_from_the_base_commit(self) -> None:
+        # The candidate swaps SECURITY.md for a link to a file outside the repository; the reviewer
+        # must still read the base commit's document, never the working tree.
+        outside = Path(self.temporary.name) / "outside-secret.md"
+        outside.write_text("secret\n", encoding="utf-8")
+        link = subprocess.run(["git", "-C", str(self.repo.root), "hash-object", "-w", "--stdin"],
+                              input=str(outside).encode(), env=GIT_ENV, capture_output=True, check=True).stdout.decode().strip()
+        self.repo.git("update-index", "--cacheinfo", f"120000,{link},SECURITY.md")
+        head = self.repo.commit({"src/auth/login.py": b"def login(user, password):\n    return True\n"}, "swap")
+        text = lenses.brief(self.repo.root, "security", self.base, head, token="0123abcd")
+        self.assertIn(f"  - git show {self.base}:SECURITY.md", text)
+        self.assertNotIn("  - SECURITY.md", text)
+        # A must-read document that is a symbolic link at the base commit is refused.
+        relaxed = self.repo.commit({}, "base with a linked must-read")
+        with self.assertRaisesRegex(lenses.LensError, "symbolic link"):
+            lenses.plan(self.repo.root, relaxed, self.repo.commit({"src/auth/login.py": b"x\n"}, "change"))
+
+    def test_a_missing_must_read_document_is_named_not_invented(self) -> None:
+        self.repo.commit({"SECURITY.md": None}, "drop the document")
+        base = self.repo.git("rev-parse", "HEAD")
+        head = self.repo.commit({"src/auth/login.py": b"x\n"}, "change")
+        text = lenses.brief(self.repo.root, "security", base, head, token="0123abcd")
+        self.assertIn("  - SECURITY.md is not in the base commit: say so in the review", text)
 
     def test_a_lens_the_change_does_not_trigger_has_no_brief(self) -> None:
         head = self.repo.commit({"src/auth/login.py": b"def login(user, password):\n    return True\n"}, "auth")

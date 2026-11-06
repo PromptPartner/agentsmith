@@ -25,7 +25,7 @@ and commit it.
 |---|---|
 | `id` | Lowercase id, for example `security`. |
 | `paths` | Globs, with the risk map's rules: root-anchored, `*` inside one folder, `**` across folders. |
-| `must_read` | Up to five documents the reviewer reads first, for example `DESIGN.md`. |
+| `must_read` | Up to five documents the reviewer reads first, for example `DESIGN.md`. Relative paths only (no drive letter, no `..`). The brief points at them as committed at `--base` (`git show <base>:<path>`), so a candidate cannot swap them; a document that is a symbolic link at the base commit is refused, and a missing one is named. |
 | `brief` | One line: what this lens looks for. |
 | `evidence` | One line: what a finding must cite. |
 | `min_tier` | The lowest tier (`A`, `B`, `C`, `human`) at which the lens runs. |

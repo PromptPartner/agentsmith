@@ -81,6 +81,7 @@ def load_lenses(data: bytes | None) -> list[dict[str, Any]]:
             items = lens[key]
             if not isinstance(items, list) or len(items) > limit or not all(
                     isinstance(item, str) and item and not item.startswith("/") and "\\" not in item
+                    and not re.match(r"[A-Za-z]:", item)  # a Windows drive, absolute or not
                     and "" not in item.split("/") and ".." not in item.split("/") for item in items):
                 raise LensError(f"{where}: {key} must be at most {limit} relative paths with '/' separators")
         for key in ("brief", "evidence"):
@@ -114,6 +115,21 @@ def _lens_file(repo: Path, base: str) -> tuple[bytes | None, str | None]:
     return risk_map._git(repo, "cat-file", "blob", blob.decode("ascii")), blob.decode("ascii")
 
 
+def _base_documents(repo: Path, base: str, paths: list[str]) -> list[dict[str, Any]]:
+    """Each must-read document as committed at base: present, or missing. A link or a folder at
+    base is refused, so the reviewer never follows a path out of the base commit."""
+    documents = []
+    for path in paths:
+        listing = risk_map._git(repo, "ls-tree", "-z", "--full-tree", base, "--", path)
+        mode = listing.split(b" ", 1)[0] if listing else b""
+        if mode == b"120000":
+            raise LensError(f"must-read document {path} is a symbolic link at the base commit")
+        if listing and not mode.startswith(b"100"):
+            raise LensError(f"must-read document {path} is not a file at the base commit")
+        documents.append({"path": path, "present": bool(listing)})
+    return documents
+
+
 def plan(repo: Path, base: str, head: str, checker_class: str = "standard") -> dict[str, Any]:
     """The lenses base..head triggers, read from the lens file committed at base."""
     risk = risk_map.classify_range(Path(repo), base, head)
@@ -135,6 +151,7 @@ def plan(repo: Path, base: str, head: str, checker_class: str = "standard") -> d
             skipped.append({"id": lens["id"], "reason": f"tier {risk['tier']} is below this lens's minimum {lens['min_tier']}"})
         else:
             triggered.append({"id": lens["id"], "because": because, "must_read": lens["must_read"],
+                              "documents": _base_documents(Path(repo), risk["base"], lens["must_read"]),
                               "brief": lens["brief"], "evidence": lens["evidence"], "min_tier": lens["min_tier"]})
     return {"schema_version": SCHEMA_VERSION, "base": risk["base"], "head": risk["head"], "tier": risk["tier"],
             "depth": review_depth, "checker_class": checker_class, "warnings": [warning] if warning else [],
@@ -161,7 +178,10 @@ def brief(repo: Path, lens_id: str, base: str, head: str, checker_class: str = "
                       f"no lens {lens_id!r} in {LENS_PATH} at the base commit")
         raise LensError(f"lens {lens_id} is not triggered by this change: {reason}")
     b, h = report["base"], report["head"]
-    reading = [f"  - {path}" for path in lens["must_read"]] or ["  (no documents listed)"]
+    # Read from the base commit: the candidate may have changed or replaced these files.
+    reading = [f"  - git show {b}:{doc['path']}" if doc["present"]
+               else f"  - {doc['path']} is not in the base commit: say so in the review"
+               for doc in lens["documents"]] or ["  (no documents listed)"]
     lines = [
         f"# Review lens: {lens_id}",
         "",
@@ -184,7 +204,7 @@ def brief(repo: Path, lens_id: str, base: str, head: str, checker_class: str = "
         *[f"  | {_data(item)}" for item in lens["because"]],
         f"CANDIDATE-DATA {token}>>>",
         "",
-        "Read these first, and say for each one what you checked:",
+        "Read these first, as committed at the base commit, and say for each one what you checked:",
         *reading,
         "",
         "Brief:",
