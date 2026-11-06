@@ -437,7 +437,10 @@ the manifest:
 ```
 
 `prepare`, `start` and `resume` refuse when the clone is missing or inside the repository or run
-worktree, when the commit does not exist there, or when a field is malformed. When the verifier
+worktree, when the commit does not exist there, or when a field is malformed. The clone must be a
+standalone repository: its Git folder inside it, not a worktree of the run's repository, and no
+objects borrowed from or lent to another repository (`objects/info/alternates`). Otherwise the
+hidden commit's objects would sit where a maker can read them with `git show`. When the verifier
 passes and the run's risk tier (computed as at acceptance) is in `tiers`, the controller copies
 the candidate's files and that commit's files into a fresh temporary folder and runs `command`
 in the verifier sandbox; `{hidden}` names the folder with the hidden tests. Neither copy is a

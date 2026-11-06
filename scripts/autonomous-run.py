@@ -882,6 +882,23 @@ def hidden_tests_problem(manifest: dict[str, Any], repo: Path) -> str | None:
     for place in (repo.resolve(), run_worktree):
         if clone == place or clone.is_relative_to(place) or place.is_relative_to(clone):
             return f"hidden_tests.repo must be outside the repository and the run worktree ({place})"
+    # The hidden objects must live only inside the clone, which roles cannot read: a worktree of
+    # the candidate repository, a clone that borrows objects (alternates) or a Git folder kept
+    # elsewhere would let a maker read the hidden tests with `git show`.
+    clone_git = run(["git", "-C", str(clone), "rev-parse", "--path-format=absolute", "--absolute-git-dir",
+                     "--git-common-dir"], repo).stdout.split("\n")
+    candidate_common = resolved_git_path(repo, "--git-common-dir")
+    clone_dirs = [Path(line).resolve() for line in clone_git[:2] if line]
+    alternates = [clone_dirs[-1] / "objects/info/alternates"] if clone_dirs else []
+    borrowed = any(path.is_file() and path.read_text(encoding="utf-8", errors="replace").strip() for path in alternates)
+    lent = candidate_common / "objects/info/alternates"
+    lends = lent.is_file() and any(Path(line.strip()).resolve().is_relative_to(clone)
+                                   for line in lent.read_text(encoding="utf-8", errors="replace").splitlines()
+                                   if line.strip())
+    if (len(clone_dirs) != 2 or not all(path.is_relative_to(clone) for path in clone_dirs)
+            or candidate_common in clone_dirs or borrowed or lends):
+        return ("hidden_tests.repo must be a standalone repository: its Git folder inside it, not a worktree "
+                "of this repository, and no objects borrowed from or lent to another repository")
     commit = str(hidden["commit"])
     if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit) or run(
             ["git", "-C", str(clone), "cat-file", "-t", commit], repo).stdout.strip() != "commit":

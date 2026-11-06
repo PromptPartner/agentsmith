@@ -210,6 +210,41 @@ class HiddenTestsTests(Fixture):
         self.assertEqual(codex["filesystem"][str(hidden)], "none")
 
 
+class HiddenCloneTests(Fixture):
+    """The hidden clone must be a standalone repository: nothing a role can read may hold its objects."""
+
+    def commit_hidden(self, repo: Path) -> str:
+        (repo / "check.sh").write_text(f"# {SECRET}\nexit 1\n", encoding="utf-8")
+        self.git(repo, "add", "check.sh")
+        self.git(repo, "-c", "user.name=Hidden", "-c", "user.email=user@example.com", "commit", "-qm", "hidden")
+        return self.git(repo, "rev-parse", "HEAD")
+
+    def problem(self, clone: Path, commit: str) -> str | None:
+        hidden = {"repo": str(clone), "commit": commit, "command": ["sh", "{hidden}/check.sh", "{token}"],
+                  "tiers": ["C"]}
+        return CONTROLLER.hidden_tests_problem(self.manifest("x", hidden_tests=hidden), self.repo)
+
+    def test_a_worktree_of_the_candidate_repository_is_refused(self) -> None:
+        clone = self.root / "external-hidden-worktree"
+        self.git(self.repo, "worktree", "add", "-q", "-b", "hidden-suite", str(clone))
+        commit = self.commit_hidden(clone)
+        self.assertEqual(self.git(self.repo, "show", f"{commit}:check.sh").splitlines()[0], f"# {SECRET}",
+                         "the candidate repository can read this commit")
+        self.assertIn("standalone", self.problem(clone, commit) or "")
+
+    def test_a_clone_that_borrows_objects_or_keeps_its_git_folder_elsewhere_is_refused(self) -> None:
+        borrowing = self.root / "borrowing"
+        subprocess.run(["git", "clone", "-q", "--shared", str(self.repo), str(borrowing)], env=self.env, check=True)
+        self.assertIn("standalone", self.problem(borrowing, self.commit_hidden(borrowing)) or "")
+        separate = self.root / "separate"
+        subprocess.run(["git", "init", "-q", "--separate-git-dir", str(self.root / "elsewhere.git"), str(separate)],
+                       env=self.env, check=True)
+        self.assertIn("standalone", self.problem(separate, self.commit_hidden(separate)) or "")
+        standalone = self.root / "standalone"
+        subprocess.run(["git", "init", "-q", str(standalone)], env=self.env, check=True)
+        self.assertIsNone(self.problem(standalone, self.commit_hidden(standalone)))
+
+
 class ReworkNoteTests(Fixture):
     NOTE = "Keep the fixed value, but also handle an empty file: the operator saw it fail in review."
 
