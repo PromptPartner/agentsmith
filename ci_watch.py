@@ -45,18 +45,29 @@ class GhError(RuntimeError):
     """gh is missing, not logged in, or a read failed."""
 
 
+class GhTimeout(GhError):
+    """A gh read did not finish within the time it was given."""
+
+
+class _Deadline(Exception):
+    """The watch's wall-clock cap has passed."""
+
+
 class Gh:
     """Thin read-only adapter over the gh CLI. `runner` and `which` are injectable for tests."""
 
     def __init__(self, runner: Callable[..., Any] = subprocess.run,
                  which: Callable[[str], str | None] = shutil.which) -> None:
         self.runner, self.which = runner, which
+        self.timeout = 120.0  # the watch lowers it to the time left before its cap
 
     def _run(self, *args: str) -> subprocess.CompletedProcess[str]:
         try:
             return self.runner(["gh", *args], capture_output=True, text=True, encoding="utf-8",
-                               errors="replace", timeout=120)
-        except (OSError, subprocess.TimeoutExpired) as exc:
+                               errors="replace", timeout=self.timeout)
+        except subprocess.TimeoutExpired:
+            raise GhTimeout(f"gh {' '.join(args[:2])} did not answer within {self.timeout:.0f} s") from None
+        except OSError as exc:
             raise GhError(f"gh {' '.join(args[:2])} failed: {exc}") from None
 
     def _json(self, *args: str) -> Any:
@@ -150,13 +161,27 @@ def watch(gh: Gh, repo: str | None, *, pr: int | None = None, sha: str | None = 
     """Watch until one end state. Exactly one of `pr` and `sha` is given."""
     if (pr is None) == (sha is None):
         raise ValueError("watch needs exactly one of pr and sha")
-    gh.check()
-    repo = repo or gh.repo()
     started = now()
+    deadline = started + cap_seconds
     runs_report: list[dict[str, Any]] = []
+    seen_runs = listed = False
+
+    def read(method: Callable[..., Any], *args: Any) -> Any:
+        """Every gh read runs inside the cap: with a timeout of the time left, then a deadline check."""
+        remaining = deadline - now()
+        if remaining <= 0:
+            raise _Deadline
+        gh.timeout = max(1.0, min(120.0, remaining))
+        try:
+            value = method(*args)
+        except GhTimeout:
+            raise _Deadline from None
+        if now() >= deadline:
+            raise _Deadline
+        return value
 
     def finish(state: str, job: str = "", run: Any = "", minutes: float = 0, new: str = "") -> dict[str, Any]:
-        if pr is not None and state not in ("conflict", "head-moved"):
+        if pr is not None and state not in ("conflict", "head-moved", "cap-reached", "no-run-registered"):
             # A push during the watch makes every result about the old head stale: read the head
             # once more before reporting anything about it.
             moved = moved_head()
@@ -170,53 +195,55 @@ def watch(gh: Gh, repo: str | None, *, pr: int | None = None, sha: str | None = 
                 "elapsed_seconds": int(now() - started), "runs": runs_report}
 
     def moved_head() -> str | None:
-        head = gh.pr(repo, pr).get("headRefOid")
+        head = read(gh.pr, repo, pr).get("headRefOid")
         return head if head != sha else None
 
-    if pr is not None:
-        while True:
-            info = gh.pr(repo, pr)
-            base = base or info.get("baseRefName")
-            sha = info.get("headRefOid")
-            if info.get("mergeable") == "CONFLICTING" or info.get("mergeStateStatus") == "DIRTY":
-                return finish("conflict")
-            if info.get("mergeable") != "UNKNOWN":
-                break
-            # GitHub computes mergeability after a push; wait for it rather than guess.
-            if now() - started >= cap_seconds:
-                return finish("cap-reached", minutes=cap_seconds / 60)
-            sleep(poll_seconds)
-    base = base or gh.default_branch(repo)
-    while True:
+    try:
+        read(gh.check)
+        repo = repo or read(gh.repo)
         if pr is not None:
-            moved = moved_head()
-            if moved:
-                return finish("head-moved", new=moved)
-        moment = now()
-        runs = sorted((run for run in gh.runs(repo, sha) if run.get("headSha") == sha),
-                      key=lambda run: run["databaseId"])
-        views = {run["databaseId"]: gh.run(repo, run["databaseId"]) for run in runs}
-        runs_report[:] = [{"id": run_id, "workflow": view.get("workflowName"), "event": view.get("event"),
-                           "attempt": view.get("attempt"), "status": view.get("status"),
-                           "conclusion": view.get("conclusion") or "", "failing_jobs": []}
-                          for run_id, view in views.items()]
-        elapsed = moment - started
-        if not runs:
-            if elapsed >= min(REGISTRATION_SECONDS, cap_seconds):
-                return finish("no-run-registered")
-        elif all(view.get("status") == "completed" for view in views.values()):
-            return _completed(gh, repo, views, runs_report, base, finish)
-        else:
-            for run_id, view in views.items():
-                if view.get("status") != "completed" and moment - last_progress(view) > stall_seconds:
-                    return finish("runner-stalled", run=run_id, minutes=(moment - last_progress(view)) / 60)
-        if elapsed >= cap_seconds:
-            return finish("cap-reached", minutes=cap_seconds / 60)
-        sleep(poll_seconds)
+            while True:
+                info = read(gh.pr, repo, pr)
+                base = base or info.get("baseRefName")
+                sha = info.get("headRefOid")
+                if info.get("mergeable") == "CONFLICTING" or info.get("mergeStateStatus") == "DIRTY":
+                    return finish("conflict")
+                if info.get("mergeable") != "UNKNOWN":
+                    break
+                # GitHub computes mergeability after a push; wait for it rather than guess.
+                sleep(min(poll_seconds, max(0.0, deadline - now())))
+        base = base or read(gh.default_branch, repo)
+        while True:
+            if pr is not None:
+                moved = moved_head()
+                if moved:
+                    return finish("head-moved", new=moved)
+            moment = now()
+            runs = sorted((run for run in read(gh.runs, repo, sha) if run.get("headSha") == sha),
+                          key=lambda run: run["databaseId"])
+            views = {run["databaseId"]: read(gh.run, repo, run["databaseId"]) for run in runs}
+            listed, seen_runs = True, seen_runs or bool(runs)
+            runs_report[:] = [{"id": run_id, "workflow": view.get("workflowName"), "event": view.get("event"),
+                               "attempt": view.get("attempt"), "status": view.get("status"),
+                               "conclusion": view.get("conclusion") or "", "failing_jobs": []}
+                              for run_id, view in views.items()]
+            if not runs:
+                if moment - started >= min(REGISTRATION_SECONDS, cap_seconds):
+                    return finish("no-run-registered")
+            elif all(view.get("status") == "completed" for view in views.values()):
+                return _completed(read, gh, repo, views, runs_report, base, finish)
+            else:
+                for run_id, view in views.items():
+                    if view.get("status") != "completed" and moment - last_progress(view) > stall_seconds:
+                        return finish("runner-stalled", run=run_id, minutes=(moment - last_progress(view)) / 60)
+            sleep(min(poll_seconds, max(0.0, deadline - now())))
+    except _Deadline:
+        # No run registered is a finding only when the run list was read and stayed empty.
+        return finish("no-run-registered" if listed and not seen_runs else "cap-reached", minutes=cap_seconds / 60)
 
 
-def _completed(gh: Gh, repo: str, views: dict[int, dict[str, Any]], runs_report: list[dict[str, Any]],
-               base: str, finish: Callable[..., dict[str, Any]]) -> dict[str, Any]:
+def _completed(read: Callable[..., Any], gh: Gh, repo: str, views: dict[int, dict[str, Any]],
+               runs_report: list[dict[str, Any]], base: str, finish: Callable[..., dict[str, Any]]) -> dict[str, Any]:
     base_runs: dict[Any, dict[str, Any] | None] = {}
     found: list[tuple[str, str, int]] = []
     for row, (run_id, view) in zip(runs_report, views.items()):
@@ -226,9 +253,9 @@ def _completed(gh: Gh, repo: str, views: dict[int, dict[str, Any]], runs_report:
             continue
         workflow = view.get("workflowDatabaseId")
         if workflow not in base_runs:
-            base_runs[workflow] = gh.base_run(repo, base, workflow)
+            base_runs[workflow] = read(gh.base_run, repo, base, workflow)
         others = [job for attempt in range(1, int(view.get("attempt") or 1))
-                  for job in gh.attempt_jobs(repo, run_id, attempt)]
+                  for job in read(gh.attempt_jobs, repo, run_id, attempt)]
         others += [job for other_id, other in views.items() if other_id != run_id
                    and other.get("workflowDatabaseId") == workflow and other.get("event") == view.get("event")
                    for job in other.get("jobs") or []]

@@ -134,6 +134,40 @@ class StateTests(unittest.TestCase):
                                 cap_seconds=120, stall_seconds=1800, poll_seconds=30, now=clock.now, sleep=clock.sleep)
         self.assertEqual(report["state"], "no-run-registered")
 
+    def test_cap_holds_across_slow_reads(self) -> None:
+        # Each gh call takes 40 s here; the watch must stop at the 60 s cap, not after the reads.
+        fixture = json.loads((FIXTURES / "green.json").read_text(encoding="utf-8"))
+        clock = Clock(fixture["start"])
+        started = clock.now()
+        timeouts = []
+
+        class SlowGh(FakeGh):
+            def __call__(self, argv, **kwargs):
+                timeouts.append((kwargs.get("timeout"), 60 - (clock.now() - started)))
+                clock.sleep(40)
+                return super().__call__(argv, **kwargs)
+        report = ci_watch.watch(ci_watch.Gh(runner=SlowGh(fixture), which=lambda _: "gh"), fixture["repo"], pr=67,
+                                cap_seconds=60, stall_seconds=1800, poll_seconds=30, now=clock.now, sleep=clock.sleep)
+        self.assertEqual(report["state"], "cap-reached", report)
+        self.assertLessEqual(report["elapsed_seconds"], 60 + 40)
+        for timeout, remaining in timeouts:
+            self.assertLessEqual(timeout, max(1, remaining) + 1e-6)
+
+    def test_a_read_that_outlasts_the_cap_ends_as_cap_reached(self) -> None:
+        fixture = json.loads((FIXTURES / "green.json").read_text(encoding="utf-8"))
+        clock = Clock(fixture["start"])
+
+        class HangingGh(FakeGh):
+            def __call__(self, argv, **kwargs):
+                if "--commit" in argv or (argv[1] == "api" and "head_sha" in argv[-1]):
+                    clock.sleep(kwargs["timeout"])
+                    raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+                return super().__call__(argv, **kwargs)
+        report = ci_watch.watch(ci_watch.Gh(runner=HangingGh(fixture), which=lambda _: "gh"), fixture["repo"], pr=67,
+                                cap_seconds=60, stall_seconds=1800, poll_seconds=30, now=clock.now, sleep=clock.sleep)
+        self.assertEqual(report["state"], "cap-reached", report)
+        self.assertLessEqual(report["elapsed_seconds"], 61)
+
     def test_exit_codes_are_distinct_and_documented(self) -> None:
         codes = [ci_watch.STATES[state][0] for state in ci_watch.STATES]
         self.assertEqual(len(codes), len(set(codes)))

@@ -24,7 +24,8 @@ branch is the repository's default branch unless `--base` names another one.
    view: right after a push, that view can still show the previous commit's green checks before
    the new run exists.
 3. **One wall-clock cap.** Polls are 30 seconds apart. The cap (`--cap-minutes`, default 60)
-   bounds the whole watch.
+   bounds the whole watch, including the time GitHub takes to answer: every `gh` read gets a
+   timeout of the time left, and the deadline is checked after each read.
 4. **One end state.** When every run is complete, or something decides the outcome earlier,
    the watch stops and prints the state and its next step. With `--pr`, the head is read again on every poll and once
    more before any end state is reported, so a push during the watch ends it as `head-moved`.
