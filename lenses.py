@@ -258,18 +258,51 @@ def _manifest(repo: Path) -> Path:
     return Path(common) / "agentsmith-lenses" / "manifest.jsonl"
 
 
-def read_rows(repo: Path) -> list[dict[str, Any]]:
+def row_problem(row: Any) -> str | None:
+    """Why a manifest row is not a valid triage row, or None."""
+    if not isinstance(row, dict):
+        return "not an object"
+    if row.get("schema_version") != SCHEMA_VERSION or type(row.get("schema_version")) is not int:
+        return f"schema_version is not {SCHEMA_VERSION}"
+    if not isinstance(row.get("candidate"), str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", row["candidate"]):
+        return "candidate is not a commit id"
+    if not isinstance(row.get("source"), str) or not SOURCE.fullmatch(row["source"]):
+        return "source is not lens:<id>, checker, human or bot:<name>"
+    for key in ("location", "evidence", "rationale"):
+        if not isinstance(row.get(key), str) or not row[key].strip():
+            return f"{key} is missing"
+    if row.get("decision") not in DECISIONS:
+        return "decision is not act, skip or skip-silently"
+    expected = ("found", "missed") if row["source"].startswith("lens:") else (None,)
+    if row.get("checker") not in expected:
+        return "checker does not fit the source"
+    for key in ("fix", "reproduction"):
+        if row.get(key) is not None and not isinstance(row[key], str):
+            return f"{key} is not text"
+    return None
+
+
+def read_rows(repo: Path) -> tuple[list[dict[str, Any]], list[str]]:
+    """(valid rows, warnings). A line that is not a valid triage row is skipped and named, so one
+    bad line neither stops the record nor counts as a finding."""
     path = _manifest(Path(repo))
     if not path.is_file():
-        return []
-    rows = []
-    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-        if line.strip():
-            try:
-                rows.append(json.loads(line))
-            except json.JSONDecodeError:
-                raise LensError(f"{path} line {number} is not JSON; fix or remove that line") from None
-    return rows
+        return [], []
+    rows, warnings = [], []
+    for number, raw in enumerate(path.read_bytes().split(b"\n"), start=1):
+        if not raw.strip():
+            continue
+        try:
+            row = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            warnings.append(f"manifest line {number} skipped: not JSON text")
+            continue
+        problem = row_problem(row)
+        if problem:
+            warnings.append(f"manifest line {number} skipped: {problem}")
+        else:
+            rows.append(row)
+    return rows, warnings
 
 
 def record(repo: Path, base: str, head: str, *, source: str, evidence: str, decision: str, rationale: str,
@@ -294,7 +327,7 @@ def record(repo: Path, base: str, head: str, *, source: str, evidence: str, deci
            "location": location, "evidence": evidence, "decision": decision, "rationale": rationale.strip(),
            "checker": checker, "fix": fix, "reproduction": reproduction,
            "recorded_at": dt.datetime.fromtimestamp(moment, dt.timezone.utc).isoformat(timespec="seconds")}
-    existing = read_rows(repo)
+    existing, _ = read_rows(repo)
     row["confidence"] = confidence(row, existing + [row])
     path = _manifest(repo)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -321,8 +354,9 @@ def confidence(row: dict[str, Any], rows: list[dict[str, Any]]) -> str:
     return LEVELS[min(2, level + 1) if agrees else level]
 
 
-def report(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Noise rate and missed-by-checker from the manifest rows, with confidence recomputed."""
+def report(rows: list[dict[str, Any]], warnings: list[str] | tuple[str, ...] = ()) -> dict[str, Any]:
+    """Noise rate and missed-by-checker from valid manifest rows (see read_rows), with confidence
+    recomputed. `warnings` are the lines read_rows skipped; they are counted, not used."""
     lens_rows = [row for row in rows if str(row.get("source", "")).startswith("lens:")]
     acted = [row for row in lens_rows if row.get("decision") == "act"]
     candidates = len({row.get("candidate") for row in rows})
@@ -338,7 +372,8 @@ def report(rows: list[dict[str, Any]]) -> dict[str, Any]:
            and missed >= 1)
     return {"schema_version": SCHEMA_VERSION, "candidates": candidates, "findings": len(rows),
             "lens_findings": len(lens_rows), "acted": len(acted), "noise_rate": noise, "missed_by_checker": missed,
-            "by_lens": by_lens, "trial": {**TRIAL, "met": met},
+            "by_lens": by_lens, "trial": {**TRIAL, "met": met}, "invalid_rows": len(warnings),
+            "warnings": list(warnings),
             "rows": [{**row, "confidence": confidence(row, rows)} for row in rows]}
 
 
@@ -362,4 +397,5 @@ def render_report(value: dict[str, Any]) -> str:
     return (f"candidates: {value['candidates']}  findings: {value['findings']}  lens findings: {value['lens_findings']}"
             f"  acted: {value['acted']}\nnoise: {noise}  missed by the single checker: {value['missed_by_checker']}\n"
             f"trial ({trial['candidates_needed']} candidates, noise under {trial['noise_limit']:.0%}, at least one "
-            f"missed defect): {'met' if trial['met'] else 'not met'}\n")
+            f"missed defect): {'met' if trial['met'] else 'not met'}\n"
+            + "".join(f"warning: {warning}\n" for warning in value.get("warnings", [])))

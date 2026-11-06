@@ -9137,7 +9137,7 @@ def cmd_lens(args: argparse.Namespace) -> int:
             text = lenses.to_json(row) if args.json else (
                 f"recorded {row['source']} at {row['location']} ({row['decision']}, confidence {row['confidence']})\n")
         else:
-            report = lenses.report(lenses.read_rows(target))
+            report = lenses.report(*lenses.read_rows(target))
             text = lenses.to_json(report) if args.json else lenses.render_report(report)
     except (lenses.LensError, risk_map.PolicyError, risk_map.RiskError) as exc:
         print(f"[error] lens {args.lens_command}: {exc}", file=sys.stderr)

@@ -238,6 +238,20 @@ class RecordTests(LensCase):
                     self.record(evidence=evidence)
         self.assertFalse((self.repo.common / "agentsmith-lenses" / "manifest.jsonl").exists())
 
+    def test_invalid_manifest_lines_are_skipped_counted_and_reported(self) -> None:
+        self.record()
+        manifest = self.repo.common / "agentsmith-lenses" / "manifest.jsonl"
+        with open(manifest, "ab") as handle:
+            handle.write(b"null\n\xff\xfe not text\n{\"source\": \"lens:security\"}\n[1, 2]\n{broken\n")
+        rows, warnings = lenses.read_rows(self.repo.root)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(warnings), 5, warnings)
+        self.assertTrue(all(warning.startswith("manifest line ") for warning in warnings))
+        # Recording still works and a report counts only valid rows, saying how many it skipped.
+        self.record(source="human", checker=None, rationale="seen by a person")
+        report = lenses.report(*lenses.read_rows(self.repo.root))
+        self.assertEqual((report["findings"], report["invalid_rows"]), (2, 5))
+
     def test_rows_need_a_one_line_rationale_and_lens_rows_say_what_the_checker_did(self) -> None:
         for fields in ({"rationale": ""}, {"rationale": "two\nlines"}, {"decision": "maybe"},
                        {"checker": None}, {"source": "someone"}):

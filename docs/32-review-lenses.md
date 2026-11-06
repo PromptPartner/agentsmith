@@ -90,7 +90,9 @@ common directory, outside the tracked tree. Write the rows before fixing anythin
 
 Disagreement between sources is allowed; an unexplained omission is not.
 
-`lens report` recomputes confidence over all rows and counts, for lens findings only:
+`lens report` reads only valid rows: a line that is not JSON text or lacks a field a row needs is
+skipped, counted as `invalid_rows` and named in a warning, never counted as a finding. It
+recomputes confidence over the valid rows and counts, for lens findings only:
 
 - **noise rate**: lens findings not acted on (`skip` or `skip-silently`), divided by all lens
   findings;
