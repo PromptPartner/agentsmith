@@ -3,6 +3,18 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [x] 2026-11-06 — macOS push run `42276115183` (`feat/sf03-deliver`, `c2f615b`) failed
+  `test_global_handler_defers_to_project_choice_and_uninstall` in `test-memory-lifecycle.py` with
+  `'handoff.md' not found in ''`; it was the first sighting in 80 runs, and the same code passed
+  elsewhere. Cause: the startup recall read the current branch with `git symbolic-ref` under a
+  0.25-second limit. On a cold or loaded runner, starting git can take longer (on macOS
+  `/usr/bin/git` is an xcrun shim); the branch was then unknown, no handoff matched, and the hook
+  printed nothing, which reads as "nothing to recall". The limit is now 0.8 seconds per Git call,
+  inside the hook's unchanged 2-second watchdog, and a Git timeout produces an explicit "did not
+  answer in time" note instead of an empty result. `test_a_slow_git_still_finds_the_handoff` (a git
+  that takes 0.5 s to start) failed with the exact CI assertion before and passes after;
+  `test_a_git_timeout_is_reported_not_silent` covers the note.
+
 - [ ] 2026-10-20 — Native Windows `test_deleted_git_lock_does_not_fail_acl_cleanup` failed once
   with `verifier did not start` in verify run `39429936983`, attempt 1, job
   `compatibility (windows-latest)`, on master `d56a0d5`. Attempt 2 on the same commit passed, and

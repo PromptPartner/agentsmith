@@ -9093,15 +9093,27 @@ def cmd_audit_config(args: argparse.Namespace) -> int:
     return config_audit.exit_code(report, args.fail_on)
 
 
-def memory_git_identity(target: Path) -> tuple[str | None, str | None]:
-    values = []
+# Starting git can take hundreds of milliseconds on a cold or loaded host (on macOS /usr/bin/git
+# is an xcrun shim). The startup hook's own 2 s watchdog still bounds the whole recall.
+MEMORY_GIT_TIMEOUT_SECONDS = 0.8
+
+
+def memory_git_identity(target: Path) -> tuple[str | None, str | None, bool]:
+    """(branch, commit, timed_out). A branch that could not be read in time is reported, not
+    mistaken for a detached HEAD, because without it no handoff matches."""
+    values: list[str | None] = []
+    timed_out = False
     for arguments in (("symbolic-ref", "--short", "HEAD"), ("rev-parse", "--verify", "HEAD")):
         try:
-            result = subprocess.run(["git", "-C", str(target), *arguments], text=True, capture_output=True, timeout=0.25)
+            result = subprocess.run(["git", "-C", str(target), *arguments], text=True, capture_output=True,
+                                    timeout=MEMORY_GIT_TIMEOUT_SECONDS)
             values.append(result.stdout.strip() if result.returncode == 0 else None)
-        except (OSError, subprocess.TimeoutExpired):
+        except subprocess.TimeoutExpired:
             values.append(None)
-    return values[0], values[1]
+            timed_out = True
+        except OSError:
+            values.append(None)
+    return values[0], values[1], timed_out
 
 
 def cmd_memory(args: argparse.Namespace) -> int:
@@ -9117,8 +9129,12 @@ def cmd_memory(args: argparse.Namespace) -> int:
             if args.selected_only and not memory_startup_selected(target, args.selection_scope):
                 print(json.dumps({"schema_version": 1, "complete": True, "output": "", "references": [], "diagnostics": []}))
                 return 0
-            branch, commit = memory_git_identity(target)
+            branch, commit, timed_out = memory_git_identity(target)
             report = project_memory.startup(target, branch, commit)
+            if timed_out and not report.get("output"):
+                # Silence would read as "nothing to recall"; say why recall is empty instead.
+                report.update(complete=False, output="Local memory: Git did not answer in time, so the branch's "
+                              "handoff could not be matched; use manual recall (agentsmith memory search).")
         print(json.dumps(report, indent=2, ensure_ascii=False) if args.json else (
             report["output"] if args.memory_command == "startup" else project_memory.format_report(report)))
         return 0 if report["complete"] else 2
