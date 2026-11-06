@@ -159,6 +159,15 @@ class FactoryTests(unittest.TestCase):
         spend = self.number(factory.numbers(self.repo, now=NOW, ci_runs=[]), "spend per landed change")
         self.assertEqual((spend["n"], spend["value"]), (5, {"claude_usd": 2.0, "codex_tokens": 100}))
 
+    def test_red_time_starts_from_the_state_before_the_window(self) -> None:
+        # Workflow 1 was already failing when the window opened, and only went green 20 h ago.
+        seeds = [ci_run(1, "failure", 50)]
+        runs = [ci_run(2, "success", 20)] + [ci_run(10 + n, "success", 10, workflow=2 + n) for n in range(4)]
+        report = factory.numbers(self.repo, since="2026-11-05", now=NOW, ci_runs=runs, ci_seeds=seeds)
+        red = self.number(report, "time the default branch spends red")
+        self.assertEqual(red["value"]["hours"], 16.0)  # from the window start, 36 h ago, to 20 h ago
+        self.assertIn("upper bound", red["detail"])
+
     def test_too_few_cases_say_insufficient_data(self) -> None:
         for index in range(3):
             self.add_run(f"few-{index}", "accepted")
@@ -388,8 +397,10 @@ if args[:2] == ["repo", "view"] and "nameWithOwner" in args:
     print(json.dumps({{"nameWithOwner": "someone/the-current-folder"}}))
 elif args[:2] == ["repo", "view"]:
     print(json.dumps({{"defaultBranchRef": {{"name": "main"}}}}))
-else:
+elif "--slurp" in args:
     print(json.dumps([{{"total_count": 0, "workflow_runs": []}}]))
+else:
+    print(json.dumps({{"total_count": 0, "workflow_runs": []}}))
 """, encoding="utf-8")
         (bin_dir / "gh").chmod(0o755)
         env = {**CLEAN_ENV, "PATH": str(bin_dir) + os.pathsep + CLEAN_ENV.get("PATH", "")}

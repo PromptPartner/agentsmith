@@ -9150,14 +9150,16 @@ def cmd_factory(args: argparse.Namespace) -> int:
             gh, gh_error = None, str(exc)
         if args.factory_command == "numbers":
             start, _ = factory.window(args.since, factory.datetime.now(factory.timezone.utc))
-            runs = None
+            runs, seeds = None, []
             if gh is not None:
                 try:
                     base = args.base or gh.default_branch(slug)
                     runs = factory.ci_runs(gh, slug, base, start)
-                except ci_watch.GhError as exc:
-                    gh_error = str(exc)
-            report = factory.numbers(repo, since=args.since, ci_runs=runs, ci_error=gh_error)
+                    seeds = factory.ci_seed_runs(gh, slug, base, start)
+                except (ci_watch.GhError, factory.FactoryError) as exc:
+                    gh_error, runs = str(exc), None
+            report = factory.numbers(repo, since=args.since, ci_runs=runs, ci_error=gh_error,
+                                     ci_seeds=seeds if runs is not None else [])
         else:
             manifest = None
             if args.manifest:

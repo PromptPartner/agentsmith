@@ -135,11 +135,16 @@ def touches(run: dict[str, Any]) -> int:
     return sum(1 for item in run["events"] if item.get("event") in TOUCH_EVENTS)
 
 
-def red_time(ci_runs: list[dict[str, Any]], start: datetime, end: datetime) -> float:
-    """Seconds in [start, end] during which the latest completed run of any workflow was failing."""
+def red_time(ci_runs: list[dict[str, Any]], start: datetime, end: datetime,
+             seeds: list[dict[str, Any]] = ()) -> float:
+    """Seconds in [start, end] during which the latest completed run of any workflow was failing.
+    `seeds` are the last runs before the window, so a workflow already red at its start counts."""
     ordered = sorted((run for run in ci_runs if parse_time(run.get("updated_at"))),
                      key=lambda run: parse_time(run["updated_at"]))
     failing: dict[Any, bool] = {}
+    for run in sorted((run for run in seeds if parse_time(run.get("updated_at"))),
+                      key=lambda run: parse_time(run["updated_at"])):
+        failing[run.get("workflow_id") or run.get("name")] = run.get("conclusion") not in PASSING
     red, since = 0.0, start
     for run in ordered:
         moment = min(max(parse_time(run["updated_at"]), start), end)
@@ -153,7 +158,8 @@ def red_time(ci_runs: list[dict[str, Any]], start: datetime, end: datetime) -> f
 
 
 def numbers(repo: Path, *, since: str | None = None, now: datetime | None = None,
-            ci_runs: list[dict[str, Any]] | None = None, ci_error: str | None = None) -> dict[str, Any]:
+            ci_runs: list[dict[str, Any]] | None = None, ci_error: str | None = None,
+            ci_seeds: list[dict[str, Any]] = ()) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
     start, end = window(since, now)
     runs, unreadable = load_runs(repo)
@@ -197,11 +203,13 @@ def numbers(repo: Path, *, since: str | None = None, now: datetime | None = None
                      "status": "unavailable", "detail": f"cannot read CI: {ci_error or 'no CI data'}"})
     else:
         completed = [run for run in ci_runs if run.get("status") == "completed"]
-        red = red_time(completed, start, end)
+        red = red_time(completed, start, end, list(ci_seeds))
         rows.append(number("time the default branch spends red", len(completed),
                            {"hours": round(red / 3600, 2), "share": round(red / max(1.0, (end - start).total_seconds()), 3)},
                            "hours and share of the window", start, end,
-                           f"from {len(completed)} completed push run(s) on the default branch"))
+                           f"from {len(completed)} completed push run(s) on the default branch and the last run of "
+                           "each workflow before the window; an upper bound, because a failing workflow counts as "
+                           "red until its next run, however long pushes pause"))
     def spend_known(run: dict[str, Any]) -> bool:
         state = run["state"]
         return (not state.get("usage_accounting_incomplete")
@@ -231,6 +239,20 @@ def ci_runs(gh: Any, repo_slug: str, branch: str, since: datetime) -> list[dict[
     """Completed push runs on the default branch since a date, every page, read-only."""
     return gh._pages(f"repos/{repo_slug}/actions/runs?branch={branch}&event=push&status=completed"
                      f"&created=%3E%3D{since.date().isoformat()}&per_page=100", "workflow_runs")
+
+
+def ci_seed_runs(gh: Any, repo_slug: str, branch: str, since: datetime) -> list[dict[str, Any]]:
+    """The latest completed push run of each workflow before the window: the state it opens with."""
+    page = gh._json("api", f"repos/{repo_slug}/actions/runs?branch={branch}&event=push&status=completed"
+                           f"&created=%3C{since.date().isoformat()}&per_page=100")
+    if not isinstance(page, dict):
+        raise FactoryError("gh api returned an unexpected shape for the runs before the window")
+    latest: dict[Any, dict[str, Any]] = {}
+    for run in page.get("workflow_runs") or []:
+        key = run.get("workflow_id")
+        if key not in latest or (run.get("updated_at") or "") > (latest[key].get("updated_at") or ""):
+            latest[key] = run
+    return list(latest.values())
 
 
 def job_os(name: str) -> str | None:
