@@ -352,7 +352,9 @@ start` and `graph resume`. The refusal names the file. A run that is already liv
 use `stop <id>` to end it. Delete the file to allow new work again. The name matches ignoring
 case (`autonomy_paused` also pauses) on every filesystem, so the rule does not depend on the disk. Each
 refusal is recorded as an `autonomy_pause_refused` event in `agentsmith-factory/events.jsonl` in
-the Git folder, which `agentsmith factory readiness` reads as evidence that the switch works. Leave it untracked: graph
+the Git folder, which `agentsmith factory readiness` reads as evidence that the switch works. Roles
+cannot write that folder, and the Git checks around each role allow only appends to its known
+logs there: a new file, a link, or a rewritten log refuses the run. Leave it untracked: graph
 validation ignores exactly this path, so `graph status` still works while autonomy is paused.
 
 `status <id>` reads controller state from the repository's git-common directory. `start` and

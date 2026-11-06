@@ -101,6 +101,11 @@ make_fake() {
     '  if [ "$mode" = commit-then-wait ]; then sleep 20; fi' \
     '  if [ "$mode" = late-commit ]; then python3 "$fake_root/late-commit.py" "$PWD"; fi' \
     '  if [ "$mode" = extra-ref ]; then git branch escaped-ref; fi' \
+    '  factory_dir="$(git rev-parse --git-common-dir)/agentsmith-factory"' \
+    '  if [ "$mode" = factory-write ]; then printf x > "$factory_dir/hidden-payload"; fi' \
+    '  if [ "$mode" = factory-symlink ]; then ln -s ../config "$factory_dir/minutes.jsonl"; fi' \
+    '  if [ "$mode" = factory-rewrite ]; then printf "%s\n" "{\"event\":\"forged\"}" > "$factory_dir/events.jsonl"; fi' \
+    '  if [ "$mode" = factory-rename ]; then mv "$(git rev-parse --git-common-dir)/description" "$factory_dir/description"; fi' \
     '  if [ "$mode" = config-mutation ]; then git config --local agentsmith.escape true; fi' \
     '  if [ "$mode" = hook-mutation ]; then mkdir -p "$(git rev-parse --git-common-dir)/hooks"; printf bad > "$(git rev-parse --git-common-dir)/hooks/escaped"; fi' \
     '  if [ "$mode" = object-mutation ]; then object="$(git rev-parse HEAD^)"; object_path="$(git rev-parse --git-common-dir)/objects/${object:0:2}/${object:2}"; chmod u+w "$object_path"; printf bad > "$object_path"; fi' \
@@ -1255,6 +1260,20 @@ if (cd "$repo" && invoke "$repo" crash-unknown start .harness/runs/crash-unknown
 else ok 'an unknown client failure is an ordinary failure'; fi
 assert 'an unknown failure is not retried as infrastructure' test "$(cat "$repo/../fake/infra-count")" = 1
 assert 'an unknown failure records no infrastructure signature' bash -c "! grep -q infrastructure '$repo/.git/agentsmith-runs/crash-unknown/events.jsonl'"
+
+echo 'autonomous-run — no tamper can hide in the factory records folder'
+for mode in factory-write factory-symlink factory-rewrite factory-rename; do
+  repo="$(new_repo "$mode")"; make_fake "$repo/../fake"; manifest "$repo" "$mode"
+  # A real kill-switch drill leaves one record, so the folder holds an operator log before the run.
+  touch "$repo/.harness/AUTONOMY_PAUSED"
+  (cd "$repo" && python3 "$repo/../fake/controller.py" prepare --run-id drill --spec docs/specs/test.md --ticket IMP-9 \
+     --maker-model m --checker-model m --template "$repo/../fake/template.json" >/dev/null 2>&1)
+  rm "$repo/.harness/AUTONOMY_PAUSED"
+  if (cd "$repo" && invoke "$repo" "$mode" start ".harness/runs/$mode.json" >../out 2>../err); then
+    bad "$mode: a maker hid a change in the factory records folder and was accepted"
+  else ok "$mode: a maker cannot hide a change in the factory records folder"; fi
+  assert "$mode: the refusal names the protected metadata" grep -q 'protected Git metadata' "$repo/../err"
+done
 
 echo 'autonomous-run — budgets are explicit or the run does not start'
 repo="$(new_repo zero-budget)"; make_fake "$repo/../fake"; manifest "$repo" zero-budget
