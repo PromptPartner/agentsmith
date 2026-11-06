@@ -3,6 +3,11 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [ ] 2026-11-06 — Measured with `agentsmith factory readiness` on this repository: the latest
+  `compatibility (windows-latest)` job took 38 of its 45 timeout minutes (84%), over the 70%
+  headroom. A slower runner can time it out. Over 2026-10-01 to 2026-11-06 the default branch was
+  red about 205 hours (23% of the window) by the derived measure, which keeps a failing workflow
+  red until its next run, so sparse pushes inflate it. Both are inputs for the CI work, not fixed here.
 - [ ] 2026-11-06 — Measured: a small model does not follow the checker's receipt format. A real
   `autonomous-run calibrate` of Claude Code 2.1.319 with `haiku` at low effort failed both labelled
   candidates (three runs, about $0.04 in total): its receipts named `HEAD`, an empty value or free

@@ -110,6 +110,7 @@ RUNTIME_FILES = (
     ".agentsmith/config_audit.py",
     ".agentsmith/risk_map.py",
     ".agentsmith/ci_watch.py",
+    ".agentsmith/factory.py",
     ".agentsmith/agentsmith",
     ".agentsmith/agentsmith.cmd",
     ".agentsmith/config/agents.json",
@@ -2004,7 +2005,7 @@ def copy_runtime(target: Path, *, dry_run: bool) -> Path:
             contained_copy(source, config_destination / source.name)
         for helper_name in ("native_launcher.py", "evaluate.py", "work_graph.py",
                             "windows_verifier_sandbox.py", "project_memory.py", "config_audit.py",
-                            "risk_map.py", "ci_watch.py"):
+                            "risk_map.py", "ci_watch.py", "factory.py"):
             helper_source = ROOT / helper_name
             if helper_source.exists():
                 contained_copy(helper_source, destination.parent / helper_name)
@@ -9120,6 +9121,57 @@ def cmd_risk(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_factory(args: argparse.Namespace) -> int:
+    """Readiness and numbers derived from runs, events, operator logs and read-only CI reads."""
+    sys.dont_write_bytecode = True
+    import factory
+    import ci_watch
+    repo = Path(args.target or os.getcwd()).expanduser().resolve()
+    try:
+        if args.factory_command == "defect":
+            print(f"recorded in {factory.add_defect(repo, args.sha, args.tier, args.note or '')}")
+            return 0
+        if args.factory_command == "minutes":
+            print(f"recorded in {factory.add_minutes(repo, args.run_id, args.minutes)}")
+            return 0
+        if args.factory_command == "export":
+            print(f"exported to {factory.export(repo, Path(args.directory))}")
+            return 0
+        gh, gh_error = ci_watch.Gh(), None
+        try:
+            gh.check()
+        except ci_watch.GhError as exc:
+            gh, gh_error = None, str(exc)
+        if args.factory_command == "numbers":
+            start, _ = factory.window(args.since, factory.datetime.now(factory.timezone.utc))
+            runs = None
+            if gh is not None:
+                try:
+                    base = args.base or gh.default_branch(gh.repo())
+                    runs = factory.ci_runs(gh, gh.repo(), base, start)
+                except ci_watch.GhError as exc:
+                    gh_error = str(exc)
+            report = factory.numbers(repo, since=args.since, ci_runs=runs, ci_error=gh_error)
+        else:
+            manifest = None
+            if args.manifest:
+                manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
+            base = args.base
+            if base is None:
+                head = factory.git(repo, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD", check=False)
+                base = head or "HEAD"
+            report = factory.readiness(repo, controller=factory.load_controller(repo), gh=gh, manifest=manifest,
+                                       base=base, green_days=args.green_days, headroom=args.headroom,
+                                       gh_error=gh_error)
+    except (factory.FactoryError, OSError, ValueError) as exc:
+        print(f"[error] factory: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(report, indent=2, sort_keys=True) if args.json else factory.render(report), end="\n" if args.json else "")
+    if args.factory_command == "readiness":
+        return 0 if report["ready"] else 1
+    return 0
+
+
 def cmd_ci_watch(args: argparse.Namespace) -> int:
     sys.dont_write_bytecode = True
     import ci_watch
@@ -9425,7 +9477,7 @@ def parser() -> argparse.ArgumentParser:
     )
     root.add_argument("--version", action="version", version=f"agentsmith {VERSION}")
     # Internal commands (hook, secret-scan, graph, wizard, evaluate, compatibility, agents,
-    # validate-integration, audit-config, risk, ci) serve programs and CI: they keep working but stay out of
+    # validate-integration, audit-config, risk, ci, factory) serve programs and CI: they keep working but stay out of
     # the root help, so the public surface stays small. docs/12-whats-built-in.md lists them.
     sub = root.add_subparsers(dest="command", metavar="{" + ",".join(PUBLIC_COMMANDS) + "}")
     install = sub.add_parser("install", help="install or update managed rules and adapters")
@@ -9566,6 +9618,37 @@ def parser() -> argparse.ArgumentParser:
     classify.add_argument("--head", required=True, help="commit to classify")
     classify.add_argument("--target", help="Git repository (default: current directory)")
     classify.add_argument("--json", action="store_true", help="schema-versioned, byte-stable report")
+    factory_parser = sub.add_parser("factory", description="readiness and numbers for autonomous work, derived "
+                                                         "from runs, events and read-only CI reads; no stored board")
+    factory_sub = factory_parser.add_subparsers(dest="factory_command", required=True)
+    ready = factory_sub.add_parser("readiness", description="Check whether this repository is ready for wider "
+                                   "autonomy. Writes nothing and switches nothing on. Exit 0 ready, 1 not ready.")
+    ready.add_argument("--manifest", help="a run manifest naming the checker (client, model, effort)")
+    ready.add_argument("--base", help="the base branch or ref (default: origin/HEAD, else HEAD)")
+    ready.add_argument("--green-days", type=int, default=7, help="days the default branch must have been green")
+    ready.add_argument("--headroom", type=float, default=0.7, help="largest share of a job's timeout it may use")
+    numbers = factory_sub.add_parser("numbers", description="The six numbers, each with its window and sample size.")
+    numbers.add_argument("--since", help="start of the data window, such as 2026-10-01 (default: 28 days ago)")
+    numbers.add_argument("--base", help="the default branch for CI (default: the repository's)")
+    for item in (ready, numbers):
+        item.add_argument("--json", action="store_true")
+        item.add_argument("--target", help="Git repository (default: current directory)")
+    exporting = factory_sub.add_parser("export", description="Write every run's state, events and receipts as "
+                                       "JSON to a folder outside the Git folder.")
+    exporting.add_argument("directory")
+    defect = factory_sub.add_parser("defect", description="operator log of defects found after merge")
+    defect_sub = defect.add_subparsers(dest="defect_command", required=True)
+    defect_add = defect_sub.add_parser("add")
+    defect_add.add_argument("sha", help="full commit SHA of the merged change")
+    defect_add.add_argument("--tier", required=True, choices=["A", "B", "C", "human"])
+    defect_add.add_argument("--note")
+    minutes = factory_sub.add_parser("minutes", description="operator log of human minutes spent on a run")
+    minutes_sub = minutes.add_subparsers(dest="minutes_command", required=True)
+    minutes_add = minutes_sub.add_parser("add")
+    minutes_add.add_argument("run_id")
+    minutes_add.add_argument("minutes", type=float)
+    for item in (exporting, defect_add, minutes_add):
+        item.add_argument("--target", help="Git repository (default: current directory)")
     ci = sub.add_parser("ci", description="report-only continuous-integration tools (GitHub, through gh)")
     ci_sub = ci.add_subparsers(dest="ci_command", required=True)
     # Kept as text so building the parser imports nothing; scripts/test-ci-watch.py checks it
@@ -9625,7 +9708,7 @@ def parser() -> argparse.ArgumentParser:
 def normalize_legacy_argv(argv: list[str]) -> list[str]:
     if not argv:
         return ["install", "--wizard"]
-    commands = {"install", "update", "agents", "doctor", "status", "profiles", "wizard", "compatibility", "verify", "validate-integration", "graph", "demo", "resume", "handoff", "new-feedback", "new-research", "secret-scan", "hook", "memory", "audit-config", "risk", "ci", "evaluate"}
+    commands = {"install", "update", "agents", "doctor", "status", "profiles", "wizard", "compatibility", "verify", "validate-integration", "graph", "demo", "resume", "handoff", "new-feedback", "new-research", "secret-scan", "hook", "memory", "audit-config", "risk", "ci", "factory", "evaluate"}
     if argv[0] in commands or argv[0] in {"-h", "--help", "--version"}:
         return argv
     if "--doctor" in argv:
@@ -10117,6 +10200,8 @@ def run(argv: list[str] | None = None) -> int:
         return cmd_risk(args)
     if args.command == "ci":
         return cmd_ci_watch(args)
+    if args.command == "factory":
+        return cmd_factory(args)
     if args.command == "memory":
         return cmd_memory(args)
     if args.command == "hook":
