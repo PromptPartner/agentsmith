@@ -9125,8 +9125,14 @@ def cmd_inbox(args: argparse.Namespace) -> int:
     target = Path(args.target or os.getcwd()).expanduser()
     try:
         if args.inbox_command == "claim":
-            path = inbox.claim(target, args.issue)
-            print(f"claimed #{inbox._issue_number(args.issue)} locally ({path}); nothing was written to GitHub")
+            gh = inbox.Gh()
+            try:
+                gh.check(target)
+            except inbox.GhError as exc:
+                gh, reason = None, str(exc)
+            path = inbox.claim(target, args.issue, gh=gh, repo_name=args.repo)
+            note = "verified open on GitHub" if gh is not None else f"unverified, because {reason}"
+            print(f"claimed #{inbox._issue_number(args.issue)} locally ({path}), {note}; nothing was written to GitHub")
             return 0
         if args.inbox_command == "release":
             inbox.release(target, args.issue)
@@ -9586,6 +9592,8 @@ def parser() -> argparse.ArgumentParser:
         claim_parser = inbox_sub.add_parser(name, help=summary)
         claim_parser.add_argument("issue", help="issue number")
         claim_parser.add_argument("--target", default=argparse.SUPPRESS, help="Git repository (default: current directory)")
+        if name == "claim":
+            claim_parser.add_argument("--repo", default=argparse.SUPPRESS, help="OWNER/NAME to check the issue on")
     memory = sub.add_parser("memory", help="search and read bounded local Markdown memory")
     # `memory startup` is the hook's internal entry point, so it stays out of the listed choices.
     memory_commands = memory.add_subparsers(dest="memory_command", required=True, metavar="{search,read}")

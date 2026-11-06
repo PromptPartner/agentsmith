@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 import subprocess
@@ -253,6 +254,13 @@ class FakeGh:
         self.calls.append(list(argv))
         verb = tuple(argv[1:3])
         limit = int(argv[argv.index("--limit") + 1]) if "--limit" in argv else 30
+        if argv[1] == "api" and re.search(r"/issues/\d+$", argv[-1]):
+            number = int(argv[-1].rsplit("/", 1)[1])
+            found = [issue for issue in self.issues if issue["number"] == number]
+            if not found:
+                return subprocess.CompletedProcess(argv, 1, "", "gh: Not Found (HTTP 404)")
+            return subprocess.CompletedProcess(argv, 0, json.dumps(
+                {"number": number, "state": found[0].get("state", "open"), "title": found[0]["title"]}), "")
         if argv[1] == "api":
             endpoint = argv[-1]
             if "/issues?" in endpoint:
@@ -359,15 +367,43 @@ class ClaimTests(InboxCase):
             inbox.release(self.repo.root, 12)
         inbox.claim(self.repo.root, 12, now=lambda: NOW)
 
+    def test_claims_are_verified_against_github_when_gh_is_available(self) -> None:
+        issues = [{"number": 12, "title": "Open one", "createdAt": iso(60), "labels": []},
+                  {"number": 13, "title": "Closed one", "createdAt": iso(60), "labels": [], "state": "closed"}]
+        gh = inbox.Gh(runner=FakeGh(issues, []), which=lambda _: "gh")
+        claims = self.repo.common / "agentsmith-inbox" / "claims"
+        for number, message in ((999, "does not exist"), (13, "not open")):
+            with self.subTest(issue=number):
+                with self.assertRaisesRegex(inbox.ClaimError, message):
+                    inbox.claim(self.repo.root, number, now=lambda: NOW, gh=gh, repo_name="owner/name")
+                self.assertFalse((claims / f"{number}.json").exists())
+        inbox.claim(self.repo.root, 12, now=lambda: NOW, gh=gh, repo_name="owner/name")
+        self.assertTrue(json.loads((claims / "12.json").read_text(encoding="utf-8"))["verified"])
+        # Without gh the claim is kept but marked unverified, and the issue row says so.
+        inbox.claim(self.repo.root, 14, now=lambda: NOW)
+        self.assertFalse(json.loads((claims / "14.json").read_text(encoding="utf-8"))["verified"])
+        issues.append({"number": 14, "title": "Later", "createdAt": iso(60), "labels": []})
+        rows = self.rows(self.collect(gh=inbox.Gh(runner=FakeGh(issues, []), which=lambda _: "gh"), repo_name="owner/name"))
+        self.assertIn("unverified", rows[("untriaged", "#14")]["next_step"])
+        self.assertNotIn("unverified", rows[("untriaged", "#12")]["next_step"])
+
     def test_cli_claim_twice_exits_2(self) -> None:
         command = [sys.executable, str(CORE), "inbox", "claim", "7", "--target", str(self.repo.root)]
-        first = subprocess.run(command, env=CLEAN_ENV, capture_output=True, text=True)
+        env = CLEAN_ENV
+        if os.name != "nt":  # keep the real gh out of this test: no network, an unverified claim
+            tools = Path(self.temporary.name) / "git-only"
+            tools.mkdir()
+            (tools / "git").symlink_to(shutil.which("git"))
+            env = {**CLEAN_ENV, "PATH": str(tools)}
+        first = subprocess.run(command, env=env, capture_output=True, text=True)
         self.assertEqual(first.returncode, 0, first.stderr)
-        second = subprocess.run(command, env=CLEAN_ENV, capture_output=True, text=True)
+        if os.name != "nt":
+            self.assertIn("unverified", first.stdout)
+        second = subprocess.run(command, env=env, capture_output=True, text=True)
         self.assertEqual(second.returncode, 2)
         self.assertIn("already claimed", second.stderr)
         released = subprocess.run([*command[:3], "release", "7", "--target", str(self.repo.root)],
-                                  env=CLEAN_ENV, capture_output=True, text=True)
+                                  env=env, capture_output=True, text=True)
         self.assertEqual(released.returncode, 0, released.stderr)
 
 

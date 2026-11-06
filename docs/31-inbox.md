@@ -56,7 +56,9 @@ written to GitHub: no labels, no comments, no assignment.
 
 A claim is local operator input, not part of the derived list: `inbox claim <issue>` records that
 you, or a session you started, are taking the issue. One claim per issue; a second claim is refused
-until `inbox release <issue>`. Claims live under the Git common directory
+until `inbox release <issue>`. When `gh` is installed and logged in, `claim` first checks, read-only, that the
+issue exists and is open, and refuses otherwise; without `gh` the claim is kept and marked
+`unverified` in its row. Claims live under the Git common directory
 (`agentsmith-inbox/claims/`), outside the tracked tree, so they never make the tree dirty and never
 reach GitHub. A claim on an issue that is no longer open shows as a warning.
 

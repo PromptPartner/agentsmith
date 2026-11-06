@@ -92,6 +92,16 @@ class Gh:
                  "labels": item.get("labels") or [], "url": item.get("html_url")}
                 for item in self._all(cwd, f"repos/{repo}/issues?state=open&per_page=100") if "pull_request" not in item]
 
+    def issue(self, cwd: Path, repo: str, number: int) -> dict[str, Any] | None:
+        """One issue, or None when GitHub has no issue with that number."""
+        result = self._run(cwd, "api", f"repos/{repo}/issues/{number}")
+        if result.returncode:
+            if "404" in (result.stderr or "") or "Not Found" in (result.stderr or ""):
+                return None
+            lines = (result.stderr or "").strip().splitlines()
+            raise GhError(f"gh api issues/{number} failed: {lines[-1] if lines else 'exit ' + str(result.returncode)}")
+        return json.loads(result.stdout)
+
     def pr_heads(self, cwd: Path, repo: str) -> set[str]:
         return {pr["head"]["sha"] for pr in self._all(cwd, f"repos/{repo}/pulls?state=open&per_page=100")
                 if isinstance((pr.get("head") or {}).get("sha"), str)}
@@ -410,7 +420,8 @@ class _Collector:
             else:
                 disposition = "read and route (direct, grill or wayfinder)"
             claim = claims.get(number)
-            owned = (f"claimed {claim.get('claimed_at', '')[:10]}" if claim
+            owned = (f"claimed {claim.get('claimed_at', '')[:10]}" + ("" if claim.get("verified") else " (unverified)")
+                     if claim
                      else f"claim it with `agentsmith inbox claim {number}`")
             self.add("untriaged", f"#{number}", _seconds(issue.get("createdAt")),
                      f"{_one_line(issue.get('title', ''))[:80]} - draft disposition: {disposition}; {owned}; "
@@ -461,14 +472,28 @@ def _issue_number(issue: Any) -> int:
     return number
 
 
-def claim(repo: Path, issue: Any, *, now: Callable[[], float] = lambda: dt.datetime.now(dt.timezone.utc).timestamp()) -> Path:
-    """Claim one issue locally. A second claim on the same issue is refused."""
+def claim(repo: Path, issue: Any, *, now: Callable[[], float] = lambda: dt.datetime.now(dt.timezone.utc).timestamp(),
+          gh: Gh | None = None, repo_name: str | None = None) -> Path:
+    """Claim one issue locally. A second claim on the same issue is refused. With `gh`, the issue must
+    exist and be open (read-only); without it, the claim is kept and marked unverified."""
     number = _issue_number(issue)
+    verified = False
+    if gh is not None:
+        try:
+            name = repo_name or gh.repo(Path(repo))
+            found = gh.issue(Path(repo), name, number)
+        except GhError as exc:
+            raise ClaimError(f"cannot check #{number} on GitHub: {exc}") from None
+        if found is None or "pull_request" in found:
+            raise ClaimError(f"#{number} does not exist as an issue on {name}")
+        if found.get("state") != "open":
+            raise ClaimError(f"#{number} is not open on {name} (state {found.get('state')!r})")
+        verified = True
     directory = _claims_dir(Path(repo))
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{number}.json"
     record = {"issue": number, "claimed_at": dt.datetime.fromtimestamp(now(), dt.timezone.utc).isoformat(timespec="seconds"),
-              "by": _git(Path(repo), "config", "user.name")}
+              "by": _git(Path(repo), "config", "user.name"), "verified": verified}
     try:
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
     except FileExistsError:
