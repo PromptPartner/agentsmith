@@ -267,11 +267,13 @@ def build_native_command(
 ) -> list[str]:
     if agent == "codex":
         protected = list(protected_write_paths)
+        hidden = list(hidden_read_paths)
         command = [*native_command_prefix(agent), "exec", "--json"]
-        if protected:
+        # The plain `--sandbox` modes read the whole disk, so hidden paths need the profile too.
+        if protected or hidden:
             permissions = codex_permissions(cwd, extra_write_dirs, read_only=read_only,
                                            protected_write_paths=protected,
-                                           hidden_read_paths=hidden_read_paths)
+                                           hidden_read_paths=hidden)
             command += ['--strict-config', '-c', 'default_permissions="agentsmith"',
                         '-c', 'permissions=' + toml_inline({'agentsmith': permissions})]
         else:

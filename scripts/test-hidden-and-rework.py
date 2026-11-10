@@ -248,6 +248,17 @@ class HiddenTestsTests(Fixture):
         codex = CONTROLLER.codex_permissions(self.repo, hidden_read_paths=[hidden])
         self.assertEqual(codex["filesystem"][str(hidden)], "none")
 
+    def test_codex_command_keeps_the_hidden_denial_without_protected_paths(self) -> None:
+        # The plain `--sandbox` modes let a role read the whole disk, so a launch that names hidden
+        # paths must use the permission profile even when no write path is protected.
+        hidden = Path("/hidden/clone")
+        command = CONTROLLER.build_native_command(
+            "codex", "prompt", self.repo, self.repo / "schema.json", self.repo / "receipt.json",
+            hidden_read_paths=[hidden])
+        self.assertNotIn("--sandbox", command)
+        profile = next(item for item in command if item.startswith("permissions="))
+        self.assertIn(f'"{hidden}"="none"', profile)
+
 
 class HiddenCloneTests(Fixture):
     """The hidden clone must be a standalone repository: nothing a role can read may hold its objects."""
