@@ -334,7 +334,9 @@ class FactoryTests(unittest.TestCase):
             {"event": "autonomy_pause_refused"},
             {**real, "marker": str(self.repo.parent / "elsewhere/AUTONOMY_PAUSED")},
             {**real, "marker_mtime_ns": None},
-            {**real, "marker_mtime_ns": int((NOW + timedelta(days=1)).timestamp() * 1e9)},
+            # A marker newer than the refusal it claims to explain. Relative to the real event, not to
+            # the fixed NOW: a fixed date stops being "later" once the calendar passes it.
+            {**real, "marker_mtime_ns": int((datetime.fromisoformat(real["at"]) + timedelta(days=1)).timestamp() * 1e9)},
             {**real, "action": "fly"},
             {**real, "run_id": ""},
             {**real, "at": "2099-01-01T00:00:00+00:00"},
