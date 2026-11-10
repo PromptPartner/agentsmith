@@ -1159,7 +1159,8 @@ class AutonomousStateTests(unittest.TestCase):
                         ".claude/skills/ship/SKILL.md", ".claude/hooks/pre.sh", ".claude/agents/judge.md",
                         "src/.claude/skills/x/SKILL.md", ".claude", ".codex/config.toml",
                         ".agents/skills/x/SKILL.md", "src/.agents/skills/x/SKILL.md",
-                        ".cursor/rules/review.mdc", ".Claude/settings.json")
+                        ".cursor/rules/review.mdc", ".Claude/settings.json",
+                        ".mcp.json", "src/.MCP.json", ".gemini/settings.json")
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
             base = self.committed_fixture(repo, {"AGENTS.md": "base rules\n", "src/app.py": "x = 1\n"})

@@ -1050,13 +1050,13 @@ BASELINE_TEST_PATHS = ("test_*.py", "*_test.py", "tests/**", "test/**",
                        "**/tests/**", "**/test/**", "**/test_*.py", "**/*_test.py",
                        "*.test.*", "*.spec.*", "*_test.go", "*_spec.rb", "scripts/test-*")
 # Instructions and configuration that Claude Code, Codex and other agent clients load from the
-# checkout. The checker runs in a worktree at the candidate commit, so a maker that edits these
+# checkout, including `.mcp.json`, which can start an MCP server inside the checker's client. The checker runs in a worktree at the candidate commit, so a maker that edits these
 # writes instructions for its own judge. They count at any depth: Claude Code loads a nested
 # CLAUDE.md when it reads files in that folder, and discovers nested `.claude/skills`. Names match
 # ignoring case, because macOS and Windows open `claude.md` when a client asks for `CLAUDE.md`.
 AGENT_INSTRUCTION_FILES = frozenset({"agents.md", "agents.override.md", "claude.md",
-                                     "claude.local.md", "gemini.md"})
-AGENT_CONFIGURATION_FOLDERS = frozenset({".claude", ".codex", ".agents", ".cursor"})
+                                     "claude.local.md", "gemini.md", ".mcp.json"})
+AGENT_CONFIGURATION_FOLDERS = frozenset({".claude", ".codex", ".agents", ".cursor", ".gemini"})
 
 
 def agent_instruction_path(path: str) -> bool:

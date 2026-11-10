@@ -54,8 +54,9 @@ operator review outside this run; the controller has no self-approval override.
 Agent instructions are protected in the same way, because the checker runs in a worktree at the
 candidate commit and its client loads them from there. A maker that edits them would write
 instructions for its own judge. The rule covers a file named `AGENTS.md`, `AGENTS.override.md`,
-`CLAUDE.md`, `CLAUDE.local.md` or `GEMINI.md`, and anything inside a `.claude/`, `.codex/`,
-`.agents/` or `.cursor/` folder (settings, hooks, skills, subagents, rules). It applies at any
+`CLAUDE.md`, `CLAUDE.local.md`, `GEMINI.md` or `.mcp.json` (which can start an MCP server inside
+the checker's client), and anything inside a `.claude/`, `.codex/`, `.agents/`, `.cursor/` or
+`.gemini/` folder (settings, hooks, skills, subagents, rules). It applies at any
 depth, not only at the root: Claude Code loads a nested `CLAUDE.md` when it reads files in that
 folder, and it finds nested `.claude/skills`. Names match ignoring case, because macOS and Windows
 open `claude.md` when a client asks for `CLAUDE.md`. Adding, editing, deleting and moving all
