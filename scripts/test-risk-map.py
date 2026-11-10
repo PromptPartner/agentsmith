@@ -144,7 +144,8 @@ class PureClassifyTests(unittest.TestCase):
             "AGENTS.md", "docs/AGENTS.md", "AGENTS.override.md", "CLAUDE.md", "src/deep/claude.md",
             "CLAUDE.local.md", "GEMINI.md", ".claude/settings.json", ".Claude/settings.json",
             "src/.claude/skills/x/SKILL.md", ".codex/config.toml", ".agents/skills/x/SKILL.md",
-            ".cursor/rules/r.mdc", ".github/workflows/verify.yml", ".GitHub/Workflows/x.yml",
+            ".cursor/rules/r.mdc", ".mcp.json", "src/.MCP.json", ".gemini/settings.json",
+            ".github/workflows/verify.yml", ".GitHub/Workflows/x.yml",
             ".github/actions/setup/action.yml", ".github/CODEOWNERS", ".harness/verify.conf",
             POLICY, ".agentsmith/agentsmith.py", "agentsmith.py", "scripts/autonomous-run.py",
             "native_launcher.py", "work_graph.py", "windows_verifier_sandbox.py", "risk_map.py",
@@ -160,7 +161,7 @@ class PureClassifyTests(unittest.TestCase):
         lookalikes = ("docs/agents-guide.md", "src/claude_client.py", "src/my.claude/x.py",
                       "docs/CLAUDE.md.txt", ".cursor-notes.md", ".github/ISSUE_TEMPLATE/bug.md",
                       "src/environment.py", "docs/migration-guide.md", "docs/keys.md", "scripts/test-x.py",
-                      "src/agentsmith.py", "harness/notes.md")
+                      "src/agentsmith.py", "harness/notes.md", "docs/mcp.json.md", "src/gemini/x.py")
         for path in lookalikes:
             with self.subTest(path=path):
                 self.assertEqual(risk_map.classify([path], rules)["tier"], "A")
@@ -169,7 +170,7 @@ class PureClassifyTests(unittest.TestCase):
         # A submodule or symlink can sit exactly at a floor folder's path.
         rules = self.rules({"paths": ["**"], "tier": "A"})
         for path in (".github/workflows", ".github/actions", "db/migrations", "migrations", "secrets",
-                     "app/secrets", ".harness", ".claude", "src/.codex"):
+                     "app/secrets", ".harness", ".claude", "src/.codex", ".gemini"):
             with self.subTest(path=path):
                 self.assertEqual(risk_map.classify([path], rules)["tier"], "human")
 

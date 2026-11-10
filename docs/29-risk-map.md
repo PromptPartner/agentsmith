@@ -68,7 +68,7 @@ policy, so no policy can remove it. Names match ignoring case and trailing dots 
 
 | Floor | Paths |
 |---|---|
-| Agent instructions | `AGENTS.md`, `AGENTS.override.md`, `CLAUDE.md`, `CLAUDE.local.md`, `GEMINI.md` at any depth; anything inside a `.claude/`, `.codex/`, `.agents/` or `.cursor/` folder |
+| Agent instructions and configuration | `AGENTS.md`, `AGENTS.override.md`, `CLAUDE.md`, `CLAUDE.local.md`, `GEMINI.md` and `.mcp.json` at any depth; anything inside a `.claude/`, `.codex/`, `.agents/`, `.cursor/` or `.gemini/` folder |
 | Continuous integration | `.github/workflows` and `.github/actions` and anything inside them, any `CODEOWNERS` file |
 | Harness | `.harness/**` (including the policy itself), `.agentsmith/**`, `agentsmith.py`, `scripts/autonomous-run.py`, `native_launcher.py`, `work_graph.py`, `windows_verifier_sandbox.py`, `risk_map.py`, `scripts/verify*` |
 | Credentials | Names starting with `.env` or `id_`, names ending in `.pem` or `_key`, a `secrets` folder and anything inside it |

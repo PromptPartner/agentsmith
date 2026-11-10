@@ -29,8 +29,8 @@ REPOSITORY_ENV = frozenset({
 # The floor. Names compare ignoring case, because macOS and Windows open `claude.md` for
 # `CLAUDE.md`. Agent instructions count at any depth, as the autonomous-run controller treats them.
 AGENT_INSTRUCTION_FILES = frozenset({"agents.md", "agents.override.md", "claude.md",
-                                     "claude.local.md", "gemini.md"})
-AGENT_CONFIGURATION_FOLDERS = frozenset({".claude", ".codex", ".agents", ".cursor"})
+                                     "claude.local.md", "gemini.md", ".mcp.json"})
+AGENT_CONFIGURATION_FOLDERS = frozenset({".claude", ".codex", ".agents", ".cursor", ".gemini"})
 HARNESS_FOLDERS = frozenset({".harness", ".agentsmith"})
 HARNESS_FILES = frozenset({"agentsmith.py", "scripts/autonomous-run.py", "native_launcher.py",
                            "work_graph.py", "windows_verifier_sandbox.py", "risk_map.py"})
