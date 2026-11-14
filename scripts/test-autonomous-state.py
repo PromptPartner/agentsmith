@@ -879,10 +879,15 @@ class AutonomousStateTests(unittest.TestCase):
             script = ('import subprocess,sys,time; '
                       'p=subprocess.Popen([sys.executable,"-c","import time; time.sleep(60)"]); '
                       'print(p.pid,flush=True); time.sleep(60)')
-            with self.assertRaises(subprocess.TimeoutExpired):
-                CONTROLLER.verifier_process([CONTROLLER.sys.executable, '-c', script], root,
-                                            0.3, CONTROLLER.verifier_env(), state)
+            # SF-11: a timeout no longer escapes as an exception that fails the whole run. The
+            # verifier returns its partial output marked as timed out, so the attempt is
+            # rejected as incomplete.
+            result = CONTROLLER.verifier_process([CONTROLLER.sys.executable, '-c', script], root,
+                                                 0.3, CONTROLLER.verifier_env(), state)
+            self.assertTrue(CONTROLLER.verifier_timed_out(result))
+            self.assertNotEqual(result.returncode, 0)
             child = int((root / 'attempt-1-verify.stdout').read_text().strip())
+            self.assertEqual(result.stdout.strip(), str(child))
             for _ in range(100):
                 if not CONTROLLER.process_is_live(child):
                     break
@@ -2090,9 +2095,13 @@ class AutonomousStateTests(unittest.TestCase):
     def run_with_fake_roles(self, common: Path, *, max_attempts: int, checker_status: str,
                             stop_during_checker: bool = False,
                             stop_maker_phase_wait_on_attempt: int = 0,
-                            move_branch_after_verify: bool = False) -> tuple[int, dict[str, Any], list[str]]:
+                            move_branch_after_verify: bool = False,
+                            verify_results: list[subprocess.CompletedProcess[str]] | None = None,
+                            calls: list[str] | None = None) -> tuple[int, dict[str, Any], list[str]]:
         """Drive the real attempt loop with Git and the roles replaced by fakes, so a stop can be
-        delivered at an exact point of it."""
+        delivered at an exact point of it. `verify_results` are returned in order by the
+        verifier; `calls` records each verifier and role
+        launch with the folder the verifier ran in."""
         directory = common / "controller"
         directory.mkdir()
         worktree = common / "worktree"
@@ -2114,10 +2123,12 @@ class AutonomousStateTests(unittest.TestCase):
                 return head["value"] if Path(repo) == worktree else state["candidate_commit"]
             return ""
 
-        def fake_verify(*_args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        def fake_verify(_command: str, cwd: Path, *_args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+            if calls is not None:
+                calls.append(f"verify {Path(cwd).name}")
             if move_branch_after_verify:
                 head["value"] = "f" * 40  # a late commit lands after the verifier ran
-            return verified
+            return results.pop(0) if results else verified
 
         @contextlib.contextmanager
         def fake_phase(_repo: Path, phase: str, **_kwargs: Any):
@@ -2127,6 +2138,8 @@ class AutonomousStateTests(unittest.TestCase):
 
         def fake_role(state: dict[str, Any], _manifest: dict[str, Any], role: str, _prompt: str,
                       **_kwargs: Any) -> dict[str, Any]:
+            if calls is not None:
+                calls.append(role)
             status = "completed"
             if role == "maker":
                 head["value"] = str(state["attempt"]) * 40
@@ -2141,10 +2154,11 @@ class AutonomousStateTests(unittest.TestCase):
                     "next_state": ""}
 
         @contextlib.contextmanager
-        def fake_checker_worktree(*args: Any):
+        def fake_checker_worktree(*args: Any, **_kwargs: Any):
             yield args[-1]
 
         verified = subprocess.CompletedProcess([], 0, "", "")
+        results = list(verify_results or [])
         with contextlib.ExitStack() as fakes:
             for name, value in {
                 "git": fake_git, "git_phase": fake_phase, "launch_role": fake_role,
@@ -2165,6 +2179,71 @@ class AutonomousStateTests(unittest.TestCase):
         durable = json.loads((directory / "state.json").read_text())
         events = [json.loads(line)["event"] for line in (directory / "events.jsonl").read_text().splitlines()]
         return outcome, durable, events
+
+    @staticmethod
+    def run_events(common: Path, kind: str) -> list[dict[str, Any]]:
+        lines = (common / "controller" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        return [record for record in map(json.loads, lines) if record["event"] == kind]
+
+    def test_an_empty_suite_is_incomplete_and_never_accepted(self) -> None:
+        empty_runs = [
+            subprocess.CompletedProcess([], 0, "\n----------------------------------------------------------------------\n"
+                                        "Ran 0 tests in 0.000s\n\nNO TESTS RAN\n", ""),
+            subprocess.CompletedProcess([], 5, "collected 0 items\n\n===== no tests ran in 0.01s =====\n", ""),
+            subprocess.CompletedProcess([], 0, "0 tests, 0 assertions\n", ""),
+        ]
+        for result in empty_runs:
+            with self.subTest(output=result.stdout):
+                verdict = CONTROLLER.verification_outcome(result)
+                self.assertEqual(verdict["verification"], "incomplete")
+                self.assertIn("no tests", verdict["reason"])
+        ran = subprocess.CompletedProcess([], 0, "Ran 12 tests in 0.4s\n\nOK\n", "")
+        self.assertEqual(CONTROLLER.verification_outcome(ran)["verification"], "passed")
+        mixed = subprocess.CompletedProcess([], 0, "Ran 0 tests in 0.0s\nOK\nRan 40 tests in 2.0s\nOK\n", "")
+        self.assertEqual(CONTROLLER.verification_outcome(mixed)["verification"], "passed")
+        with tempfile.TemporaryDirectory(prefix="agentsmith empty suite ") as temporary:
+            common = Path(temporary)
+            calls: list[str] = []
+            outcome, durable, events = self.run_with_fake_roles(
+                common, max_attempts=1, checker_status="accepted", calls=calls,
+                verify_results=[empty_runs[0]])
+            self.assertEqual((outcome, durable["status"]), (2, "escalated"))
+            self.assertNotIn("run_accepted", events)
+            self.assertNotIn("checker", calls, "an incomplete verification needs no checker")
+            [rejected] = self.run_events(common, "attempt_rejected")
+            self.assertEqual(rejected["verification"], "incomplete")
+            self.assertIn("no tests", durable["last_checker_receipt"]["summary"])
+
+    def test_a_verifier_timeout_rejects_the_attempt_as_incomplete(self) -> None:
+        # A hung suite reported nothing: the attempt ends `incomplete`, and the run is not failed
+        # outright as it was when the timeout escaped as an exception.
+        timed_out = subprocess.CompletedProcess([], 124, "partial output\n", "")
+        timed_out.timed_out = True
+        verdict = CONTROLLER.verification_outcome(timed_out)
+        self.assertEqual(verdict["verification"], "incomplete")
+        self.assertIn("timed out", verdict["reason"])
+        with tempfile.TemporaryDirectory(prefix="agentsmith verify timeout ") as temporary:
+            common = Path(temporary)
+            calls: list[str] = []
+            outcome, durable, _events = self.run_with_fake_roles(
+                common, max_attempts=2, checker_status="accepted", calls=calls,
+                verify_results=[timed_out])
+            # Attempt 1 timed out and was rejected; attempt 2 verified and was accepted.
+            self.assertEqual((outcome, durable["status"]), (0, "accepted"))
+            self.assertEqual(calls.count("checker"), 1)
+            [rejected] = self.run_events(common, "attempt_rejected")
+            self.assertEqual((rejected["attempt"], rejected["verification"]), (1, "incomplete"))
+
+    def test_windows_verifier_timeout_is_marked_incomplete(self) -> None:
+        # The AppContainer runner reports a timeout as exit 126 with this exact message.
+        fake = mock.Mock()
+        fake.run_verifier.return_value = subprocess.CompletedProcess(["cmd"], 126, "", "verifier timed out")
+        with mock.patch.object(CONTROLLER.sys, "platform", "win32"), \
+                mock.patch.dict(CONTROLLER.sys.modules, {"windows_verifier_sandbox": fake}), \
+                mock.patch.object(CONTROLLER, "resolved_git_path", return_value=Path("common")):
+            result = CONTROLLER.sandboxed_verify("cmd", Path("."), 5, {})
+        self.assertTrue(CONTROLLER.verifier_timed_out(result))
+        self.assertEqual(CONTROLLER.verification_outcome(result)["verification"], "incomplete")
 
     def test_verify_command_runs_with_pipefail(self) -> None:
         sandboxed = (CONTROLLER.sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").exists()) or (

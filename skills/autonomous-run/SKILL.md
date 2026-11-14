@@ -67,7 +67,8 @@ python3 .agentsmith/autonomous-run.py start .harness/runs/<short-id>.json
 
 The controller creates an isolated local branch/worktree, launches a fresh maker, validates its
 receipt, scope and Git transition, then creates a disposable detached worktree for the sandboxed
-deterministic verifier and a fresh checker. A rejection becomes the next maker's input. Three
+deterministic verifier and a fresh checker. An empty or timed-out suite rejects the attempt as
+incomplete, never as a pass, without a checker. A rejection becomes the next maker's input. Three
 failed attempts, invalid state, denied scope, immutable-deadline or reported-budget exhaustion,
 Git metadata drift, protected verification edits, or checker mutation escalates instead of widening authority.
 A known infrastructure failure (network, sign-in, overload, sandbox start, client crash) relaunches

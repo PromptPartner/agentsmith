@@ -78,6 +78,15 @@ to reject a change that is larger than the stated problem needs, and a red test 
 the wrong reason (a stub, an import error or an earlier gate instead of the bug's own failure
 message). Role exit codes are retained separately from structured receipts.
 
+Each attempt's verification is `passed`, `failed` or `incomplete`. It is `incomplete` when the
+verify command timed out, or when it ran an empty suite: pytest exit code 5, or output such as
+`Ran 0 tests`, `no tests ran`, `collected 0 items` or `0 tests` with no count of tests that did
+run. An incomplete attempt observed nothing, so it is never a pass: the controller rejects it
+without launching a checker, and the next maker reads why. A timeout therefore no longer fails
+the whole run by itself; the run escalates only when no wall-clock time is left for the next
+attempt. This rule is ported from [CodeAF](https://github.com/Agent-Field/CodeAF) (Apache-2.0):
+`internal/seniordev/app/full_verification.go`.
+
 On macOS and Linux the verify command runs as `bash -o pipefail -c <command>`, so
 `pytest | tee log` fails when `pytest` fails. The Windows verifier runs the command through
 `cmd.exe`, which has no pipefail.

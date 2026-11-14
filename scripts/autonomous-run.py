@@ -1196,6 +1196,33 @@ def acceptance_ready(verify_exit: int, checker: dict[str, Any]) -> bool:
             and not checker["unresolved"])
 
 
+# Verification outcomes. The rule is ported from CodeAF (https://github.com/Agent-Field/CodeAF,
+# Apache-2.0), `internal/seniordev/app/full_verification.go` with `verification_no_tests.go`: an
+# empty suite and a hung suite are incomplete observations, never a pass.
+EMPTY_SUITE = re.compile(r"\bRan 0 tests?\b|\bno tests (?:ran|found|collected|to run)\b|\bcollected 0 items?\b"
+                         r"|(?<![\w.])0 tests?\b|\bno test files (?:found|matched)\b", re.IGNORECASE)
+SOME_TESTS = re.compile(r"\bRan [1-9]\d* tests?\b|\bcollected [1-9]\d* items?\b|(?<![\w.])[1-9]\d* (?:tests?|passed)\b"
+                        r"|\brunning [1-9]\d* tests?\b|\bTests run: [1-9]", re.IGNORECASE)
+PYTEST_NO_TESTS_EXIT = 5
+
+
+def verifier_timed_out(result: subprocess.CompletedProcess[str]) -> bool:
+    return bool(getattr(result, "timed_out", False))
+
+
+def verification_outcome(result: subprocess.CompletedProcess[str]) -> dict[str, Any]:
+    """`passed`, `failed` or `incomplete`. A timeout or an empty suite is incomplete: it
+    observed nothing, so it can neither pass nor name a failure."""
+    output = f"{result.stdout}\n{result.stderr}"
+    if verifier_timed_out(result):
+        return {"verification": "incomplete",
+                "reason": "the verify command timed out before it finished; a hung suite reported no result"}
+    if (result.returncode == PYTEST_NO_TESTS_EXIT or EMPTY_SUITE.search(output)) and not SOME_TESTS.search(output):
+        return {"verification": "incomplete",
+                "reason": "the verify command ran no tests (an empty suite proves nothing)"}
+    return {"verification": "failed" if result.returncode else "passed", "reason": None}
+
+
 def file_digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "missing"
 
@@ -1536,13 +1563,19 @@ def checker_environment(env: dict[str, str], scratch: Path) -> dict[str, str]:
 def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str],
                      *, state: dict[str, Any] | None = None) -> subprocess.CompletedProcess[str]:
     """Run the human-approved verifier with no network and no writes outside its worktree and a
-    private home, temporary and cache folder that exists only for this run of the verifier."""
+    private home, temporary and cache folder that exists only for this run of the verifier.
+    A timeout returns the partial result marked `timed_out` (see `verifier_timed_out`)."""
     common = resolved_git_path(cwd, "--git-common-dir")
     if sys.platform == "win32":
         # The Windows verifier points HOME, USERPROFILE, APPDATA, TEMP and TMP at the disposable
         # worktree and LOCALAPPDATA at a temporary AppContainer profile, both private to it.
         from windows_verifier_sandbox import run_verifier
-        return run_verifier(command, cwd, common, timeout, env)
+        result = run_verifier(command, cwd, common, timeout, env)
+        # Its runner reports a timeout as exit 126 with exactly this message. A command that
+        # prints it itself is only judged incomplete, which is never a pass either.
+        if result.returncode == 126 and result.stderr.strip() == "verifier timed out":
+            result.timed_out = True  # type: ignore[attr-defined]
+        return result
     with private_scratch("agentsmith-verify-") as scratch:
         return posix_sandboxed_verify(command, cwd, common, timeout,
                                       private_tool_environment(env, scratch, home=True), scratch, state)
@@ -1883,6 +1916,10 @@ def verifier_process(command: list[str], cwd: Path, timeout: int, env: dict[str,
             state = {'state_path': str(Path(temporary) / 'state.json'), 'attempt': 0}
         result, error = supervised_process(command, cwd, timeout, env, state,
                                            f"attempt-{state['attempt']}-verify")
+        if isinstance(error, subprocess.TimeoutExpired):
+            # A hung verifier is an incomplete attempt, not a failed run: keep what it printed.
+            result.timed_out = True  # type: ignore[attr-defined]
+            return result
         if error is not None:
             raise error
         if result.returncode:
@@ -2181,6 +2218,12 @@ def checkpoint_stage(state: dict[str, Any], stage: str) -> None:
         raise_if_stopped(Path(state['state_path']).parent)
 
 
+def controller_rejection(commit: str, paths: list[str], reason: str) -> dict[str, Any]:
+    """The feedback a maker gets when the controller rejects an attempt before any checker."""
+    return {"status": "rejected", "summary": f"controller rejected the attempt: {reason}", "commit": commit,
+            "changed_paths": paths, "evidence": [], "unresolved": [reason], "next_state": "retrying"}
+
+
 def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
     worktree = Path(state["worktree"])
     max_attempts = int(manifest["limits"]["max_attempts"])
@@ -2286,8 +2329,10 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             verify_output = f"exit={verify.returncode}\nSTDOUT:\n{verify.stdout}\nSTDERR:\n{verify.stderr}"
             verify_path = Path(state["state_path"]).parent / f"attempt-{state['attempt']}-verify.txt"
             verify_path.write_text(verify_output, encoding="utf-8")
+            outcome = verification_outcome(verify)
             proof = verification_binding(state, manifest, checker_head)
-            proof.update(exit_code=verify.returncode, output_sha256=file_digest(verify_path))
+            proof.update(exit_code=verify.returncode, output_sha256=file_digest(verify_path),
+                         verification=outcome["verification"], verification_reason=outcome["reason"])
             proof_path = verify_path.with_suffix(".json")
             write_json(proof_path, proof)
             state["verification_receipt"] = str(proof_path)
@@ -2296,6 +2341,20 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             checker_status = git(checker_worktree, "status", "--porcelain")
             if checker_status:
                 raise RunError("verifier modified tracked state")
+            # The checker reads the controller's verdict first; the raw output follows it.
+            verify_output = (f"verification={outcome['verification']}"
+                             + (f" ({outcome['reason']})" if outcome["reason"] else "")
+                             + f"\n{verify_output}")
+            if outcome["verification"] == "incomplete":
+                # Nothing was observed, so no checker can accept it: reject without spending one.
+                # Leaving the block removes the disposable worktree as usual.
+                prior = controller_rejection(checker_head, paths, f"verification incomplete: {outcome['reason']}")
+                state["last_checker_receipt"] = prior
+                state["status"] = "retrying"
+                state['stage'] = 'retrying'
+                save_state(state, "attempt_rejected", attempt=state["attempt"], verify_exit=verify.returncode,
+                           verification="incomplete")
+                continue
             checker_ignored = ignored_paths(checker_worktree)
             checker_meta = git_metadata(checker_worktree)
             checker_error: Exception | None = None
@@ -2325,7 +2384,7 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
                 Path(state["state_path"]).parent / f"attempt-{state['attempt']}-checker-receipt.json")
             proof["checker_status"] = checker["status"]
             write_json(proof_path, proof)
-        if acceptance_ready(verify.returncode, checker):
+        if outcome["verification"] == "passed" and acceptance_ready(verify.returncode, checker):
             # A stop that arrived before the acceptance record still interrupts the run.
             raise_if_stopped(Path(state["state_path"]).parent)
             # The last step before the record: the branch must still be the checked commit.
@@ -2345,7 +2404,8 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
         state["last_checker_receipt"] = checker
         state["status"] = "retrying"
         state['stage'] = 'retrying'
-        save_state(state, "attempt_rejected", attempt=state["attempt"], verify_exit=verify.returncode)
+        save_state(state, "attempt_rejected", attempt=state["attempt"], verify_exit=verify.returncode,
+                   verification=outcome["verification"])
     # As with acceptance, a stop that arrived before this record still interrupts the run.
     raise_if_stopped(Path(state["state_path"]).parent)
     state["status"] = "escalated"
