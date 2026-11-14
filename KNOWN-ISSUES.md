@@ -3,6 +3,12 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [ ] 2026-11-14 — Open design gap, found while adding the hidden-test tripwire: when a maker trips
+  it only in its output, the attempt fails and the run reworks, but that maker's commits stay on
+  the run branch, as after any rejection. Code it wrote after reading the held-out tests can then
+  pass them in a later attempt. Only a probe seen in the maker's changes or commit messages stops
+  the run. Decide whether any maker probe should stop the run or reset the branch to the
+  attempt's start. The tripwire also misses a role that reads the tests and never shows the token.
 - [ ] 2026-11-06 — Found while fixing the export redaction on Windows: `evaluate.py`'s
   `redact()` replaces only the home folder exactly as `Path.home()` spells it, followed by the
   native separator. On Windows the same folder written with `/`, in another letter case, with the
