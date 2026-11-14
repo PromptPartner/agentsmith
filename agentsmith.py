@@ -6485,6 +6485,35 @@ def status_verification(target: Path) -> tuple[dict[str, Any], list[dict[str, st
     }, warnings
 
 
+AGENTSMITH_ORIGIN = re.compile(r"(?i)^(?:https?://|ssh://git@|git@)github\.com[:/]PromptPartner/agentsmith(?:\.git)?/?$")
+
+
+def origin_remote_url(target: Path) -> str | None:
+    """The origin remote as Git records it locally; never contacts the remote."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(target), "config", "--get", "remote.origin.url"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", check=False, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def is_copied_agentsmith_source(target: Path) -> bool:
+    """A clone or copy of the AgentSmith source whose origin is not AgentSmith itself.
+
+    Its AGENTS.md is AgentSmith's own contributor agreement. A user who copied the folder needs the
+    setup questions first, not that agreement. A legacy install in a user's own project has no
+    AgentSmith source tree, so it stays `legacy`."""
+    if not ((target / "agentsmith.py").is_file() and (target / "core").is_dir() and (target / "AGENT-INSTALL.md").is_file()):
+        return False
+    url = origin_remote_url(target)
+    return url is None or not AGENTSMITH_ORIGIN.match(url)
+
+
 def build_status(target: Path) -> dict[str, Any]:
     target = target.expanduser().resolve()
     if not target.is_dir():
@@ -6509,6 +6538,12 @@ def build_status(target: Path) -> dict[str, Any]:
         topology_kind = "incomplete"
         topology_summary = "The project expects a global layer, but no global installation record is available."
         topology_source = str(state_path(target).resolve())
+    elif any(source["scope"] == "project" and source["state"] in {"managed", "drifted", "duplicated", "malformed"}
+             for source in chain) and is_copied_agentsmith_source(target):
+        topology_kind = "copied"
+        topology_summary = ("This folder is a copy of the AgentSmith source. Its AGENTS.md is AgentSmith's "
+                            "contributor agreement, not rules for your work.")
+        topology_source = str((target / "AGENTS.md").resolve())
     elif global_installation:
         topology_kind = "global-only"
         topology_summary = "Only the global AgentSmith installation record applies to this target."
@@ -6589,6 +6624,12 @@ def build_status(target: Path) -> dict[str, Any]:
         next_action = {
             "command": native_command("agentsmith", "profiles", "recommend", "--target", str(target)),
             "reason": "Choose an evidence-backed work profile before installing managed instructions.",
+        }
+    elif topology_kind == "copied":
+        next_action = {
+            "command": native_command("agentsmith", "install", "--wizard", "--target", "<your-project>"),
+            "reason": ("Follow AGENT-INSTALL.md and ask its setup questions before any other work: "
+                       f"{(target / 'AGENT-INSTALL.md').resolve()}. Without the CLI, use its no-CLI path."),
         }
     elif any(source["state"] in {"drifted", "malformed"} for source in chain):
         next_action = {
