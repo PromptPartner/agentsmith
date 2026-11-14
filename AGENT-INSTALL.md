@@ -1,6 +1,6 @@
 # Install AgentSmith with an AI agent
 
-Use this guide when a user asks you to install AgentSmith. Keep the experience conversational. The user should make choices about their work, not translate installer flags.
+Use this guide when a user asks you to install AgentSmith, or when you opened a copy of this repository and the user is not developing AgentSmith itself. Keep the experience conversational. The user should make choices about their work, not translate installer flags.
 
 ## Safety boundary
 
@@ -22,6 +22,38 @@ Use this guide when a user asks you to install AgentSmith. Keep the experience c
 8. **Ask once, then apply.** After approval, run the same command without `--dry-run`. For a new project, create the folder and initialize Git only now.
 9. **Verify the installation.** Run `agentsmith doctor --agent <selection> --target <path>` and `agentsmith status --target <path>`. Inspect one assembled instruction chain end to end. Report any unsupported client capability or unwired verification phase.
 10. **Give one next step.** Usually this is replacing the `unwired` entry in `.harness/verify.conf` with the project's real checks, then assigning one bounded task.
+
+## The setup questions
+
+These are the questions the installer's wizard asks, in its order. Ask them in conversation; do not show the table. `agentsmith wizard schema --json` gives the same list for this computer, including a `container` choice for `safety` inside a container.
+
+<!-- BEGIN GENERATED: wizard questions (from WIZARD_QUESTIONS in agentsmith.py; do not edit by hand) -->
+| Key | Question | Answers | Default | Asked when |
+| --- | --- | --- | --- | --- |
+| `language` | Language | `en` / `de` / `es` / `fr` / `zh-CN` | computed: locale_environment | always |
+| `project_kind` | Are you setting up an existing project or a new folder? | `existing` / `new` | `existing` | always |
+| `target` | Project folder | a folder path | computed: current_directory | always |
+| `agent` | Which agent should use these rules? | agent ids or groups, comma separated | computed: agent_detection | always |
+| `goal` | What will this project mainly do? 1 software, 2 systems/deployments, 3 marketing, 4 documents, 5 data, 6 administration, 7 research, 8 visual design | `1` software-dev, `2` devops-setup, `3` marketing-outreach, `4` document-creation, `5` data-crunching, `6` general-admin, `7` deep-research, `8` creative-design | `1` | project_kind = `new` |
+| `profile` | Use this profile, enter another name, or type 'all' | `recommended` or one profile name | `recommended` (computed: profile_recommendation) | project_kind = `existing` |
+| `experience` | Your background: 1 new to programming, 2 developer new to AI agents, 3 experienced with AI agents | `1` / `2` / `3` | `2` | always |
+| `safety` | Agent permissions | `cautious` / `trusted` | `cautious` | always |
+| `advanced` | Configure advanced options such as user-wide rules, extra profiles, skills, MCP, or hooks? | `y` / `n` | `n` | always |
+| `scope` | Rule scope | `project` / `user` | `project` | advanced = `y` |
+| `extra_profiles` | Extra profile names, comma separated | profile names, comma separated | none | advanced = `y` |
+| `capabilities` | Optional capabilities, comma separated: skills,mcp,hooks,handoff-hooks,ui-design-hook,memory-startup | `skills` / `mcp` / `hooks` / `handoff-hooks` / `ui-design-hook` / `memory-startup` | none | advanced = `y` |
+| `confirm` | Apply this plan? | `yes` / `no` | `yes` | always |
+<!-- END GENERATED: wizard questions -->
+
+## Without the CLI
+
+Use this path only when you cannot run commands, for example in a chat-only session, or when the user declines the CLI.
+
+1. **Ask the same questions.** Ask the starting point (`project_kind`), the main kind of work (`goal`, or the profile for an existing project), and the user's background (`experience`). Ask their name and role. Skip the questions that only the CLI can act on, such as `agent`, `safety`, and `capabilities`.
+2. **Assemble the rules by hand.** Copy every file in `core/` in file-name order. Then add a line `---`, a heading `# Work-Type Profile(s): <profile>`, and the text of `profiles/<profile>.md`. Put the first two comment lines of the root `AGENTS.md` above it (the `BEGIN AGENTSMITH` marker, then the `Generated. Profiles:` line with your profile name), and its `END AGENTSMITH` line below it, so a later CLI install can manage the block. Leave out the routing note that stands above the markers.
+3. **Fill in the operator line.** Replace `{{OPERATOR_NAME}}` and `{{OPERATOR_ROLE}}` with the answers, and `{{OPERATOR_BIO}}` with one or two sentences about the user's background. Replace `{{TRACKER}}` with where defects are recorded (for example `KNOWN-ISSUES.md`), and `{{TRACKER_POLICY}}` with "writes are NOT authorized: draft the entry for the operator to post" unless the user allows writes. Replace any other placeholder with `[TODO: set NAME]`.
+4. **Hand it over.** Save the result as `AGENTS.md` at the root of the user's project, or give it to the user to save when you cannot write files. Claude Code reads `AGENTS.md` only when no `CLAUDE.md` exists; otherwise add the line `@AGENTS.md` to `CLAUDE.md`.
+5. **Say plainly that nothing was verified.** No doctor check ran, no status report exists, no native safety settings were written, and the project's verify phases are not wired. Recommend a CLI install later, which replaces the hand-made block in place.
 
 ## Direct command shape
 

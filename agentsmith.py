@@ -9676,6 +9676,42 @@ def wizard_question(key: str) -> dict[str, Any]:
     return next(question for question in wizard_questions() if question["key"] == key)
 
 
+AGENT_INSTALL_QUESTIONS_BEGIN = "<!-- BEGIN GENERATED: wizard questions (from WIZARD_QUESTIONS in agentsmith.py; do not edit by hand) -->"
+AGENT_INSTALL_QUESTIONS_END = "<!-- END GENERATED: wizard questions -->"
+
+
+def wizard_questions_markdown() -> str:
+    """The wizard's questions as the Markdown table in AGENT-INSTALL.md.
+
+    It is built from the machine-independent table and the English prompts, so the same text
+    results on every computer; scripts/test-guided-install.py fails when the guide drifts."""
+    prompts = load_wizard_locales()["en"]
+    answers_by_kind = {
+        "path": "a folder path",
+        "agent_list": "agent ids or groups, comma separated",
+        "profile": "`recommended` or one profile name",
+        "profile_list": "profile names, comma separated",
+    }
+    rows = ["| Key | Question | Answers | Default | Asked when |", "| --- | --- | --- | --- | --- |"]
+    for question in WIZARD_QUESTIONS:
+        text = re.sub(r"(\s*\[[^\]]*\])*:\s*$", "", prompts[question["prompt_key"]]).strip()
+        if question["key"] == "goal":
+            answers = ", ".join(f"`{key}` {profile}" for key, profile in WIZARD_GOAL_PROFILES.items())
+        elif question.get("choices"):
+            answers = " / ".join(f"`{choice}`" for choice in question["choices"])
+        else:
+            answers = answers_by_kind[question["kind"]]
+        default = question["default"]
+        value = default.get("value")
+        shown = "none" if value == [] else f"`{value}`" if value is not None else ""
+        if "computed" in default:
+            computed = f"computed: {default['computed']}"
+            shown = f"{shown} ({computed})" if shown else computed
+        when = ", ".join(f"{key} = `{value}`" for key, value in question.get("when", {}).items()) or "always"
+        rows.append(f"| `{question['key']}` | {text} | {answers} | {shown} | {when} |")
+    return "\n".join(rows)
+
+
 def wizard_default_agents() -> str:
     detected = [name for name in ("claude", "codex") if shutil.which(name)]
     return ",".join(detected) if detected else "native"
