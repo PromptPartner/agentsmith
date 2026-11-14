@@ -22,7 +22,8 @@ of who owns each decision.
 3. **Terminal draft:** clear every blocking decision and either resolve or explicitly defer
    non-blocking fog. Split the resulting work into independent implementation-ticket drafts.
 4. **Accept:** a reviewer who did not draft the spec records a verdict (`reviewer_receipt:`), and
-   the spec names its research and route; `check-specs` verifies all three. Then the operator
+   the spec names its research and route; `check-specs` verifies all three, and that the spec
+   lists acceptance criteria, edge cases and non-goals and that its assumptions still hold. Then the operator
    explicitly accepts the spec. Only then does its status become
    `accepted`, with `accepted_by` and `accepted_at` recorded; the decision ticket can close and
    implementation becomes eligible to start.

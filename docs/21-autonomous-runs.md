@@ -25,7 +25,12 @@ cap, wall-clock budget, and git/external-write policy. It must be reviewed and c
 `start` will accept it. Both roles require explicit model and effort settings. `prepare` refuses to write a
 manifest while a model or effort is blank or a placeholder (`<...>`, `REPLACE-WITH...`,
 `TO-FILL`, `TODO`, `TBD`, `CHANGEME`, `PLACEHOLDER`, `FIXME`) and names each field to fill;
-`start` refuses the same values. `scope.resources` optionally names local coordination keys such as
+`start` refuses the same values. Before it writes anything, `prepare` also runs the spec preflight
+that `start` repeats: a schema-2 spec needs at least one acceptance criterion, edge case and
+out-of-scope item (`## Acceptance and evidence`, `## Edge cases`, `## Non-goals`), and each
+`` `path` `` or `` `path::symbol` `` item under `## Assumptions` must still hold at `base_ref`.
+A missing section or a stale assumption is refused by name, so no role starts on a spec it cannot
+test. The format is in [`docs/specs/README.md`](specs/README.md). `scope.resources` optionally names local coordination keys such as
 `port:3000`, `db:local/test`, or `service:redis`; omit it in an older manifest or use an empty list
 when the run reserves none.
 

@@ -341,6 +341,114 @@ class AutonomousStateTests(unittest.TestCase):
                     CONTROLLER.prepare(args)
             self.assertFalse((repo / ".harness/runs/item.json").exists())
 
+    PREFLIGHT_SECTIONS = {
+        "non_goals": "## Non-goals\n\n- Rewriting the parser; it is stable and out of scope.\n",
+        "edge_cases": "## Edge cases\n\n- An empty input file returns an empty result.\n",
+        "acceptance": "## Acceptance and evidence\n\n- A new unit test for empty input passes.\n",
+    }
+
+    def preflight_repo(self, body: str) -> Path:
+        """A committed schema-2 spec with its research, receipt and one source file at HEAD."""
+        temporary = tempfile.TemporaryDirectory(prefix="agentsmith preflight ")
+        self.addCleanup(temporary.cleanup)
+        repo = Path(temporary.name).resolve()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        (repo / "docs/research").mkdir(parents=True)
+        (repo / "docs/research/r.md").write_text("research\n", encoding="utf-8")
+        (repo / "docs/research/v.md").write_text("ACCEPT\n", encoding="utf-8")
+        (repo / "src").mkdir()
+        (repo / "src/app.py").write_text("def handle(path):\n    return []\n", encoding="utf-8")
+        spec = repo / "docs/specs/item.md"
+        spec.parent.mkdir(parents=True)
+        spec.write_text("---\nschema: 2\nstatus: accepted\ndecision_ticket: DEC-1\n"
+                        "research: docs/research/r.md\nreviewer_receipt: docs/research/v.md\n"
+                        "route: direct — one reproduced bug\naccepted_by: Test Operator\n"
+                        "accepted_at: 2026-11-14\n---\n# Spec\n\n" + body, encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(repo), "-c", "user.name=T", "-c", "user.email=t@example.com",
+                        "commit", "-qm", "spec"], check=True)
+        return repo
+
+    def preflight(self, repo: Path) -> None:
+        """Run `prepare` and the `start` validation on the fixture; raise what either refuses."""
+        args = CONTROLLER.parser().parse_args([
+            "prepare", "--run-id", "item", "--spec", "docs/specs/item.md", "--ticket", "IMP-1",
+            "--maker-model", "m", "--checker-model", "m",
+            "--template", str(ROOT / "templates/autonomous-run.json")])
+        with mock.patch.object(CONTROLLER.Path, "cwd", return_value=repo), \
+                mock.patch.object(CONTROLLER, "launch_role") as launched, \
+                contextlib.redirect_stdout(io.StringIO()):
+            try:
+                CONTROLLER.prepare(args)
+            finally:
+                launched.assert_not_called()
+        manifest = json.loads((repo / ".harness/runs/item.json").read_text(encoding="utf-8"))
+        CONTROLLER.validate_manifest(manifest, repo)
+
+    def test_prepare_passes_a_spec_with_acceptance_edge_cases_and_non_goals(self) -> None:
+        repo = self.preflight_repo("\n".join(self.PREFLIGHT_SECTIONS.values()))
+        self.preflight(repo)
+
+    def test_prepare_refuses_a_spec_without_acceptance_edge_case_or_out_of_scope_item(self) -> None:
+        expected = {
+            "acceptance": "no acceptance criteria: add a '## Acceptance and evidence' section",
+            "edge_cases": "no edge case: add a '## Edge cases' section",
+            "non_goals": "no out-of-scope item: add a '## Non-goals' section",
+        }
+        for missing, message in expected.items():
+            for shape in ("absent", "empty", "placeholder"):
+                with self.subTest(missing=missing, shape=shape):
+                    sections = dict(self.PREFLIGHT_SECTIONS)
+                    heading = sections[missing].split("\n", 1)[0]
+                    if shape == "absent":
+                        del sections[missing]
+                    elif shape == "empty":
+                        sections[missing] = heading + "\n\nSee the ticket.\n"
+                    else:
+                        sections[missing] = heading + "\n\n- <a placeholder left from the template>\n"
+                    repo = self.preflight_repo("\n".join(sections.values()))
+                    with self.assertRaisesRegex(CONTROLLER.RunError, message):
+                        self.preflight(repo)
+                    self.assertFalse((repo / ".harness/runs/item.json").exists())
+                    manifest = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
+                    manifest.update(run_id="item", spec_path="docs/specs/item.md", implementation_ticket="IMP-1")
+                    for role in manifest["roles"].values():
+                        role["model"] = "fixture-model"
+                    with self.assertRaisesRegex(CONTROLLER.RunError, message):
+                        CONTROLLER.validate_manifest(manifest, repo)
+
+    def test_prepare_checks_spec_assumptions_against_the_base_commit(self) -> None:
+        sections = "\n".join(self.PREFLIGHT_SECTIONS.values())
+        valid = ("\n## Assumptions\n\n- `src/app.py` holds the reader.\n"
+                 "- `src/app.py::handle` is the entry point.\n"
+                 "- `src` is the source folder.\n"
+                 "- Users run Python 3.11 or later; prose items are not checked.\n")
+        self.preflight(self.preflight_repo(sections + valid))
+        cases = {
+            "- `src/gone.py` holds the reader.\n":
+                r"stale assumption: `src/gone\.py` does not exist at HEAD",
+            "- `src/app.py::render` draws the page.\n":
+                r"stale assumption: `src/app\.py::render` — 'render' does not occur in src/app\.py at HEAD",
+            "- `src/gone.py::handle` is the entry point.\n":
+                r"stale assumption: `src/gone\.py::handle` — src/gone\.py does not exist at HEAD",
+            "- `src::handle` is the entry point.\n":
+                r"stale assumption: `src::handle` — src is not a file at HEAD",
+            "- `../outside.py` is shared.\n":
+                r"assumption `\.\./outside\.py` must be a repository-relative path",
+        }
+        for item, message in cases.items():
+            with self.subTest(item=item):
+                repo = self.preflight_repo(sections + "\n## Assumptions\n\n" + item)
+                with self.assertRaisesRegex(CONTROLLER.RunError, message):
+                    self.preflight(repo)
+                self.assertFalse((repo / ".harness/runs/item.json").exists())
+        # The check reads the base commit, not the working tree: a file deleted only on disk is still
+        # there for the run, and a file created only on disk is not.
+        repo = self.preflight_repo(sections + "\n## Assumptions\n\n- `src/new.py` is added.\n")
+        (repo / "src/new.py").write_text("x = 1\n", encoding="utf-8")
+        with self.assertRaisesRegex(CONTROLLER.RunError, r"stale assumption: `src/new\.py`"):
+            self.preflight(repo)
+
     def test_checker_prompt_checks_smallest_change_and_red_failure_reason(self) -> None:
         manifest = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
         manifest.update(spec_path="docs/specs/task.md", implementation_ticket="IMP-1")
@@ -456,7 +564,8 @@ class AutonomousStateTests(unittest.TestCase):
             spec.write_text("---\nschema: 2\nstatus: accepted\ndecision_ticket: DEC-1\n"
                             "research: docs/research/r.md\nreviewer_receipt: docs/research/v.md\n"
                             "route: direct — one reproduced bug\naccepted_by: Test Operator\n"
-                            "accepted_at: 2026-10-26\n---\n# Spec\n", encoding="utf-8")
+                            "accepted_at: 2026-10-26\n---\n# Spec\n\n"
+                            + "\n".join(self.PREFLIGHT_SECTIONS.values()), encoding="utf-8")
             subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
             subprocess.run(["git", "-C", str(repo), "-c", "user.name=T", "-c", "user.email=t@example.com",
                             "commit", "-qm", "spec"], check=True)

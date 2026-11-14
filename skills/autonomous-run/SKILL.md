@@ -35,7 +35,10 @@ python3 .agentsmith/autonomous-run.py prepare --run-id <short-id> --spec docs/sp
 ```
 
 `prepare` refuses blank or placeholder models and efforts and names the fields to fill. Ask the
-operator which models to use; never invent one. Review the manifest's exact allowed/denied
+operator which models to use; never invent one. `prepare` and `start` also refuse a schema-2 spec
+with no list item under `## Acceptance and evidence`, `## Edge cases` or `## Non-goals`, and a
+"stale assumption": an `## Assumptions` item `` `path` `` or `` `path::symbol` `` that no longer
+holds at `base_ref`. Fix the spec and have the operator re-accept it; do not weaken the item. Review the manifest's exact allowed/denied
 paths, verifier, models, attempt cap, wall-clock limit, budgets, and optional `scope.resources` keys such as `port:3000` or
 `db:local/test`. Resource keys coordinate cooperating local runs; they do not replace operating-
 system port binding or database isolation. Commit the manifest before execution; the controller

@@ -23,6 +23,8 @@ done
 required_sections=(
   '## Destination'
   '## Non-goals'
+  '## Edge cases'
+  '## Assumptions'
   '## Decision map'
   '### Frontier'
   '### Blocked'
@@ -101,7 +103,11 @@ write_spec() { # $1 = status, then lines to drop or replace via sed expressions
   printf '%s\n' '---' 'schema: 2' "status: $status" 'decision_ticket: DEC-1' \
     'research: docs/research/item.md' 'route: direct — one bug with a reproduction' \
     'reviewer_receipt: docs/research/reviews/item-spec-review.md' \
-    'accepted_by: Test Operator' 'accepted_at: 2026-10-26' '---' '# Spec' > "$FIX/docs/specs/item.md"
+    'accepted_by: Test Operator' 'accepted_at: 2026-10-26' '---' '# Spec' \
+    '## Non-goals' '- Rewriting the parser; out of scope.' \
+    '## Edge cases' '- An empty input returns an empty result.' \
+    '## Assumptions' '- `docs/research/item.md` holds the research.' \
+    '## Acceptance and evidence' '- A unit test for empty input passes.' > "$FIX/docs/specs/item.md"
   for expression in "$@"; do sed -i.bak "$expression" "$FIX/docs/specs/item.md"; rm -f "$FIX/docs/specs/item.md.bak"; done
 }
 check() { (cd "$FIX" && python3 "$GUARD" check-specs "$@" >"$FIX/out" 2>&1); echo $?; }
@@ -116,7 +122,12 @@ for case in \
   'route needs a one-line reason|s#^route:.*#route: wayfinder#' \
   'route must start with direct, grill or wayfinder|s#^route:.*#route: <direct | grill | wayfinder> — <reason>#' \
   'research must be a repository-relative path|s#^research:.*#research: ../outside.md#' \
-  "unsupported schema '3'|s#^schema: 2#schema: 3#"; do
+  "unsupported schema '3'|s#^schema: 2#schema: 3#" \
+  "no acceptance criteria: add a '## Acceptance and evidence' section|/^- A unit test/d" \
+  "no edge case: add a '## Edge cases' section|s#^- An empty input.*#- <an edge case>#" \
+  "no out-of-scope item: add a '## Non-goals' section|/^## Non-goals/d" \
+  'stale assumption: `docs/research/gone.md` does not exist in what Git tracks|s#`docs/research/item.md`#`docs/research/gone.md`#' \
+  "stale assumption: \`docs/research/item.md::Missing\` — 'Missing' does not occur|s#item.md\`#item.md::Missing\`#"; do
   expected="${case%%|*}"; expression="${case#*|}"
   write_spec accepted "$expression"
   if [ "$(check)" = 1 ] && grep -qF "$expected" "$FIX/out"; then
