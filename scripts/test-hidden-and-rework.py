@@ -34,8 +34,25 @@ FAKE_CLIENT = textwrap.dedent('''\
         log.write(json.dumps(prompt) + "\\n")
     receipt_path = pathlib.Path(argv[argv.index("-o") + 1]) if "-o" in argv else None
     checker = "You are the independent checker" in prompt
+    # A probing role: once, it reads the hidden clone the manifest names and echoes what it read.
+    plan_path = root / "probe.json"
+    plan = json.loads(plan_path.read_text(encoding="utf-8")) if plan_path.exists() else {}
+    seen = ""
+    if plan.get("role") == ("checker" if checker else "maker"):
+        plan_path.unlink()
+        manifests = [json.loads(path.read_text(encoding="utf-8")) for path in pathlib.Path(".harness/runs").glob("*.json")]
+        clone = pathlib.Path(next(item for item in manifests if "hidden_tests" in item)["hidden_tests"]["repo"])
+        seen = "".join(path.name + "\\n" + path.read_text(encoding="utf-8", errors="replace")
+                       for path in sorted(clone.rglob("*")) if path.is_file() and ".git" not in path.parts)
+        (root / "probe.log").write_text(seen, encoding="utf-8")
+        print(seen)
+        if plan.get("stderr"):
+            sys.stderr.write(plan["stderr"] + "\\n")
+            sys.exit(plan.get("exit", 1))
     if not checker:
         pathlib.Path("src").mkdir(exist_ok=True)
+        if seen and plan.get("commit"):
+            pathlib.Path("src/notes.txt").write_text(seen, encoding="utf-8")
         count = len(list(pathlib.Path("src").glob("change*.txt")))
         pathlib.Path(f"src/change{count}.txt").write_text("fixed\\n", encoding="utf-8")
         subprocess.run(["git", "add", "src"], check=True)
@@ -124,8 +141,7 @@ class Fixture(unittest.TestCase):
         return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
 
 
-@unittest.skipUnless(sandbox_available(), "a real run needs the macOS or Linux role sandbox")
-class HiddenTestsTests(Fixture):
+class HiddenRepo(Fixture):
     def hidden_repo(self, expected: str = "fixed", no_marker: bool = False) -> tuple[Path, str]:
         hidden = self.root / "private-hidden-tests"
         hidden.mkdir()
@@ -145,6 +161,9 @@ class HiddenTestsTests(Fixture):
         return json.loads((self.repo / f".git/agentsmith-runs/{run_id}/attempt-{attempt}-verify.json").read_text(
             encoding="utf-8"))
 
+
+@unittest.skipUnless(sandbox_available(), "a real run needs the macOS or Linux role sandbox")
+class HiddenTestsTests(HiddenRepo):
     def test_passing_hidden_tests_are_recorded_and_the_checker_still_decides(self) -> None:
         hidden, commit = self.hidden_repo()
         self.commit_manifest("pass", **self.hidden(hidden, commit))
@@ -258,6 +277,102 @@ class HiddenTestsTests(Fixture):
         self.assertNotIn("--sandbox", command)
         profile = next(item for item in command if item.startswith("permissions="))
         self.assertIn(f'"{hidden}"="none"', profile)
+
+
+@unittest.skipUnless(sandbox_available(), "a real run needs the macOS or Linux role sandbox")
+class HiddenTestProbeTests(HiddenRepo):
+    """A role that reads the hidden clone trips a per-run canary; the controller notices and fails the attempt."""
+
+    def probe(self, role: str, **plan) -> None:
+        (self.fake / "probe.json").write_text(json.dumps({"role": role, **plan}), encoding="utf-8")
+
+    def events(self, run_id: str) -> list[dict]:
+        path = self.repo / ".git/agentsmith-runs" / run_id / "events.jsonl"
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+    def canary(self) -> str:
+        seen = (self.fake / "probe.log").read_text(encoding="utf-8")
+        self.assertIn(SECRET, seen, "the probing role really read the hidden clone")
+        # The only file the controller adds to the clone is the tripwire; its content is the canary.
+        tracked = {"check.sh"}
+        names = [line for line in seen.splitlines() if line and not line.startswith(("#", "grep", "echo"))]
+        tripwires = [name for name in names if name not in tracked and name.strip()]
+        self.assertTrue(tripwires, "no tripwire was in the hidden clone while the role ran")
+        token = seen.split(tripwires[0] + "\n", 1)[1].splitlines()[0].split()[-1]
+        self.assertRegex(token, r"^[0-9a-f]{32}$")
+        return token
+
+    def assert_nothing_leaked(self, run_id: str, hidden: Path, canary: str) -> None:
+        for prompt in self.prompts():
+            for secret in (SECRET, canary, str(hidden)):
+                self.assertNotIn(secret, prompt)
+        for path in (self.repo / ".git/agentsmith-runs" / run_id).rglob("*"):
+            if path.is_file():
+                text = path.read_text(encoding="utf-8", errors="replace")
+                self.assertNotIn(SECRET, text, f"hidden content kept in {path.name}")
+                self.assertNotIn(canary, text, f"the canary is in {path.name}")
+        self.assertEqual(self.git(hidden, "status", "--porcelain", "--untracked-files=all"), "",
+                         "the tripwire was left in the hidden clone")
+
+    def test_a_maker_that_reads_the_hidden_clone_fails_its_attempt(self) -> None:
+        hidden, commit = self.hidden_repo()
+        self.commit_manifest("probe", **self.hidden(hidden, commit))
+        self.probe("maker")
+        started = self.controller("start", ".harness/runs/probe.json")
+        self.assertIn(SECRET, (self.fake / "probe.log").read_text(encoding="utf-8"), "the maker read the clone")
+        probes = [item for item in self.events("probe") if item["event"] == "hidden_test_probe"]
+        self.assertEqual([(item["role"], item["attempt"]) for item in probes], [("maker", 1)], started.stderr)
+        rejected = [item for item in self.events("probe") if item["event"] == "attempt_rejected"]
+        self.assertEqual(rejected[0].get("reason"), "hidden-test-probe")
+        # The next maker is told what it did wrong, never what it saw; the clean attempt is accepted.
+        self.assertEqual(started.returncode, 0, started.stderr)
+        self.assertEqual((self.state("probe")["status"], self.state("probe")["attempt"]), ("accepted", 2))
+        makers = [prompt for prompt in self.prompts() if "independent checker" not in prompt]
+        self.assertIn("tried to read the held-out acceptance tests", makers[1])
+        self.assertFalse(any(item["event"] == "infrastructure_failure" for item in self.events("probe")))
+        self.assert_nothing_leaked("probe", hidden, self.canary())
+
+    def test_a_maker_that_commits_what_it_read_stops_the_run(self) -> None:
+        # The leak is now in the run branch, which every later role reads: no rework can undo that.
+        hidden, commit = self.hidden_repo()
+        self.commit_manifest("committed", **self.hidden(hidden, commit))
+        self.probe("maker", commit=True)
+        started = self.controller("start", ".harness/runs/committed.json")
+        canary = self.canary()
+        self.assertNotEqual(started.returncode, 0)
+        state = self.state("committed")
+        self.assertEqual((state["status"], state["attempt"]), ("escalated", 1))
+        self.assertIn("hidden-test-probe", state["reason"])
+        self.assertNotIn(canary, started.stderr + started.stdout)
+        probes = [item for item in self.events("committed") if item["event"] == "hidden_test_probe"]
+        self.assertEqual(len(probes), 1)
+        self.assertIn("worktree changes", probes[0]["surfaces"])
+
+    def test_a_checker_probe_is_not_an_infrastructure_failure(self) -> None:
+        # The probing checker exits like a network fault; it must not be relaunched as one.
+        hidden, commit = self.hidden_repo()
+        self.commit_manifest("checkprobe", **self.hidden(hidden, commit))
+        self.probe("checker", stderr="Error: read ECONNRESET", exit=1)
+        started = self.controller("start", ".harness/runs/checkprobe.json")
+        canary = self.canary()
+        events = self.events("checkprobe")
+        self.assertFalse(any(item["event"] == "infrastructure_failure" for item in events), started.stderr)
+        probes = [item for item in events if item["event"] == "hidden_test_probe"]
+        self.assertEqual([(item["role"], item["attempt"]) for item in probes], [("checker", 1)])
+        self.assertEqual(started.returncode, 0, started.stderr)
+        self.assertEqual(self.state("checkprobe")["attempt"], 2)
+        self.assertEqual(self.proof("checkprobe", 1)["checker_status"], "not used: hidden-test-probe")
+        self.assertFalse((self.repo / ".git/agentsmith-runs/checkprobe/attempt-1-checker-receipt.json").exists())
+        self.assert_nothing_leaked("checkprobe", hidden, canary)
+
+    def test_a_clean_run_trips_nothing_and_leaves_the_clone_as_it_was(self) -> None:
+        hidden, commit = self.hidden_repo()
+        self.commit_manifest("clean", **self.hidden(hidden, commit))
+        started = self.controller("start", ".harness/runs/clean.json")
+        self.assertEqual(started.returncode, 0, started.stderr)
+        self.assertEqual(self.state("clean")["attempt"], 1)
+        self.assertFalse(any(item["event"] == "hidden_test_probe" for item in self.events("clean")))
+        self.assertEqual(self.git(hidden, "status", "--porcelain", "--untracked-files=all"), "")
 
 
 class HiddenCloneTests(Fixture):

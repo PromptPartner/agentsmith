@@ -18,6 +18,7 @@ import math
 import os
 import posixpath
 import re
+import secrets
 import shlex
 import signal
 import shlex
@@ -93,6 +94,19 @@ class InfrastructureFailure(RunError):
     def __init__(self, message: str, signature: str) -> None:
         super().__init__(message)
         self.signature = signature
+
+
+class HiddenTestProbe(RunError):
+    """A role's output, receipt or changes held the canary planted in the hidden clone: it tried
+    to read the held-out tests. Never an infrastructure failure, so the breaker never relaunches it."""
+
+    def __init__(self, role: str, surfaces: list[str]) -> None:
+        super().__init__(f"{HIDDEN_PROBE}: the {role} tried to read the held-out acceptance tests "
+                         f"(seen in its {', '.join(surfaces)})")
+        self.role = role
+        self.surfaces = surfaces
+        # Changes and commit messages stay in the run branch, where every later role reads them.
+        self.persistent = any(surface in PERSISTENT_PROBE_SURFACES for surface in surfaces)
 
 
 class HiddenTestsRejected(Exception):
@@ -936,6 +950,71 @@ def hidden_tests_problem(manifest: dict[str, Any], repo: Path) -> str | None:
 def hidden_read_paths(manifest: dict[str, Any]) -> list[Path]:
     hidden = manifest.get("hidden_tests")
     return [Path(str(hidden["repo"])).expanduser().resolve()] if isinstance(hidden, dict) else []
+
+
+HIDDEN_PROBE = "hidden-test-probe"
+PERSISTENT_PROBE_SURFACES = ("worktree changes", "commit messages")
+
+
+def probe_hint(role: str) -> str:
+    """Rework feedback after a probe: it names the behaviour, never a hidden file or the canary."""
+    return (f"the {role} tried to read the held-out acceptance tests, which no role may read, so the attempt "
+            "was not used; work from the spec and the visible tests only")
+
+
+@contextlib.contextmanager
+def hidden_tripwire(manifest: dict[str, Any]):
+    """A file with a fresh random name and canary token in the hidden clone while one role runs.
+    The role sandbox denies reading the clone; the canary shows a read that got through anyway.
+    Content, not access times: atime is off or relaxed on most macOS and Linux mounts. The suite
+    comes from `git archive` of the hidden commit, so this untracked file never joins it."""
+    clones = hidden_read_paths(manifest)
+    if not clones:
+        yield None
+        return
+    tripwire = {"name": f"case-{secrets.token_hex(8)}.txt", "token": secrets.token_hex(16)}
+    path = clones[0] / tripwire["name"]
+    try:
+        with path.open("x", encoding="utf-8") as handle:
+            handle.write(f"held-out acceptance case {tripwire['token']}\n")
+    except OSError as exc:
+        raise RunError(f"cannot place the hidden-test tripwire in hidden_tests.repo ({exc.strerror}); "
+                       "the controller needs write access to the clone") from None
+    try:
+        yield tripwire
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def probe_surfaces(tripwire: dict[str, str], role_output: str, receipt_path: Path, worktree: Path,
+                   before_head: str) -> list[str]:
+    """Where a role showed the canary or the tripwire's name: its output, its receipt, the changes
+    it left in its worktree (committed, uncommitted or untracked) and its new commit messages."""
+    untracked = git(worktree, "ls-files", "--others", "--exclude-standard", "-z", check=False).split("\0")
+    changes = [git(worktree, "diff", "--no-ext-diff", "--text", before_head, check=False)]
+    for name in filter(None, untracked):
+        with contextlib.suppress(OSError):
+            changes.append(name + "\n" + (worktree / name).read_bytes()[:1 << 20].decode("utf-8", "replace"))
+    surfaces = {
+        "output": role_output,
+        "receipt": receipt_path.read_text(encoding="utf-8", errors="replace") if receipt_path.is_file() else "",
+        "worktree changes": "\n".join(changes),
+        "commit messages": git(worktree, "log", "--format=%B", f"{before_head}..HEAD", check=False),
+    }
+    return [label for label, text in surfaces.items()
+            if tripwire["token"] in text or tripwire["name"] in text]
+
+
+def probed_attempt(state: dict[str, Any], probe: HiddenTestProbe, commit: str, paths: list[str]) -> dict[str, Any]:
+    """A probe fails the attempt like a rejection, with feedback that names only the behaviour."""
+    receipt = {"status": "rejected", "summary": f"the {probe.role} tried to read the held-out acceptance tests",
+               "commit": commit, "changed_paths": paths, "evidence": [], "unresolved": [probe_hint(probe.role)],
+               "next_state": "rejected"}
+    state["last_checker_receipt"] = receipt
+    state["status"] = "retrying"
+    state["stage"] = "retrying"
+    save_state(state, "attempt_rejected", attempt=state["attempt"], reason=HIDDEN_PROBE, role=probe.role)
+    return receipt
 
 
 def extract_tree(source: Path, commit: str, destination: Path) -> None:
@@ -2260,19 +2339,37 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
     prefix = f"attempt-{state['attempt']}-{role}"
     state['usage_pending'] = {'role': role, 'runtime': runtime, 'prefix': prefix}
     save_state(state)
+    # The start of this launch, to find the role's own changes and commits (hidden-test runs only).
+    before_head = git(worktree, "rev-parse", "HEAD") if hidden_read_paths(manifest) else ""
     with contextlib.ExitStack() as stack:
         environment = stack.enter_context(native_role_environment(runtime, worktree))
         if role == "checker":
             scratch = stack.enter_context(private_scratch("agentsmith-check-"))
             environment = checker_environment(environment, scratch)
+        tripwire = stack.enter_context(hidden_tripwire(manifest))
         result, error = supervised_process(cmd, worktree, timeout, environment, state, prefix)
     stdout, stderr = result.stdout, result.stderr
+    probed = (probe_surfaces(tripwire, stdout + "\n" + stderr, receipt_path, worktree, before_head)
+              if tripwire is not None else [])
+    if probed:
+        # The output may hold hidden test source, and later roles can read the run folder: keep
+        # only its hash. The receipt is never saved; the canary dies with this launch.
+        for stream, text in ((".stdout", stdout), (".stderr", stderr)):
+            digest = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+            (run_dir / (prefix + stream)).write_text(
+                f"withheld: this output showed an attempt to read the held-out acceptance tests "
+                f"(sha256 {digest})\n", encoding="utf-8")
     denials = permission_denials(stdout) if runtime == "claude" else None
     write_json(run_dir / (prefix + '-exit.json'),
                {'role': role, 'runtime': runtime, 'exit_code': result.returncode,
                 'model': role_cfg['model'], 'effort': role_cfg['effort'],
                 **({'permission_denials': denials} if denials is not None else {})})
     record_role_usage(state, runtime, role, stdout)
+    if probed:
+        event(state, "hidden_test_probe", role=role, runtime=runtime, attempt=state["attempt"], surfaces=probed)
+        if error is not None and not isinstance(error, subprocess.TimeoutExpired):
+            raise error  # an operator stop still wins; the probe is already on record
+        raise HiddenTestProbe(role, probed)
     if error is not None:
         if isinstance(error, subprocess.TimeoutExpired):
             raise RunError(f'{role} exceeded wall-clock budget') from error
@@ -2376,6 +2473,11 @@ def launch_role_with_breaker(state: dict[str, Any], manifest: dict[str, Any], ro
     while True:
         try:
             receipt = launch_role(state, manifest, role, prompt, **kwargs)
+        except HiddenTestProbe:
+            # A probe is the role's own act, not a host fault: it ends any streak, never extends it.
+            if state.pop("infrastructure_streak", None) is not None:
+                save_state(state)
+            raise
         except InfrastructureFailure as failure:
             streak = [*state.get("infrastructure_streak", []), failure.signature]
             state["infrastructure_streak"] = streak
@@ -2614,6 +2716,13 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
                     after_meta = git_metadata(worktree, known_peers=before_meta["registered_peers"])
                 validate_git_transition(worktree, before_meta, after_meta, state["branch"],
                                         before_head, after_head)
+            if isinstance(maker_error, HiddenTestProbe):
+                if maker_error.persistent:
+                    raise RunError(f"{maker_error}; the run branch now holds what it read, which every later "
+                                   "role can read, so no rework can withdraw it: a person must review the branch "
+                                   "and replace the hidden tests")
+                prior = probed_attempt(state, maker_error, after_head, changed_paths(worktree, state["base_head"]))
+                continue
             if isinstance(maker_error, BudgetExceeded) and maker_error.receipt is not None:
                 # The maker finished but crossed a cap: checkpoint its candidate before the
                 # escalation, so resume can verify and check it instead of discarding it.
@@ -2691,6 +2800,7 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             checker_meta = git_metadata(checker_worktree)
             checker_error: Exception | None = None
             checker: dict[str, Any] | None = None
+            checker_probe: HiddenTestProbe | None = None
             try:
                 if hidden_failed:
                     # Hidden tests only reject. The maker learns that they failed and nothing else;
@@ -2706,6 +2816,12 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
                 checker = {"status": "rejected", "summary": "hidden acceptance tests failed", "commit": checker_head,
                            "changed_paths": paths, "evidence": [], "unresolved": [HIDDEN_HINT],
                            "next_state": "rejected"}
+            except HiddenTestProbe as probe:
+                # Its verdict is not used; the attempt fails and the next maker learns why.
+                checker_probe = probe
+                checker = {"status": "rejected", "summary": "the checker tried to read the held-out acceptance tests",
+                           "commit": checker_head, "changed_paths": paths, "evidence": [],
+                           "unresolved": [probe_hint("checker")], "next_state": "rejected"}
             except Exception as exc:
                 checker_error = exc
             validate_git_unchanged(
@@ -2722,9 +2838,10 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             assert checker is not None
             if checker["commit"] != checker_head or sorted(checker["changed_paths"]) != sorted(paths):
                 raise RunError("checker receipt does not match the committed Git state")
-            proof["checker_receipt_sha256"] = (None if hidden_failed else file_digest(
+            proof["checker_receipt_sha256"] = (None if hidden_failed or checker_probe else file_digest(
                 Path(state["state_path"]).parent / f"attempt-{state['attempt']}-checker-receipt.json"))
-            proof["checker_status"] = "not run: hidden acceptance tests failed" if hidden_failed else checker["status"]
+            proof["checker_status"] = ("not run: hidden acceptance tests failed" if hidden_failed
+                                       else f"not used: {HIDDEN_PROBE}" if checker_probe else checker["status"])
             # Every acceptance that would otherwise count is checked, including one with no or only
             # blank evidence: that is a checker defect with rework feedback, not a plain rejection.
             claims_acceptance = (verify.returncode == 0 and checker["status"] == "accepted"
@@ -2766,7 +2883,8 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
         state["last_checker_receipt"] = checker
         state["status"] = "retrying"
         state['stage'] = 'retrying'
-        save_state(state, "attempt_rejected", attempt=state["attempt"], verify_exit=verify.returncode)
+        save_state(state, "attempt_rejected", attempt=state["attempt"], verify_exit=verify.returncode,
+                   **({"reason": HIDDEN_PROBE, "role": "checker"} if checker_probe else {}))
     # As with acceptance, a stop that arrived before this record still interrupts the run.
     raise_if_stopped(Path(state["state_path"]).parent)
     state["status"] = "escalated"
