@@ -2100,7 +2100,7 @@ class AutonomousStateTests(unittest.TestCase):
                             calls: list[str] | None = None) -> tuple[int, dict[str, Any], list[str]]:
         """Drive the real attempt loop with Git and the roles replaced by fakes, so a stop can be
         delivered at an exact point of it. `verify_results` are returned in order by the
-        verifier; `calls` records each verifier and role
+        verifier, the first one for the base commit; `calls` records each verifier and role
         launch with the folder the verifier ran in."""
         directory = common / "controller"
         directory.mkdir()
@@ -2185,6 +2185,54 @@ class AutonomousStateTests(unittest.TestCase):
         lines = (common / "controller" / "events.jsonl").read_text(encoding="utf-8").splitlines()
         return [record for record in map(json.loads, lines) if record["event"] == kind]
 
+    def test_baseline_is_taken_once_on_the_base_commit_before_the_first_edit(self) -> None:
+        # SF-11: the verify command runs on the base commit before any maker edit, and its result
+        # is stored with the run; a resumed run inherits it instead of taking it again.
+        with tempfile.TemporaryDirectory(prefix="agentsmith baseline ") as temporary:
+            common = Path(temporary)
+            calls: list[str] = []
+            baseline = subprocess.CompletedProcess([], 1, "verify.sh: phase 'tests' failed.\n", "")
+            outcome, durable, events = self.run_with_fake_roles(
+                common, max_attempts=1, checker_status="accepted", verify_results=[baseline], calls=calls)
+            self.assertEqual(outcome, 0)
+            self.assertEqual(calls[:2], ["verify worktree-baseline", "maker"])
+            self.assertEqual(calls.count("verify worktree-baseline"), 1)
+            recorded = durable["verification_baseline"]
+            self.assertEqual((recorded["commit"], recorded["verification"], recorded["exit_code"]),
+                             ("a" * 40, "failed", 1))
+            self.assertIn("phase: tests", recorded["failing"])
+            self.assertLess(events.index("baseline_recorded"), events.index("role_started")
+                            if "role_started" in events else events.index("stage_started"))
+            # A resumed run keeps the stored baseline: the base commit is not verified again.
+            state = {**durable, "status": "resuming", "stage": "retrying", "attempt": 1}
+            calls.clear()
+            with mock.patch.object(CONTROLLER, "sandboxed_verify") as verify:
+                verify.side_effect = AssertionError("baseline taken twice")
+                CONTROLLER.ensure_verification_baseline(state, {"verify": {"command": "true"}})
+            self.assertEqual(state["verification_baseline"], recorded)
+
+    def test_a_test_broken_in_attempt_one_stays_a_regression_in_attempt_two(self) -> None:
+        # The baseline is the base commit, never the previous attempt: a check that attempt 1
+        # turned red is still a regression when attempt 2 leaves it red.
+        green = subprocess.CompletedProcess(
+            [], 0, "[1/2] build\n  make\n\n[2/2] tests\n  make test\n\nverify.sh: all 2 phase(s) passed in 1s.\n", "")
+        broken = subprocess.CompletedProcess(
+            [], 1, "[1/2] build\n  make\n\n[2/2] tests\n  make test\n\nverify.sh: phase 'tests' failed.\n", "")
+        with tempfile.TemporaryDirectory(prefix="agentsmith regression ") as temporary:
+            common = Path(temporary)
+            outcome, durable, _events = self.run_with_fake_roles(
+                common, max_attempts=2, checker_status="rejected", verify_results=[green, broken, broken])
+            self.assertEqual((outcome, durable["status"]), (2, "escalated"))
+            rejected = self.run_events(common, "attempt_rejected")
+            self.assertEqual([record["attempt"] for record in rejected], [1, 2])
+            for record in rejected:
+                self.assertEqual(record["verification"], "failed")
+                self.assertIn("phase: tests", record["regressions"])
+                self.assertNotIn("phase: build", record["regressions"])
+            proof = json.loads((common / "controller" / "attempt-2-verify.json").read_text())
+            self.assertIn("phase: tests", proof["regressions"])
+            self.assertEqual(proof["baseline_commit"], "a" * 40)
+
     def test_an_empty_suite_is_incomplete_and_never_accepted(self) -> None:
         empty_runs = [
             subprocess.CompletedProcess([], 0, "\n----------------------------------------------------------------------\n"
@@ -2204,9 +2252,10 @@ class AutonomousStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="agentsmith empty suite ") as temporary:
             common = Path(temporary)
             calls: list[str] = []
+            green = subprocess.CompletedProcess([], 0, "Ran 3 tests in 0.1s\n\nOK\n", "")
             outcome, durable, events = self.run_with_fake_roles(
                 common, max_attempts=1, checker_status="accepted", calls=calls,
-                verify_results=[empty_runs[0]])
+                verify_results=[green, empty_runs[0]])
             self.assertEqual((outcome, durable["status"]), (2, "escalated"))
             self.assertNotIn("run_accepted", events)
             self.assertNotIn("checker", calls, "an incomplete verification needs no checker")
@@ -2225,9 +2274,10 @@ class AutonomousStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="agentsmith verify timeout ") as temporary:
             common = Path(temporary)
             calls: list[str] = []
+            green = subprocess.CompletedProcess([], 0, "Ran 3 tests in 0.1s\n\nOK\n", "")
             outcome, durable, _events = self.run_with_fake_roles(
                 common, max_attempts=2, checker_status="accepted", calls=calls,
-                verify_results=[timed_out])
+                verify_results=[green, timed_out])
             # Attempt 1 timed out and was rejected; attempt 2 verified and was accepted.
             self.assertEqual((outcome, durable["status"]), (0, "accepted"))
             self.assertEqual(calls.count("checker"), 1)

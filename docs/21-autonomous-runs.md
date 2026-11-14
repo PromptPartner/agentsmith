@@ -78,18 +78,28 @@ to reject a change that is larger than the stated problem needs, and a red test 
 the wrong reason (a stub, an import error or an earlier gate instead of the bug's own failure
 message). Role exit codes are retained separately from structured receipts.
 
+Before the first maker starts, the controller runs the verify command once on the base commit, in
+a disposable worktree, and stores the result with the run as `verification_baseline` in the run
+state (`baseline-verify.txt` keeps the raw output, and the events file has one
+`baseline_recorded`). A resumed run keeps that baseline; it is never taken again from a later
+tree. Every attempt is compared with it, not with the attempt before: a check that passed on the
+base commit and fails now is listed under `regressions` in the attempt's verification receipt and
+in its `attempt_rejected` event, even when an earlier attempt broke it. A check is a
+`scripts/verify.sh` phase, a Python `unittest` or `pytest` test named in the output, or the verify
+command as a whole. A base commit that already fails does not lower the bar: only a verify
+command that exits 0 can be accepted.
+
 Each attempt's verification is `passed`, `failed` or `incomplete`. It is `incomplete` when the
 verify command timed out, or when it ran an empty suite: pytest exit code 5, or output such as
 `Ran 0 tests`, `no tests ran`, `collected 0 items` or `0 tests` with no count of tests that did
 run. An incomplete attempt observed nothing, so it is never a pass: the controller rejects it
 without launching a checker, and the next maker reads why. A timeout therefore no longer fails
 the whole run by itself; the run escalates only when no wall-clock time is left for the next
-attempt. This rule is ported from [CodeAF](https://github.com/Agent-Field/CodeAF) (Apache-2.0):
-`internal/seniordev/app/full_verification.go`.
-
-On macOS and Linux the verify command runs as `bash -o pipefail -c <command>`, so
+attempt. On macOS and Linux the verify command runs as `bash -o pipefail -c <command>`, so
 `pytest | tee log` fails when `pytest` fails. The Windows verifier runs the command through
-`cmd.exe`, which has no pipefail.
+`cmd.exe`, which has no pipefail. The baseline and incomplete rules are ported from
+[CodeAF](https://github.com/Agent-Field/CodeAF) (Apache-2.0): `internal/verify/baseline.go` and
+`internal/seniordev/app/full_verification.go`.
 
 Acceptance is bound to the exact commit the checks passed. Just before it records `accepted`,
 the controller confirms that the run branch and the run worktree's `HEAD` still point at that

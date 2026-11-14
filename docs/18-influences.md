@@ -191,9 +191,9 @@ a production project. For the longer "why," see [`01-harness-philosophy.md`](01-
 This page is the public attribution summary. Working research notes are kept in the private
 project archive.
 
-## CodeAF verifier results
+## CodeAF verifier baseline
 
-The autonomous-run verifier's `incomplete` result ports a rule from [CodeAF](https://github.com/Agent-Field/CodeAF) (Apache-2.0): an empty or hung suite is an incomplete observation, never a pass (`internal/seniordev/app/full_verification.go`). AgentSmith implements the logic in its own controller; no CodeAF code or runtime dependency is imported. See [Autonomous runs](21-autonomous-runs.md).
+The autonomous-run verifier baseline and its `incomplete` result port rules from [CodeAF](https://github.com/Agent-Field/CodeAF) (Apache-2.0): one baseline of the base commit, taken before the first change and inherited by every later attempt (`internal/verify/baseline.go`), and an empty or hung suite treated as an incomplete observation, with the verify command run under pipefail (`internal/seniordev/app/full_verification.go`). AgentSmith implements the logic in its own controller; no CodeAF code or runtime dependency is imported. See [Autonomous runs](21-autonomous-runs.md).
 
 ## ECC hook effect disclosures
 
