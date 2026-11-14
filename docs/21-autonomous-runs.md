@@ -78,11 +78,14 @@ to reject a change that is larger than the stated problem needs, and a red test 
 the wrong reason (a stub, an import error or an earlier gate instead of the bug's own failure
 message). Role exit codes are retained separately from structured receipts.
 
-Before the first maker starts, the controller runs the verify command once on the base commit, in
-a disposable worktree, and stores the result with the run as `verification_baseline` in the run
-state (`baseline-verify.txt` keeps the raw output, and the events file has one
-`baseline_recorded`). A resumed run keeps that baseline; it is never taken again from a later
-tree. Every attempt is compared with it, not with the attempt before: a check that passed on the
+Before the first attempt is judged, the controller runs the verify command once on the base
+commit, in a disposable worktree, and stores the result with the run as `verification_baseline`
+in the run state (`baseline-verify.txt` keeps the raw output, and the events file has one
+`baseline_recorded`). It does this at the first verify stage, after the first maker: the base
+commit cannot change, so the result is the same, and parallel runs do not delay each other's
+makers (on Windows every verifier call holds one machine-wide lock). A run that stops before
+its first verification takes no baseline. A resumed run keeps a stored baseline; it is never
+taken again from a later tree. Every attempt is compared with it, not with the attempt before: a check that passed on the
 base commit and fails now is listed under `regressions` in the attempt's verification receipt and
 in its `attempt_rejected` event, even when an earlier attempt broke it. A check is a
 `scripts/verify.sh` phase, a Python `unittest` or `pytest` test named in the output, or the verify

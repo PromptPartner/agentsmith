@@ -2185,9 +2185,11 @@ class AutonomousStateTests(unittest.TestCase):
         lines = (common / "controller" / "events.jsonl").read_text(encoding="utf-8").splitlines()
         return [record for record in map(json.loads, lines) if record["event"] == kind]
 
-    def test_baseline_is_taken_once_on_the_base_commit_before_the_first_edit(self) -> None:
-        # SF-11: the verify command runs on the base commit before any maker edit, and its result
-        # is stored with the run; a resumed run inherits it instead of taking it again.
+    def test_baseline_is_taken_once_on_the_base_commit_before_the_first_attempt_is_judged(self) -> None:
+        # SF-11: the verify command runs on the base commit, in its own worktree, and its result is
+        # stored with the run; a resumed run inherits it instead of taking it again. It is taken at
+        # the first verify stage, not before the maker: on Windows every verifier call holds one
+        # machine-wide lock, so a baseline before the maker staggered the makers of parallel runs.
         with tempfile.TemporaryDirectory(prefix="agentsmith baseline ") as temporary:
             common = Path(temporary)
             calls: list[str] = []
@@ -2195,14 +2197,12 @@ class AutonomousStateTests(unittest.TestCase):
             outcome, durable, events = self.run_with_fake_roles(
                 common, max_attempts=1, checker_status="accepted", verify_results=[baseline], calls=calls)
             self.assertEqual(outcome, 0)
-            self.assertEqual(calls[:2], ["verify worktree-baseline", "maker"])
-            self.assertEqual(calls.count("verify worktree-baseline"), 1)
+            self.assertEqual(calls, ["maker", "verify worktree-baseline", "verify worktree-check-1", "checker"])
             recorded = durable["verification_baseline"]
             self.assertEqual((recorded["commit"], recorded["verification"], recorded["exit_code"]),
                              ("a" * 40, "failed", 1))
             self.assertIn("phase: tests", recorded["failing"])
-            self.assertLess(events.index("baseline_recorded"), events.index("role_started")
-                            if "role_started" in events else events.index("stage_started"))
+            self.assertEqual(events.count("baseline_recorded"), 1)
             # A resumed run keeps the stored baseline: the base commit is not verified again.
             state = {**durable, "status": "resuming", "stage": "retrying", "attempt": 1}
             calls.clear()
@@ -2210,6 +2210,17 @@ class AutonomousStateTests(unittest.TestCase):
                 verify.side_effect = AssertionError("baseline taken twice")
                 CONTROLLER.ensure_verification_baseline(state, {"verify": {"command": "true"}})
             self.assertEqual(state["verification_baseline"], recorded)
+
+    def test_a_run_stopped_before_any_verification_takes_no_baseline(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith no baseline ") as temporary:
+            calls: list[str] = []
+            outcome, durable, events = self.run_with_fake_roles(
+                Path(temporary), max_attempts=1, checker_status="accepted",
+                stop_maker_phase_wait_on_attempt=1, calls=calls)
+            self.assertEqual((outcome, durable["status"]), (130, "interrupted"))
+            self.assertEqual(calls, [])
+            self.assertNotIn("verification_baseline", durable)
+            self.assertNotIn("baseline_recorded", events)
 
     def test_a_test_broken_in_attempt_one_stays_a_regression_in_attempt_two(self) -> None:
         # The baseline is the base commit, never the previous attempt: a check that attempt 1

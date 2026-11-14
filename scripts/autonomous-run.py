@@ -2272,9 +2272,11 @@ def checkpoint_stage(state: dict[str, Any], stage: str) -> None:
 
 
 def ensure_verification_baseline(state: dict[str, Any], manifest: dict[str, Any]) -> None:
-    """Run the verify command once on the base commit before the first maker edit, in a
-    disposable worktree, and store the result with the run. A resumed run inherits it: the
-    baseline is a fact about the base commit, so it is never taken again from a later tree."""
+    """Run the verify command once on the base commit, in a disposable worktree, and store the
+    result with the run. A resumed run inherits it: the baseline is a fact about the base
+    commit, so it is never taken again from a later tree. It is taken at the first verify stage,
+    not before the first maker: the base commit cannot change, and on Windows every verifier
+    call holds one machine-wide lock, so a baseline before the maker staggered parallel makers."""
     if isinstance(state.get("verification_baseline"), dict):
         return
     worktree = Path(state["worktree"])
@@ -2306,7 +2308,6 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
     worktree = Path(state["worktree"])
     max_attempts = int(manifest["limits"]["max_attempts"])
     prior = state.get("last_checker_receipt")
-    ensure_verification_baseline(state, manifest)
     while state["attempt"] < max_attempts or pending_candidate(state) or state.get("repeat_attempt"):
         raise_if_stopped(Path(state["state_path"]).parent)
         if remaining_seconds(state, manifest) <= 0:
@@ -2399,7 +2400,10 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
         validate_verification_changes(worktree, state["base_head"], after_head, manifest)
         state["status"] = "checking"
         checkpoint_stage(state, 'verifying')
+        # Read the candidate before the baseline: a commit that lands while the baseline runs was
+        # never validated, so it must not become the checked commit (acceptance then refuses it).
         checker_head = git(worktree, "rev-parse", "HEAD")
+        ensure_verification_baseline(state, manifest)
         checker_worktree = worktree.with_name(f"{worktree.name}-check-{state['attempt']}")
         with checker_worktree_session(state, manifest, worktree, checker_head, checker_worktree):
             archive_artifacts(Path(state['state_path']).parent, f"attempt-{state['attempt']}-verify")

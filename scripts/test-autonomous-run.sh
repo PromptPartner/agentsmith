@@ -325,7 +325,11 @@ assert baseline['commit'] == state['base_head'], baseline
 assert (baseline['verification'], baseline['exit_code']) == ('failed', 1), baseline
 assert baseline['failing'] == ['the verify command'], baseline
 events = [json.loads(line)['event'] for line in (pathlib.Path(sys.argv[1]).parent / 'events.jsonl').read_text().splitlines()]
-assert events.count('baseline_recorded') == 1 and events.index('baseline_recorded') < events.index('role_started'), events
+# Taken at the first verify stage: after the maker, before the candidate is judged.
+assert events.count('baseline_recorded') == 1, events
+stages = [json.loads(line) for line in (pathlib.Path(sys.argv[1]).parent / 'events.jsonl').read_text().splitlines()]
+order = [(record['event'], record.get('role') or record.get('stage')) for record in stages]
+assert order.index(('role_completed', 'maker')) < order.index(('baseline_recorded', None)) < order.index(('stage_started', 'checking')), order
 proof = json.load(open(state['verification_receipt']))
 assert (proof['verification'], proof['regressions'], proof['baseline_commit']) == ('passed', [], state['base_head']), proof
 assert not pathlib.Path(sys.argv[2]).exists(), 'baseline worktree was not removed'
