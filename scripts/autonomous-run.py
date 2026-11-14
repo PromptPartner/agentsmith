@@ -1550,6 +1550,8 @@ def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str],
 
 def posix_sandboxed_verify(command: str, cwd: Path, common: Path, timeout: int, env: dict[str, str],
                            scratch: Path, state: dict[str, Any] | None) -> subprocess.CompletedProcess[str]:
+    # `pipefail`: a pipeline such as `pytest | tee log` fails when its test command fails, not
+    # only when its last command does. scripts/verify.sh runs with the same option.
     if sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").exists():
         escaped = str(cwd).replace('"', '\\"')
         escaped_common = str(common).replace('"', '\\"')
@@ -1574,7 +1576,7 @@ def posix_sandboxed_verify(command: str, cwd: Path, common: Path, timeout: int, 
             *[f'(deny file-write-unlink (literal {json.dumps(str(parent), ensure_ascii=False)}))'
               for parent in sorted(protected_ancestors)],
         ])
-        args = ["/usr/bin/sandbox-exec", "-p", profile, "/bin/bash", "-c", command]
+        args = ["/usr/bin/sandbox-exec", "-p", profile, "/bin/bash", "-o", "pipefail", "-c", command]
         return verifier_process(args, cwd, timeout, env, state)
     if sys.platform.startswith("linux") and shutil.which("bwrap"):
         home = Path.home().resolve()
@@ -1598,7 +1600,7 @@ def posix_sandboxed_verify(command: str, cwd: Path, common: Path, timeout: int, 
             args += ["--remount-ro", str(home)]
         args += ["--bind", str(cwd), str(cwd), "--ro-bind", str(common), str(common),
                  "--bind", str(scratch), str(scratch), "--dev", "/dev", "--proc", "/proc",
-                 "--chdir", str(cwd), "/bin/bash", "-c", command]
+                 "--chdir", str(cwd), "/bin/bash", "-o", "pipefail", "-c", command]
         return verifier_process(args, cwd, timeout, env, state)
     return subprocess.CompletedProcess([], 126, "", "no supported fail-closed verifier sandbox")
 

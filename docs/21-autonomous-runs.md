@@ -78,6 +78,10 @@ to reject a change that is larger than the stated problem needs, and a red test 
 the wrong reason (a stub, an import error or an earlier gate instead of the bug's own failure
 message). Role exit codes are retained separately from structured receipts.
 
+On macOS and Linux the verify command runs as `bash -o pipefail -c <command>`, so
+`pytest | tee log` fails when `pytest` fails. The Windows verifier runs the command through
+`cmd.exe`, which has no pipefail.
+
 Acceptance is bound to the exact commit the checks passed. Just before it records `accepted`,
 the controller confirms that the run branch and the run worktree's `HEAD` still point at that
 commit and that the worktree is clean, and it reads both commit IDs again after that clean

@@ -2166,6 +2166,17 @@ class AutonomousStateTests(unittest.TestCase):
         events = [json.loads(line)["event"] for line in (directory / "events.jsonl").read_text().splitlines()]
         return outcome, durable, events
 
+    def test_verify_command_runs_with_pipefail(self) -> None:
+        sandboxed = (CONTROLLER.sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").exists()) or (
+            CONTROLLER.sys.platform.startswith("linux") and shutil.which("bwrap"))
+        if not sandboxed:
+            self.skipTest("needs the macOS or Linux verifier sandbox")
+        with tempfile.TemporaryDirectory(prefix="agentsmith pipefail ") as temporary:
+            repo = Path(temporary).resolve() / "candidate"
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            self.assertEqual(CONTROLLER.sandboxed_verify("true | true", repo, 30, CONTROLLER.verifier_env()).returncode, 0)
+            self.assertNotEqual(CONTROLLER.sandboxed_verify("false | true", repo, 30, CONTROLLER.verifier_env()).returncode, 0)
+
     def test_fake_roles_reach_acceptance_without_a_stop(self) -> None:
         # Control for the cases below: the fakes alone lead to an accepted run.
         with tempfile.TemporaryDirectory(prefix="agentsmith fake roles ") as temporary:
