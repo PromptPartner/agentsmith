@@ -1043,3 +1043,17 @@ open, which plain shell lacks.
   with the Windows locale (CP-1252), so `ü` became `Ã¼` and the hook went into a mis-spelled
   folder. The call now decodes UTF-8 (`surrogateescape`); a test that forces the CP-1252 decoder
   failed before and passes after. Native Windows confirmation of the fix is CI's.
+
+## Copied repository intake (2026-11-14)
+
+### SF-17: a copy of the repository silently applied the contributor agreement (fixed)
+
+2026-11-14 — The tracked root `AGENTS.md` is AgentSmith's own contributor agreement. Codex reads
+it directly, and Claude Code reads it when no `CLAUDE.md` exists. Someone who cloned or copied the
+repository without the installer got that agreement and was never asked what work they do, and
+`status` called the copy `legacy`. Fixed: a hand-written routing note above the managed block sends
+anyone who is not developing AgentSmith to `AGENT-INSTALL.md`; `status` reports topology `copied`
+for an AgentSmith source tree whose origin is not `PromptPartner/agentsmith` (or that has no
+origin); the guide carries the wizard's question list, generated from `WIZARD_QUESTIONS` and
+checked by `test-guided-install.py`, and a path for agents without the CLI.
+
