@@ -97,16 +97,17 @@ class InfrastructureFailure(RunError):
 
 
 class HiddenTestProbe(RunError):
-    """A role's output, receipt or changes held the canary planted in the hidden clone: it tried
-    to read the held-out tests. Never an infrastructure failure, so the breaker never relaunches it."""
+    """A role's output, receipt or changes showed the tripwire planted in the hidden clone: it tried
+    to read the held-out tests. Never an infrastructure failure, so the breaker never relaunches it.
+    `content` means the canary token itself appeared, so the role saw held-out content; a hit on
+    the file's name alone (a denied read's error message) means the sandbox held."""
 
-    def __init__(self, role: str, surfaces: list[str]) -> None:
-        super().__init__(f"{HIDDEN_PROBE}: the {role} tried to read the held-out acceptance tests "
-                         f"(seen in its {', '.join(surfaces)})")
+    def __init__(self, role: str, surfaces: list[str], content: bool) -> None:
+        seen = "saw held-out content" if content else "tried to read the held-out acceptance tests"
+        super().__init__(f"{HIDDEN_PROBE}: the {role} {seen} (shown in its {', '.join(surfaces)})")
         self.role = role
         self.surfaces = surfaces
-        # Changes and commit messages stay in the run branch, where every later role reads them.
-        self.persistent = any(surface in PERSISTENT_PROBE_SURFACES for surface in surfaces)
+        self.content = content
 
 
 class HiddenTestsRejected(Exception):
@@ -953,7 +954,6 @@ def hidden_read_paths(manifest: dict[str, Any]) -> list[Path]:
 
 
 HIDDEN_PROBE = "hidden-test-probe"
-PERSISTENT_PROBE_SURFACES = ("worktree changes", "commit messages")
 
 
 def probe_hint(role: str) -> str:
@@ -987,9 +987,10 @@ def hidden_tripwire(manifest: dict[str, Any]):
 
 
 def probe_surfaces(tripwire: dict[str, str], role_output: str, receipt_path: Path, worktree: Path,
-                   before_head: str) -> list[str]:
+                   before_head: str) -> tuple[list[str], bool]:
     """Where a role showed the canary or the tripwire's name: its output, its receipt, the changes
-    it left in its worktree (committed, uncommitted or untracked) and its new commit messages."""
+    it left in its worktree (committed, uncommitted or untracked) and its new commit messages; and
+    whether the canary token itself was among them."""
     untracked = git(worktree, "ls-files", "--others", "--exclude-standard", "-z", check=False).split("\0")
     changes = [git(worktree, "diff", "--no-ext-diff", "--text", before_head, check=False)]
     for name in filter(None, untracked):
@@ -1001,8 +1002,8 @@ def probe_surfaces(tripwire: dict[str, str], role_output: str, receipt_path: Pat
         "worktree changes": "\n".join(changes),
         "commit messages": git(worktree, "log", "--format=%B", f"{before_head}..HEAD", check=False),
     }
-    return [label for label, text in surfaces.items()
-            if tripwire["token"] in text or tripwire["name"] in text]
+    hits = [label for label, text in surfaces.items() if tripwire["token"] in text or tripwire["name"] in text]
+    return hits, any(tripwire["token"] in text for text in surfaces.values())
 
 
 def probed_attempt(state: dict[str, Any], probe: HiddenTestProbe, commit: str, paths: list[str]) -> dict[str, Any]:
@@ -2349,8 +2350,8 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
         tripwire = stack.enter_context(hidden_tripwire(manifest))
         result, error = supervised_process(cmd, worktree, timeout, environment, state, prefix)
     stdout, stderr = result.stdout, result.stderr
-    probed = (probe_surfaces(tripwire, stdout + "\n" + stderr, receipt_path, worktree, before_head)
-              if tripwire is not None else [])
+    probed, saw_content = (probe_surfaces(tripwire, stdout + "\n" + stderr, receipt_path, worktree, before_head)
+                           if tripwire is not None else ([], False))
     if probed:
         # The output may hold hidden test source, and later roles can read the run folder: keep
         # only its hash. The receipt is never saved; the canary dies with this launch.
@@ -2366,10 +2367,11 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
                 **({'permission_denials': denials} if denials is not None else {})})
     record_role_usage(state, runtime, role, stdout)
     if probed:
-        event(state, "hidden_test_probe", role=role, runtime=runtime, attempt=state["attempt"], surfaces=probed)
+        event(state, "hidden_test_probe", role=role, runtime=runtime, attempt=state["attempt"], surfaces=probed,
+              content=saw_content)
         if error is not None and not isinstance(error, subprocess.TimeoutExpired):
             raise error  # an operator stop still wins; the probe is already on record
-        raise HiddenTestProbe(role, probed)
+        raise HiddenTestProbe(role, probed, saw_content)
     if error is not None:
         if isinstance(error, subprocess.TimeoutExpired):
             raise RunError(f'{role} exceeded wall-clock budget') from error
@@ -2473,10 +2475,15 @@ def launch_role_with_breaker(state: dict[str, Any], manifest: dict[str, Any], ro
     while True:
         try:
             receipt = launch_role(state, manifest, role, prompt, **kwargs)
-        except HiddenTestProbe:
+        except HiddenTestProbe as probe:
             # A probe is the role's own act, not a host fault: it ends any streak, never extends it.
             if state.pop("infrastructure_streak", None) is not None:
                 save_state(state)
+            if probe.content:
+                # The role saw held-out content. Discarding its attempt cannot undo that, and the
+                # hidden tests no longer measure this run: stop it for a person.
+                raise RunError(f"{probe}; the hidden tests no longer give an honest signal for this run, so it "
+                               "stops: review the run branch and replace the hidden tests before another run") from None
             raise
         except InfrastructureFailure as failure:
             streak = [*state.get("infrastructure_streak", []), failure.signature]
@@ -2717,10 +2724,8 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
                 validate_git_transition(worktree, before_meta, after_meta, state["branch"],
                                         before_head, after_head)
             if isinstance(maker_error, HiddenTestProbe):
-                if maker_error.persistent:
-                    raise RunError(f"{maker_error}; the run branch now holds what it read, which every later "
-                                   "role can read, so no rework can withdraw it: a person must review the branch "
-                                   "and replace the hidden tests")
+                # Only the tripwire's name showed: the sandbox held, so the attempt fails and its
+                # commits stay, as after any rejection. A content leak already stopped the run.
                 prior = probed_attempt(state, maker_error, after_head, changed_paths(worktree, state["base_head"]))
                 continue
             if isinstance(maker_error, BudgetExceeded) and maker_error.receipt is not None:

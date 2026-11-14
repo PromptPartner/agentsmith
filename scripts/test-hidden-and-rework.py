@@ -45,7 +45,8 @@ FAKE_CLIENT = textwrap.dedent('''\
         seen = "".join(path.name + "\\n" + path.read_text(encoding="utf-8", errors="replace")
                        for path in sorted(clone.rglob("*")) if path.is_file() and ".git" not in path.parts)
         (root / "probe.log").write_text(seen, encoding="utf-8")
-        print(seen)
+        # "names": show only a listing, as a denied read's error message would; else everything read.
+        print("\\n".join(path.name for path in clone.iterdir()) if plan.get("show") == "names" else seen)
         if plan.get("stderr"):
             sys.stderr.write(plan["stderr"] + "\\n")
             sys.exit(plan.get("exit", 1))
@@ -314,26 +315,27 @@ class HiddenTestProbeTests(HiddenRepo):
         self.assertEqual(self.git(hidden, "status", "--porcelain", "--untracked-files=all"), "",
                          "the tripwire was left in the hidden clone")
 
-    def test_a_maker_that_reads_the_hidden_clone_fails_its_attempt(self) -> None:
+    def test_a_maker_that_shows_the_canary_stops_the_run(self) -> None:
+        # It saw held-out content: no rework can make it unsee it, even with nothing committed.
         hidden, commit = self.hidden_repo()
         self.commit_manifest("probe", **self.hidden(hidden, commit))
         self.probe("maker")
         started = self.controller("start", ".harness/runs/probe.json")
         self.assertIn(SECRET, (self.fake / "probe.log").read_text(encoding="utf-8"), "the maker read the clone")
+        state = self.state("probe")
+        self.assertEqual((state["status"], state["attempt"]), ("escalated", 1), started.stderr)
+        self.assertNotEqual(started.returncode, 0)
+        self.assertIn("hidden-test-probe", state["reason"])
         probes = [item for item in self.events("probe") if item["event"] == "hidden_test_probe"]
-        self.assertEqual([(item["role"], item["attempt"]) for item in probes], [("maker", 1)], started.stderr)
-        rejected = [item for item in self.events("probe") if item["event"] == "attempt_rejected"]
-        self.assertEqual(rejected[0].get("reason"), "hidden-test-probe")
-        # The next maker is told what it did wrong, never what it saw; the clean attempt is accepted.
-        self.assertEqual(started.returncode, 0, started.stderr)
-        self.assertEqual((self.state("probe")["status"], self.state("probe")["attempt"]), ("accepted", 2))
-        makers = [prompt for prompt in self.prompts() if "independent checker" not in prompt]
-        self.assertIn("tried to read the held-out acceptance tests", makers[1])
+        self.assertEqual([(item["role"], item["attempt"], item["content"]) for item in probes], [("maker", 1, True)])
+        self.assertEqual(probes[0]["surfaces"], ["output"])
+        self.assertEqual(len([prompt for prompt in self.prompts() if "independent checker" not in prompt]), 1)
         self.assertFalse(any(item["event"] == "infrastructure_failure" for item in self.events("probe")))
-        self.assert_nothing_leaked("probe", hidden, self.canary())
+        canary = self.canary()
+        self.assertNotIn(canary, started.stderr + started.stdout)
+        self.assert_nothing_leaked("probe", hidden, canary)
 
     def test_a_maker_that_commits_what_it_read_stops_the_run(self) -> None:
-        # The leak is now in the run branch, which every later role reads: no rework can undo that.
         hidden, commit = self.hidden_repo()
         self.commit_manifest("committed", **self.hidden(hidden, commit))
         self.probe("maker", commit=True)
@@ -348,11 +350,28 @@ class HiddenTestProbeTests(HiddenRepo):
         self.assertEqual(len(probes), 1)
         self.assertIn("worktree changes", probes[0]["surfaces"])
 
+    def test_a_maker_that_only_names_the_tripwire_fails_its_attempt(self) -> None:
+        # Only the name reached its output, as from a denied read: nothing was learned, so rework.
+        hidden, commit = self.hidden_repo()
+        self.commit_manifest("named", **self.hidden(hidden, commit))
+        self.probe("maker", show="names")
+        started = self.controller("start", ".harness/runs/named.json")
+        probes = [item for item in self.events("named") if item["event"] == "hidden_test_probe"]
+        self.assertEqual([(item["role"], item["attempt"], item["content"]) for item in probes], [("maker", 1, False)])
+        rejected = [item for item in self.events("named") if item["event"] == "attempt_rejected"]
+        self.assertEqual(rejected[0].get("reason"), "hidden-test-probe")
+        self.assertEqual(started.returncode, 0, started.stderr)
+        self.assertEqual((self.state("named")["status"], self.state("named")["attempt"]), ("accepted", 2))
+        makers = [prompt for prompt in self.prompts() if "independent checker" not in prompt]
+        self.assertIn("tried to read the held-out acceptance tests", makers[1])
+        self.assertFalse(any(item["event"] == "infrastructure_failure" for item in self.events("named")))
+        self.assert_nothing_leaked("named", hidden, self.canary())
+
     def test_a_checker_probe_is_not_an_infrastructure_failure(self) -> None:
         # The probing checker exits like a network fault; it must not be relaunched as one.
         hidden, commit = self.hidden_repo()
         self.commit_manifest("checkprobe", **self.hidden(hidden, commit))
-        self.probe("checker", stderr="Error: read ECONNRESET", exit=1)
+        self.probe("checker", show="names", stderr="Error: read ECONNRESET", exit=1)
         started = self.controller("start", ".harness/runs/checkprobe.json")
         canary = self.canary()
         events = self.events("checkprobe")
@@ -364,6 +383,16 @@ class HiddenTestProbeTests(HiddenRepo):
         self.assertEqual(self.proof("checkprobe", 1)["checker_status"], "not used: hidden-test-probe")
         self.assertFalse((self.repo / ".git/agentsmith-runs/checkprobe/attempt-1-checker-receipt.json").exists())
         self.assert_nothing_leaked("checkprobe", hidden, canary)
+
+    def test_a_checker_that_shows_the_canary_stops_the_run(self) -> None:
+        hidden, commit = self.hidden_repo()
+        self.commit_manifest("checkseen", **self.hidden(hidden, commit))
+        self.probe("checker")
+        started = self.controller("start", ".harness/runs/checkseen.json")
+        state = self.state("checkseen")
+        self.assertEqual((state["status"], state["attempt"]), ("escalated", 1), started.stderr)
+        self.assertIn("hidden-test-probe", state["reason"])
+        self.assert_nothing_leaked("checkseen", hidden, self.canary())
 
     def test_a_clean_run_trips_nothing_and_leaves_the_clone_as_it_was(self) -> None:
         hidden, commit = self.hidden_repo()

@@ -477,20 +477,23 @@ content, and removes it when the role ends. The suite comes from `git archive` o
 commit, so this untracked file never joins it, but the controller needs write access to the
 clone and refuses to launch a role without it. After the role ends, the controller looks for the
 token or the file's name in the role's output, its receipt, the changes it left in its worktree
-(committed, uncommitted or untracked) and its new commit messages. The name counts too: a role
-can learn it only by listing the clone, so even a denied read whose error message prints the
-file's path is an attempt to read the held-out tests. A hit records a
-`hidden_test_probe` event that names the role and where the token was seen, and fails the
-attempt with reason `hidden-test-probe`. It is never counted as an infrastructure failure, so
-the role is not relaunched. The role's output files keep only a hash, its receipt is not saved,
-and the next maker is told that the attempt tried to read the held-out acceptance tests, never
-the token or a hidden file. When a maker's changes or commit messages hold the token, the run
-stops instead: what it read is now in the run branch, which every later role can read, so review
-the branch and replace the hidden tests. Detection uses content, not file access times, because
-access times are off or relaxed on most macOS and Linux mounts. It catches a role that shows what
-it read, not one that reads and stays silent, or that changes the text before showing it; the
-sandbox denial stays the boundary. A maker that read the tests in a failed attempt still leaves
-its commits on the run branch, as after any rejection.
+(committed, uncommitted or untracked) and its new commit messages, and records a
+`hidden_test_probe` event that names the role, where the hit was and whether it was the token.
+Either hit is never counted as an infrastructure failure, so the role is not relaunched, and the
+role's output files keep only a hash and its receipt is not saved.
+
+- The token anywhere means the role saw held-out content. Discarding its attempt cannot undo
+  that, committed or not, so the run stops with reason `hidden-test-probe` and waits for a
+  person: review the run branch and replace the hidden tests before another run.
+- The file's name alone, for example in the error message of a denied read, means the sandbox
+  held and nothing was learned. A role can learn the name only by trying the clone, so the
+  attempt fails with reason `hidden-test-probe`. Its commits stay on the run branch, as after any
+  rejection, and the next maker is told that the attempt tried to read the held-out acceptance
+  tests, never the token or a hidden file.
+
+Detection uses content, not file access times, because access times are off or relaxed on most
+macOS and Linux mounts. It catches a role that shows what it read, not one that reads and stays
+silent, or that changes the text before showing it; the sandbox denial stays the boundary.
 
 ## Landing an accepted run
 
