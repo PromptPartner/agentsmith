@@ -5,6 +5,8 @@ record with its arithmetic. Lenses report; they never block."""
 
 from __future__ import annotations
 
+import _fixture_git  # first: keeps every Git fixture out of an inherited repository
+_fixture_git.isolate()
 import json
 import os
 from pathlib import Path
