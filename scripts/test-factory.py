@@ -90,6 +90,8 @@ class FactoryTests(unittest.TestCase):
         (self.repo / ".harness/lenses.json").write_text('{"schema_version": 1, "lenses": []}\n', encoding="utf-8")
         (self.repo / ".github/workflows").mkdir(parents=True)
         (self.repo / ".github/workflows/verify.yml").write_text(WORKFLOW, encoding="utf-8")
+        (self.repo / "src").mkdir()
+        (self.repo / "src/app.py").write_text("", encoding="utf-8")  # what the policy's `src/**` names
         self.git("add", ".")
         self.git("commit", "-qm", "base")
         self.git("remote", "add", "origin", "https://github.com/owner/project.git")
@@ -395,7 +397,7 @@ class FactoryTests(unittest.TestCase):
         headroom = next(item for item in report["checks"] if item["name"] == "CI headroom")
         self.assertIn("windows compatibility (windows-latest): 20 of 45 min", headroom["evidence"])
         self.assertIn("linux compatibility (ubuntu-latest): 6 of 20 min", headroom["evidence"])
-        self.assertEqual(len(report["checks"]), 10)
+        self.assertEqual(len(report["checks"]), 11)
 
     def test_each_readiness_check_fails_with_its_reason_and_a_next_step(self) -> None:
         def broken_preflight(*_args, **_kwargs):
@@ -505,6 +507,45 @@ class FactoryTests(unittest.TestCase):
         # A Linux home path, split so the leak gate does not read a fixture as an operator's home folder.
         self.assertIsNone(factory.marketplace_editor("/" + "home/tester/.myapp/extensions/tool/claude"))
         self.assertIsNone(factory.marketplace_editor(r"D:\Tools\.config\extensions\claude.exe"))
+
+    def test_a_policy_pattern_or_lens_path_that_matches_no_file_is_drift(self) -> None:
+        name = "policy and lens paths match files at the base"
+        alive = next(item for item in self.readiness()["checks"] if item["name"] == name)
+        self.assertEqual(alive["status"], "pass", alive)
+        self.assertIn("1 pattern(s) and path(s) each match a file at main", alive["evidence"])
+        policy = {"schema_version": 1, "rules": [{"paths": ["src/**", "billing/**"], "tier": "C"},
+                                                 {"paths": ["SRC/*.py"], "tier": "B"}]}
+        lens = {"id": "security", "paths": ["auth/**"], "must_read": ["docs/security.md"],
+                "brief": "look for authorization gaps", "evidence": "cite the line", "min_tier": "B"}
+        (self.repo / ".harness/risk-policy.json").write_text(json.dumps(policy), encoding="utf-8")
+        (self.repo / ".harness/lenses.json").write_text(json.dumps({"schema_version": 1, "lenses": [lens]}),
+                                                        encoding="utf-8")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "policy and a lens for paths the base does not have")
+        (self.repo / "billing").mkdir()
+        (self.repo / "billing/invoice.py").write_text("", encoding="utf-8")  # in the work tree only
+        report = self.readiness()
+        self.assertFalse(report["ready"])
+        dead = self.failing(report)[name]
+        self.assertIn("match no file at main: risk policy rule 1 `billing/**`, lens security path `auth/**`, "
+                      "lens security must-read `docs/security.md`", dead)
+        self.assertNotIn("`src/**`", dead)
+        self.assertNotIn("`SRC/*.py`", dead)  # patterns ignore case, as the risk map does
+        failed = next(item for item in report["checks"] if item["name"] == name)
+        self.assertIn("fix or remove each dead pattern", failed["next_step"])
+        for path in ("billing/invoice.py", "auth/login.py", "docs/security.md"):
+            (self.repo / path).parent.mkdir(exist_ok=True)
+            (self.repo / path).write_text("", encoding="utf-8")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "the files the patterns name")
+        alive = next(item for item in self.readiness()["checks"] if item["name"] == name)
+        self.assertEqual(alive["status"], "pass", alive)
+        self.assertIn("5 pattern(s) and path(s) each match a file at main", alive["evidence"])
+        (self.repo / ".harness/lenses.json").write_text('{"schema_version": 1, "lenses": [{}]}', encoding="utf-8")
+        self.git("commit", "-qam", "an invalid lens file")
+        invalid = next(item for item in self.readiness()["checks"] if item["name"] == name)
+        self.assertIn("lens file invalid: lens 1 needs exactly", invalid["evidence"])
+        self.assertIn("commit a valid .harness/risk-policy.json and .harness/lenses.json", invalid["next_step"])
 
     def test_an_unknown_timeout_fails_the_headroom_check(self) -> None:
         self.git("rm", "-q", ".github/workflows/verify.yml")
