@@ -1,0 +1,358 @@
+{
+ "attempts": {},
+ "base": {
+  "list": [
+   {
+    "conclusion": "success",
+    "databaseId": 7000,
+    "event": "push",
+    "headSha": "610914b5c8c24904de0259d70b74cb0d9b0289a4",
+    "status": "completed"
+   }
+  ],
+  "view": {
+   "attempt": 1,
+   "conclusion": "success",
+   "createdAt": "2026-11-06T15:00:30Z",
+   "event": "push",
+   "headBranch": "master",
+   "headSha": "610914b5c8c24904de0259d70b74cb0d9b0289a4",
+   "jobs": [
+    {
+     "completedAt": "2026-11-06T15:05:00Z",
+     "conclusion": "success",
+     "databaseId": 900,
+     "name": "compatibility (ubuntu-latest)",
+     "startedAt": "2026-11-06T15:01:00Z",
+     "status": "completed",
+     "steps": [
+      {
+       "completedAt": "2026-11-06T15:01:06Z",
+       "conclusion": "success",
+       "name": "Set up job",
+       "number": 1,
+       "startedAt": "2026-11-06T15:01:00Z",
+       "status": "completed"
+      },
+      {
+       "completedAt": "2026-11-06T15:01:12Z",
+       "conclusion": "success",
+       "name": "Run actions/checkout@v7",
+       "number": 2,
+       "startedAt": "2026-11-06T15:01:06Z",
+       "status": "completed"
+      },
+      {
+       "completedAt": "2026-11-06T15:05:00Z",
+       "conclusion": "success",
+       "name": "Python core compiles",
+       "number": 3,
+       "startedAt": "2026-11-06T15:01:12Z",
+       "status": "completed"
+      }
+     ],
+     "url": "https://github.com/PromptPartner/agentsmith/actions/runs/1/job/900"
+    },
+    {
+     "completedAt": "2026-11-06T15:05:00Z",
+     "conclusion": "success",
+     "databaseId": 901,
+     "name": "compatibility (macos-latest)",
+     "startedAt": "2026-11-06T15:01:00Z",
+     "status": "completed",
+     "steps": [
+      {
+       "completedAt": "2026-11-06T15:01:06Z",
+       "conclusion": "success",
+       "name": "Set up job",
+       "number": 1,
+       "startedAt": "2026-11-06T15:01:00Z",
+       "status": "completed"
+      },
+      {
+       "completedAt": "2026-11-06T15:01:12Z",
+       "conclusion": "success",
+       "name": "Run actions/checkout@v7",
+       "number": 2,
+       "startedAt": "2026-11-06T15:01:06Z",
+       "status": "completed"
+      },
+      {
+       "completedAt": "2026-11-06T15:05:00Z",
+       "conclusion": "success",
+       "name": "Python core compiles",
+       "number": 3,
+       "startedAt": "2026-11-06T15:01:12Z",
+       "status": "completed"
+      }
+     ],
+     "url": "https://github.com/PromptPartner/agentsmith/actions/runs/1/job/901"
+    }
+   ],
+   "status": "completed",
+   "updatedAt": "2026-11-06T15:05:00Z",
+   "workflowDatabaseId": 365097755,
+   "workflowName": "verify"
+  }
+ },
+ "cap_minutes": 60,
+ "default_branch": "master",
+ "description": "The PR's aggregate check view reports SUCCESS from an earlier head before any run exists for this SHA; the real run then fails.",
+ "expect": {
+  "exit": 10,
+  "state": "red-at-diff"
+ },
+ "mode": "pr",
+ "poll_seconds": 30,
+ "polls": [
+  {
+   "runs": [],
+   "views": {}
+  },
+  {
+   "runs": [],
+   "views": {}
+  },
+  {
+   "runs": [
+    {
+     "conclusion": null,
+     "created_at": "2026-11-06T15:00:30Z",
+     "event": "push",
+     "head_branch": "fix/verify-git-env-isolation",
+     "head_repository": {
+      "full_name": "PromptPartner/agentsmith"
+     },
+     "head_sha": "884ab3cfbaf1b05e7557712c2108a99b0284c9fe",
+     "id": 100,
+     "name": "verify",
+     "run_attempt": 1,
+     "status": "in_progress",
+     "updated_at": "2026-11-06T15:01:00Z",
+     "workflow_id": 365097755
+    }
+   ],
+   "views": {
+    "100": {
+     "attempt": 1,
+     "conclusion": "",
+     "createdAt": "2026-11-06T15:00:30Z",
+     "event": "push",
+     "headBranch": "fix/verify-git-env-isolation",
+     "headSha": "884ab3cfbaf1b05e7557712c2108a99b0284c9fe",
+     "jobs": [
+      {
+       "completedAt": "0001-01-01T00:00:00Z",
+       "conclusion": "",
+       "databaseId": 500,
+       "name": "compatibility (ubuntu-latest)",
+       "startedAt": "2026-11-06T15:01:00Z",
+       "status": "in_progress",
+       "steps": [
+        {
+         "completedAt": "2026-11-06T15:01:06Z",
+         "conclusion": "success",
+         "name": "Set up job",
+         "number": 1,
+         "startedAt": "2026-11-06T15:01:00Z",
+         "status": "completed"
+        },
+        {
+         "completedAt": "2026-11-06T15:01:12Z",
+         "conclusion": "success",
+         "name": "Run actions/checkout@v7",
+         "number": 2,
+         "startedAt": "2026-11-06T15:01:06Z",
+         "status": "completed"
+        },
+        {
+         "completedAt": "0001-01-01T00:00:00Z",
+         "conclusion": "",
+         "name": "Python core compiles",
+         "number": 3,
+         "startedAt": "2026-11-06T15:01:12Z",
+         "status": "in_progress"
+        }
+       ],
+       "url": "https://github.com/PromptPartner/agentsmith/actions/runs/1/job/500"
+      },
+      {
+       "completedAt": "0001-01-01T00:00:00Z",
+       "conclusion": "",
+       "databaseId": 501,
+       "name": "compatibility (macos-latest)",
+       "startedAt": "2026-11-06T15:01:00Z",
+       "status": "in_progress",
+       "steps": [
+        {
+         "completedAt": "2026-11-06T15:01:06Z",
+         "conclusion": "success",
+         "name": "Set up job",
+         "number": 1,
+         "startedAt": "2026-11-06T15:01:00Z",
+         "status": "completed"
+        },
+        {
+         "completedAt": "2026-11-06T15:01:12Z",
+         "conclusion": "success",
+         "name": "Run actions/checkout@v7",
+         "number": 2,
+         "startedAt": "2026-11-06T15:01:06Z",
+         "status": "completed"
+        },
+        {
+         "completedAt": "0001-01-01T00:00:00Z",
+         "conclusion": "",
+         "name": "Python core compiles",
+         "number": 3,
+         "startedAt": "2026-11-06T15:01:12Z",
+         "status": "in_progress"
+        }
+       ],
+       "url": "https://github.com/PromptPartner/agentsmith/actions/runs/1/job/501"
+      }
+     ],
+     "status": "in_progress",
+     "updatedAt": "2026-11-06T15:01:00Z",
+     "workflowDatabaseId": 365097755,
+     "workflowName": "verify"
+    }
+   }
+  },
+  {
+   "runs": [
+    {
+     "conclusion": "failure",
+     "created_at": "2026-11-06T15:00:30Z",
+     "event": "push",
+     "head_branch": "fix/verify-git-env-isolation",
+     "head_repository": {
+      "full_name": "PromptPartner/agentsmith"
+     },
+     "head_sha": "884ab3cfbaf1b05e7557712c2108a99b0284c9fe",
+     "id": 100,
+     "name": "verify",
+     "run_attempt": 1,
+     "status": "completed",
+     "updated_at": "2026-11-06T15:05:00Z",
+     "workflow_id": 365097755
+    }
+   ],
+   "views": {
+    "100": {
+     "attempt": 1,
+     "conclusion": "failure",
+     "createdAt": "2026-11-06T15:00:30Z",
+     "event": "push",
+     "headBranch": "fix/verify-git-env-isolation",
+     "headSha": "884ab3cfbaf1b05e7557712c2108a99b0284c9fe",
+     "jobs": [
+      {
+       "completedAt": "2026-11-06T15:05:00Z",
+       "conclusion": "failure",
+       "databaseId": 500,
+       "name": "compatibility (ubuntu-latest)",
+       "startedAt": "2026-11-06T15:01:00Z",
+       "status": "completed",
+       "steps": [
+        {
+         "completedAt": "2026-11-06T15:01:06Z",
+         "conclusion": "success",
+         "name": "Set up job",
+         "number": 1,
+         "startedAt": "2026-11-06T15:01:00Z",
+         "status": "completed"
+        },
+        {
+         "completedAt": "2026-11-06T15:01:12Z",
+         "conclusion": "success",
+         "name": "Run actions/checkout@v7",
+         "number": 2,
+         "startedAt": "2026-11-06T15:01:06Z",
+         "status": "completed"
+        },
+        {
+         "completedAt": "2026-11-06T15:05:00Z",
+         "conclusion": "failure",
+         "name": "Risk map contracts and byte-identical JSON",
+         "number": 3,
+         "startedAt": "2026-11-06T15:01:12Z",
+         "status": "completed"
+        }
+       ],
+       "url": "https://github.com/PromptPartner/agentsmith/actions/runs/1/job/500"
+      },
+      {
+       "completedAt": "2026-11-06T15:05:00Z",
+       "conclusion": "success",
+       "databaseId": 501,
+       "name": "compatibility (macos-latest)",
+       "startedAt": "2026-11-06T15:01:00Z",
+       "status": "completed",
+       "steps": [
+        {
+         "completedAt": "2026-11-06T15:01:06Z",
+         "conclusion": "success",
+         "name": "Set up job",
+         "number": 1,
+         "startedAt": "2026-11-06T15:01:00Z",
+         "status": "completed"
+        },
+        {
+         "completedAt": "2026-11-06T15:01:12Z",
+         "conclusion": "success",
+         "name": "Run actions/checkout@v7",
+         "number": 2,
+         "startedAt": "2026-11-06T15:01:06Z",
+         "status": "completed"
+        },
+        {
+         "completedAt": "2026-11-06T15:05:00Z",
+         "conclusion": "success",
+         "name": "Python core compiles",
+         "number": 3,
+         "startedAt": "2026-11-06T15:01:12Z",
+         "status": "completed"
+        }
+       ],
+       "url": "https://github.com/PromptPartner/agentsmith/actions/runs/1/job/501"
+      }
+     ],
+     "status": "completed",
+     "updatedAt": "2026-11-06T15:05:00Z",
+     "workflowDatabaseId": 365097755,
+     "workflowName": "verify"
+    }
+   }
+  }
+ ],
+ "pr": [
+  {
+   "baseRefName": "master",
+   "headRefName": "fix/verify-git-env-isolation",
+   "headRefOid": "884ab3cfbaf1b05e7557712c2108a99b0284c9fe",
+   "headRepository": {
+    "name": "agentsmith"
+   },
+   "headRepositoryOwner": {
+    "login": "PromptPartner"
+   },
+   "mergeStateStatus": "BLOCKED",
+   "mergeable": "MERGEABLE",
+   "number": 67,
+   "state": "OPEN",
+   "statusCheckRollup": [
+    {
+     "__typename": "CheckRun",
+     "conclusion": "SUCCESS",
+     "name": "compatibility (ubuntu-latest)",
+     "status": "COMPLETED"
+    }
+   ]
+  }
+ ],
+ "repo": "PromptPartner/agentsmith",
+ "sha": "884ab3cfbaf1b05e7557712c2108a99b0284c9fe",
+ "stall_minutes": 30,
+ "start": "2026-11-06T15:00:00Z"
+}
