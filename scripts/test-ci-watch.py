@@ -4,6 +4,8 @@ SHA, read-only against GitHub. The gh calls are served from fixtures in tests/fi
 
 from __future__ import annotations
 
+import _fixture_git  # first: keeps every Git fixture out of an inherited repository
+_fixture_git.isolate()
 import datetime as dt
 import json
 import os
