@@ -3,6 +3,12 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [x] 2026-11-16 — `scripts/verify.sh` ended with exit 128 and no message when its project was
+  not a Git repository: the gate-lock lookup `git rev-parse --absolute-git-dir` failed inside a
+  command substitution under `set -e`, before the `.harness/verify.lock` fallback ran. Found when
+  fix/gate-worktree-lock and fix/verify-git-env-isolation met on the integration branch:
+  `test_repository_runner_clears_inherited_git_environment` runs the gate in a plain folder and
+  failed there, and passes after the lookup tolerates the failure.
 - [x] 2026-11-06 — Two verification gates could run in one worktree at once (two agents, or a hook
   and a manual run) and interleave fixtures and receipts, and a recorded receipt named the commit
   and dirty flag but not the tested tree. `agentsmith verify` and `scripts/verify.sh` now share a

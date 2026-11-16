@@ -98,7 +98,8 @@ done < <(compgen -e)
 # One gate per worktree: two at once (two agents, a hook and a manual run) interleave fixtures and
 # receipts. The lock lives in the worktree's own Git directory and is shared with `agentsmith
 # verify`; a gate started by the holder itself (a phase that runs a gate) shares the holder's lock.
-LOCK="$(git -C "$ROOT_DIR" rev-parse --absolute-git-dir 2>/dev/null)/agentsmith-verify.lock"
+# Outside a Git repository the lookup fails; `|| true` keeps `set -e` from ending the gate there.
+LOCK="$(git -C "$ROOT_DIR" rev-parse --absolute-git-dir 2>/dev/null || true)/agentsmith-verify.lock"
 [ "$LOCK" = "/agentsmith-verify.lock" ] && LOCK="$ROOT_DIR/.harness/verify.lock"
 if [ "${AGENTSMITH_VERIFY_LOCK:-}" != "$LOCK" ]; then
   while ! ( set -o noclobber
