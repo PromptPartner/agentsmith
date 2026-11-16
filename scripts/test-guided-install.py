@@ -468,6 +468,31 @@ class GuidedInstallContracts(unittest.TestCase):
         troubleshooting = (ROOT / "docs" / "17-troubleshooting.md").read_text(encoding="utf-8")
         self.assertIn("needs an interactive terminal", troubleshooting)
 
+    def test_agent_install_question_list_matches_the_wizard_schema(self) -> None:
+        # A chat-only agent asks the questions AGENT-INSTALL.md lists. If that list drifts from the
+        # wizard, users answer questions the installer no longer asks, or miss one it needs.
+        text = (ROOT / "AGENT-INSTALL.md").read_text(encoding="utf-8")
+        begin, end = agentsmith.AGENT_INSTALL_QUESTIONS_BEGIN, agentsmith.AGENT_INSTALL_QUESTIONS_END
+        self.assertEqual((text.count(begin), text.count(end)), (1, 1), "AGENT-INSTALL.md needs one generated question list")
+        section = text.split(begin, 1)[1].split(end, 1)[0].strip("\n")
+        self.assertEqual(
+            section, agentsmith.wizard_questions_markdown(),
+            "AGENT-INSTALL.md question list drifted from WIZARD_QUESTIONS; replace the generated section "
+            "with the output of agentsmith.wizard_questions_markdown()",
+        )
+        # The guard must notice a changed answer, not only a changed question.
+        changed = [dict(question) for question in agentsmith.WIZARD_QUESTIONS]
+        safety = next(question for question in changed if question["key"] == "safety")
+        safety["choices"] = [*safety["choices"], "paranoid"]
+        with mock.patch.object(agentsmith, "WIZARD_QUESTIONS", tuple(changed)):
+            self.assertNotEqual(section, agentsmith.wizard_questions_markdown())
+
+    def test_agent_install_guide_offers_a_path_without_the_cli(self) -> None:
+        text = (ROOT / "AGENT-INSTALL.md").read_text(encoding="utf-8")
+        self.assertIn("## Without the CLI", text)
+        for phrase in ("core/", "profiles/", "{{OPERATOR_NAME}}", "nothing was verified"):
+            self.assertIn(phrase, text)
+
     def test_install_docs_explain_the_answers_file_and_schema(self) -> None:
         for name in ("INSTALL.md", "AGENT-INSTALL.md", "docs/12-whats-built-in.md"):
             text = (ROOT / name).read_text(encoding="utf-8")

@@ -49,7 +49,7 @@ emulate hooks or MCP to make matrix cells green.
 | Command | Purpose |
 |---|---|
 | `agentsmith demo first-loop --target <new-path>` | Copy the deterministic dependency-free launch-readiness exercise into a new or empty explicit target; refuse broad, non-empty, or symbolic targets. |
-| `agentsmith status [--target <path>] [--json]` | Explain effective topology, profiles, instruction sources, managed capabilities, verification coverage, and one reasoned next action without changing state. |
+| `agentsmith status [--target <path>] [--json]` | Explain effective topology, profiles, instruction sources, managed capabilities, verification coverage, and one reasoned next action without changing state. A copy of the AgentSmith source whose origin is not `PromptPartner/agentsmith` reports topology `copied` and points at `AGENT-INSTALL.md`. |
 | `agentsmith install --answers <file> [--dry-run]` | Apply wizard answers from a JSON file without a terminal, checked with the wizard's own rules; every problem is reported at once. |
 | `agentsmith profiles list [--json]` | List the shipped work profiles from their source files and name each verification preset. |
 | `agentsmith profiles recommend [--target <path>] [--json]` | Rank deterministic profile choices from repository evidence without calling a model or changing files. |

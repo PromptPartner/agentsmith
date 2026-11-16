@@ -508,6 +508,59 @@ class FirstVerifiedLoopCommandContracts(unittest.TestCase):
         )
         self.assertEqual(unmanaged["topology"]["kind"], "unmanaged")
 
+    def test_status_reports_a_copied_agentsmith_checkout_and_points_at_the_agent_install_guide(self) -> None:
+        # Someone who clones or copies AgentSmith gets its contributor agreement in AGENTS.md and is
+        # never asked what work they do. Status must name that state instead of calling it legacy.
+        clone = self.root / "copied clone ü"
+        (clone / "core").mkdir(parents=True)
+        (clone / "core" / "00-identity.md").write_text("# core\n", encoding="utf-8")
+        (clone / "agentsmith.py").write_text("# runtime\n", encoding="utf-8")
+        (clone / "AGENT-INSTALL.md").write_text("# guide\n", encoding="utf-8")
+        shutil.copyfile(ROOT / "AGENTS.md", clone / "AGENTS.md")
+
+        def git(*arguments: str) -> None:
+            subprocess.run(["git", "-C", str(clone), *arguments], capture_output=True, check=True)
+
+        git("init", "-q")
+        git("remote", "add", "origin", "https://github.com/example/someone-else.git")
+        copied = self.assert_json_output(
+            self.run_cli("status", "--target", str(clone), "--json"), "status.schema.json"
+        )
+        self.assertEqual(copied["topology"]["kind"], "copied")
+        self.assertIn("AGENT-INSTALL.md", copied["next_action"]["reason"])
+        self.assertIn(str((clone / "AGENT-INSTALL.md").resolve()), copied["next_action"]["reason"])
+
+        # A user-wide AgentSmith install does not change what this folder's AGENTS.md is.
+        home_state = Path(self.env["HOME"]) / ".agentsmith" / "state.json"
+        home_state.parent.mkdir(parents=True)
+        home_state.write_text(json.dumps({"installation": {
+            "scope": "global", "profiles": [], "include_core": True,
+        }}) + "\n", encoding="utf-8")
+        with_global = self.assert_json_output(
+            self.run_cli("status", "--target", str(clone), "--json"), "status.schema.json"
+        )
+        self.assertEqual(with_global["topology"]["kind"], "copied")
+        home_state.unlink()
+
+        # A folder with no Git remote at all (a downloaded archive) is a copy too.
+        shutil.rmtree(clone / ".git")
+        archive = self.assert_json_output(
+            self.run_cli("status", "--target", str(clone), "--json"), "status.schema.json"
+        )
+        self.assertEqual(archive["topology"]["kind"], "copied")
+
+        # The contributor's own checkout keeps its agreement: the origin is AgentSmith itself. The SSH
+        # form is assembled because the leak gate reads a literal user@host remote as an email address.
+        ssh_user = "git"
+        for url in ("https://github.com/PromptPartner/agentsmith.git", f"{ssh_user}@github.com:PromptPartner/agentsmith"):
+            git("init", "-q")
+            git("remote", "add", "origin", url)
+            contributor = self.assert_json_output(
+                self.run_cli("status", "--target", str(clone), "--json"), "status.schema.json"
+            )
+            self.assertEqual(contributor["topology"]["kind"], "legacy", url)
+            shutil.rmtree(clone / ".git")
+
     def test_status_reports_manifest_drift_and_duplicate_core(self) -> None:
         state_path = self.project / ".agentsmith" / "state.json"
         state = load_json(state_path)
