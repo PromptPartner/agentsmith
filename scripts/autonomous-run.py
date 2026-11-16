@@ -668,9 +668,81 @@ def frontmatter(text: str) -> dict[str, str]:
 
 
 ROUTE = re.compile(r"(direct|grill|wayfinder)\b[\s\-—–:;,(]*(.*)")
+LIST_ITEM = re.compile(r"\s*(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?(.*\S)")
+# A section a schema-2 spec must hold with at least one real list item, and what it stands for.
+REQUIRED_SPEC_SECTIONS = (("Acceptance and evidence", "acceptance criteria"),
+                          ("Edge cases", "edge case"),
+                          ("Non-goals", "out-of-scope item"))
+ASSUMPTION = re.compile(r"`([^`\s]+?)(?:::([^`\s]+))?`")
 
 
-def spec_pipeline_problems(repo: Path, meta: dict[str, str], commit: str | None = None) -> list[str]:
+def spec_sections(text: str) -> dict[str, list[str]]:
+    """The list items under each `## ` heading of a spec body, outside fenced code blocks.
+
+    An item that is only a template placeholder such as `<a boundary>` does not count."""
+    end = text.find("\n---\n", 4) if text.startswith("---\n") else -1
+    sections: dict[str, list[str]] = {}
+    current = None
+    fenced = False
+    for line in text[end + 5:].splitlines() if end >= 0 else text.splitlines():
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        if line.startswith("#"):
+            heading = re.fullmatch(r"##\s+(.*?)\s*#*\s*", line)
+            current = heading.group(1) if heading else None
+            if current is not None:
+                sections.setdefault(current, [])
+            continue
+        item = LIST_ITEM.fullmatch(line)
+        if current is not None and item and not re.fullmatch(r"<[^>]*>\.?", item.group(1)):
+            sections[current].append(item.group(1))
+    return sections
+
+
+def assumption_problems(repo: Path, items: list[str], commit: str | None) -> list[str]:
+    """Check each `path` or `path::symbol` that opens an Assumptions item against Git.
+
+    With `commit`, the path must exist in that commit (file or folder) and a symbol must occur as
+    a whole word in that file there; without it, the same holds for what Git tracks (the index).
+    Items that do not open with a backticked reference are prose and are not checked."""
+    problems = []
+    where = f"at {commit}" if commit else "in what Git tracks"
+    for item in items:
+        reference = ASSUMPTION.match(item)
+        if reference is None:
+            continue
+        path, symbol = reference.group(1).rstrip("/"), reference.group(2)
+        shown = reference.group(0)
+        relative = Path(path)
+        if (not path or relative.is_absolute() or "\\" in path or ".." in relative.parts
+                or path.startswith("-")):
+            problems.append(f"assumption {shown} must be a repository-relative path")
+            continue
+        if commit:
+            entry = run(["git", "ls-tree", commit, "--", path], repo).stdout.split()
+            kind = entry[1] if len(entry) > 1 else None
+        else:
+            tracked = run(["git", "ls-files", "-z", "--", path], repo).stdout.split("\0")
+            kind = "blob" if path in tracked else "tree" if any(tracked) else None
+        if symbol is None:
+            if kind is None:
+                problems.append(f"stale assumption: {shown} does not exist {where}")
+            continue
+        if kind is None:
+            problems.append(f"stale assumption: {shown} — {path} does not exist {where}")
+        elif kind != "blob":
+            problems.append(f"stale assumption: {shown} — {path} is not a file {where}")
+        elif run(["git", "grep", "-q", "-w", "-F", "-e", symbol,
+                  *([commit] if commit else ["--cached"]), "--", path], repo).returncode:
+            problems.append(f"stale assumption: {shown} — {symbol!r} does not occur in {path} {where}")
+    return problems
+
+
+def spec_pipeline_problems(repo: Path, meta: dict[str, str], commit: str | None = None, *,
+                           text: str) -> list[str]:
     """What a schema-2 spec lacks of the development pipeline's artifacts.
 
     A spec with no `schema` key at all predates the pipeline fields and is not checked, so specs
@@ -678,7 +750,12 @@ def spec_pipeline_problems(repo: Path, meta: dict[str, str], commit: str | None 
     value other than 2, blank included, is refused rather than treated as legacy.
 
     A run's worktree holds only what Git holds. With `commit`, each cited file must be a regular
-    file in that commit; without it, the file must exist and be tracked."""
+    file in that commit; without it, the file must exist and be tracked.
+
+    The body must hold acceptance criteria, an edge case and an out-of-scope item, each as a list
+    item under its heading, and each `path` or `path::symbol` assumption must hold at `commit`
+    (in what Git tracks without one), so a run never starts on a spec it cannot test or that is
+    stale."""
     if "schema" not in meta:
         return []
     schema = meta["schema"]
@@ -708,6 +785,11 @@ def spec_pipeline_problems(repo: Path, meta: dict[str, str], commit: str | None 
         problems.append("route must start with direct, grill or wayfinder")
     elif not route.group(2).strip():
         problems.append("route needs a one-line reason after direct, grill or wayfinder")
+    sections = spec_sections(text)
+    for heading, meaning in REQUIRED_SPEC_SECTIONS:
+        if not sections.get(heading):
+            problems.append(f"no {meaning}: add a '## {heading}' section with at least one list item")
+    problems += assumption_problems(repo, sections.get("Assumptions", []), commit)
     return problems
 
 
@@ -734,7 +816,7 @@ def check_specs(args: argparse.Namespace) -> int:
         if not named and status != "accepted":
             continue
         checked += 1
-        problems = spec_pipeline_problems(repo, meta)
+        problems = spec_pipeline_problems(repo, meta, text=text)
         if problems:
             print(f"FAIL {shown}: " + "; ".join(problems))
             failed = True
@@ -1220,7 +1302,7 @@ def validate_manifest(manifest: dict[str, Any], repo: Path) -> tuple[Path, str]:
         raise RunError("accepted spec requires accepted_by and accepted_at")
     if not meta.get("decision_ticket"):
         raise RunError("accepted spec requires a decision_ticket reference")
-    problems = spec_pipeline_problems(repo, meta, str(manifest["base_ref"]))
+    problems = spec_pipeline_problems(repo, meta, str(manifest["base_ref"]), text=shown)
     if problems:
         raise RunError("accepted spec fails the pipeline check: " + "; ".join(problems))
     if str(manifest["implementation_ticket"]) == meta.get("decision_ticket"):
@@ -1317,8 +1399,9 @@ def prepare(args: argparse.Namespace) -> int:
         manifest["roles"]["checker"]["runtime"] = args.checker
     spec = repo / args.spec
     if spec.is_file():
-        problems = spec_pipeline_problems(repo, frontmatter(read_text(spec)),
-                                          str(manifest.get("base_ref") or "HEAD"))
+        text = read_text(spec)
+        problems = spec_pipeline_problems(repo, frontmatter(text),
+                                          str(manifest.get("base_ref") or "HEAD"), text=text)
         if problems:
             raise RunError(f"{args.spec} fails the pipeline check: " + "; ".join(problems))
     if args.maker_model:

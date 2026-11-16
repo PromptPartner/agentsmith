@@ -19,6 +19,16 @@ accepted_at:
 
 - <A deliberate boundary; include why it is outside this destination.>
 
+## Edge cases
+
+- <An input, state or failure the implementation must handle, and the expected behaviour.>
+
+## Assumptions
+
+- `<path/to/file>` <what this spec assumes about it; the file must exist at the run's base commit>
+- `<path/to/file>::<symbol>` <the symbol must occur as a whole word in that file there>
+- <A prose assumption; an item that does not open with a backticked reference is not checked.>
+
 ## Decision map
 
 ### Frontier

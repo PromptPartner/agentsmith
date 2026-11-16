@@ -13,6 +13,17 @@ file, and `autonomous-run` refuses such a spec. Only a spec with no `schema` key
 as accepted before these fields existed and is not checked; any other schema value, a blank one
 included, is refused, and so is a front matter key that appears twice.
 
+A schema-2 spec must also be testable. Its body needs at least one list item under each of
+`## Acceptance and evidence` (the acceptance criteria), `## Edge cases` and `## Non-goals` (what
+is out of scope); a section that is missing, holds only prose, or holds only a template
+placeholder such as `- <...>` counts as absent. An optional `## Assumptions` section records what
+the spec takes for granted about the code. A list item that opens with a backticked reference is
+checked against Git: `` `path` `` must exist (file or folder), and `` `path::symbol` `` must name a
+file in which the symbol occurs as a whole word. `prepare` and `start` check these at the run's
+`base_ref` and refuse a "stale assumption" by name; `check-specs` checks them against what Git
+tracks. Any other list item is prose and is not checked. Specs without a `schema` key are still
+not checked.
+
 The spec records decisions. Implementation proceeds through new, separately scoped tracker items;
 the active tracker-write consent policy governs creating, commenting on, or closing those items.
 
