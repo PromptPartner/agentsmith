@@ -9,6 +9,21 @@ been authorized, so the entries are kept here.
   fix/gate-worktree-lock and fix/verify-git-env-isolation met on the integration branch:
   `test_repository_runner_clears_inherited_git_environment` runs the gate in a plain folder and
   failed there, and passes after the lookup tolerates the failure.
+- [ ] 2026-11-06 — Found while fixing the export redaction on Windows: `evaluate.py`'s
+  `redact()` replaces only the home folder exactly as `Path.home()` spells it, followed by the
+  native separator. On Windows the same folder written with `/`, in another letter case, with the
+  `\\?\` prefix, as Git Bash's `/c/Users/...` or with doubled backslashes stays in the normalized
+  evaluation summary. `factory export` now matches all of these; the evaluator does not reuse it.
+- [ ] 2026-11-06 — Coverage gap: `scripts/test-factory.py` skips two tests on Windows. The fake
+  `gh` is a POSIX script, so the test that `factory numbers --target` reads CI for the target's
+  repository and not the current folder's never runs there; the real readiness preflight test
+  needs the macOS or Linux sandbox, so the Windows sandbox preflight is never run by it. Windows
+  CI passing says nothing about either path on Windows.
+- [ ] 2026-11-06 — Measured with `agentsmith factory readiness` on this repository: the latest
+  `compatibility (windows-latest)` job took 38 of its 45 timeout minutes (84%), over the 70%
+  headroom. A slower runner can time it out. Over 2026-10-01 to 2026-11-06 the default branch was
+  red about 205 hours (23% of the window) by the derived measure, which keeps a failing workflow
+  red until its next run, so sparse pushes inflate it. Both are inputs for the CI work, not fixed here.
 - [ ] 2026-11-06 — Measured: a small model does not follow the checker's receipt format. A real
   `autonomous-run calibrate` of Claude Code 2.1.319 with `haiku` at low effort failed both labelled
   candidates (three runs, about $0.04 in total): its receipts named `HEAD`, an empty value or free

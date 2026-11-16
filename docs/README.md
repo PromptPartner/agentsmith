@@ -44,6 +44,8 @@ Product templates, demos, and the [spec format](specs/README.md) remain public. 
 
 - [CI watch](30-ci-watch.md) — one end state for a commit's CI, read-only, from the runs for its exact SHA.
 
+- [Factory readiness](31-factory-readiness.md) — readiness checks and the six numbers, derived and read-only.
+
 - [Inbox](31-inbox.md) — everything that waits on the operator, derived on every call; local issue claims.
 
 - [Review lenses](32-review-lenses.md) — report-only specialist reviews: triggers, depth, briefs and the trial record.

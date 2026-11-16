@@ -85,6 +85,7 @@ surface stays small.
 | `agentsmith risk classify --base <ref> --head <ref> [--json]` | Tier (A, B, C or human) and triggered lenses for a commit range, from the policy committed at the base ([risk map](29-risk-map.md)). |
 | `agentsmith lens plan\|brief\|record\|report` | Report-only review lenses: which lenses a change triggers and how deep, the attended brief, and the trial record ([review lenses](32-review-lenses.md)). |
 | `agentsmith ci watch --pr <n>\|--sha <sha> [--json]` | Report-only watch of a commit's GitHub runs, ending in one named state with an exit code ([CI watch](30-ci-watch.md)). |
+| `agentsmith factory readiness\|numbers\|export\|defect add\|minutes add` | Derived readiness checks and the six numbers for autonomous work; read-only except export and the operator logs ([factory readiness](31-factory-readiness.md)). |
 
 The [First Verified Loop public proof](demos/first-verified-loop/README.md) exercises the portable
 status, verification, receipt, handoff, and resume commands together. Its lifecycle artifacts also

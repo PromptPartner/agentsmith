@@ -145,7 +145,24 @@ def shown_paths(paths: list[str]) -> str:
 PAUSE_MARKER = ".harness/AUTONOMY_PAUSED"
 
 
-def assert_autonomy_not_paused(repo: Path) -> None:
+def factory_root(repo: Path) -> Path:
+    """Operator-side records outside any run: kill-switch refusals, the post-merge defect log and
+    logged human minutes. Roles cannot write it, and Git metadata checks ignore it."""
+    return state_root(repo).parent / "agentsmith-factory"
+
+
+def record_factory_event(repo: Path, kind: str, **fields: Any) -> None:
+    """Best effort: a record that cannot be written must never change the decision it records."""
+    try:
+        root = factory_root(repo)
+        root.mkdir(exist_ok=True)
+        with (root / "events.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"at": now(), "event": kind, **fields}, sort_keys=True) + "\n")
+    except (OSError, RunError):
+        pass
+
+
+def assert_autonomy_not_paused(repo: Path, *, action: str = "work", run_id: str | None = None) -> None:
     """The operator's repository-wide kill switch: while the marker exists in this checkout or
     in the main checkout, no run is prepared, started or resumed. A live run keeps running;
     `stop <id>` ends it. Any entry in `.harness/` named AUTONOMY_PAUSED ignoring case counts,
@@ -163,6 +180,13 @@ def assert_autonomy_not_paused(repo: Path) -> None:
             raise RunError(f"cannot tell whether autonomy is paused: {folder}: {exc}") from exc
         for name in names:
             if name.casefold() == wanted:
+                # The evidence that the kill switch works, for `agentsmith factory readiness`.
+                try:
+                    marker_mtime = (folder / name).stat().st_mtime_ns
+                except OSError:
+                    marker_mtime = None
+                record_factory_event(repo, "autonomy_pause_refused", action=action, run_id=run_id,
+                                     marker=str((folder / name).resolve()), marker_mtime_ns=marker_mtime)
                 raise RunError(f"autonomy is paused by {folder / name}; remove it to allow new work "
                                "(live runs are not stopped; use stop <id>)")
 
@@ -1042,7 +1066,7 @@ def graph_effective_base(repo: Path, graph_path: str, manifest_path: Path,
 
 def prepare(args: argparse.Namespace) -> int:
     repo = repo_root(Path.cwd())
-    assert_autonomy_not_paused(repo)
+    assert_autonomy_not_paused(repo, action="prepare", run_id=args.run_id)
     if args.template:
         source = Path(args.template).resolve()
     else:
@@ -1467,7 +1491,7 @@ def _git_metadata_once(repo: Path, *, known_peers: dict[str, Any] | None = None)
     branch_log = Path("logs") / branch_ref if branch_ref else None
     for path in sorted(item for item in common.rglob("*") if item.is_file()):
         rel = path.relative_to(common)
-        if rel.parts[0] in {"agentsmith-runs", "agentsmith-calibrations"}:
+        if rel.parts[0] in {"agentsmith-runs", "agentsmith-calibrations", "agentsmith-factory"}:
             continue
         if rel.parts[0] == "objects":
             objects.append((rel.as_posix(), file_digest(path)))
@@ -1492,6 +1516,7 @@ def _git_metadata_once(repo: Path, *, known_peers: dict[str, Any] | None = None)
         "hooks": hooks,
         "protected_files": protected,
         "existing_objects": objects,
+        "factory": factory_snapshot(common),
         "registered_peers": {
             "refs": sorted(other_run_refs),
             "protected_refs": sorted(line.split(" ", 1)[0] for line in refs),
@@ -1545,6 +1570,50 @@ def git_metadata(repo: Path, *, known_peers: dict[str, Any] | None = None) -> di
         time.sleep(0.02)
 
 
+# The only entries the factory records folder may hold: operator logs that only grow.
+FACTORY_LOGS = frozenset({"events.jsonl", "defects.jsonl", "minutes.jsonl"})
+
+
+def factory_snapshot(common: Path) -> dict[str, Any]:
+    """The factory records folder's shape. It is left out of the strict comparison because other
+    commands append to it while a run is live, so it gets its own rule: only the known logs, as
+    regular files, and each may only grow (an append keeps every earlier byte)."""
+    folder = common / "agentsmith-factory"
+    entries: dict[str, Any] = {}
+    if folder.is_symlink() or (folder.exists() and not folder.is_dir()):
+        return {"folder": str(folder), "entries": {".": {"kind": "not-a-folder"}}}
+    for path in sorted(folder.rglob("*")) if folder.is_dir() else []:
+        rel = path.relative_to(folder).as_posix()
+        if path.is_symlink() or not path.is_file():
+            entries[rel] = {"kind": "symlink" if path.is_symlink() else "other"}
+            continue
+        data = path.read_bytes()
+        entries[rel] = {"kind": "file", "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+    return {"folder": str(folder), "entries": entries}
+
+
+def factory_tampering(before: dict[str, Any] | None, after: dict[str, Any] | None) -> str | None:
+    if not before or not after:
+        return None
+    folder = Path(after["folder"])
+    for rel, entry in after["entries"].items():
+        if rel not in FACTORY_LOGS or entry["kind"] != "file":
+            return f"agentsmith-factory/{rel} is not an operator log file"
+    for rel, entry in before["entries"].items():
+        if entry.get("kind") != "file":
+            continue
+        later = after["entries"].get(rel)
+        if later is None or later["size"] < entry["size"]:
+            return f"agentsmith-factory/{rel} lost records"
+        try:
+            prefix = (folder / rel).read_bytes()[:entry["size"]]
+        except OSError:
+            return f"agentsmith-factory/{rel} cannot be read"
+        if hashlib.sha256(prefix).hexdigest() != entry["sha256"]:
+            return f"agentsmith-factory/{rel} was rewritten, not appended to"
+    return None
+
+
 def ignored_paths(worktree: Path) -> set[str]:
     return set(git_paths(worktree, "ls-files", "--others", "--ignored", "--exclude-standard"))
 
@@ -1572,6 +1641,9 @@ def validate_git_transition(worktree: Path, before: dict[str, Any], after: dict[
                                  if old_files.get(path) != new_files.get(path))
                 raise RunError(f"runtime changed protected Git metadata: {key}: {', '.join(changed[:8])}")
             raise RunError(f"runtime changed protected Git metadata: {key}")
+    tampered = factory_tampering(before.get("factory"), after.get("factory"))
+    if tampered:
+        raise RunError(f"runtime changed protected Git metadata: {tampered}")
     after_objects = dict(after["existing_objects"])
     altered_objects = [path for path, digest in before["existing_objects"]
                        if after_objects.get(path) != digest]
@@ -1592,6 +1664,9 @@ def validate_git_unchanged(before: dict[str, Any], after: dict[str, Any], actor:
     for key in ("refs", "config", "config_worktree", "hooks", "protected_files", "existing_objects"):
         if before[key] != after[key]:
             raise RunError(f"{actor} changed protected Git metadata: {key}")
+    tampered = factory_tampering(before.get("factory"), after.get("factory"))
+    if tampered:
+        raise RunError(f"{actor} changed protected Git metadata: {tampered}")
 
 
 @contextlib.contextmanager
@@ -1899,7 +1974,9 @@ def trusted_paths(state: dict[str, Any]) -> list[Path]:
     # every sandbox can name it.
     calibrations = state_root(repo).parent / "agentsmith-calibrations"
     calibrations.mkdir(exist_ok=True)
-    return [state_root(repo), calibrations, Path(state['manifest_path']), repo / state['spec_path'],
+    factory = factory_root(repo)
+    factory.mkdir(exist_ok=True)
+    return [state_root(repo), calibrations, factory, Path(state['manifest_path']), repo / state['spec_path'],
             Path(__file__).resolve().parent, runtime.parent]
 
 
@@ -2647,7 +2724,7 @@ def run_controller(state: dict[str, Any], manifest: dict[str, Any]) -> int:
 
 def start(args: argparse.Namespace) -> int:
     repo = repo_root(Path.cwd())
-    assert_autonomy_not_paused(repo)
+    assert_autonomy_not_paused(repo, action="start", run_id=Path(args.manifest).stem)
     manifest_path = Path(args.manifest).resolve()
     manifest = load_json(manifest_path)
     spec_rel, spec_hash = validate_manifest(manifest, repo)
@@ -2964,7 +3041,7 @@ def recover_checker_worktree(state: dict[str, Any], manifest: dict[str, Any]) ->
 
 def resume(args: argparse.Namespace) -> int:
     repo = repo_root(Path.cwd())
-    assert_autonomy_not_paused(repo)
+    assert_autonomy_not_paused(repo, action="resume", run_id=args.run_id)
     state = load_run(repo, args.run_id)
     if state["status"] == "accepted":
         raise RunError("accepted runs do not resume")
@@ -3579,7 +3656,7 @@ def calibrate(args: argparse.Namespace) -> int:
     """Run the configured checker against the labelled candidates and record the result.
     Record-only: no run depends on it yet. 0 passed, 1 failed, 2 could not run."""
     repo = repo_root(Path.cwd())
-    assert_autonomy_not_paused(repo)
+    assert_autonomy_not_paused(repo, action="calibrate")
     manifest = load_json(Path(args.manifest).resolve())
     checker = (manifest.get("roles") or {}).get("checker") or {}
     if checker.get("runtime") not in {"claude", "codex"}:

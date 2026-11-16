@@ -523,6 +523,39 @@ class AutonomousStateTests(unittest.TestCase):
         (repo / ".harness" / "AUTONOMY_PAUSED.md").touch()
         CONTROLLER.assert_autonomy_not_paused(repo)
 
+    def test_a_kill_switch_refusal_leaves_evidence_outside_any_run(self) -> None:
+        # Readiness asks whether the kill switch was ever seen to work; a refusal leaves no run,
+        # so it is recorded in the factory events log, which roles cannot write.
+        repo = self.guard_repository()
+        (repo / ".harness").mkdir()
+        (repo / ".harness" / "AUTONOMY_PAUSED").touch()
+        for action, run_id in (("start", "nightly"), ("resume", "nightly"), ("prepare", "draft")):
+            with self.assertRaisesRegex(CONTROLLER.RunError, "autonomy is paused"):
+                CONTROLLER.assert_autonomy_not_paused(repo, action=action, run_id=run_id)
+        log = CONTROLLER.factory_root(repo) / "events.jsonl"
+        events = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([(e["event"], e["action"], e["run_id"]) for e in events],
+                         [("autonomy_pause_refused", "start", "nightly"), ("autonomy_pause_refused", "resume", "nightly"),
+                          ("autonomy_pause_refused", "prepare", "draft")])
+        self.assertTrue(all(e["marker"].endswith("AUTONOMY_PAUSED") and e["at"] for e in events))
+        state = {"repo": str(repo), "manifest_path": str(repo / "m.json"), "spec_path": "s.md"}
+        self.assertIn(CONTROLLER.factory_root(repo), CONTROLLER.trusted_paths(state))
+
+    def test_the_factory_folder_may_only_grow_by_appends_to_its_logs(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith factory shape ") as temporary:
+            common = Path(temporary)
+            folder = common / "agentsmith-factory"
+            folder.mkdir()
+            (folder / "events.jsonl").write_text('{"event": "first"}\n', encoding="utf-8")
+            before = CONTROLLER.factory_snapshot(common)
+            with (folder / "events.jsonl").open("a", encoding="utf-8") as log:
+                log.write('{"event": "appended by another command"}\n')
+            (folder / "defects.jsonl").write_text('{"sha": "x"}\n', encoding="utf-8")
+            self.assertIsNone(CONTROLLER.factory_tampering(before, CONTROLLER.factory_snapshot(common)))
+            (folder / "events.jsonl").write_text('{"event": "rewritten"}\n', encoding="utf-8")
+            self.assertIn("rewritten, not appended to",
+                          CONTROLLER.factory_tampering(before, CONTROLLER.factory_snapshot(common)))
+
     def test_kill_switch_in_main_checkout_pauses_linked_worktrees(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith pause ") as temporary:
             repo = Path(temporary).resolve() / "main"

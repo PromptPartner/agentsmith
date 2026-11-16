@@ -666,7 +666,7 @@ def _create_checkpoint(contract: dict[str, Any], state: dict[str, Any], run_id: 
 def _assert_autonomy_not_paused(contract: dict[str, Any]) -> None:
     controller = _controller()
     try:
-        controller.assert_autonomy_not_paused(contract["repo"])
+        controller.assert_autonomy_not_paused(contract["repo"], action="graph", run_id=contract["graph_id"])
     except controller.RunError as exc:
         raise GraphError(str(exc)) from exc
 
