@@ -43,3 +43,5 @@ Product templates, demos, and the [spec format](specs/README.md) remain public. 
 - [Risk map](29-risk-map.md) — the tier of a change from a committed path policy and a fixed always-human floor.
 
 - [Inbox](31-inbox.md) — everything that waits on the operator, derived on every call; local issue claims.
+
+- [Review lenses](32-review-lenses.md) — report-only specialist reviews: triggers, depth, briefs and the trial record.

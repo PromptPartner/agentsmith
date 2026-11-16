@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "lenses": [
+    {
+      "id": "security",
+      "paths": ["src/auth/**", "**/auth/**", "**/permissions/**", "**/*secret*", "**/*token*"],
+      "must_read": ["SECURITY.md"],
+      "brief": "Look for authentication, authorization, input-handling and secret-handling defects: who can do what, which input reaches a query, a shell or a file path, and what is logged.",
+      "evidence": "Cite the line that is wrong, or the line where a check is missing.",
+      "min_tier": "B"
+    },
+    {
+      "id": "data",
+      "paths": ["**/migrations/**", "**/schema*", "**/*.sql"],
+      "must_read": ["docs/data-model.md"],
+      "brief": "Check that every schema or data change runs on existing data, keeps a way back, and does not lose or expose records.",
+      "evidence": "Cite the migration or query line and say which existing data it affects.",
+      "min_tier": "A"
+    },
+    {
+      "id": "installer",
+      "paths": ["install*", "setup*", "**/install/**", "**/update/**", "**/release*"],
+      "must_read": ["INSTALL.md"],
+      "brief": "Check what the change does on a user's machine: files it writes or removes, upgrades from the previous release, and what happens when a step fails halfway.",
+      "evidence": "Cite the line that writes, removes or upgrades, and the case it gets wrong.",
+      "min_tier": "A"
+    },
+    {
+      "id": "ui",
+      "paths": ["**/*.css", "**/*.scss", "**/components/**", "**/ui/**", "**/*.html"],
+      "must_read": ["DESIGN.md"],
+      "brief": "Check the change against the design system: colors, type, spacing, components, states and accessibility.",
+      "evidence": "Cite the style or component line and the DESIGN.md rule it breaks.",
+      "min_tier": "A"
+    }
+  ]
+}

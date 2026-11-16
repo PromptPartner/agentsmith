@@ -43,7 +43,8 @@ The policy is `.harness/risk-policy.json`. A starting point is
 ```
 
 - Each rule has `paths` (one or more globs), a `tier` (`A`, `B`, `C` or `human`) and optional
-  `lenses` (lowercase ids such as `security`). Other keys are an error.
+  `lenses` (lowercase ids such as `security`), which trigger the [review lenses](32-review-lenses.md)
+  of the same id. Other keys are an error.
 - Globs start at the repository root. `*` and `?` match inside one folder name; `**` matches any
   number of whole folders, including none, so `docs/**` also covers an entry named `docs`.
   `*.md` matches only Markdown files at the root; use `**/*.md` for any depth. Use `/` as the
