@@ -20,7 +20,7 @@ been authorized, so the entries are kept here.
   `scripts/verify.sh` and `agentsmith verify` (with and without `--record`) now clear these
   variables before any phase runs. The three `GitEnvironmentIsolationTests` in
   `scripts/test-verify-receipts.py` failed before the change and pass after.
-- [ ] 2026-11-06 — Test scripts run directly, outside the gate, still pass these variables to their
+- [x] 2026-11-06 — Test scripts run directly, outside the gate, still pass these variables to their
   Git fixtures: `test-agent-conformance.py`, `test-autonomous-graph-base.py`,
   `test-autonomous-run.sh`, `test-autonomous-state.py`, `test-doctor.py`,
   `test-durable-checkpoints.py`, `test-first-verified-loop-contracts.py`,
@@ -28,7 +28,8 @@ been authorized, so the entries are kept here.
   `test-wayfinder-spec.sh`, `test-windows-verifier-sandbox.py`, `test-work-graph-contracts.py`,
   `test-work-graph-dispatch.py`, `test-work-graph-release-evidence.py`,
   `test-work-graph-status.py`. Run them through `scripts/verify.sh --only <label>` from a hook or
-  `rebase --exec`, not directly.
+  `rebase --exec`, not directly. Fixed by the `_fixture_git` entry above: every test script now clears
+  the variables itself.
 
 - [x] 2026-11-06 — The maker scope check and the protected-input check (policy files, baseline
   tests, agent instructions and the symbolic links that reach them) read only the end-to-end diff
