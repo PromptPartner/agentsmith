@@ -3,6 +3,15 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [x] 2026-11-06 — Two verification gates could run in one worktree at once (two agents, or a hook
+  and a manual run) and interleave fixtures and receipts, and a recorded receipt named the commit
+  and dirty flag but not the tested tree. `agentsmith verify` and `scripts/verify.sh` now share a
+  per-worktree lock in the worktree's Git directory: a second gate fails fast naming the holder's
+  pid and start time, `--wait` waits, a dead holder's lock is reclaimed, and a gate started by the
+  holder shares its lock. Receipts record `git write-tree`, and `verification_receipt_problem()`
+  refuses a receipt from another or a dirty tree. `VerifyLockTests` in `test-verify-receipts.py`
+  failed before and pass after.
+
 - [ ] 2026-11-06 — `git_metadata()` excludes the active worktree's Git directory from the protected
   files. Called from the main checkout, that directory is the whole common directory, so nothing
   outside objects, refs, config and hooks would be compared. Every current caller passes a run's
