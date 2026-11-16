@@ -16,6 +16,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 from typing import Any, Callable
 
@@ -342,6 +343,81 @@ def refusal_holds(repo: Path, item: dict[str, Any], now: datetime) -> bool:
             and marker.parent.name == ".harness" and marker.parent.parent.resolve() in roots)
 
 
+# The oldest native client readiness accepts. Claude Code 2.1.319 carries the fix for the worktree
+# sandbox escape; Codex 0.167 is the factory's floor for Codex.
+MIN_CLIENT_VERSIONS = {"claude": (2, 1, 319), "codex": (0, 167, 0)}
+# A version: numbers, then an optional prerelease of non-empty dot-separated [0-9A-Za-z-] identifiers.
+# Anything joined to it other than a sentence's closing dot (`2.1.319-`, `2.1.319-beta_1`) is unreadable.
+VERSION = r"v?(?P<major>\d+)\.(?P<minor>\d+)(?:\.(?P<patch>\d+))?(?:-(?P<pre>[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+CLIENT_VERSION = re.compile(rf"(?<![\w.+-]){VERSION}(?![\w+-]|\.(?!\s|$))")
+# What each client calls itself in its `--version` line: `2.1.327 (Claude Code)`, `codex-cli 0.169.0`.
+CLIENT_NAMES = {"claude": ("claude code", "claude"), "codex": ("codex-cli", "codex")}
+
+
+def client_version_match(text: str, runtime: str) -> re.Match[str] | None:
+    """The version next to the client's own name; without the name, the only version in the text.
+    None (an unknown version) when the name is there without a readable version beside it, or when
+    the text holds no version or more than one."""
+    named = False
+    for name in CLIENT_NAMES[runtime]:
+        word = rf"(?<![\w-]){re.escape(name)}(?![\w-])"
+        if re.search(word, text, re.IGNORECASE):
+            named = True
+            beside = re.search(rf"{word}\s+(?P<v>\S+)|(?P<w>\S+)\s*\(\s*{word}\s*\)", text, re.IGNORECASE)
+            if beside:
+                token = beside["v"] or beside["w"]
+                found = CLIENT_VERSION.fullmatch(token.rstrip(".;,"))
+                if found:
+                    return found
+    if named:
+        return None
+    versions = list(CLIENT_VERSION.finditer(text))
+    return versions[0] if len(versions) == 1 else None
+
+
+def parse_client_version(text: str, runtime: str) -> tuple[int, int, int, int] | None:
+    """(major, minor, patch, 1) from a client's `--version` line, with 0 last for a prerelease,
+    which comes before its release. None when no version can be read."""
+    found = client_version_match(text, runtime)
+    if found is None:
+        return None
+    return int(found["major"]), int(found["minor"]), int(found["patch"] or 0), 0 if found["pre"] else 1
+
+
+def probe_client(runtime: str) -> dict[str, Any]:
+    """Where the configured native client is and what `--version` says, as a run would launch it."""
+    import native_launcher
+    command = native_launcher.native_command_prefix(runtime)
+    found = shutil.which(command[-1]) or (command[-1] if Path(command[-1]).is_file() else None)
+    if found is None:
+        return {"runtime": runtime, "path": None, "text": "not found", "version": None}
+    try:
+        text = native_launcher.client_version([*command[:-1], found])
+    except (OSError, subprocess.SubprocessError):
+        text = "unknown"
+    return {"runtime": runtime, "path": found, "text": text, "version": parse_client_version(text, runtime)}
+
+
+def client_versions(clients: list[dict[str, Any]]) -> dict[str, Any]:
+    rows, low = [], []
+    for client in clients:
+        runtime, version = client["runtime"], client["version"]
+        floor = ".".join(map(str, MIN_CLIENT_VERSIONS[runtime]))
+        if client["path"] is None:
+            low.append(f"{runtime} not found (needs {floor} or later)")
+        elif version is None:
+            low.append(f"{runtime} version unknown ({client['text'][:80]!r}; needs {floor} or later)")
+        else:
+            found = client_version_match(client["text"], runtime)
+            shown = found[0].lstrip("v") if found else client["text"]
+            if version < (*MIN_CLIENT_VERSIONS[runtime], 1):
+                low.append(f"{runtime} {shown} is below {floor}")
+            else:
+                rows.append(f"{runtime} {shown} (needs {floor} or later)")
+    return check("client versions", not low, "; ".join(low + rows) or "no native client named",
+                 "update each client named above to its minimum version or later, then run readiness again")
+
+
 def load_controller(repo: Path) -> Any:
     here = Path(__file__).resolve().parent
     for source in (here / "autonomous-run.py", here / "scripts" / "autonomous-run.py"):
@@ -431,14 +507,19 @@ def readiness(repo: Path, *, controller: Any, gh: Any | None, manifest: dict[str
                             f"{checker.get('runtime')} {checker.get('model')} ({checker.get('effort')}): "
                             f"{status.get('status')}" + (f" at {status['calibrated_at']}" if status.get("calibrated_at") else ""),
                             "run `autonomous-run.py calibrate <manifest>` with this checker"))
-    # 5. The kill switch has been seen to stop work. A local log is evidence, not proof: each record
+    # 5. Each native client the manifest names (both without one) is at its minimum version.
+    runtimes = sorted({role.get("runtime") for role in ((manifest or {}).get("roles") or {}).values()
+                       if isinstance(role, dict)} & set(MIN_CLIENT_VERSIONS)) if manifest else sorted(MIN_CLIENT_VERSIONS)
+    clients = [probe_client(runtime) for runtime in runtimes]
+    checks.append(client_versions(clients))
+    # 6. The kill switch has been seen to stop work. A local log is evidence, not proof: each record
     # must carry the refusal's facts, and the facts that can be checked are.
     refusals = [item for item in read_jsonl(factory_dir(repo) / "events.jsonl") if refusal_holds(repo, item, now)]
     checks.append(check("kill switch tested", bool(refusals),
                         f"{len(refusals)} refusal(s) recorded with their facts"
                         + (f", latest {refusals[-1].get('at')} ({refusals[-1].get('action')})" if refusals else ""),
                         "create .harness/AUTONOMY_PAUSED, try a start, see it refused, then remove the file"))
-    # 6-7. What the base commit carries.
+    # 7-8. What the base commit carries.
     def at_base(path: str) -> str | None:
         if not base_commit:
             return None
@@ -463,7 +544,7 @@ def readiness(repo: Path, *, controller: Any, gh: Any | None, manifest: dict[str
                         f"risk policy {'valid' if policy_ok else 'missing or invalid'}, lens file "
                         f"{'present' if lenses is not None else 'missing'} at {base}",
                         "commit .harness/risk-policy.json and .harness/lenses.json"))
-    # 8. Receipts can leave the Git folder.
+    # 9. Receipts can leave the Git folder.
     try:
         exported = collect_export(repo)
         checks.append(check("receipts exportable", True, f"{len(exported['runs'])} run(s) readable for export", ""))
