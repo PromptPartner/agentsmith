@@ -315,8 +315,10 @@ def job_timeout(workflow: str, job_name: str) -> int | None:
 
 # --- readiness ---------------------------------------------------------------------------------
 
-def check(name: str, passed: bool, evidence: str, next_step: str) -> dict[str, Any]:
-    return {"name": name, "status": "pass" if passed else "fail", "evidence": evidence,
+def check(name: str, passed: bool, evidence: str, next_step: str, *, warn: bool = False) -> dict[str, Any]:
+    """A check passes or fails. `warn` turns a failure into a warning: the risk is named with its
+    next step, and readiness is not held back by it."""
+    return {"name": name, "status": "pass" if passed else "warn" if warn else "fail", "evidence": evidence,
             "next_step": "none" if passed else next_step}
 
 
@@ -396,6 +398,43 @@ def probe_client(runtime: str) -> dict[str, Any]:
     except (OSError, subprocess.SubprocessError):
         text = "unknown"
     return {"runtime": runtime, "path": found, "text": text, "version": parse_client_version(text, runtime)}
+
+
+# Editor folders whose `extensions` folder holds marketplace extensions that bundle a client binary.
+EDITOR_FOLDERS = {".vscode": "VS Code", ".vscode-insiders": "VS Code Insiders", ".vscode-server": "VS Code Server",
+                  ".vscode-server-insiders": "VS Code Server", ".vscode-oss": "VSCodium", ".cursor": "Cursor",
+                  ".cursor-server": "Cursor Server", ".windsurf": "Windsurf", ".windsurf-server": "Windsurf Server",
+                  ".positron": "Positron"}
+
+
+def marketplace_editor(path: str) -> str | None:
+    """The editor whose extensions folder holds `path`, such as `~/.vscode/extensions/...`; None for
+    a client installed as a command-line tool. Only the editor folders listed above count."""
+    parts = [part for part in re.split(r"[\\/]+", path.casefold()) if part]
+    for folder, child in zip(parts, parts[1:]):
+        if child == "extensions" and folder in EDITOR_FOLDERS:
+            return EDITOR_FOLDERS[folder]
+    return None
+
+
+def client_sources(clients: list[dict[str, Any]]) -> dict[str, Any]:
+    rows, bundled = [], []
+    for client in clients:
+        if client["path"] is None:
+            continue
+        real = str(Path(client["path"]).resolve())
+        editor = marketplace_editor(client["path"]) or marketplace_editor(real)
+        where = client["path"] + (f" (links to {real})" if real != client["path"] else "")
+        if editor:
+            bundled.append(f"{client['runtime']} at {where} comes from a {editor} extension: the editor "
+                           "updates or removes it on its own schedule, so the version checked here can change "
+                           "under a run")
+        else:
+            rows.append(f"{client['runtime']} at {where}")
+    return check("clients installed as a command-line tool", not bundled,
+                 "; ".join(bundled + rows) or "no native client found",
+                 "install the command-line client and point AGENTSMITH_CLAUDE_BIN or AGENTSMITH_CODEX_BIN at it",
+                 warn=True)
 
 
 def client_versions(clients: list[dict[str, Any]]) -> dict[str, Any]:
@@ -512,6 +551,7 @@ def readiness(repo: Path, *, controller: Any, gh: Any | None, manifest: dict[str
                        if isinstance(role, dict)} & set(MIN_CLIENT_VERSIONS)) if manifest else sorted(MIN_CLIENT_VERSIONS)
     clients = [probe_client(runtime) for runtime in runtimes]
     checks.append(client_versions(clients))
+    checks.append(client_sources(clients))
     # 6. The kill switch has been seen to stop work. A local log is evidence, not proof: each record
     # must carry the refusal's facts, and the facts that can be checked are.
     refusals = [item for item in read_jsonl(factory_dir(repo) / "events.jsonl") if refusal_holds(repo, item, now)]
@@ -550,7 +590,7 @@ def readiness(repo: Path, *, controller: Any, gh: Any | None, manifest: dict[str
         checks.append(check("receipts exportable", True, f"{len(exported['runs'])} run(s) readable for export", ""))
     except FactoryError as exc:
         checks.append(check("receipts exportable", False, str(exc), "repair or archive the unreadable run"))
-    return {"schema_version": SCHEMA_VERSION, "base": base, "ready": all(item["status"] == "pass" for item in checks),
+    return {"schema_version": SCHEMA_VERSION, "base": base, "ready": all(item["status"] != "fail" for item in checks),
             "checks": checks}
 
 

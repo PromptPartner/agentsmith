@@ -395,7 +395,7 @@ class FactoryTests(unittest.TestCase):
         headroom = next(item for item in report["checks"] if item["name"] == "CI headroom")
         self.assertIn("windows compatibility (windows-latest): 20 of 45 min", headroom["evidence"])
         self.assertIn("linux compatibility (ubuntu-latest): 6 of 20 min", headroom["evidence"])
-        self.assertEqual(len(report["checks"]), 9)
+        self.assertEqual(len(report["checks"]), 10)
 
     def test_each_readiness_check_fails_with_its_reason_and_a_next_step(self) -> None:
         def broken_preflight(*_args, **_kwargs):
@@ -472,6 +472,39 @@ class FactoryTests(unittest.TestCase):
         self.client("claude", "2.1.319 (Claude Code)")
         self.client("codex", "codex-cli 0.100.0")  # not named by the manifest, so not asked
         self.assertNotIn("client versions", self.failing(self.readiness()))
+
+    def test_a_client_from_an_editor_extension_is_a_warning(self) -> None:
+        both = {"roles": {"maker": {"runtime": "codex"},
+                          "checker": {"runtime": "claude", "model": "m", "effort": "high"}}}
+        source = next(item for item in self.readiness(manifest=both)["checks"]
+                      if item["name"] == "clients installed as a command-line tool")
+        self.assertEqual(source["status"], "pass", source)
+        extension = self.client("claude", "2.1.330 (Claude Code)",
+                                "home/.vscode/extensions/anthropic.claude-code-2.1.330-darwin-arm64/resources/native-binary")
+        # A command on PATH that links into an editor's extensions folder is that extension's binary.
+        linked = self.repo.parent / "home/.local/bin/codex.py"
+        linked.parent.mkdir(parents=True)
+        linked.symlink_to(self.client("codex", "codex-cli 0.169.0", "home/.cursor/extensions/openai.chatgpt-26.5/bin"))
+        os.environ["AGENTSMITH_CODEX_BIN"] = str(linked)
+        report = self.readiness(manifest=both)
+        source = next(item for item in report["checks"] if item["name"] == "clients installed as a command-line tool")
+        self.assertEqual(source["status"], "warn", source)
+        self.assertIn(f"claude at {extension} comes from a VS Code extension", source["evidence"])
+        self.assertIn("codex at", source["evidence"])
+        self.assertIn("comes from a Cursor extension", source["evidence"])
+        self.assertIn("install the command-line client", source["next_step"])
+        self.assertTrue(report["ready"], "a warning names a risk; it does not block")
+        self.assertEqual([item["name"] for item in report["checks"] if item["status"] == "fail"], [])
+        text = factory.render(report)
+        self.assertIn("  warn clients installed as a command-line tool:", text)
+        self.assertIn("readiness: ready (base main)", text)
+        self.assertEqual(factory.marketplace_editor(r"D:\Tools\.VSCode-Insiders\extensions\x\claude.exe"),
+                         "VS Code Insiders")
+        self.assertIsNone(factory.marketplace_editor("/opt/homebrew/Caskroom/codex/0.169.0/bin/codex"))
+        # Only the editors' own folders count, not any dot folder that has an `extensions` folder.
+        # A Linux home path, split so the leak gate does not read a fixture as an operator's home folder.
+        self.assertIsNone(factory.marketplace_editor("/" + "home/tester/.myapp/extensions/tool/claude"))
+        self.assertIsNone(factory.marketplace_editor(r"D:\Tools\.config\extensions\claude.exe"))
 
     def test_an_unknown_timeout_fails_the_headroom_check(self) -> None:
         self.git("rm", "-q", ".github/workflows/verify.yml")
