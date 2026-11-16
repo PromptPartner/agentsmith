@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Read-only audit contract tests using isolated, inert fixtures."""
+import _fixture_git  # first: keeps every Git fixture out of an inherited repository
+_fixture_git.isolate()
 import json
 import subprocess
 import os

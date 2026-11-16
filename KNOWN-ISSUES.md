@@ -3,6 +3,15 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [x] 2026-11-06 — Test scripts run directly from a hook, `git rebase --exec` or a wrapper passed the
+  inherited `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and related variables to their Git
+  fixtures, which then worked on that repository instead of their temporary ones. Every
+  `scripts/test-*` file now clears them first: Python tests call `_fixture_git.isolate()`, shell
+  tests source `scripts/_fixture_git.sh`, with one list of variables that a test keeps equal.
+  `scripts/test-fixture-git-env.py` runs a Python and a shell fixture test with `GIT_DIR` pointing
+  at a sentinel repository: both changed the sentinel before and leave it unchanged after, and a
+  coverage check names any test script that lacks the call.
+
 - [x] 2026-11-06 — Verification phases inherited Git's repository variables (`GIT_DIR`,
   `GIT_WORK_TREE`, `GIT_INDEX_FILE` and the rest of `git rev-parse --local-env-vars`). Hooks,
   `git rebase --exec` and wrappers export them, so a test fixture's `git -C <temporary> init`

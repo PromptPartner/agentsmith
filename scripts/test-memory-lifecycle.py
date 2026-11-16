@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Exercise installed startup registration and reference delivery across clients."""
+import _fixture_git  # first: keeps every Git fixture out of an inherited repository
+_fixture_git.isolate()
 import json
 import os
 from pathlib import Path

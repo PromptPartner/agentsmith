@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "$(dirname "$0")/_fixture_git.sh"  # first: keeps every Git fixture out of an inherited repository
 # Non-regression suite for the Claude-only Stop hook context-budget nudge.
 set -uo pipefail
 

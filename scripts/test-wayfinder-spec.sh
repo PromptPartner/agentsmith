@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "$(dirname "$0")/_fixture_git.sh"  # first: keeps every Git fixture out of an inherited repository
 # Regression guard for the Wayfinder spec boundary: stable structure, explicit acceptance, and
 # tracker consent. This is intentionally structural; prose alone cannot prevent decision and
 # implementation tickets from collapsing back into one item.

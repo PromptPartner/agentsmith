@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Evidence integrity tests: fixture records cannot stand in for native qualification."""
+import _fixture_git  # first: keeps every Git fixture out of an inherited repository
+_fixture_git.isolate()
 import importlib.util
 import pathlib
 import json

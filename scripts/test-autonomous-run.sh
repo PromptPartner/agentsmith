@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "$(dirname "$0")/_fixture_git.sh"  # first: keeps every Git fixture out of an inherited repository
 # Deterministic controller tests: fake runtimes exercise the state machine without API calls.
 set -uo pipefail
 

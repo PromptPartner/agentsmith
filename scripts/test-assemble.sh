@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "$(dirname "$0")/_fixture_git.sh"  # first: keeps every Git fixture out of an inherited repository
 # test-assemble.sh — every profile must assemble into rules a human can actually follow.
 #
 # The harness's whole output is an assembled AGENTS.md (a project CLAUDE.md imports it). If

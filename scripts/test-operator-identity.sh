@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "$(dirname "$0")/_fixture_git.sh"  # first: keeps every Git fixture out of an inherited repository
 # test-operator-identity.sh — non-regression suite for feedback 0003.
 #
 # The incident: `setup.sh --global` re-rendered ~/.claude/CLAUDE.md from scratch every run, so a
