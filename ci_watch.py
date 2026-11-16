@@ -239,7 +239,7 @@ def watch(gh: Gh, repo: str | None, *, pr: int | None = None, sha: str | None = 
         return {"schema_version": SCHEMA_VERSION, "state": state, "exit_code": code,
                 "next_step": template.format(sha=sha, base=base, job=job, run=run, repo=repo, minutes=int(minutes),
                                              new=new),
-                "repo": repo, "pr": pr, "sha": sha, "base": base,
+                "repo": repo, "pr": pr, "sha": sha, "base": base, "branch": head[0] if head else None,
                 "elapsed_seconds": int(now() - started), "runs": runs_report}
 
     def moved_head() -> str | None:
