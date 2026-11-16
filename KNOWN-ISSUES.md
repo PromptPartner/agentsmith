@@ -194,22 +194,28 @@ been authorized, so the entries are kept here.
   compatibility lifecycle on commit `13bfb84`; its hosted aggregate accepted all three native
   reports from tree `a9e84ec`. The original failure did not recur, so keep this issue open
   until its failing assertion is captured.
-- [ ] 2026-09-21 — PR run `35641860248` exposed a macOS false negative in the new Git
+- [x] 2026-09-21 — PR run `35641860248` exposed a macOS false negative in the new Git
   text-conversion regression: `git status` sometimes trusted cached index metadata immediately
   after the test changed `core.autocrlf`, so it reported a clean worktree even though the
   controller would hash different bytes. The regression now compares the filtered worktree
   blob with the committed blob directly; native confirmation remains pending.
-- [ ] 2026-09-21 — The same PR run failed a Windows graph stop fixture because it waited for
+  Closed 2026-11-06: not reproduced in the 60 verify runs from 2026-10-26 to 2026-11-06. Method: the
+  failed logs of every failed final attempt, and of earlier attempts of rerun runs (`gh run view
+  --log-failed`, `--attempt N`), searched for this entry's test names and messages; no match.
+- [x] 2026-09-21 — The same PR run failed a Windows graph stop fixture because it waited for
   any of two parallel makers to log a start but then required `repo-a` to exist. Maker `b` can
   start first, so a stop before `a` creates its worktree is valid. The fixture now checks
   retention for every maker that actually logged a start; native confirmation remains pending.
+  Closed 2026-11-06: not reproduced in the 60 verify runs from 2026-10-26 to 2026-11-06. Method: the
+  failed logs of every failed final attempt, and of earlier attempts of rerun runs (`gh run view
+  --log-failed`, `--attempt N`), searched for this entry's test names and messages; no match.
 - [x] 2026-10-19 — Pull-request run `39275474565` (PR #56, attempt 2) failed native Windows
   `test_parallel_roots_and_dependent_checkpoint` with `1411.665 not less than 1411.569`: the
   two root children never overlapped. The fake maker slept a default 1 s, shorter than the gap
   between dispatching the two roots on a loaded Windows runner. A 0.01 s maker reproduced the
   same assertion on macOS. Fixed: the test gives each maker 4 s, as its sibling tests do. The
   product dispatch was not at fault.
-- [ ] 2026-09-21 — Final-tree manual run `35623269366` passed Linux and macOS native work-graph
+- [x] 2026-09-21 — Final-tree manual run `35623269366` passed Linux and macOS native work-graph
   lifecycle but failed eight of ten Windows dispatch tests. The Windows report binds commit
   `00461bf`, tree `8d0c00f`, and records a clean checkout; its lifecycle phase exited 1.
   Compatibility previously tested the Windows boundary but did not expose dispatch test errors.
@@ -274,6 +280,9 @@ been authorized, so the entries are kept here.
   and compatibility lifecycle paths on commit `13bfb84`, and its hosted aggregate bound all
   three native reports to tree `a9e84ec`. No post-fix Windows child interruption recurred;
   the controller cause remains open pending a captured failure and red regression.
+  Closed 2026-11-06: not reproduced in the 60 verify runs from 2026-10-26 to 2026-11-06. Method: the
+  failed logs of every failed final attempt, and of earlier attempts of rerun runs (`gh run view
+  --log-failed`, `--attempt N`), searched for this entry's test names and messages; no match.
 - [ ] 2026-09-21 — A stop request arriving after a fake maker has committed but before its receipt
   is reconciled can leave an interrupted run whose resume replays the maker, producing a clean
   worktree with nothing new to commit. A local graph stop/resume test exposed this under heavy
@@ -560,6 +569,13 @@ been authorized, so the entries are kept here.
   Process-group stopping does not contain detached daemons or hostile same-user processes.
   The [qualification contract](docs/26-native-qualification-contract.md) defines required cases;
   the earlier project-config override probe is inconclusive, and inference remains unqualified.
+  2026-11-06: checker budget reservation fixed. When the maker and the checker spend one cap, a
+  share of it (`limits.checker_reserve`, default 0.25, bounds 0.05 to 0.5) is held for checking; a
+  maker with nothing above it is not launched and the run escalates with "budget reserved for
+  checking". With one $0.60 Claude cap and $0.25 per role, the fake-client run in
+  `test-autonomous-run.sh` launched a second maker and spent $0.75 before; it now stops at $0.50,
+  and the first maker's `--max-budget-usd` is 0.45. Linux/native containment and crash/timeout
+  pilots and unreported crash spend remain open.
 - [x] 2026-10-04 — Stopping the primary during peer inspection could swallow SIGTERM as an
   ordinary run error and falsely report the legitimate `disjoint` peer branch as tampering.
   Cancellation now bypasses invalid-peer handlers. Retained before/after fixtures and deterministic

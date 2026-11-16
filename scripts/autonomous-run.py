@@ -832,6 +832,43 @@ def validate_budgets(manifest: dict[str, Any]) -> None:
         elif not positive_number(value, whole=field == "codex_goal_tokens"):
             raise RunError(f"limits.{field} must be {kind}, or \"{UNBOUNDED}\" with a written "
                            "limits.budget_rationale; zero or a missing value no longer means no cap")
+    if "checker_reserve" in limits:
+        reserve, (low, high) = limits["checker_reserve"], CHECKER_RESERVE_BOUNDS
+        if not positive_number(reserve, whole=False) or not low <= reserve <= high:
+            raise RunError(f"limits.checker_reserve must be a fraction from {low} to {high} of a cap that both the "
+                           "maker and the checker spend: enough to check, and at least half left for making")
+
+
+# The share of a runtime's cap held back for checking when the maker and the checker spend the same
+# cap. Without it a maker can spend what the checker needs, and the run ends with work nobody checks.
+DEFAULT_CHECKER_RESERVE = 0.25
+CHECKER_RESERVE_BOUNDS = (0.05, 0.5)  # at least a token share for checking; at least half for making
+
+
+class BudgetReserved(RunError):
+    """A maker would spend the share of a budget reserved for checking: a budget stop, not a model failure."""
+
+
+def checker_reserve(manifest: dict[str, Any], runtime: str) -> float:
+    """The amount of `runtime`'s cap reserved for checking: a fraction of the cap when the maker and
+    the checker both spend it, else nothing (no other role competes for it)."""
+    roles = manifest.get("roles", {})
+    if any((roles.get(role) or {}).get("runtime") != runtime for role in ("maker", "checker")):
+        return 0.0
+    cap = budget_cap(manifest["limits"], RUNTIME_BUDGETS[runtime][0])
+    if cap is None:
+        return 0.0
+    return cap * float(manifest["limits"].get("checker_reserve", DEFAULT_CHECKER_RESERVE))
+
+
+def maker_allowance(state: dict[str, Any], manifest: dict[str, Any]) -> float | None:
+    """What the maker may still spend of its runtime's cap, above the checking reserve (None: unbounded)."""
+    runtime = manifest["roles"]["maker"]["runtime"]
+    cap = budget_cap(manifest["limits"], RUNTIME_BUDGETS[runtime][0])
+    if cap is None:
+        return None
+    spent = float(state.get("claude_cost_usd", 0.0)) if runtime == "claude" else float(state.get("codex_tokens_used", 0))
+    return cap - checker_reserve(manifest, runtime) - spent
 
 
 def budget_cap(limits: dict[str, Any], field: str) -> float | None:
@@ -1926,6 +1963,11 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
     maker_write_dirs = [common_git, resolved_git_path(worktree, '--git-dir')] if role == 'maker' else []
     protected = trusted_paths(state)
     cap = budget_cap(manifest["limits"], RUNTIME_BUDGETS[runtime][0])
+    allowance = maker_allowance(state, manifest) if role == "maker" else None
+    if allowance is not None and allowance <= 0:
+        # Before the cap itself: what is left is the checker's, so a maker must not start.
+        raise BudgetReserved(f"budget reserved for checking: the maker's share of limits."
+                             f"{RUNTIME_BUDGETS[runtime][0]} is spent, and the rest is held for the checker")
     if runtime == "codex":
         # Codex has no documented hard token switch for `codex exec`, so this cap is enforced
         # here, before each Codex role, and after it (`budget_overrun`); the goal budget in the
@@ -1949,6 +1991,8 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
         )
         # Claude Code enforces the remaining allowance inside the role (`--max-budget-usd`).
         remaining_budget = None if cap is None else cap - float(state.get("claude_cost_usd", 0.0))
+        if allowance is not None:
+            remaining_budget = round(allowance, 6)  # a Claude maker stops at the checker's reserve
         if remaining_budget is not None and remaining_budget <= 0:
             raise RunError("Claude run-wide USD budget exhausted")
         cmd = build_native_command(
@@ -2120,8 +2164,8 @@ A moved file counts twice: list the old path and the new path.
     if role == "maker":
         feedback = f"\nThe prior checker rejected the attempt:\n{json.dumps(prior, indent=2)}\n" if prior else ""
         codex_maker = manifest["roles"]["maker"]["runtime"] == "codex"
-        cap = budget_cap(manifest["limits"], "codex_goal_tokens") if codex_maker else None
-        goal_budget = 0 if cap is None else int(cap) - int(state.get("codex_tokens_used", 0))
+        allowance = maker_allowance(state, manifest) if codex_maker else None
+        goal_budget = 0 if allowance is None else int(allowance)
         goal = (f"If your runtime exposes the native goal tool, create a goal for this exact ticket with token budget "
                 f"{goal_budget}; the manifest remains authoritative.\n") if goal_budget > 0 else ""
         return common + goal + f"""Implement the smallest complete change, run {manifest['verify']['command']},

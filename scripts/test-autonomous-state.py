@@ -227,6 +227,35 @@ class AutonomousStateTests(unittest.TestCase):
                     CONTROLLER.prepare(args)
             self.assertFalse((repo / ".harness/runs/draft.json").exists())
 
+    def test_checker_reserve_applies_only_to_a_runtime_both_roles_spend(self) -> None:
+        shared = self.budget_manifest(maker="claude", checker="claude")
+        shared["limits"]["claude_max_usd"] = 8
+        self.assertEqual(CONTROLLER.checker_reserve(shared, "claude"), 2.0)  # default: a quarter
+        shared["limits"]["checker_reserve"] = 0.5
+        self.assertEqual(CONTROLLER.checker_reserve(shared, "claude"), 4.0)
+        split = self.budget_manifest(maker="codex", checker="claude")
+        self.assertEqual(CONTROLLER.checker_reserve(split, "codex"), 0.0)  # the checker never spends it
+        self.assertEqual(CONTROLLER.checker_reserve(split, "claude"), 0.0)
+        shared["limits"].update(claude_max_usd="unbounded", budget_rationale="calibration; Test Operator")
+        self.assertEqual(CONTROLLER.checker_reserve(shared, "claude"), 0.0)
+
+    def test_a_checker_reserve_outside_its_bounds_refuses(self) -> None:
+        for value in (0, 0.01, 0.6, 1, -0.25, "a quarter", True):
+            manifest = self.budget_manifest(maker="claude", checker="claude")
+            manifest["limits"]["checker_reserve"] = value
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(CONTROLLER.RunError, "limits.checker_reserve"):
+                    CONTROLLER.validate_budgets(manifest)
+
+    def test_the_maker_sees_only_the_budget_above_the_reserve(self) -> None:
+        manifest = self.budget_manifest(maker="codex", checker="codex")
+        manifest["limits"]["codex_goal_tokens"] = 1000
+        state = {"run_id": "budget", "base_head": "a" * 40, "codex_tokens_used": 100}
+        self.assertIn("token budget 650", CONTROLLER.role_prompt(state, manifest, "maker"))
+        state["codex_tokens_used"] = 750  # into the 250-token reserve
+        self.assertLessEqual(CONTROLLER.maker_allowance(state, manifest), 0)
+        self.assertNotIn("token budget", CONTROLLER.role_prompt(state, manifest, "maker"))
+
     def test_unbounded_caps_launch_without_a_client_cap_or_goal_budget(self) -> None:
         manifest = self.budget_manifest(maker="codex", checker="claude")
         manifest["limits"].update(codex_goal_tokens="unbounded", claude_max_usd="unbounded",

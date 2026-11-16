@@ -56,6 +56,9 @@ finished maker's candidate is checkpointed first, so `resume` can verify and che
 Keep `max_attempts` at 3. Every runtime a role uses needs its cap (`codex_goal_tokens`,
 `claude_max_usd`); zero or a missing cap refuses at `prepare` and `start`. Only the operator may
 choose `"unbounded"` instead, and only with `budget_rationale` saying who chose it and why.
+When the maker and the checker run the same runtime, `limits.checker_reserve` (default 0.25, from
+0.05 to 0.5) of that cap is held for checking; a maker with nothing above it does not start, and the
+run escalates with "budget reserved for checking".
 
 ## Start and supervise
 
