@@ -12,6 +12,8 @@ agentsmith risk classify --base 1a2b3c4 --head 5d6e7f8 --json
 
 The command is read-only. It writes no file and contacts no service. Today the tier is a report:
 it does not skip any review, and nothing merges automatically because of it.
+An autonomous run records the same classification, from its base to its accepted commit, in its
+run receipt ([autonomous runs](21-autonomous-runs.md)).
 
 ## Tiers
 

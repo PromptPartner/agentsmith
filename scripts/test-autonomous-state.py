@@ -2123,7 +2123,8 @@ class AutonomousStateTests(unittest.TestCase):
     def run_with_fake_roles(self, common: Path, *, max_attempts: int, checker_status: str,
                             stop_during_checker: bool = False,
                             stop_maker_phase_wait_on_attempt: int = 0,
-                            move_branch_after_verify: bool = False) -> tuple[int, dict[str, Any], list[str]]:
+                            move_branch_after_verify: bool = False,
+                            checker_evidence: list[str] | None = None) -> tuple[int, dict[str, Any], list[str]]:
         """Drive the real attempt loop with Git and the roles replaced by fakes, so a stop can be
         delivered at an exact point of it."""
         directory = common / "controller"
@@ -2168,16 +2169,20 @@ class AutonomousStateTests(unittest.TestCase):
                 if stop_during_checker:
                     # Not os.kill: on Windows it ends this process instead of calling the handler.
                     CONTROLLER.signal.raise_signal(CONTROLLER.signal.SIGTERM)
+            evidence = ["fake evidence"] if role == "maker" else (
+                checker_evidence if checker_evidence is not None
+                else [f"verification passed :: attempt-{state['attempt']}-verify.txt:3 :: fixture verification passed"])
             return {"status": status, "summary": role,
                     "commit": head["value"] if role == "maker" else state["candidate_commit"],
-                    "changed_paths": ["a.txt"], "evidence": ["fake evidence"], "unresolved": [],
+                    "changed_paths": ["a.txt"], "evidence": evidence, "unresolved": [],
                     "next_state": ""}
 
         @contextlib.contextmanager
         def fake_checker_worktree(*args: Any):
             yield args[-1]
 
-        verified = subprocess.CompletedProcess([], 0, "", "")
+        verified = subprocess.CompletedProcess(
+            [], 0, "fixture verification passed: a.txt\n" + "".join(f"filler {n}\n" for n in range(1, 6)), "")
         with contextlib.ExitStack() as fakes:
             for name, value in {
                 "git": fake_git, "git_phase": fake_phase, "launch_role": fake_role,
@@ -2191,7 +2196,6 @@ class AutonomousStateTests(unittest.TestCase):
                 "ignored_paths": lambda *_args: set(), "clean": lambda *_args: True,
                 "changed_paths": lambda *_args: ["a.txt"], "path_allowed": lambda *_args: True,
                 "sandboxed_verify": fake_verify,
-                "file_digest": lambda *_args: "0" * 64,
             }.items():
                 fakes.enter_context(mock.patch.object(CONTROLLER, name, side_effect=value))
             outcome = CONTROLLER.run_controller(state, manifest)
@@ -2205,6 +2209,189 @@ class AutonomousStateTests(unittest.TestCase):
             outcome, durable, events = self.run_with_fake_roles(
                 Path(temporary), max_attempts=1, checker_status="accepted")
             self.assertEqual((outcome, durable["status"], events[-1]), (0, "accepted", "run_accepted"))
+
+    def test_an_acceptance_without_valid_citations_is_a_checker_defect(self) -> None:
+        # Every passed criterion cites this attempt's verifier output by file and excerpt. An
+        # acceptance whose citations do not check out is not trusted: the attempt is reworked.
+        cases = {
+            "no evidence at all": [],
+            "only blank evidence": ["   "],
+            "no citation": ["looks good to me"],
+            "fabricated file": ["tests pass :: attempt-1-junit.xml :: 12 passed"],
+            "another attempt": ["tests pass :: attempt-7-verify.txt :: fixture verification passed"],
+            "excerpt not in the file": ["tests pass :: attempt-1-verify.txt :: 12 passed, 0 failed"],
+            "excerpt far from the cited line": ["tests pass :: attempt-1-verify.txt:8 :: fixture verification passed"],
+            "line past the end": ["tests pass :: attempt-1-verify.txt:99 :: fixture verification passed"],
+            "only the harness's own log header": ["tests pass :: attempt-1-verify.txt :: exit=0\nSTDOUT:"],
+            "a header word": ["tests pass :: attempt-1-verify.txt :: STDOUT:"],
+            "too short to be evidence": ["tests pass :: attempt-1-verify.txt :: passed:"],
+        }
+        for label, evidence in cases.items():
+            with self.subTest(case=label), tempfile.TemporaryDirectory(prefix="agentsmith citation ") as temporary:
+                outcome, durable, events = self.run_with_fake_roles(
+                    Path(temporary), max_attempts=1, checker_status="accepted", checker_evidence=evidence)
+                self.assertEqual((outcome, durable["status"]), (2, "escalated"), label)
+                self.assertNotIn("run_accepted", events)
+                self.assertIn("checker_defect", events)
+                self.assertIn("attempt cap reached", durable["reason"])
+        with tempfile.TemporaryDirectory(prefix="agentsmith citation ok ") as temporary:
+            outcome, durable, events = self.run_with_fake_roles(
+                Path(temporary), max_attempts=1, checker_status="accepted",
+                checker_evidence=["verification passed :: attempt-1-verify.txt :: fixture verification passed",
+                                  "near the line :: attempt-1-verify.txt:5 :: fixture verification passed: a.txt"])
+            self.assertEqual((outcome, durable["status"]), (0, "accepted"))
+            self.assertNotIn("checker_defect", events)
+
+    def test_citations_may_name_files_the_verifier_left_and_must_match_their_hash(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith citation files ") as temporary:
+            root = Path(temporary)
+            log = root / "attempt-2-verify.txt"
+            log.write_text("exit=0\nSTDOUT:\nran 12 tests in 0.4 seconds\n", encoding="utf-8")
+            worktree = root / "check"
+            (worktree / "reports").mkdir(parents=True)
+            (worktree / "reports/junit.xml").write_text('<testsuite tests="12" failures="0"/>\n', encoding="utf-8")
+            (worktree / "big.bin").write_bytes(b"x" * (CONTROLLER.MAX_EVIDENCE_BYTES + 1))
+            index = CONTROLLER.verifier_evidence(log, worktree, {"reports/junit.xml", "big.bin", "gone.txt"})
+            self.assertEqual(sorted(index), ["attempt-2-verify.txt", "reports/junit.xml"])
+
+            def problem(*evidence: str) -> str | None:
+                receipt = {"status": "accepted", "evidence": list(evidence)}
+                return CONTROLLER.citation_problem(receipt, index, log, worktree, 2)
+
+            self.assertIsNone(problem("tests ran :: attempt-2-verify.txt:3 :: ran 12 tests in 0.4",
+                                      'no failures :: reports/junit.xml :: failures="0"'))
+            self.assertIn("did not produce", problem("big file :: big.bin :: xxx"))
+            self.assertIn("checker accepted without citing any evidence", problem())
+            (worktree / "reports/junit.xml").write_text('<testsuite tests="12" failures="3"/>\n', encoding="utf-8")
+            self.assertIn("changed after the verifier finished",
+                          problem('no failures :: reports/junit.xml :: failures="0"'))
+
+    def test_the_run_records_the_risk_tier_from_the_base_policy(self) -> None:
+        # The candidate rewrites the policy to drop its own lens and lower src/**. The record must
+        # still come from the policy committed at the base, and a declared tier only raises it.
+        strict = '{"schema_version": 1, "rules": [{"paths": ["src/**"], "tier": "C", "lenses": ["security"]}]}\n'
+        lenient = '{"schema_version": 1, "rules": [{"paths": ["src/**", ".harness/**"], "tier": "A"}]}\n'
+        with tempfile.TemporaryDirectory(prefix="agentsmith risk record ") as temporary:
+            repo = Path(temporary)
+            base = self.committed_fixture(repo, {".harness/risk-policy.json": strict, "src/app.py": "x = 1\n"})
+            base_blob = CONTROLLER.git(repo, "rev-parse", f"{base}:.harness/risk-policy.json")
+            head = self.commit_entries(repo, {"src/app.py": "x = 2\n", ".harness/risk-policy.json": lenient})
+            import risk_map
+            self.assertEqual(CONTROLLER.RISK_TIERS, risk_map.TIERS)
+            record = CONTROLLER.risk_record(repo, base, head, None)
+            self.assertEqual(record["policy"]["blob"], base_blob)
+            self.assertEqual(record["lenses"], ["security"])
+            self.assertEqual(record["computed_tier"], "human")  # the policy file itself is on the floor
+            only_code = self.commit_entries(repo, {".harness/risk-policy.json": strict})
+            record = CONTROLLER.risk_record(repo, base, only_code, None)
+            self.assertEqual((record["computed_tier"], record["tier"]), ("C", "C"))
+            self.assertEqual(CONTROLLER.risk_record(repo, base, only_code, "human")["tier"], "human")
+            self.assertEqual(CONTROLLER.risk_record(repo, base, only_code, "A")["tier"], "C")
+            # Report-only: a classification that cannot run is recorded, as human, not raised.
+            subprocess.run(["git", "-C", str(repo), "checkout", "-q", base], check=True)
+            broken = self.commit_entries(repo, {".harness/risk-policy.json": "{not json\n"})
+            later = self.commit_entries(repo, {"src/app.py": "x = 3\n"})
+            record = CONTROLLER.risk_record(repo, broken, later, "B")
+            self.assertEqual(record["tier"], "human")
+            self.assertIn("error", record)
+
+    def test_a_declared_risk_tier_must_be_a_known_tier(self) -> None:
+        manifest = self.budget_manifest()
+        manifest["risk_tier"] = "low"
+        with self.assertRaisesRegex(CONTROLLER.RunError, "risk_tier must be one of A, B, C, human"):
+            CONTROLLER.validate_manifest(manifest, ROOT)
+
+    def test_calibration_receipts_are_keyed_by_prompt_and_out_of_the_roles_reach(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith calibration key ") as temporary:
+            repo = Path(temporary)
+            self.committed_fixture(repo, {"a.txt": "a\n"})
+            checker = {"runtime": "claude", "model": "m", "effort": "high"}
+            self.assertEqual(CONTROLLER.calibration_status(repo, checker), {"status": "none"})
+            path = CONTROLLER.calibration_path(repo, "claude", "m", "high")
+            CONTROLLER.write_json(path, {"status": "passed", "calibrated_at": "2026-11-06T10:00:00+00:00"})
+            self.assertEqual(CONTROLLER.calibration_status(repo, checker)["status"], "passed")
+            self.assertEqual(CONTROLLER.calibration_status(repo, {**checker, "model": "other"}), {"status": "none"})
+            # A changed checker prompt is a different checker: the old calibration no longer matches.
+            with mock.patch.object(CONTROLLER, "checker_prompt_sha256", return_value="f" * 64):
+                self.assertEqual(CONTROLLER.calibration_status(repo, checker), {"status": "none"})
+            state = {"repo": str(repo), "manifest_path": str(repo / "m.json"), "spec_path": "s.md"}
+            self.assertIn(path.parent, CONTROLLER.trusted_paths(state))
+            self.assertRegex(CONTROLLER.checker_prompt_sha256(), r"\A[0-9a-f]{64}\Z")
+
+    def test_a_citation_is_checked_against_the_bytes_that_were_hashed(self) -> None:
+        # A writer that lands after the hash and before the quote is read must not supply the quote.
+        with tempfile.TemporaryDirectory(prefix="agentsmith citation race ") as temporary:
+            root = Path(temporary)
+            log = root / "attempt-1-verify.txt"
+            log.write_text("exit=0\n", encoding="utf-8")
+            worktree = root / "check"
+            worktree.mkdir()
+            report = worktree / "report.txt"
+            report.write_text("old verifier report line\n", encoding="utf-8")
+            index = CONTROLLER.verifier_evidence(log, worktree, {"report.txt"})
+            real_digest, real_read = CONTROLLER.file_digest, Path.read_bytes
+
+            def write_after(path: Path) -> None:
+                if path == report and "forged" not in real_read(path).decode():
+                    report.write_text("forged after the hash was taken\n", encoding="utf-8")
+
+            def digest_then_write(path: Path) -> str:
+                value = real_digest(path)
+                write_after(path)
+                return value
+
+            def read_then_write(path: Path) -> bytes:
+                value = real_read(path)
+                write_after(path)
+                return value
+
+            with mock.patch.object(CONTROLLER, "file_digest", side_effect=digest_then_write), \
+                    mock.patch.object(Path, "read_bytes", autospec=True, side_effect=read_then_write):
+                problem = CONTROLLER.citation_problem(
+                    {"evidence": ["report :: report.txt :: forged after the hash was taken"]},
+                    index, log, worktree, 1)
+            self.assertIsNotNone(problem)
+
+    def test_an_unreadable_calibration_receipt_never_affects_a_run(self) -> None:
+        # Calibration is record-only: whatever is in its file, a run records "unreadable" and goes on.
+        with tempfile.TemporaryDirectory(prefix="agentsmith calibration unreadable ") as temporary:
+            repo = Path(temporary)
+            self.committed_fixture(repo, {"a.txt": "a\n"})
+            checker = {"runtime": "claude", "model": "m", "effort": "high"}
+            path = CONTROLLER.calibration_path(repo, "claude", "m", "high")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            for content in (b"\xff\xfe not UTF-8", b"{not json", b"[1, 2]", b'{"status": 3}'):
+                with self.subTest(content=content):
+                    path.write_bytes(content)
+                    status = CONTROLLER.calibration_status(repo, checker)
+                    self.assertEqual(status, {"status": "unreadable"})
+                    proof = CONTROLLER.verification_binding(
+                        {"repo": str(repo), "worktree": str(repo), "base_head": "a" * 40,
+                         "spec_sha256": "s", "manifest_sha256": "m"},
+                        {"verify": {"command": "true"}, "roles": {"checker": checker}}, "b" * 40)
+                    self.assertEqual(proof["checker_calibration"], status)
+            path.write_bytes(b"\xff")
+            self.assertEqual(CONTROLLER.calibration_status(repo, checker), {"status": "unreadable"})
+
+    def test_evidence_that_changes_after_the_verifier_finished_is_not_trusted(self) -> None:
+        # A verifier child that escaped its process group can keep writing after the hashes were
+        # taken. Any recorded evidence file that no longer matches makes the acceptance untrusted,
+        # even when the checker cited a different file.
+        with tempfile.TemporaryDirectory(prefix="agentsmith late evidence ") as temporary:
+            root = Path(temporary)
+            log = root / "attempt-1-verify.txt"
+            log.write_text("exit=0\nSTDOUT:\nfixture verification passed\n", encoding="utf-8")
+            worktree = root / "check"
+            worktree.mkdir()
+            report = worktree / "report.txt"
+            report.write_text("initial evidence\n", encoding="utf-8")
+            index = CONTROLLER.verifier_evidence(log, worktree, {"report.txt"})
+            report.write_text("late child evidence\n", encoding="utf-8")
+            problem = CONTROLLER.citation_problem(
+                {"evidence": ["verified :: attempt-1-verify.txt :: fixture verification passed"]},
+                index, log, worktree, 1)
+            self.assertIsNotNone(problem)
+            self.assertIn("report.txt changed after the verifier finished", problem)
 
     def test_a_commit_after_verification_refuses_acceptance(self) -> None:
         # The checks passed at one commit; a run branch that moved afterwards would hand the

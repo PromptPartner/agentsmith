@@ -92,7 +92,13 @@ a path added and later removed still refuses the run. Add custom acceptance inpu
 protected inputs requires separate operator review outside this run. New regression tests remain
 allowed. Both roles receive trusted-path write restrictions through their native policies; Codex uses a
 strict named filesystem profile, and Claude combines Bash denyWrite with file-tool Edit denials.
-Native clients and the host remain trusted. Checkers inspect the controller verifier evidence.
+Native clients and the host remain trusted. Checkers inspect the controller verifier evidence,
+and an accepting checker cites it per criterion as `criterion :: file[:line] :: excerpt`; an
+acceptance whose citations do not check out is a checker defect and the attempt is reworked.
+At acceptance the run records the risk tier from the policy committed at the base (`status <id>`
+shows `risk_tier`); a declared `risk_tier` only raises it, and the tier decides nothing yet.
+Before relying on a checker client and model, run `calibrate <manifest>`: it judges a clean and a
+defective built-in candidate and records the result, which later runs show as `checker_calibration`.
 
 Before `start` creates local Git or state artifacts, and before `resume` restarts work, the
 controller serializes a repository-local collision scan. Ancestor/descendant fixed prefixes from

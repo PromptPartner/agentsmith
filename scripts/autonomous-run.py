@@ -32,10 +32,12 @@ from typing import Any
 try:
     from native_launcher import (
         build_native_command,
+        client_version,
         codex_permissions,
         claude_sandbox_settings,
         toml_inline,
         minimal_environment,
+        native_command_prefix,
         native_environment,
         usage_metrics as shared_usage_metrics,
     )
@@ -43,10 +45,12 @@ except ModuleNotFoundError:  # source-tree execution from scripts/
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from native_launcher import (
         build_native_command,
+        client_version,
         codex_permissions,
         claude_sandbox_settings,
         toml_inline,
         minimal_environment,
+        native_command_prefix,
         native_environment,
         usage_metrics as shared_usage_metrics,
     )
@@ -791,6 +795,26 @@ def unset_role_settings(manifest: dict[str, Any]) -> list[str]:
     return unset
 
 
+# Risk tiers, lowest first, as in risk_map.TIERS. A manifest may declare one; it only raises.
+RISK_TIERS = ("A", "B", "C", "human")
+
+
+def risk_record(repo: Path, base: str, head: str, declared: str | None) -> dict[str, Any]:
+    """Classify base..head with the risk policy committed at the base, so a candidate cannot
+    relax the rules that judge it. Report-only: it decides nothing, and a classification that
+    cannot run is recorded as `human` with its error instead of stopping the run."""
+    record: dict[str, Any] = {"base": base, "head": head, "declared_tier": declared}
+    try:
+        import risk_map
+        report = risk_map.classify_range(repo, base, head)
+        record.update(computed_tier=report["tier"], lenses=report["lenses"], policy=report["policy"],
+                      tier=risk_map.raise_tier(report["tier"], declared or "A"))
+    except Exception as exc:  # ImportError, PolicyError, RiskError: recorded, never fatal
+        record.update(computed_tier=None, lenses=[], policy=None, tier="human",
+                      error=f"{type(exc).__name__}: {exc}"[:300])
+    return record
+
+
 UNBOUNDED = "unbounded"
 # The cap each runtime spends, and the type its value must have.
 RUNTIME_BUDGETS = {"codex": ("codex_goal_tokens", "a positive whole number of tokens"),
@@ -922,6 +946,8 @@ def validate_manifest(manifest: dict[str, Any], repo: Path) -> tuple[Path, str]:
     if not isinstance(verify_config, dict) or not isinstance(verify_config.get("command"), str) or not verify_config["command"].strip():
         raise RunError("verify.command must name a required verification command")
     validate_budgets(manifest)
+    if "risk_tier" in manifest and manifest["risk_tier"] not in RISK_TIERS:
+        raise RunError(f"risk_tier must be one of {', '.join(RISK_TIERS)}; it can only raise the computed tier")
     spec_rel = Path(str(manifest["spec_path"]))
     if spec_rel.is_absolute() or ".." in spec_rel.parts or spec_rel.parts[:2] != ("docs", "specs"):
         raise RunError("spec_path must be a repository-relative path under docs/specs/")
@@ -1232,6 +1258,9 @@ def verification_binding(state: dict[str, Any], manifest: dict[str, Any], head: 
             "controller": file_digest(Path(__file__)),
             "launcher": file_digest(Path(build_native_command.__code__.co_filename)),
         },
+        # Record-only: the latest calibration of this checker client, model and prompt.
+        "checker_calibration": calibration_status(Path(state.get("repo") or worktree),
+                                                  (manifest.get("roles") or {}).get("checker") or {}),
     }
 
 
@@ -1437,7 +1466,7 @@ def _git_metadata_once(repo: Path, *, known_peers: dict[str, Any] | None = None)
     branch_log = Path("logs") / branch_ref if branch_ref else None
     for path in sorted(item for item in common.rglob("*") if item.is_file()):
         rel = path.relative_to(common)
-        if rel.parts[0] == "agentsmith-runs":
+        if rel.parts[0] in {"agentsmith-runs", "agentsmith-calibrations"}:
             continue
         if rel.parts[0] == "objects":
             objects.append((rel.as_posix(), file_digest(path)))
@@ -1865,7 +1894,11 @@ def preflight_verifier_sandbox() -> None:
 def trusted_paths(state: dict[str, Any]) -> list[Path]:
     repo = Path(state['repo'])
     runtime = Path(claude_sandbox_settings.__code__.co_filename).resolve()
-    return [state_root(repo), Path(state['manifest_path']), repo / state['spec_path'],
+    # Calibration receipts are controller evidence like run state. The folder must exist so that
+    # every sandbox can name it.
+    calibrations = state_root(repo).parent / "agentsmith-calibrations"
+    calibrations.mkdir(exist_ok=True)
+    return [state_root(repo), calibrations, Path(state['manifest_path']), repo / state['spec_path'],
             Path(__file__).resolve().parent, runtime.parent]
 
 
@@ -2194,8 +2227,83 @@ def launch_role_with_breaker(state: dict[str, Any], manifest: dict[str, Any], ro
         return receipt
 
 
+# What a checker may cite: this attempt's verifier output log, plus files the verifier left in
+# the disposable worktree (ignored by Git), each recorded by hash when the verifier finished.
+MAX_EVIDENCE_FILES = 200
+MAX_EVIDENCE_BYTES = 8 * 1024 * 1024
+CITATION_FORM = "criterion :: file[:line] :: excerpt"
+# A heuristic floor, not proof that the excerpt supports the criterion: it must hold at least
+# this many visible characters besides the lines the harness itself writes into every log, and
+# sit within this many lines of the cited line.
+MIN_EXCERPT_CHARACTERS = 12
+LINE_WINDOW = 2
+HARNESS_LOG_TEXT = re.compile(r"exit=-?[0-9]+|STDOUT:|STDERR:")
+VERIFY_LOG = re.compile(r"attempt-([0-9]+)-verify\.txt")
+
+
+def verifier_evidence(verify_log: Path, checker_worktree: Path, ignored: set[str]) -> dict[str, str]:
+    index = {verify_log.name: file_digest(verify_log)}
+    for relative in sorted(ignored)[:MAX_EVIDENCE_FILES]:
+        path = checker_worktree / relative
+        if path.is_file() and not path.is_symlink() and path.stat().st_size <= MAX_EVIDENCE_BYTES:
+            index[relative] = file_digest(path)
+    return index
+
+
+def citation_problem(checker: dict[str, Any], index: dict[str, str], verify_log: Path,
+                     checker_worktree: Path, attempt: int) -> str | None:
+    """Why an accepting checker's evidence does not hold, or None. No model is involved: each
+    evidence item must read `criterion :: file[:line] :: excerpt`, name a file this attempt's
+    verifier produced, still match its recorded hash, and quote text that is in that file."""
+    if not checker["evidence"]:
+        return "checker accepted without citing any evidence"
+    # Read every recorded file once. A verifier child that left its process group can still be
+    # writing after the hashes were taken, so any recorded file that changed makes the checker's
+    # view of the evidence unreliable, whether or not it was cited. The checks below use these
+    # same bytes, so a write between hashing and quoting cannot supply a quote.
+    contents: dict[str, bytes] = {}
+    for name, digest in index.items():
+        path = verify_log if name == verify_log.name else checker_worktree / name
+        try:
+            contents[name] = path.read_bytes()
+        except OSError:
+            return f"{name} can no longer be read; the verifier evidence changed after it finished"
+        if hashlib.sha256(contents[name]).hexdigest() != digest:
+            return f"{name} changed after the verifier finished; a verifier process may still have been writing"
+    for number, item in enumerate(checker["evidence"], 1):
+        shown = repr(item[:80])
+        parts = item.split(" :: ", 2)
+        if len(parts) != 3 or not parts[0].strip():
+            return f"evidence item {number} ({shown}) is not '{CITATION_FORM}'"
+        location, excerpt = parts[1].strip(), parts[2].strip()
+        match = re.fullmatch(r"(.+?)(?::([1-9][0-9]{0,6}))?", location)
+        name, line = (match.group(1), int(match.group(2)) if match.group(2) else None) if match else (location, None)
+        if name not in index:
+            other = VERIFY_LOG.fullmatch(name)
+            if other and int(other.group(1)) != attempt:
+                return f"evidence item {number} cites {name} from attempt {other.group(1)}, not this attempt ({attempt})"
+            return f"evidence item {number} cites {shown_paths([name])}, which this attempt's verifier did not produce"
+        data = contents[name]
+        if len(re.sub(r"\s", "", HARNESS_LOG_TEXT.sub("", excerpt))) < MIN_EXCERPT_CHARACTERS:
+            return (f"evidence item {number} quotes too little of {name}: an excerpt needs at least "
+                    f"{MIN_EXCERPT_CHARACTERS} characters besides the log's exit, STDOUT and STDERR lines")
+        text = data.decode("utf-8", errors="replace")
+        if line is not None:
+            lines = text.splitlines()
+            if line > len(lines):
+                return f"evidence item {number} cites line {line} of {name}, which has {len(lines)} lines"
+            window = "\n".join(lines[max(0, line - 1 - LINE_WINDOW):line + LINE_WINDOW])
+            if excerpt not in window:
+                return (f"evidence item {number} quotes {excerpt[:60]!r}, which is not within "
+                        f"{LINE_WINDOW} lines of line {line} of {name}")
+        elif excerpt not in text:
+            return f"evidence item {number} quotes {excerpt[:60]!r}, which is not in {name}"
+    return None
+
+
 def role_prompt(state: dict[str, Any], manifest: dict[str, Any], role: str,
-                prior: dict[str, Any] | None = None, verify_output: str = "") -> str:
+                prior: dict[str, Any] | None = None, verify_output: str = "",
+                evidence_files: list[str] | None = None) -> str:
     spec = manifest["spec_path"]
     scope = manifest["scope"]
     base = state["base_head"]
@@ -2218,14 +2326,22 @@ A moved file counts twice: list the old path and the new path.
         return common + goal + f"""Implement the smallest complete change, run {manifest['verify']['command']},
 and make atomic local commits only. Leave the worktree clean. HEAD must advance beyond {base}.
 Use status completed or blocked; do not mark your own work accepted.{feedback}"""
+    verify_log = f"attempt-{state.get('attempt')}-verify.txt"
     return common + f"""You are the independent checker and default to REJECT. Do not edit files or commit.
 Inspect the committed diff from {base} to HEAD and the controller verification evidence.
 Try to falsify the acceptance criteria using read-only commands. Also reject when either answer is no:
 - Is this the smallest change that solves the stated problem? Name any part the spec does not need.
 - Did each new red test fail for the intended reason? Check that it asserts on the failure message
   or value the bug produces, not on a stub, an import error or an earlier gate.
-Controller verification output:
+Controller verification output (the file {verify_log}):
 {verify_output[-6000:]}
+To accept, cite evidence for every criterion that passed. Write each evidence item exactly as
+`{CITATION_FORM}`, where file is one of this attempt's verifier outputs:
+{json.dumps(evidence_files or [verify_log])}
+(files other than the output log are in your worktree), line is optional and counts from the
+start of the file, and excerpt is text
+copied exactly from that file, or from that line when you give one. The controller checks every
+citation without a model; an acceptance whose citations do not hold is not trusted.
 Use status accepted, rejected, or blocked."""
 
 
@@ -2391,13 +2507,17 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             if checker_status:
                 raise RunError("verifier modified tracked state")
             checker_ignored = ignored_paths(checker_worktree)
+            evidence = verifier_evidence(verify_path, checker_worktree, checker_ignored)
+            proof["evidence_files"] = evidence
+            write_json(proof_path, proof)
             checker_meta = git_metadata(checker_worktree)
             checker_error: Exception | None = None
             checker: dict[str, Any] | None = None
             try:
                 checker = launch_role_with_breaker(
                     state, manifest, "checker",
-                    role_prompt(state, manifest, "checker", verify_output=verify_output),
+                    role_prompt(state, manifest, "checker", verify_output=verify_output,
+                                evidence_files=sorted(evidence)),
                     role_worktree=checker_worktree)
             except Exception as exc:
                 checker_error = exc
@@ -2418,10 +2538,28 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             proof["checker_receipt_sha256"] = file_digest(
                 Path(state["state_path"]).parent / f"attempt-{state['attempt']}-checker-receipt.json")
             proof["checker_status"] = checker["status"]
+            # Every acceptance that would otherwise count is checked, including one with no or only
+            # blank evidence: that is a checker defect with rework feedback, not a plain rejection.
+            claims_acceptance = (verify.returncode == 0 and checker["status"] == "accepted"
+                                 and not checker["unresolved"])
+            defect = (citation_problem(checker, evidence, verify_path, checker_worktree, state["attempt"])
+                      if claims_acceptance else None)
+            if defect:
+                proof["checker_defect"] = defect
             write_json(proof_path, proof)
+        if defect:
+            # An acceptance whose evidence does not hold is a checker defect, not an acceptance:
+            # the attempt is reworked like a rejection, and the next maker is told why.
+            event(state, "checker_defect", attempt=state["attempt"], reason=defect)
+            checker = {**checker, "status": "rejected", "unresolved": [
+                *checker["unresolved"], f"the checker's acceptance was not trusted: {defect}"]}
         if acceptance_ready(verify.returncode, checker):
             # A stop that arrived before the acceptance record still interrupts the run.
             raise_if_stopped(Path(state["state_path"]).parent)
+            risk = risk_record(worktree, state["base_head"], checker_head, manifest.get("risk_tier"))
+            proof["risk"] = risk
+            write_json(proof_path, proof)
+            state["risk"] = risk
             # The last step before the record: the branch must still be the checked commit.
             moved = candidate_moved(worktree, state["branch"], checker_head)
             if moved:
@@ -2607,7 +2745,7 @@ def _real_file(path: Path) -> bool:
     return path.is_file() and not path.is_symlink()
 
 
-def live_work(repo: Path) -> tuple[list[str], list[str]]:
+def live_work(repo: Path, accepted: list[str] | None = None) -> tuple[list[str], list[str]]:
     """Read-only scan of every run and graph sharing this repository's Git metadata.
 
     Returns (live, undetermined). Linked worktrees share refs and worktree administration, so
@@ -2658,6 +2796,10 @@ def live_work(repo: Path) -> tuple[list[str], list[str]]:
             live.append(f"run {name}: {status} with no live controller; resume or inspect it first")
         elif status not in TERMINAL_RUN_STATUSES:
             unknown.append(f"run {name}: unrecognized status {status!r}")
+        elif status == "accepted" and accepted is not None:
+            risk = state.get("risk") if isinstance(state.get("risk"), dict) else {}
+            accepted.append(f"run {name}: accepted at {state.get('accepted_commit')}, "
+                            f"risk tier {risk.get('tier', 'not recorded')}")
     graphs = common / "agentsmith-graphs"
     for entry in sorted(graphs.iterdir() if _real_directory(graphs) else []):
         name = entry.name
@@ -2695,12 +2837,13 @@ def live_work(repo: Path) -> tuple[list[str], list[str]]:
 
 def all_terminal(repo: Path) -> int:
     """0: every run and graph is terminal. 1: something is live or not terminal. 2: cannot tell."""
+    accepted: list[str] = []
     try:
-        live, unknown = live_work(repo)
+        live, unknown = live_work(repo, accepted)
     except (OSError, ValueError, RunError) as exc:
         print(f"cannot tell whether autonomous work is live: {exc}")
         return 2
-    for line in [*unknown, *live]:
+    for line in [*accepted, *unknown, *live]:
         print(line)
     if unknown:
         print("cannot tell whether every autonomous run is terminal; do not change Git metadata")
@@ -2724,7 +2867,10 @@ def status_cmd(args: argparse.Namespace) -> int:
     keys = ["run_id", "status", "stage", "attempt", "active_pid", "branch", "worktree", "base_head",
             "accepted_commit", "deadline_epoch", "claude_cost_usd", "codex_tokens_used",
             "budget_rationale", "usage_accounting_incomplete", "reason", "updated_at"]
-    print(json.dumps({key: state.get(key) for key in keys if state.get(key) is not None}, indent=2))
+    view = {key: state.get(key) for key in keys if state.get(key) is not None}
+    if isinstance(state.get("risk"), dict):
+        view["risk_tier"] = state["risk"].get("tier")  # report-only: it decides nothing yet
+    print(json.dumps(view, indent=2))
     return 0
 
 
@@ -2896,6 +3042,206 @@ def resume(args: argparse.Namespace) -> int:
             release_lifecycle_lock(run_dir, token)
 
 
+# Checker calibration: the configured checker client and model judge two built-in candidates with
+# known labels. A clean change must be accepted with valid citations; a change whose tests pass
+# but which breaks the spec (an injected defect the verifier cannot see) must be rejected.
+CALIBRATION_SPEC = """# Spec: add two numbers
+
+`src/calc.py` defines `add(a, b)`, which returns the sum of `a` and `b` for any integers.
+
+Acceptance criteria:
+1. `add(2, 3)` returns 5 and `add(-1, 1)` returns 0.
+2. A test in `tests/test_calc.py` checks the sum.
+"""
+CALIBRATION_TEST = """import sys
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from calc import add
+
+
+class AddTests(unittest.TestCase):
+    def test_add(self):
+        self.assertEqual(add({left}, {right}), {result})
+
+
+if __name__ == "__main__":
+    unittest.main()
+"""
+CALIBRATION_CANDIDATES = (
+    # label, expected verdict, implementation, (left, right, result) for its own test
+    ("clean", "accepted", "def add(a, b):\n    return a + b\n", (2, 3, 5)),
+    ("defect", "rejected", "def add(a, b):\n    return a * b\n", (2, 2, 4)),
+)
+CALIBRATION_VERIFY = "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v"
+
+
+def calibration_manifest(checker: dict[str, Any], limits: dict[str, Any]) -> dict[str, Any]:
+    return {"run_id": "checker-calibration", "implementation_ticket": "CALIBRATION",
+            "spec_path": "docs/specs/calc.md", "verify": {"command": CALIBRATION_VERIFY},
+            "scope": {"allowed_paths": ["src/**", "tests/**"], "denied_paths": [], "resources": []},
+            "roles": {"checker": dict(checker)}, "limits": dict(limits)}
+
+
+def checker_prompt_sha256() -> str:
+    """The checker prompt template with fixed inputs: it changes only when the prompt does."""
+    state = {"run_id": "checker-calibration", "base_head": "0" * 40, "attempt": 1}
+    manifest = calibration_manifest({}, {})
+    return hashlib.sha256(role_prompt(state, manifest, "checker").encode("utf-8")).hexdigest()
+
+
+def calibration_path(repo: Path, runtime: str, model: str, effort: str) -> Path:
+    key = hashlib.sha256(json.dumps([runtime, model, effort, checker_prompt_sha256()]).encode()).hexdigest()
+    return state_root(repo).parent / "agentsmith-calibrations" / f"{key[:32]}.json"
+
+
+def calibration_status(repo: Path, checker: dict[str, Any]) -> dict[str, Any]:
+    """The latest calibration for this checker client, model, effort and prompt. Record-only, so
+    no content of the file, and no error reading it, may affect the run: it reads "unreadable"."""
+    try:
+        path = calibration_path(repo, str(checker.get("runtime")), str(checker.get("model")),
+                                str(checker.get("effort")))
+        if not path.is_file():
+            return {"status": "none"}
+        record = json.loads(path.read_bytes().decode("utf-8"))
+        if not isinstance(record, dict) or record.get("status") not in {"passed", "failed", "error"}:
+            return {"status": "unreadable"}
+        return {"status": record["status"], "calibrated_at": str(record.get("calibrated_at")),
+                "client_version": str(record.get("client_version")), "receipt": str(path)}
+    except Exception:  # record-only: never let a calibration file stop a run
+        return {"status": "unreadable"}
+
+
+def calibration_fixture(root: Path) -> tuple[Path, str, dict[str, str]]:
+    repo = root / "fixture"
+    repo.mkdir()
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+
+    def fixture_git(*args: str) -> str:
+        result = subprocess.run(["git", "-c", "user.name=AgentSmith calibration",
+                                 "-c", "user.email=user@example.com", "-c", "commit.gpgsign=false",
+                                 *args], cwd=repo, env=environment, capture_output=True, text=True, check=False)
+        if result.returncode:
+            raise RunError(f"cannot build the calibration fixture: {result.stderr.strip()}")
+        return result.stdout.strip()
+
+    fixture_git("init", "-q")
+    (repo / "docs/specs").mkdir(parents=True)
+    (repo / "docs/specs/calc.md").write_text(CALIBRATION_SPEC, encoding="utf-8")
+    (repo / "src").mkdir()
+    (repo / "src/calc.py").write_text("def add(a, b):\n    raise NotImplementedError\n", encoding="utf-8")
+    fixture_git("add", "-A")
+    fixture_git("commit", "-qm", "calibration: spec and stub")
+    base = fixture_git("rev-parse", "HEAD")
+    heads = {}
+    for label, _expected, implementation, (left, right, result) in CALIBRATION_CANDIDATES:
+        fixture_git("checkout", "-q", "--detach", base)
+        (repo / "src/calc.py").write_text(implementation, encoding="utf-8")
+        (repo / "tests").mkdir(exist_ok=True)
+        (repo / "tests/test_calc.py").write_text(
+            CALIBRATION_TEST.format(left=left, right=right, result=result), encoding="utf-8")
+        fixture_git("add", "-A")
+        fixture_git("commit", "-qm", f"calibration: {label} candidate")
+        heads[label] = fixture_git("rev-parse", "HEAD")
+    fixture_git("checkout", "-q", "--detach", base)
+    return repo, base, heads
+
+
+def calibrate_case(repo: Path, base: str, head: str, label: str, attempt: int, manifest: dict[str, Any],
+                   usage: dict[str, Any]) -> dict[str, Any]:
+    worktree = repo.parent / f"candidate-{label}"
+    added = run(["git", "worktree", "add", "-q", "--detach", str(worktree), head], repo)
+    if added.returncode:
+        raise RunError(f"cannot create the {label} calibration worktree: {added.stderr.strip()}")
+    run_dir = state_root(repo) / "checker-calibration"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    state = {"run_id": "checker-calibration", "repo": str(repo), "worktree": str(worktree),
+             "state_path": str(run_dir / "state.json"), "manifest_path": str(repo / "manifest.json"),
+             "spec_path": manifest["spec_path"], "base_head": base, "attempt": attempt,
+             "deadline_epoch": time.time() + int(manifest["limits"]["wall_minutes"]) * 60,
+             "claude_cost_usd": usage["claude_cost_usd"], "codex_tokens_used": usage["codex_tokens_used"],
+             "active_pid": None}
+    verify = sandboxed_verify(CALIBRATION_VERIFY, worktree, 300, verifier_env(), state=state)
+    verify_output = f"exit={verify.returncode}\nSTDOUT:\n{verify.stdout}\nSTDERR:\n{verify.stderr}"
+    verify_log = run_dir / f"attempt-{attempt}-verify.txt"
+    verify_log.write_text(verify_output, encoding="utf-8")
+    evidence = verifier_evidence(verify_log, worktree, ignored_paths(worktree))
+    outcome: dict[str, Any] = {"label": label, "candidate": head, "verify_exit": verify.returncode}
+    try:
+        receipt = launch_role(state, manifest, "checker",
+                              role_prompt(state, manifest, "checker", verify_output=verify_output,
+                                          evidence_files=sorted(evidence)),
+                              role_worktree=worktree)
+    except RunError as exc:
+        outcome.update(verdict="error", detail=str(exc)[:300])
+        receipt = None
+    finally:
+        usage.update(claude_cost_usd=state.get("claude_cost_usd", 0.0),
+                     codex_tokens_used=state.get("codex_tokens_used", 0))
+    if receipt is not None:
+        changed = changed_paths(worktree, base)
+        if git(worktree, "rev-parse", "HEAD") != head or git(worktree, "status", "--porcelain"):
+            outcome.update(verdict="changed-worktree", detail="the checker changed its worktree")
+        elif receipt["commit"] != head or sorted(receipt["changed_paths"]) != sorted(changed):
+            # A receipt that does not name the candidate is the checker's mistake, not the host's.
+            outcome.update(verdict="invalid-receipt", detail=(
+                f"the checker receipt names {receipt['commit'][:12]} with {receipt['changed_paths']}; "
+                f"the candidate is {head[:12]} with {changed}")[:300])
+        elif receipt["status"] == "accepted":
+            defect = (citation_problem(receipt, evidence, verify_log, worktree, attempt)
+                      if acceptance_ready(verify.returncode, receipt) else "acceptance is not ready")
+            outcome.update(verdict="accepted-without-valid-evidence" if defect else "accepted",
+                           **({"detail": defect} if defect else {}))
+        else:
+            outcome.update(verdict=receipt["status"])
+        outcome["receipt_sha256"] = hashlib.sha256(json.dumps(receipt, sort_keys=True).encode()).hexdigest()
+    run(["git", "worktree", "remove", "--force", str(worktree)], repo)
+    return outcome
+
+
+def calibrate(args: argparse.Namespace) -> int:
+    """Run the configured checker against the labelled candidates and record the result.
+    Record-only: no run depends on it yet. 0 passed, 1 failed, 2 could not run."""
+    repo = repo_root(Path.cwd())
+    assert_autonomy_not_paused(repo)
+    manifest = load_json(Path(args.manifest).resolve())
+    checker = (manifest.get("roles") or {}).get("checker") or {}
+    if checker.get("runtime") not in {"claude", "codex"}:
+        raise RunError("roles.checker.runtime must be claude or codex")
+    unset = [f"roles.checker.{key}" for key in ("model", "effort")
+             if not isinstance(checker.get(key), str) or PLACEHOLDER_SETTING.search(checker[key])]
+    if unset:
+        raise RunError(f"{', '.join(unset)} must be explicit before calibration")
+    limits = {"max_attempts": 1, "wall_minutes": args.wall_minutes,
+              "claude_max_usd": args.max_usd, "codex_goal_tokens": args.max_tokens}
+    cal_manifest = calibration_manifest(checker, limits)
+    validate_budgets({"limits": limits, "roles": {"checker": checker}})
+    require_native_role_sandbox()
+    usage = {"claude_cost_usd": 0.0, "codex_tokens_used": 0}
+    with tempfile.TemporaryDirectory(prefix="agentsmith-calibration-") as temporary:
+        fixture, base, heads = calibration_fixture(Path(temporary).resolve())
+        cases = []
+        for attempt, (label, expected, _implementation, _test) in enumerate(CALIBRATION_CANDIDATES, 1):
+            outcome = calibrate_case(fixture, base, heads[label], label, attempt, cal_manifest, usage)
+            outcome.update(expected=expected, correct=outcome["verdict"] == expected)
+            cases.append(outcome)
+    errors = [case for case in cases if case["verdict"] == "error"]
+    status = "error" if errors else "passed" if all(case["correct"] for case in cases) else "failed"
+    command = native_command_prefix(checker["runtime"])
+    record = {"schema_version": 1, "status": status, "calibrated_at": now(),
+              "client": checker["runtime"], "model": checker["model"], "effort": checker["effort"],
+              "client_version": client_version(command),
+              "checker_prompt_sha256": checker_prompt_sha256(), "cases": cases, **usage}
+    path = calibration_path(repo, checker["runtime"], checker["model"], checker["effort"])
+    write_json(path, record)
+    for case in cases:
+        print(f"{case['label']}: expected {case['expected']}, checker {case['verdict']}"
+              + (f" ({case['detail']})" if case.get("detail") else ""))
+    print(f"calibration {status}: {path}")
+    return {"passed": 0, "failed": 1}.get(status, 2)
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description="Finite local Claude/Codex maker-checker runs")
     sub = result.add_subparsers(dest="command", required=True)
@@ -2921,6 +3267,13 @@ def parser() -> argparse.ArgumentParser:
     begin.add_argument("--graph", help="committed work-graph path authorizing a pinned effective base")
     begin.add_argument("--effective-base", help="exact graph-owned root or dependency checkpoint commit OID")
     begin.set_defaults(func=start)
+    calibration = sub.add_parser("calibrate", help="judge two labelled candidates with the configured "
+                                                     "checker and record the result (record-only)")
+    calibration.add_argument("manifest", help="a run manifest whose roles.checker names the client and model")
+    calibration.add_argument("--max-usd", type=float, default=1.0, help="Claude spend cap for the calibration")
+    calibration.add_argument("--max-tokens", type=int, default=400000, help="Codex token cap for the calibration")
+    calibration.add_argument("--wall-minutes", type=int, default=20)
+    calibration.set_defaults(func=calibrate)
     for name, func in (("status", status_cmd), ("stop", stop), ("resume", resume)):
         item = sub.add_parser(name)
         item.add_argument("run_id", nargs="?" if name == "status" else None)

@@ -9,6 +9,12 @@ been authorized, so the entries are kept here.
   fix/gate-worktree-lock and fix/verify-git-env-isolation met on the integration branch:
   `test_repository_runner_clears_inherited_git_environment` runs the gate in a plain folder and
   failed there, and passes after the lookup tolerates the failure.
+- [ ] 2026-11-06 — Measured: a small model does not follow the checker's receipt format. A real
+  `autonomous-run calibrate` of Claude Code 2.1.319 with `haiku` at low effort failed both labelled
+  candidates (three runs, about $0.04 in total): its receipts named `HEAD`, an empty value or free
+  text instead of the candidate commit, and listed no changed paths, so neither verdict counted.
+  The calibration receipt records this as `invalid-receipt`. Calibrate a stronger checker model
+  before relying on it, or simplify what the receipt asks for; nothing enforces calibration yet.
 - [x] 2026-11-06 — The Windows compatibility job ran close to its cap: over the 24 latest verify
   runs (push and pull request, 2026-10-26 to 2026-11-06) it took p50 35.3, p90 38.0 and at most
   40.8 minutes against a 45-minute cap, and a factory multiplies CI load. Slowest Windows steps

@@ -84,6 +84,28 @@ to reject a change that is larger than the stated problem needs, and a red test 
 the wrong reason (a stub, an import error or an earlier gate instead of the bug's own failure
 message). Role exit codes are retained separately from structured receipts.
 
+**An acceptance must cite its evidence.** When the verifier finishes, the controller records by
+hash every file the checker may cite: this attempt's output log, `attempt-N-verify.txt`, and the
+files the verifier left in the disposable worktree that Git ignores (up to 200, each up to 8 MB).
+The list is `evidence_files` in the verification receipt. A checker that accepts writes each
+`evidence` item as `criterion :: file[:line] :: excerpt`. The line is optional and counts from the
+start of the file. The excerpt is text copied exactly from that file; when a line is given, it
+must appear within two lines of it. An excerpt needs at least 12 visible characters besides the
+`exit=`, `STDOUT:` and `STDERR:` lines that the controller writes into every log, so a verify
+command must print what it checked (a test runner's summary, for example); one that prints
+nothing leaves a checker nothing to cite. These rules are a heuristic floor, not proof that the
+excerpt supports the criterion. Before acceptance, a check without any model reads every item.
+The acceptance is not trusted when it has no evidence item at all, or when an item has no
+citation, quotes too little, names a file that this attempt's verifier did not produce (for
+example a file from another attempt), cites a line past the end, or quotes text that is not
+there. It is not trusted either when any recorded file, cited or not, no longer matches its
+hash: a process the verifier started may have kept writing after it finished. That is a
+checker defect. The attempt is then reworked like a
+rejection: the defect is recorded as a `checker_defect` event and as `checker_defect` in the
+verification receipt, and the next maker is told that the acceptance was not trusted. A rejection
+needs no citations. The receipt shape does not change, so a stored receipt stays valid, and a
+checker whose evidence already uses this form passes as it is.
+
 Acceptance is bound to the exact commit the checks passed. Just before it records `accepted`,
 the controller confirms that the run branch and the run worktree's `HEAD` still point at that
 commit and that the worktree is clean, and it reads both commit IDs again after that clean
@@ -91,6 +113,37 @@ check, because a commit can land while the check runs. A commit that lands after
 example from a process a role left running, refuses acceptance: the run escalates and names the
 checked commit and where the branch is now. `accepted_commit` in the run state, the
 `run_accepted` event and `candidate_commit` in the verification receipt all name that one commit.
+
+**Checker calibration.** `python3 .agentsmith/autonomous-run.py calibrate <manifest>` tests the
+checker that the manifest names (`roles.checker`: client, model and effort) on two built-in
+candidates with known answers. The clean candidate implements a small spec correctly and must be
+accepted with valid citations. The other candidate has an injected defect: its own test passes,
+so the verifier cannot see the defect, but the code breaks the spec, and the checker must reject
+it. Each candidate goes through the real verifier sandbox and the real checker launch. The command
+writes a calibration receipt to the repository's Git folder, under `agentsmith-calibrations/`. The
+receipt records the status, the date, the client and its version, the model, the effort, the hash
+of the checker prompt template, each candidate's verdict and the spend. The status is `passed`
+(both verdicts right), `failed` (a wrong verdict, an acceptance whose citations do not hold, or a
+receipt that does not name the candidate) or `error` (the client could not run). The exit code is
+0, 1 or 2 to match. `--max-usd` (default 1.0) caps Claude spend, `--max-tokens` (default 400,000)
+caps Codex tokens and `--wall-minutes` (default 20) caps time. Every later run records the latest
+calibration for its checker client, model, effort and prompt hash as `checker_calibration` in its
+verification receipt, or `{"status": "none"}` when none matches. A changed prompt template needs a
+new calibration. This is a record only: no run waits for or depends on a calibration yet. Roles
+cannot write the calibration folder. In a measured run on 2026-11-06, a small model (`haiku` at low
+effort) failed calibration because its receipts did not name the candidate commit.
+
+**The run receipt records the risk tier.** At acceptance the controller classifies the change from
+the base commit to the accepted commit, as `agentsmith risk classify` does (see
+[the risk map](29-risk-map.md)), with the policy committed at the base, so a candidate that edits
+`.harness/risk-policy.json` is still judged by the policy it started from. The verification
+receipt and the run state record `risk`: the computed tier, the lenses, the policy blob, the base
+and accepted commits, and the tier recorded. A manifest may declare `risk_tier` (`A`, `B`, `C` or
+`human`); it can only raise the computed tier, never lower it. `status <id>` prints `risk_tier`,
+`status --all-terminal` lists each accepted run with its tier, and `agentsmith graph status` shows
+each completed child's tier. The tier is a report: it changes no decision. If the classification
+cannot run, for example because the policy at the base is invalid, the run records the tier
+`human` with the error and continues.
 
 Trusted state stays in the controller's shared run directory. Each native role receives explicit
 write restrictions for that directory, the original contract, and the controller/launcher source

@@ -20,6 +20,7 @@ make_fake() {
   cp "$ROOT/scripts/autonomous-run.py" "$path/controller.py"
   cp "$ROOT/native_launcher.py" "$path/native_launcher.py"
   cp "$ROOT/windows_verifier_sandbox.py" "$path/windows_verifier_sandbox.py"
+  cp "$ROOT/risk_map.py" "$path/risk_map.py" 2>/dev/null || true
   chmod +x "$path/controller.py"
   cp "$ROOT/templates/autonomous-run.json" "$path/template.json"
   printf '%s\n' \
@@ -55,6 +56,17 @@ make_fake() {
     '  if [ "$mode" = checker-ref ]; then git branch checker-escape; fi' \
     '  if [ "$mode" = checker-slow ]; then printf "{\"type\":\"result\",\"total_cost_usd\":0.125}\n"; sleep 60 & printf "%s" "$!" > "$fake_root/child-pid"; wait; fi' \
     '  if [ "$mode" = plant-cache ]; then token="$(cat "$fake_root/plant-token")"; for seen in "${TMPDIR:-/tmp}/$token" "${CLAUDE_CODE_TMPDIR:-/tmp}/claude-$(id -u)/$token" "${XDG_CACHE_HOME:-/nonexistent}/$token"; do if [ -e "$seen" ]; then printf "%s\n" "$seen" >> "$fake_root/checker-saw-plant"; mode=always-reject; fi; done; fi' \
+    '  vlog="$(printf "%s" "$prompt" | grep -o "attempt-[0-9]*-verify.txt" | head -1 || true)"' \
+    '  cite="verification passed :: $vlog :: fixture verification passed"' \
+    '  if [ "$mode" = checker-no-citation ]; then cite="looks good to me"; fi' \
+    '  if [ "$mode" = checker-fabricated ]; then cite="all tests pass :: test-report.xml :: 12 passed"; fi' \
+    '  if [[ "$mode" == calibrate-* ]]; then' \
+    '    status=accepted; [ "$mode" = calibrate-reject ] && status=rejected' \
+    '    if [ "$mode" = calibrate-correct ] && grep -q "a \* b" src/calc.py; then status=rejected; fi' \
+    '    vcite="the tests pass :: $vlog :: test_add (test_calc.AddTests"' \
+    '    emit "{\"status\":\"$status\",\"summary\":\"calibration $status\",\"commit\":\"$(git rev-parse HEAD)\",\"changed_paths\":$(listed_paths diff --name-only --no-renames),\"evidence\":[\"$vcite\"],\"unresolved\":[],\"next_state\":\"$status\"}"' \
+    '    exit 0' \
+    '  fi' \
     '  count_file="$fake_root/counter"' \
     '  count=0; [ -f "$count_file" ] && count="$(<"$count_file")"' \
     '  count=$((count+1)); printf "%s" "$count" > "$count_file"' \
@@ -62,8 +74,8 @@ make_fake() {
     '  if [ "$mode" = reject-once ] && [ "$count" -eq 1 ]; then status=rejected; fi' \
     '  if [ "$mode" = always-reject ]; then status=rejected; fi' \
     '  paths_json="[\"src/change.txt\"]"; if [ -f "$fake_root/paths_json" ]; then paths_json="$(<"$fake_root/paths_json")"; fi' \
-    '  if [ "$mode" = checker-denials ] && [ -z "$receipt" ]; then printf "{\"type\":\"result\",\"total_cost_usd\":0.25,\"permission_denials\":[{\"tool_name\":\"Edit\"}],\"structured_output\":{\"status\":\"accepted\",\"summary\":\"checker accepted\",\"commit\":\"%s\",\"changed_paths\":[\"src/change.txt\"],\"evidence\":[\"fake check\"],\"unresolved\":[],\"next_state\":\"accepted\"}}\n" "$(git rev-parse HEAD)"; exit 0; fi' \
-    '  emit "{\"status\":\"$status\",\"summary\":\"checker $status\",\"commit\":\"$(git rev-parse HEAD)\",\"changed_paths\":$paths_json,\"evidence\":[\"fake check\"],\"unresolved\":[],\"next_state\":\"$status\"}"' \
+    '  if [ "$mode" = checker-denials ] && [ -z "$receipt" ]; then printf "{\"type\":\"result\",\"total_cost_usd\":0.25,\"permission_denials\":[{\"tool_name\":\"Edit\"}],\"structured_output\":{\"status\":\"accepted\",\"summary\":\"checker accepted\",\"commit\":\"%s\",\"changed_paths\":[\"src/change.txt\"],\"evidence\":[\"%s\"],\"unresolved\":[],\"next_state\":\"accepted\"}}\n" "$(git rev-parse HEAD)" "$cite"; exit 0; fi' \
+    '  emit "{\"status\":\"$status\",\"summary\":\"checker $status\",\"commit\":\"$(git rev-parse HEAD)\",\"changed_paths\":$paths_json,\"evidence\":[\"$cite\"],\"unresolved\":[],\"next_state\":\"$status\"}"' \
     'else' \
     '  if [ "$mode" = slow ]; then sleep 20; fi' \
     '  if [ "$mode" = collision-slow ]; then sleep 60; fi' \
@@ -145,7 +157,8 @@ value.update(run_id=run_id, spec_path='docs/specs/test.md', implementation_ticke
 for role in value['roles'].values():
     role['model'] = 'fixture-model'
 value['scope']['allowed_paths'] = ['src/**']
-value['verify']['command'] = 'git rev-parse HEAD >/dev/null && test -f src/change.txt'
+value['verify']['command'] = ('git rev-parse HEAD >/dev/null && test -f src/change.txt '
+                              '&& echo "fixture verification passed for src/change.txt"')
 value['limits'].update(max_attempts=3, wall_minutes=2)
 path = repo / '.harness' / 'runs' / f'{run_id}.json'
 path.write_text(json.dumps(value, indent=2) + '\n')
@@ -1036,6 +1049,111 @@ assert state['accepted_commit'] == state['candidate_commit']
 assert state['codex_tokens_used'] == 10
 PY
 
+echo 'autonomous-run — the run receipt records the risk tier'
+for declared in none C A; do
+  id="risk-$declared"
+  repo="$(new_repo "$id")"; make_fake "$repo/../fake"
+  printf '%s\n' '{"schema_version": 1, "rules": [{"paths": ["src/**"], "tier": "B", "lenses": ["code"]}]}' > "$repo/.harness/risk-policy.json"
+  git -C "$repo" add . && git -C "$repo" commit -qm 'test: risk policy'
+  manifest "$repo" "$id"
+  if [ "$declared" != none ]; then
+    python3 - "$repo/.harness/runs/$id.json" "$declared" <<'PY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); v = json.loads(p.read_text()); v['risk_tier'] = sys.argv[2]
+p.write_text(json.dumps(v, indent=2) + '\n')
+PY
+    git -C "$repo" add . && git -C "$repo" commit -qm 'test: declared tier'
+  fi
+  expected=B; [ "$declared" = C ] && expected=C
+  if (cd "$repo" && invoke "$repo" accept start ".harness/runs/$id.json" >../out 2>../err); then
+    ok "risk $declared: run accepted"
+  else bad "risk $declared: run was not accepted"; sed -n '1,5p' "$repo/../err"; fi
+  assert "risk $declared: state and verification receipt record tier $expected from the base policy" \
+    python3 - "$repo/.git/agentsmith-runs/$id" "$expected" "$declared" <<'PY'
+import json, pathlib, sys
+root, expected, declared = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+state = json.load(open(root / 'state.json'))
+proof = json.load(open(state['verification_receipt']))
+risk = proof['risk']
+assert risk == state['risk'], (risk, state.get('risk'))
+assert (risk['tier'], risk['computed_tier'], risk['lenses']) == (expected, 'B', ['code']), risk
+assert risk['declared_tier'] == (None if declared == 'none' else declared), risk
+assert risk['policy']['blob'] and risk['head'] == state['accepted_commit'] and risk['base'] == state['base_head']
+PY
+  assert "risk $declared: status shows the tier" bash -c "cd '$repo' && python3 '$repo/../fake/controller.py' status '$id' | grep -q '\"risk_tier\": \"$expected\"'"
+  assert "risk $declared: the live-run guard shows the tier" bash -c "cd '$repo' && python3 '$repo/../fake/controller.py' status --all-terminal | grep -q 'run $id: accepted at .* risk tier $expected'"
+done
+
+echo 'autonomous-run — checker calibration against labelled candidates'
+calibration_record() {
+  python3 - "$1" <<'PY'
+import json, pathlib, sys
+records = sorted(pathlib.Path(sys.argv[1]).glob('.git/agentsmith-calibrations/*.json'))
+assert len(records) == 1, records
+print(json.dumps(json.loads(records[0].read_text())))
+PY
+}
+for case in calibrate-correct:passed:0 calibrate-accept:failed:1 calibrate-reject:failed:1; do
+  mode="${case%%:*}"; rest="${case#*:}"; expected="${rest%%:*}"; code="${rest#*:}"
+  repo="$(new_repo "$mode")"; make_fake "$repo/../fake"; manifest "$repo" "$mode"
+  (cd "$repo" && invoke "$repo" "$mode" calibrate ".harness/runs/$mode.json" >../out 2>../err); rc=$?
+  assert "$mode: calibrate exits $code" test "$rc" = "$code"
+  assert "$mode: the calibration receipt says $expected" python3 - "$(calibration_record "$repo")" "$expected" "$mode" <<'PY'
+import json, re, sys
+record, expected, mode = json.loads(sys.argv[1]), sys.argv[2], sys.argv[3]
+assert record['status'] == expected, record
+assert (record['client'], record['model'], record['effort']) == ('claude', 'fixture-model', 'high'), record
+assert re.fullmatch(r'[0-9a-f]{64}', record['checker_prompt_sha256']) and record['calibrated_at']
+cases = {case['label']: case for case in record['cases']}
+assert (cases['clean']['expected'], cases['defect']['expected']) == ('accepted', 'rejected'), cases
+wrong = {'calibrate-correct': set(), 'calibrate-accept': {'defect'}, 'calibrate-reject': {'clean'}}[mode]
+assert {label for label, case in cases.items() if not case['correct']} == wrong, cases
+PY
+done
+# A run started after a passing calibration records it in its verification receipt.
+repo="$(new_repo calibrated-run)"; make_fake "$repo/../fake"; manifest "$repo" calibrated-run
+(cd "$repo" && invoke "$repo" calibrate-correct calibrate .harness/runs/calibrated-run.json >../out 2>../err)
+if (cd "$repo" && invoke "$repo" accept start .harness/runs/calibrated-run.json >../out 2>../err); then ok 'calibrated run accepted'
+else bad 'calibrated run was not accepted'; sed -n '1,5p' "$repo/../err"; fi
+assert 'the run receipt records the matching calibration' python3 - "$repo/.git/agentsmith-runs/calibrated-run/state.json" <<'PY'
+import json, sys
+state = json.load(open(sys.argv[1])); proof = json.load(open(state['verification_receipt']))
+calibration = proof['checker_calibration']
+assert calibration['status'] == 'passed' and calibration['calibrated_at'], calibration
+PY
+repo="$(new_repo uncalibrated-run)"; make_fake "$repo/../fake"; manifest "$repo" uncalibrated-run
+(cd "$repo" && invoke "$repo" accept start .harness/runs/uncalibrated-run.json >../out 2>../err)
+assert 'an uncalibrated checker is recorded as such, and the run still proceeds' python3 - "$repo/.git/agentsmith-runs/uncalibrated-run/state.json" <<'PY'
+import json, sys
+state = json.load(open(sys.argv[1])); proof = json.load(open(state['verification_receipt']))
+assert state['status'] == 'accepted' and proof['checker_calibration'] == {'status': 'none'}, proof.get('checker_calibration')
+PY
+
+echo 'autonomous-run — an acceptance must cite the verifier evidence'
+for mode in checker-no-citation checker-fabricated; do
+  repo="$(new_repo "$mode")"; make_fake "$repo/../fake"; manifest "$repo" "$mode"
+  python3 - "$repo/.harness/runs/$mode.json" <<'PY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); v = json.loads(p.read_text())
+v['limits']['max_attempts'] = 1
+p.write_text(json.dumps(v, indent=2) + '\n')
+PY
+  git -C "$repo" add . && git -C "$repo" commit -qm 'test: one attempt only'
+  if (cd "$repo" && invoke "$repo" "$mode" start ".harness/runs/$mode.json" >../out 2>../err); then
+    bad "$mode: an acceptance with bad citations was trusted"
+  else ok "$mode: an acceptance with bad citations is a checker defect, not an acceptance"; fi
+  assert "$mode: the defect is recorded with its reason" python3 - "$repo/.git/agentsmith-runs/$mode" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1]); state = json.load(open(root / 'state.json'))
+events = [json.loads(line) for line in open(root / 'events.jsonl')]
+defects = [e for e in events if e['event'] == 'checker_defect']
+assert state['status'] == 'escalated' and 'accepted_commit' not in state, state['status']
+assert len(defects) == 1 and ('not ' in defects[0]['reason']), defects
+proof = json.load(open(root / 'attempt-1-verify.json'))
+assert proof['checker_defect'] == defects[0]['reason'] and 'attempt-1-verify.txt' in proof['evidence_files']
+PY
+done
+
 echo 'autonomous-run — acceptance is bound to the commit the checks passed'
 repo="$(new_repo late-commit)"; make_fake "$repo/../fake"; manifest "$repo" late-commit
 # A process the maker detached outlives its process group and commits once verification starts.
@@ -1057,7 +1175,7 @@ PY
 python3 - "$repo/.harness/runs/late-commit.json" <<'PY'
 import json, pathlib, sys
 p = pathlib.Path(sys.argv[1]); v = json.loads(p.read_text())
-v['verify']['command'] = 'sleep 3 && test -f src/change.txt'
+v['verify']['command'] = 'sleep 3 && test -f src/change.txt && echo "fixture verification passed"'
 p.write_text(json.dumps(v, indent=2) + '\n')
 PY
 git -C "$repo" add . && git -C "$repo" commit -qm 'test: slow verifier'
@@ -1081,7 +1199,8 @@ import json, pathlib, sys
 p = pathlib.Path(sys.argv[1]); v = json.loads(p.read_text())
 token = sys.argv[2]
 v['verify']['command'] = (f'test ! -e "$HOME/.cache/{token}" && test ! -e "$TMPDIR/{token}" '
-                          f'&& test ! -e "$XDG_CACHE_HOME/{token}" && test -f src/change.txt')
+                          f'&& test ! -e "$XDG_CACHE_HOME/{token}" && test -f src/change.txt '
+                          f'&& echo "fixture verification passed"')
 v['limits']['max_attempts'] = 1
 p.write_text(json.dumps(v, indent=2) + '\n')
 PY
