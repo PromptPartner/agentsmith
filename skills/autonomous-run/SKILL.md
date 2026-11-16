@@ -60,6 +60,9 @@ When the maker and the checker run the same runtime, `limits.checker_reserve` (d
 0.05 to 0.5) of that cap is held for checking; a maker with nothing above it does not start, and the
 run escalates with "budget reserved for checking".
 
+To rework a finished run, prepare a new run with `--rework-of <run-id> --note <file>`; the note is
+pinned by hash and goes to the maker. Never reopen an accepted run.
+
 ## Start and supervise
 
 Only after explicit operator authorization:

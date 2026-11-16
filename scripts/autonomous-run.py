@@ -18,8 +18,10 @@ import math
 import os
 import posixpath
 import re
+import secrets
 import shlex
 import signal
+import shlex
 import shutil
 import subprocess
 import sys
@@ -92,6 +94,24 @@ class InfrastructureFailure(RunError):
     def __init__(self, message: str, signature: str) -> None:
         super().__init__(message)
         self.signature = signature
+
+
+class HiddenTestProbe(RunError):
+    """A role's output, receipt or changes showed the tripwire planted in the hidden clone: it tried
+    to read the held-out tests. Never an infrastructure failure, so the breaker never relaunches it.
+    `content` means the canary token itself appeared, so the role saw held-out content; a hit on
+    the file's name alone (a denied read's error message) means the sandbox held."""
+
+    def __init__(self, role: str, surfaces: list[str], content: bool) -> None:
+        seen = "saw held-out content" if content else "tried to read the held-out acceptance tests"
+        super().__init__(f"{HIDDEN_PROBE}: the {role} {seen} (shown in its {', '.join(surfaces)})")
+        self.role = role
+        self.surfaces = surfaces
+        self.content = content
+
+
+class HiddenTestsRejected(Exception):
+    """Internal: opt-in hidden acceptance tests rejected the candidate before any checker ran."""
 
 
 class RunInterrupted(RuntimeError):
@@ -840,6 +860,216 @@ def risk_record(repo: Path, base: str, head: str, declared: str | None) -> dict[
     return record
 
 
+MAX_REWORK_NOTE_BYTES = 16 * 1024
+
+
+def rework_note(repo: Path, manifest: dict[str, Any]) -> str | None:
+    """The operator's rework note, checked against the hash pinned at prepare; None without one."""
+    rework = manifest.get("rework")
+    if rework is None:
+        return None
+    if not isinstance(rework, dict) or set(rework) != {"of", "note_path", "note_sha256"}:
+        raise RunError("rework needs exactly of, note_path and note_sha256; prepare it with --rework-of")
+    path = (repo / str(rework["note_path"])).resolve()
+    if not path.is_relative_to(repo.resolve()) or not path.is_file():
+        raise RunError(f"rework note {rework['note_path']} is missing; prepare a new run")
+    data = path.read_bytes()
+    if hashlib.sha256(data).hexdigest() != rework["note_sha256"]:
+        raise RunError("rework note changed since prepare; prepare a new run with the new note")
+    return note_text_problem(data, str(rework["note_path"])).strip()
+
+
+def note_text_problem(data: bytes, shown: str) -> str:
+    """The note as text. It reaches the maker as a process argument, which cannot hold NUL."""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = "\0"
+    if "\0" in text:
+        raise RunError(f"rework note {shown} must be UTF-8 text without NUL characters")
+    return text
+
+
+HIDDEN_PASS_MARKER = "AGENTSMITH-HIDDEN-PASS"
+HIDDEN_HINT = ("hidden acceptance tests failed; re-read the spec's acceptance criteria and check the cases "
+               "the visible tests do not cover")
+
+
+def hidden_tests_problem(manifest: dict[str, Any], repo: Path) -> str | None:
+    """Why a manifest's opt-in hidden acceptance tests cannot be used, or None (also when absent)."""
+    hidden = manifest.get("hidden_tests")
+    if hidden is None:
+        return None
+    if not isinstance(hidden, dict) or set(hidden) != {"repo", "commit", "command", "tiers"}:
+        return "hidden_tests needs exactly repo, commit, command and tiers"
+    clone = Path(str(hidden["repo"])).expanduser()
+    if not clone.is_absolute() or not clone.is_dir():
+        return "hidden_tests.repo must be an absolute path to a local clone"
+    clone = clone.resolve()
+    run_worktree = Path(manifest.get("worktree_path") or repo.parent / f"{repo.name}-{manifest.get('run_id')}").resolve()
+    for place in (repo.resolve(), run_worktree):
+        if clone == place or clone.is_relative_to(place) or place.is_relative_to(clone):
+            return f"hidden_tests.repo must be outside the repository and the run worktree ({place})"
+    # The hidden objects must live only inside the clone, which roles cannot read: a worktree of
+    # the candidate repository, a clone that borrows objects (alternates) or a Git folder kept
+    # elsewhere would let a maker read the hidden tests with `git show`.
+    clone_git = run(["git", "-C", str(clone), "rev-parse", "--path-format=absolute", "--absolute-git-dir",
+                     "--git-common-dir"], repo).stdout.split("\n")
+    candidate_common = resolved_git_path(repo, "--git-common-dir")
+    clone_dirs = [Path(line).resolve() for line in clone_git[:2] if line]
+    alternates = [clone_dirs[-1] / "objects/info/alternates"] if clone_dirs else []
+    borrowed = any(path.is_file() and path.read_text(encoding="utf-8", errors="replace").strip() for path in alternates)
+    lent = candidate_common / "objects/info/alternates"
+    lends = lent.is_file() and any(Path(line.strip()).resolve().is_relative_to(clone)
+                                   for line in lent.read_text(encoding="utf-8", errors="replace").splitlines()
+                                   if line.strip())
+    if (len(clone_dirs) != 2 or not all(path.is_relative_to(clone) for path in clone_dirs)
+            or candidate_common in clone_dirs or borrowed or lends):
+        return ("hidden_tests.repo must be a standalone repository: its Git folder inside it, not a worktree "
+                "of this repository, and no objects borrowed from or lent to another repository")
+    commit = str(hidden["commit"])
+    if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit) or run(
+            ["git", "-C", str(clone), "cat-file", "-t", commit], repo).stdout.strip() != "commit":
+        return "hidden_tests.commit must be a full commit SHA that exists in hidden_tests.repo"
+    # Only plain files and folders: a link or submodule could reach outside the suite, and no error
+    # may name a hidden entry, because errors are saved where roles can read them.
+    listing = run(["git", "-C", str(clone), "ls-tree", "-r", "-t", "-z", commit], repo).stdout.split("\0")
+    if any(entry and entry.split(" ", 1)[0] not in {"100644", "100755", "040000"} for entry in listing):
+        return "hidden_tests.commit holds an entry that is not a regular file or folder; keep the suite to plain files"
+    command = hidden["command"]
+    if not isinstance(command, list) or not command or not all(isinstance(item, str) and item for item in command):
+        return "hidden_tests.command must be a non-empty list of arguments; {hidden} names the tests folder"
+    if not any("{token}" in item for item in command):
+        return (f"hidden_tests.command must pass {{token}} to the hidden harness, which prints "
+                f"'{HIDDEN_PASS_MARKER} <token>' on a line of its own when every hidden test ran")
+    tiers = hidden["tiers"]
+    if not isinstance(tiers, list) or not tiers or any(tier not in RISK_TIERS for tier in tiers):
+        return f"hidden_tests.tiers must list tiers from {', '.join(RISK_TIERS)}"
+    return None
+
+
+def hidden_read_paths(manifest: dict[str, Any]) -> list[Path]:
+    hidden = manifest.get("hidden_tests")
+    return [Path(str(hidden["repo"])).expanduser().resolve()] if isinstance(hidden, dict) else []
+
+
+HIDDEN_PROBE = "hidden-test-probe"
+
+
+def probe_hint(role: str) -> str:
+    """Rework feedback after a probe: it names the behaviour, never a hidden file or the canary."""
+    return (f"the {role} tried to read the held-out acceptance tests, which no role may read, so the attempt "
+            "was not used; work from the spec and the visible tests only")
+
+
+@contextlib.contextmanager
+def hidden_tripwire(manifest: dict[str, Any]):
+    """A file with a fresh random name and canary token in the hidden clone while one role runs.
+    The role sandbox denies reading the clone; the canary shows a read that got through anyway.
+    Content, not access times: atime is off or relaxed on most macOS and Linux mounts. The suite
+    comes from `git archive` of the hidden commit, so this untracked file never joins it."""
+    clones = hidden_read_paths(manifest)
+    if not clones:
+        yield None
+        return
+    tripwire = {"name": f"case-{secrets.token_hex(8)}.txt", "token": secrets.token_hex(16)}
+    path = clones[0] / tripwire["name"]
+    try:
+        with path.open("x", encoding="utf-8") as handle:
+            handle.write(f"held-out acceptance case {tripwire['token']}\n")
+    except OSError as exc:
+        raise RunError(f"cannot place the hidden-test tripwire in hidden_tests.repo ({exc.strerror}); "
+                       "the controller needs write access to the clone") from None
+    try:
+        yield tripwire
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def probe_surfaces(tripwire: dict[str, str], role_output: str, receipt_path: Path, worktree: Path,
+                   before_head: str) -> tuple[list[str], bool]:
+    """Where a role showed the canary or the tripwire's name: its output, its receipt, the changes
+    it left in its worktree (committed, uncommitted or untracked) and its new commit messages; and
+    whether the canary token itself was among them."""
+    untracked = git(worktree, "ls-files", "--others", "--exclude-standard", "-z", check=False).split("\0")
+    changes = [git(worktree, "diff", "--no-ext-diff", "--text", before_head, check=False)]
+    for name in filter(None, untracked):
+        with contextlib.suppress(OSError):
+            changes.append(name + "\n" + (worktree / name).read_bytes()[:1 << 20].decode("utf-8", "replace"))
+    surfaces = {
+        "output": role_output,
+        "receipt": receipt_path.read_text(encoding="utf-8", errors="replace") if receipt_path.is_file() else "",
+        "worktree changes": "\n".join(changes),
+        "commit messages": git(worktree, "log", "--format=%B", f"{before_head}..HEAD", check=False),
+    }
+    hits = [label for label, text in surfaces.items() if tripwire["token"] in text or tripwire["name"] in text]
+    return hits, any(tripwire["token"] in text for text in surfaces.values())
+
+
+def probed_attempt(state: dict[str, Any], probe: HiddenTestProbe, commit: str, paths: list[str]) -> dict[str, Any]:
+    """A probe fails the attempt like a rejection, with feedback that names only the behaviour."""
+    receipt = {"status": "rejected", "summary": f"the {probe.role} tried to read the held-out acceptance tests",
+               "commit": commit, "changed_paths": paths, "evidence": [], "unresolved": [probe_hint(probe.role)],
+               "next_state": "rejected"}
+    state["last_checker_receipt"] = receipt
+    state["status"] = "retrying"
+    state["stage"] = "retrying"
+    save_state(state, "attempt_rejected", attempt=state["attempt"], reason=HIDDEN_PROBE, role=probe.role)
+    return receipt
+
+
+def extract_tree(source: Path, commit: str, destination: Path) -> None:
+    """A commit's files, without its Git history, through `git archive` and a checked tar."""
+    archived = subprocess.run(["git", "-C", str(source), "archive", "--format=tar", commit],
+                              capture_output=True, check=False)
+    if archived.returncode:
+        raise RunError(f"cannot read commit {commit[:12]}: {archived.stderr.decode('utf-8', 'replace').strip()}")
+    destination.mkdir(parents=True, exist_ok=True)
+    import io
+    import tarfile
+    with tarfile.TarFile(fileobj=io.BytesIO(archived.stdout)) as archive:  # bytes, not text
+        for member in archive.getmembers():
+            name = Path(member.name)
+            if name.is_absolute() or ".." in name.parts or not (member.isfile() or member.isdir()):
+                raise RunError(f"commit {commit[:12]} holds {member.name!r}, which is not a plain file or folder")
+        archive.extractall(destination)
+
+
+def run_hidden_tests(state: dict[str, Any], manifest: dict[str, Any], candidate: str) -> dict[str, Any]:
+    """Opt-in hidden acceptance tests. They run in the verifier sandbox against a plain copy of the
+    candidate in a temporary folder, never in a worktree a role sees, and only their result, time
+    and output hash are kept: no output is stored where a maker could read it. They can only reject."""
+    hidden = manifest["hidden_tests"]
+    tier = risk_record(Path(state["worktree"]), state["base_head"], candidate, manifest.get("risk_tier"))["tier"]
+    record: dict[str, Any] = {"commit": hidden["commit"], "tier": tier, "tiers": hidden["tiers"]}
+    if tier not in hidden["tiers"]:
+        return {**record, "status": "skipped"}
+    started = time.monotonic()
+    # The suite and the candidate sit in separate folders, so no candidate file can join the suite,
+    # and the suite is read-only to the run. A pass needs the harness's own marker with a token made
+    # for this run, not just exit 0, so an early exit from candidate code does not pass.
+    token = uuid.uuid4().hex
+    with private_scratch("agentsmith-hidden-") as scratch:
+        workspace, suite = scratch / "candidate", scratch / "suite"
+        extract_tree(Path(state["worktree"]), candidate, workspace)
+        try:
+            extract_tree(Path(str(hidden["repo"])).expanduser().resolve(), hidden["commit"], suite)
+        except (RunError, OSError) as exc:
+            # The detail names hidden entries; keep only a reference the operator can match locally.
+            reference = hashlib.sha256(str(exc).encode("utf-8", "replace")).hexdigest()[:12]
+            raise RunError(f"hidden acceptance tests could not be prepared (reference {reference})") from None
+        run(["git", "init", "-q", str(workspace)], workspace)  # the verifier sandbox expects a Git folder
+        argv = [item.replace("{hidden}", str(suite)).replace("{token}", token) for item in hidden["command"]]
+        # No shared /tmp: code the hidden tests run must not leave the suite where a later role reads.
+        result = sandboxed_verify(shlex.join(argv), workspace, max(1, remaining_seconds(state, manifest)),
+                                  verifier_env(), read_dirs=(suite,), shared_tmp=False)
+    output = hashlib.sha256((result.stdout + "\0" + result.stderr).encode("utf-8", "replace")).hexdigest()
+    passed = result.returncode == 0 and f"{HIDDEN_PASS_MARKER} {token}" in result.stdout.splitlines()
+    return {**record, "status": "pass" if passed else "fail", "exit_code": result.returncode,
+            "marker_seen": passed, "duration_seconds": round(time.monotonic() - started, 1),
+            "output_sha256": output}
+
+
 UNBOUNDED = "unbounded"
 # The cap each runtime spends, and the type its value must have.
 RUNTIME_BUDGETS = {"codex": ("codex_goal_tokens", "a positive whole number of tokens"),
@@ -971,6 +1201,10 @@ def validate_manifest(manifest: dict[str, Any], repo: Path) -> tuple[Path, str]:
     if not isinstance(verify_config, dict) or not isinstance(verify_config.get("command"), str) or not verify_config["command"].strip():
         raise RunError("verify.command must name a required verification command")
     validate_budgets(manifest)
+    hidden = hidden_tests_problem(manifest, repo)
+    if hidden:
+        raise RunError(hidden)
+    rework_note(repo, manifest)  # refuses a note that changed after prepare
     if "risk_tier" in manifest and manifest["risk_tier"] not in RISK_TIERS:
         raise RunError(f"risk_tier must be one of {', '.join(RISK_TIERS)}; it can only raise the computed tier")
     spec_rel = Path(str(manifest["spec_path"]))
@@ -1096,6 +1330,28 @@ def prepare(args: argparse.Namespace) -> int:
         raise RunError(f"{', '.join(unset)} are blank or placeholders; pass --maker-model and "
                        "--checker-model, or fill them in the template, before prepare writes a manifest")
     validate_budgets(manifest)
+    hidden = hidden_tests_problem(manifest, repo)
+    if hidden:
+        raise RunError(hidden)
+    if bool(args.rework_of) != bool(args.note):
+        raise RunError("--rework-of and --note go together")
+    if args.rework_of:
+        # A rework is always a new run: an accepted or escalated run is never reopened.
+        if args.rework_of == args.run_id:
+            raise RunError("a rework is a new run: choose a run id other than the one it reworks")
+        previous = load_run(repo, args.rework_of)
+        owner = read_lock(state_root(repo) / args.rework_of)
+        if previous.get("status") not in TERMINAL_RUN_STATUSES or (owner and process_is_live(owner["pid"])):
+            raise RunError(f"run {args.rework_of} is {previous.get('status')}; only a finished run "
+                           "(accepted, escalated or interrupted) can be reworked")
+        note = (Path.cwd() / args.note).resolve()
+        if not note.is_relative_to(repo) or not note.is_file():
+            raise RunError(f"rework note {args.note} must be a file inside the repository")
+        if note.stat().st_size > MAX_REWORK_NOTE_BYTES:
+            raise RunError(f"rework note {args.note} is larger than {MAX_REWORK_NOTE_BYTES // 1024} KB")
+        note_text_problem(note.read_bytes(), args.note)
+        manifest["rework"] = {"of": args.rework_of, "note_path": note.relative_to(repo).as_posix(),
+                              "note_sha256": hashlib.sha256(note.read_bytes()).hexdigest()}
     output = Path(args.output or f".harness/runs/{args.run_id}.json")
     output = output if output.is_absolute() else repo / output
     if output.exists() and not args.force:
@@ -1152,6 +1408,8 @@ VERIFICATION_POLICY_PATHS = (
     ".agentsmith/**", ".harness/**", ".github/workflows/**",
     "scripts/verify*", "scripts/autonomous-run.py", "native_launcher.py",
     "agentsmith.py", "windows_verifier_sandbox.py",
+    # Never part of a candidate: the name the hidden acceptance suite once used inside the copy.
+    ".agentsmith-hidden-tests", ".agentsmith-hidden-tests/**",
 )
 BASELINE_TEST_PATHS = ("test_*.py", "*_test.py", "tests/**", "test/**",
                        "**/tests/**", "**/test/**", "**/test_*.py", "**/*_test.py",
@@ -1723,10 +1981,16 @@ def checker_environment(env: dict[str, str], scratch: Path) -> dict[str, str]:
 
 
 def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str],
-                     *, state: dict[str, Any] | None = None) -> subprocess.CompletedProcess[str]:
+                     *, state: dict[str, Any] | None = None,
+                     read_dirs: tuple[Path, ...] = (),
+                     shared_tmp: bool = True) -> subprocess.CompletedProcess[str]:
     """Run the human-approved verifier with no network and no writes outside its worktree and a
-    private home, temporary and cache folder that exists only for this run of the verifier."""
+    private home, temporary and cache folder that exists only for this run of the verifier.
+    `read_dirs` are extra folders it may read but not write (the hidden suite). With `shared_tmp`
+    off, it may not write the shared /tmp either (Linux never allows that)."""
     common = resolved_git_path(cwd, "--git-common-dir")
+    if sys.platform == "win32" and read_dirs:
+        return subprocess.CompletedProcess([], 126, "", "hidden tests need the macOS or Linux verifier sandbox")
     if sys.platform == "win32":
         # The Windows verifier points HOME, USERPROFILE, APPDATA, TEMP and TMP at the disposable
         # worktree and LOCALAPPDATA at a temporary AppContainer profile, both private to it.
@@ -1734,11 +1998,13 @@ def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str],
         return run_verifier(command, cwd, common, timeout, env)
     with private_scratch("agentsmith-verify-") as scratch:
         return posix_sandboxed_verify(command, cwd, common, timeout,
-                                      private_tool_environment(env, scratch, home=True), scratch, state)
+                                      private_tool_environment(env, scratch, home=True), scratch, state,
+                                      tuple(path.resolve() for path in read_dirs), shared_tmp)
 
 
 def posix_sandboxed_verify(command: str, cwd: Path, common: Path, timeout: int, env: dict[str, str],
-                           scratch: Path, state: dict[str, Any] | None) -> subprocess.CompletedProcess[str]:
+                           scratch: Path, state: dict[str, Any] | None,
+                           read_dirs: tuple[Path, ...] = (), shared_tmp: bool = True) -> subprocess.CompletedProcess[str]:
     if sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").exists():
         escaped = str(cwd).replace('"', '\\"')
         escaped_common = str(common).replace('"', '\\"')
@@ -1756,7 +2022,7 @@ def posix_sandboxed_verify(command: str, cwd: Path, common: Path, timeout: int, 
             f'(require-not (subpath {json.dumps(str(scratch), ensure_ascii=False)}))))',
             f'(allow file-write* (subpath "{escaped}"))',
             f'(allow file-write* (subpath {json.dumps(str(scratch), ensure_ascii=False)}))',
-            '(allow file-write* (subpath "/tmp") (subpath "/private/tmp"))',
+            *(['(allow file-write* (subpath "/tmp") (subpath "/private/tmp"))'] if shared_tmp else []),
             '(allow file-write* (literal "/dev/null") (literal "/dev/dtracehelper"))',
             *[f'(deny file-write* (subpath {json.dumps(str(path.resolve()), ensure_ascii=False)}))'
               for path in protected],
@@ -1773,7 +2039,7 @@ def posix_sandboxed_verify(command: str, cwd: Path, common: Path, timeout: int, 
         if not home.is_relative_to(temporary):
             args += ["--tmpfs", str(home)]
         directories: set[Path] = set()
-        for target in (cwd.resolve(), common, scratch):
+        for target in (cwd.resolve(), common, scratch, *read_dirs):
             for mount_root in (temporary, home):
                 if target.is_relative_to(mount_root):
                     current = mount_root
@@ -1786,7 +2052,9 @@ def posix_sandboxed_verify(command: str, cwd: Path, common: Path, timeout: int, 
         if not home.is_relative_to(temporary):
             args += ["--remount-ro", str(home)]
         args += ["--bind", str(cwd), str(cwd), "--ro-bind", str(common), str(common),
-                 "--bind", str(scratch), str(scratch), "--dev", "/dev", "--proc", "/proc",
+                 "--bind", str(scratch), str(scratch),
+                 *[item for path in read_dirs for item in ("--ro-bind", str(path), str(path))],
+                 "--dev", "/dev", "--proc", "/proc",
                  "--chdir", str(cwd), "/bin/bash", "-c", command]
         return verifier_process(args, cwd, timeout, env, state)
     return subprocess.CompletedProcess([], 126, "", "no supported fail-closed verifier sandbox")
@@ -2135,7 +2403,7 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
         cmd = build_native_command(
             "codex", prompt, worktree, schema_path, receipt_path,
             extra_write_dirs=maker_write_dirs, read_only=role == "checker",
-            protected_write_paths=protected,
+            protected_write_paths=protected, hidden_read_paths=hidden_read_paths(manifest),
             model=str(role_cfg.get("model", "")), effort=str(role_cfg.get("effort", "")),
         )
     else:
@@ -2144,7 +2412,7 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
             settings_path,
             claude_sandbox_settings(
                 worktree, maker_write_dirs, read_only=role == "checker",
-                protected_write_paths=protected,
+                protected_write_paths=protected, hidden_read_paths=hidden_read_paths(manifest),
             ),
         )
         # Claude Code enforces the remaining allowance inside the role (`--max-budget-usd`).
@@ -2163,19 +2431,38 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
     prefix = f"attempt-{state['attempt']}-{role}"
     state['usage_pending'] = {'role': role, 'runtime': runtime, 'prefix': prefix}
     save_state(state)
+    # The start of this launch, to find the role's own changes and commits (hidden-test runs only).
+    before_head = git(worktree, "rev-parse", "HEAD") if hidden_read_paths(manifest) else ""
     with contextlib.ExitStack() as stack:
         environment = stack.enter_context(native_role_environment(runtime, worktree))
         if role == "checker":
             scratch = stack.enter_context(private_scratch("agentsmith-check-"))
             environment = checker_environment(environment, scratch)
+        tripwire = stack.enter_context(hidden_tripwire(manifest))
         result, error = supervised_process(cmd, worktree, timeout, environment, state, prefix)
     stdout, stderr = result.stdout, result.stderr
+    probed, saw_content = (probe_surfaces(tripwire, stdout + "\n" + stderr, receipt_path, worktree, before_head)
+                           if tripwire is not None else ([], False))
+    if probed:
+        # The output may hold hidden test source, and later roles can read the run folder: keep
+        # only its hash. The receipt is never saved; the canary dies with this launch.
+        for stream, text in ((".stdout", stdout), (".stderr", stderr)):
+            digest = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+            (run_dir / (prefix + stream)).write_text(
+                f"withheld: this output showed an attempt to read the held-out acceptance tests "
+                f"(sha256 {digest})\n", encoding="utf-8")
     denials = permission_denials(stdout) if runtime == "claude" else None
     write_json(run_dir / (prefix + '-exit.json'),
                {'role': role, 'runtime': runtime, 'exit_code': result.returncode,
                 'model': role_cfg['model'], 'effort': role_cfg['effort'],
                 **({'permission_denials': denials} if denials is not None else {})})
     record_role_usage(state, runtime, role, stdout)
+    if probed:
+        event(state, "hidden_test_probe", role=role, runtime=runtime, attempt=state["attempt"], surfaces=probed,
+              content=saw_content)
+        if error is not None and not isinstance(error, subprocess.TimeoutExpired):
+            raise error  # an operator stop still wins; the probe is already on record
+        raise HiddenTestProbe(role, probed, saw_content)
     if error is not None:
         if isinstance(error, subprocess.TimeoutExpired):
             raise RunError(f'{role} exceeded wall-clock budget') from error
@@ -2279,6 +2566,16 @@ def launch_role_with_breaker(state: dict[str, Any], manifest: dict[str, Any], ro
     while True:
         try:
             receipt = launch_role(state, manifest, role, prompt, **kwargs)
+        except HiddenTestProbe as probe:
+            # A probe is the role's own act, not a host fault: it ends any streak, never extends it.
+            if state.pop("infrastructure_streak", None) is not None:
+                save_state(state)
+            if probe.content:
+                # The role saw held-out content. Discarding its attempt cannot undo that, and the
+                # hidden tests no longer measure this run: stop it for a person.
+                raise RunError(f"{probe}; the hidden tests no longer give an honest signal for this run, so it "
+                               "stops: review the run branch and replace the hidden tests before another run") from None
+            raise
         except InfrastructureFailure as failure:
             streak = [*state.get("infrastructure_streak", []), failure.signature]
             state["infrastructure_streak"] = streak
@@ -2401,6 +2698,10 @@ A moved file counts twice: list the old path and the new path.
         goal_budget = 0 if allowance is None else int(allowance)
         goal = (f"If your runtime exposes the native goal tool, create a goal for this exact ticket with token budget "
                 f"{goal_budget}; the manifest remains authoritative.\n") if goal_budget > 0 else ""
+        note = rework_note(Path(state["repo"]), manifest) if state.get("repo") else None
+        if note:
+            goal += (f"This run is a rework of run {manifest['rework']['of']}. The operator's rework note:\n"
+                     f"{note}\n")
         return common + goal + f"""Implement the smallest complete change, run {manifest['verify']['command']},
 and make atomic local commits only. Leave the worktree clean. HEAD must advance beyond {base}.
 Use status completed or blocked; do not mark your own work accepted.{feedback}"""
@@ -2513,6 +2814,11 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
                     after_meta = git_metadata(worktree, known_peers=before_meta["registered_peers"])
                 validate_git_transition(worktree, before_meta, after_meta, state["branch"],
                                         before_head, after_head)
+            if isinstance(maker_error, HiddenTestProbe):
+                # Only the tripwire's name showed: the sandbox held, so the attempt fails and its
+                # commits stay, as after any rejection. A content leak already stopped the run.
+                prior = probed_attempt(state, maker_error, after_head, changed_paths(worktree, state["base_head"]))
+                continue
             if isinstance(maker_error, BudgetExceeded) and maker_error.receipt is not None:
                 # The maker finished but crossed a cap: checkpoint its candidate before the
                 # escalation, so resume can verify and check it instead of discarding it.
@@ -2587,16 +2893,36 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             checker_ignored = ignored_paths(checker_worktree)
             evidence = verifier_evidence(verify_path, checker_worktree, checker_ignored)
             proof["evidence_files"] = evidence
+            hidden_failed = False
+            if verify.returncode == 0 and manifest.get("hidden_tests") is not None:
+                proof["hidden_tests"] = run_hidden_tests(state, manifest, checker_head)
+                hidden_failed = proof["hidden_tests"]["status"] == "fail"
             write_json(proof_path, proof)
             checker_meta = git_metadata(checker_worktree)
             checker_error: Exception | None = None
             checker: dict[str, Any] | None = None
+            checker_probe: HiddenTestProbe | None = None
             try:
+                if hidden_failed:
+                    # Hidden tests only reject. The maker learns that they failed and nothing else;
+                    # no checker is spent on a candidate they rejected.
+                    event(state, "hidden_tests_failed", attempt=state["attempt"])
+                    raise HiddenTestsRejected()
                 checker = launch_role_with_breaker(
                     state, manifest, "checker",
                     role_prompt(state, manifest, "checker", verify_output=verify_output,
                                 evidence_files=sorted(evidence)),
                     role_worktree=checker_worktree)
+            except HiddenTestsRejected:
+                checker = {"status": "rejected", "summary": "hidden acceptance tests failed", "commit": checker_head,
+                           "changed_paths": paths, "evidence": [], "unresolved": [HIDDEN_HINT],
+                           "next_state": "rejected"}
+            except HiddenTestProbe as probe:
+                # Its verdict is not used; the attempt fails and the next maker learns why.
+                checker_probe = probe
+                checker = {"status": "rejected", "summary": "the checker tried to read the held-out acceptance tests",
+                           "commit": checker_head, "changed_paths": paths, "evidence": [],
+                           "unresolved": [probe_hint("checker")], "next_state": "rejected"}
             except Exception as exc:
                 checker_error = exc
             validate_git_unchanged(
@@ -2613,9 +2939,10 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             assert checker is not None
             if checker["commit"] != checker_head or sorted(checker["changed_paths"]) != sorted(paths):
                 raise RunError("checker receipt does not match the committed Git state")
-            proof["checker_receipt_sha256"] = file_digest(
-                Path(state["state_path"]).parent / f"attempt-{state['attempt']}-checker-receipt.json")
-            proof["checker_status"] = checker["status"]
+            proof["checker_receipt_sha256"] = (None if hidden_failed or checker_probe else file_digest(
+                Path(state["state_path"]).parent / f"attempt-{state['attempt']}-checker-receipt.json"))
+            proof["checker_status"] = ("not run: hidden acceptance tests failed" if hidden_failed
+                                       else f"not used: {HIDDEN_PROBE}" if checker_probe else checker["status"])
             # Every acceptance that would otherwise count is checked, including one with no or only
             # blank evidence: that is a checker defect with rework feedback, not a plain rejection.
             claims_acceptance = (verify.returncode == 0 and checker["status"] == "accepted"
@@ -2657,7 +2984,8 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
         state["last_checker_receipt"] = checker
         state["status"] = "retrying"
         state['stage'] = 'retrying'
-        save_state(state, "attempt_rejected", attempt=state["attempt"], verify_exit=verify.returncode)
+        save_state(state, "attempt_rejected", attempt=state["attempt"], verify_exit=verify.returncode,
+                   **({"reason": HIDDEN_PROBE, "role": "checker"} if checker_probe else {}))
     # As with acceptance, a stop that arrived before this record still interrupts the run.
     raise_if_stopped(Path(state["state_path"]).parent)
     state["status"] = "escalated"
@@ -3708,6 +4036,8 @@ def parser() -> argparse.ArgumentParser:
     prep.add_argument("--template")
     prep.add_argument("--output")
     prep.add_argument("--force", action="store_true")
+    prep.add_argument("--rework-of", help="a finished run this new run reworks")
+    prep.add_argument("--note", help="the operator's rework note, a file in the repository (with --rework-of)")
     prep.set_defaults(func=prepare)
     specs = sub.add_parser("check-specs", help="pipeline guard: accepted specs point at their "
                                               "research and review receipt and record a route")

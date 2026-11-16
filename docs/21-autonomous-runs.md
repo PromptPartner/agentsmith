@@ -29,6 +29,19 @@ manifest while a model or effort is blank or a placeholder (`<...>`, `REPLACE-WI
 `port:3000`, `db:local/test`, or `service:redis`; omit it in an older manifest or use an empty list
 when the run reserves none.
 
+**Rework.** When a finished run needs another pass, prepare a new run with the operator's note:
+
+```text
+python3 .agentsmith/autonomous-run.py prepare --run-id <new-id> --spec docs/specs/<name>.md \
+  --ticket <ticket> --rework-of <finished-run-id> --note <file in the repository>
+```
+
+The run it reworks must be finished (`accepted`, `escalated` or `interrupted`), and it is never
+reopened: a rework is always a new run with a new ID. The manifest pins the note by path and
+SHA-256 in `rework`, and `start` and `resume` refuse when the note changed after `prepare`.
+The maker receives the note through its prompt, marked as a rework of the earlier run. A note
+may be at most 16 KB.
+
 ## What runs overnight
 
 `python3 .agentsmith/autonomous-run.py start <manifest>` creates a sibling git worktree on an
@@ -431,6 +444,76 @@ verifier support is unchanged.
 An accepted run prints the branch, commit, worktree, and evidence for human review. An escalated
 run prints the exact boundary that stopped it. Nothing leaves the machine until the operator
 separately authorizes the relevant external action.
+
+### Hidden acceptance tests (opt-in)
+
+A run can add acceptance tests that neither role ever sees. They must be written by a person and
+kept in a private local clone outside the repository and outside the run worktree. Name them in
+the manifest:
+
+```json
+"hidden_tests": {"repo": "/absolute/path/to/private-tests", "commit": "<full commit sha>",
+                 "command": ["python3", "{hidden}/run_hidden.py", "{token}"], "tiers": ["C"]}
+```
+
+`prepare`, `start` and `resume` refuse when the clone is missing or inside the repository or run
+worktree, when the commit does not exist there, or when a field is malformed. The clone must be a
+standalone repository: its Git folder inside it, not a worktree of the run's repository, and no
+objects borrowed from or lent to another repository (`objects/info/alternates`). Otherwise the
+hidden commit's objects would sit where a maker can read them with `git show`. The hidden commit may hold
+only plain files and folders. No message that a run saves names a hidden file: if the suite
+cannot be prepared, the run records "hidden acceptance tests could not be prepared" with a
+short reference, and you see the detail by running `git archive` on the clone yourself. When the verifier
+passes and the run's risk tier (computed as at acceptance) is in `tiers`, the controller copies
+the candidate's files and that commit's files into two separate folders in a fresh temporary
+folder and runs `command` in the verifier sandbox, with the candidate's copy as its working
+folder. `{hidden}` names the hidden suite's folder, which the run can read but not write, and no
+candidate file can join it; a candidate path under `.agentsmith-hidden-tests/` is refused like
+other protected inputs. `{token}` is a random token made for this run, and the command must pass
+it to the hidden harness. The run passes only when the command exits 0 and prints
+`AGENTSMITH-HIDDEN-PASS <token>` on a line of its own, which the harness does when every hidden
+test ran. This stops a candidate that ends the test process early with success, but candidate code
+that the tests import runs in the same process and could read the token from its arguments: the
+marker is a guard against accidents and early exits, not a boundary against a deliberate attack.
+The hidden run may write only its own copy and its private home and temporary folders, all
+removed afterwards: unlike the ordinary macOS verifier, it may not write the shared `/tmp`, so
+code the hidden tests run cannot leave the suite where a later maker could read it.
+Neither copy is a worktree that a role sees. The verification receipt records `hidden_tests`: `pass`, `fail` or
+`skipped` (with the tier and the listed tiers), the commit, the exit code, the time taken and a
+hash of the output. The output itself is not stored anywhere a role can read it.
+
+Hidden tests can only reject. A failure rejects the attempt without running the checker, and the
+next maker is told only that the hidden acceptance tests failed and to re-read the acceptance
+criteria, never the path, the tests or their output. A pass still needs the verifier and the
+checker. Both roles are denied reading the clone (Codex with a `none` filesystem rule, Claude
+with `denyRead` and `Read` deny rules). The manifest, which the maker's worktree contains, still
+names the clone's path and commit, so keep the clone private on this machine. This is opt-in and
+measured: the time each run spends on hidden tests is in its receipt, so you can decide whether
+they earn their cost.
+
+A tripwire backs up that denial. While each maker or checker runs, the controller keeps one
+extra file in the clone, with a fresh random name and a fresh random canary token as its
+content, and removes it when the role ends. The suite comes from `git archive` of the hidden
+commit, so this untracked file never joins it, but the controller needs write access to the
+clone and refuses to launch a role without it. After the role ends, the controller looks for the
+token or the file's name in the role's output, its receipt, the changes it left in its worktree
+(committed, uncommitted or untracked) and its new commit messages, and records a
+`hidden_test_probe` event that names the role, where the hit was and whether it was the token.
+Either hit is never counted as an infrastructure failure, so the role is not relaunched, and the
+role's output files keep only a hash and its receipt is not saved.
+
+- The token anywhere means the role saw held-out content. Discarding its attempt cannot undo
+  that, committed or not, so the run stops with reason `hidden-test-probe` and waits for a
+  person: review the run branch and replace the hidden tests before another run.
+- The file's name alone, for example in the error message of a denied read, means the sandbox
+  held and nothing was learned. A role can learn the name only by trying the clone, so the
+  attempt fails with reason `hidden-test-probe`. Its commits stay on the run branch, as after any
+  rejection, and the next maker is told that the attempt tried to read the held-out acceptance
+  tests, never the token or a hidden file.
+
+Detection uses content, not file access times, because access times are off or relaxed on most
+macOS and Linux mounts. It catches a role that shows what it read, not one that reads and stays
+silent, or that changes the text before showing it; the sandbox denial stays the boundary.
 
 ## Landing an accepted run
 

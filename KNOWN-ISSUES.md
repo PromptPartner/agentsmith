@@ -9,6 +9,14 @@ been authorized, so the entries are kept here.
   fix/gate-worktree-lock and fix/verify-git-env-isolation met on the integration branch:
   `test_repository_runner_clears_inherited_git_environment` runs the gate in a plain folder and
   failed there, and passes after the lookup tolerates the failure.
+- [x] 2026-11-14 — Design gap found while adding the hidden-test tripwire: a maker that showed
+  the canary only in its output failed its attempt, but the run reworked on top of its commits,
+  so code written after reading the held-out tests could pass them later. Fixed: the canary token
+  anywhere in a role's output, receipt, changes or commits now stops the run for a person; only a
+  hit on the tripwire's name alone (a denied read) fails the attempt and keeps its commits.
+- [ ] 2026-11-14 — Limit of the hidden-test tripwire: it catches a role that shows the canary, not
+  one that reads the held-out tests and never shows it, or changes the text first. The role
+  sandbox's read denial stays the boundary.
 - [ ] 2026-11-06 — Found while fixing the export redaction on Windows: `evaluate.py`'s
   `redact()` replaces only the home folder exactly as `Path.home()` spells it, followed by the
   native separator. On Windows the same folder written with `/`, in another letter case, with the
