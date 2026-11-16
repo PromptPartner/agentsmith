@@ -119,7 +119,7 @@ class DeliverTests(unittest.TestCase):
                               check=True).stdout.strip()
 
     def accepted_run(self, *, policy_tier: str = "B", declared: str | None = None, run_id: str = "deliver",
-                     spec_note: str = "") -> Path:
+                     spec_note: str = "", allowed_paths: tuple[str, ...] = ("src/**",)) -> Path:
         origin = self.root / "origin.git"
         subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], env=self.env, check=True)
         repo = self.root / "repo"
@@ -141,7 +141,7 @@ class DeliverTests(unittest.TestCase):
         manifest.update(run_id=run_id, spec_path="docs/specs/task.md", implementation_ticket="IMP-7")
         for role in manifest["roles"].values():
             role["model"] = "fixture-model"
-        manifest["scope"]["allowed_paths"] = ["src/**"]
+        manifest["scope"]["allowed_paths"] = list(allowed_paths)
         manifest["verify"]["command"] = ('test -f src/change.txt && '
                                          'echo "fixture verification passed for src/change.txt"')
         manifest["limits"].update(max_attempts=3, wall_minutes=5,
@@ -369,7 +369,10 @@ class DeliverTests(unittest.TestCase):
         self.refused(repo, "the pull-request body holds a likely secret (GitHub token)")
 
     def test_the_tier_counts_every_commit_that_the_push_publishes(self) -> None:
-        repo = self.accepted_run(policy_tier="A", spec_note="Fixture: commit a floor path first.\n")
+        # The scope check reads every commit, so the floor path must be in scope for the run to be
+        # accepted at all; the tier must still count it although the final tree no longer has it.
+        repo = self.accepted_run(policy_tier="A", spec_note="Fixture: commit a floor path first.\n",
+                                 allowed_paths=("src/**", "secrets/**"))
         state = self.state(repo)
         history = self.git(repo, "rev-list", "--count", f"{state['base_head']}..{state['accepted_commit']}")
         self.assertEqual(history, "2", "the maker committed a floor path, then removed it")
