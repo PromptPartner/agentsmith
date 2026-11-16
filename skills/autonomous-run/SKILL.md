@@ -53,7 +53,9 @@ about 800, L up to about 2,500; split anything larger), cap at the highest usage
 accepted run of that class plus at least 20% headroom, and write the class, the measurement and
 who set it in `limits.budget_rationale`. A run stops at the first report over a cap, even by 1%; a
 finished maker's candidate is checkpointed first, so `resume` can verify and check it.
-Keep `max_attempts` at 3.
+Keep `max_attempts` at 3. Every runtime a role uses needs its cap (`codex_goal_tokens`,
+`claude_max_usd`); zero or a missing cap refuses at `prepare` and `start`. Only the operator may
+choose `"unbounded"` instead, and only with `budget_rationale` saying who chose it and why.
 
 ## Start and supervise
 
@@ -67,13 +69,20 @@ The controller creates an isolated local branch/worktree, launches a fresh maker
 receipt, scope and Git transition, then creates a disposable detached worktree for the sandboxed
 deterministic verifier and a fresh checker. A rejection becomes the next maker's input. Three
 failed attempts, invalid state, denied scope, immutable-deadline or reported-budget exhaustion,
-Git metadata drift, protected verification edits, or checker mutation escalates instead of widening authority. Verification
+Git metadata drift, protected verification edits, or checker mutation escalates instead of widening authority.
+A known infrastructure failure (network, sign-in, overload, sandbox start, client crash) relaunches
+the role without spending an attempt; the same failure twice in a row stops the run, and a work
+graph then starts no new child. A Claude checker that accepts after a denied tool call is not
+trusted and is relaunched the same way. Report the named failure; the operator fixes it and resumes. Verification
 fails closed unless macOS `sandbox-exec` or Linux `bubblewrap` is available. Before creating
 anything, `start` runs one trivial sandboxed command per role and one through the verifier
 sandbox; if the host cannot run them, it refuses and names the role and reason.
 
 Existing baseline tests, the accepted spec, runtime launchers, and verification policy are protected
-even with broad maker scope, and moving or renaming one of them counts as changing it. A moved
+even with broad maker scope, and moving or renaming one of them counts as changing it. So are agent
+instructions at any depth (`AGENTS.md`, `AGENTS.override.md`, `CLAUDE.md`, `CLAUDE.local.md`,
+`GEMINI.md`, and `.claude/`, `.codex/`, `.agents/`, `.cursor/` folders), because the checker loads
+them from the candidate; if a task needs one changed, the operator commits that change first. A moved
 file counts as two changed paths, the old one and the new one; both must be inside the allowed
 scope. Add custom acceptance inputs via `verify.protected_paths`; changing
 protected inputs requires separate operator review outside this run. New regression tests remain

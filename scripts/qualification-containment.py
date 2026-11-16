@@ -300,8 +300,8 @@ def offline_gates(recorder, base):
     with mock.patch.dict(os.environ,{'SYNTHETIC_API_KEY':'synthetic'},clear=False):
         environment=module.verifier_env()
     recorder.add('controller/C08/verifier-environment','fixture',
-                 'pass' if 'SYNTHETIC_API_KEY' not in environment and environment['HOME']=='/tmp/agentsmith-verifier-home' else 'fail',
-                 environment_keys=sorted(environment),home=environment['HOME'])
+                 'pass' if 'SYNTHETIC_API_KEY' not in environment and 'HOME' not in environment else 'fail',
+                 environment_keys=sorted(environment),home=environment.get('HOME'))
     verifier=repo/'verifier candidate'; verifier.mkdir()
     home_sentinel=recorder.output/'home-read-sentinel'; home_sentinel.write_text('synthetic home fixture')
     listener=socket.socket(); listener.bind(('127.0.0.1',0)); listener.listen(2); listener.settimeout(0.2)

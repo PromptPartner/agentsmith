@@ -206,6 +206,11 @@ class GraphDispatchTests(unittest.TestCase):
             receipt_path = Path(argv[argv.index("-o") + 1]) if "-o" in argv else None
             changed = "src/shared.txt" if (Path(__file__).parent / "shared-mode").is_file() else f"src/{run_id}/change.txt"
             if not checker:
+                infra_run = Path(__file__).parent / "infra-run.txt"
+                if infra_run.is_file() and infra_run.read_text(encoding="utf-8").strip() == run_id:
+                    # A client network failure before any receipt, every time: the breaker trips.
+                    print(json.dumps({"type": "error", "message": "stream disconnected before completion"}))
+                    raise SystemExit(1)
                 failed_run = Path(__file__).parent / "fail-run.txt"
                 if failed_run.is_file() and failed_run.read_text(encoding="utf-8").strip() == run_id:
                     raise SystemExit("configured fake maker failure")
@@ -443,6 +448,33 @@ class GraphDispatchTests(unittest.TestCase):
         self.assertEqual({node["run_id"]: node["status"] for node in report["nodes"]},
                          {"a": "completed", "b": "failed", "c": "blocked"}, details)
         self.assertFalse((self.repo.parent / "repo-c").exists())
+
+    def test_repeated_infrastructure_failure_stops_new_child_launches(self) -> None:
+        # Three independent nodes, one at a time: once a child stops on its circuit breaker the
+        # host is suspect, so the graph must not start the next child on it.
+        graph_file = self.repo / self.graph_path
+        graph = json.loads(graph_file.read_text(encoding="utf-8"))
+        graph["max_parallel"] = 1
+        for node in graph["nodes"]:
+            node["depends_on"] = []
+        graph_file.write_bytes((json.dumps(graph, indent=2) + "\n").encode("utf-8"))
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-qm", "test: independent nodes, one at a time")
+        (self.fake_client.parent / "infra-run.txt").write_text("a", encoding="utf-8")
+        started = self.invoke("start", diagnose_unexpected=False)
+        self.assertNotEqual(started.returncode, 0, started.stdout + started.stderr)
+        child = json.loads((self.repo / ".git/agentsmith-runs/a/state.json").read_text(encoding="utf-8"))
+        self.assertEqual((child["status"], child.get("infrastructure_stop")), ("escalated", "network"))
+        for run_id in ("b", "c"):
+            self.assertFalse((self.repo / ".git/agentsmith-runs" / run_id / "state.json").exists(),
+                             f"{run_id} started after the breaker stopped a child")
+        directory = self.repo / ".git/agentsmith-graphs/dispatch-fixture"
+        graph_state = json.loads((directory / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(graph_state["status"], "blocked")
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+        halted = [event for event in events if event["event"] == "graph_halted"]
+        self.assertEqual(len(halted), 1, events)
+        self.assertIn("infrastructure failure (network)", halted[0]["reason"])
 
     def test_stop_then_resume_preserves_partial_work_and_limits(self) -> None:
         (self.fake_client.parent / "sleep-seconds.txt").write_text("20", encoding="utf-8")
