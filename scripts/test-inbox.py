@@ -4,6 +4,8 @@ against Git, and the list itself writes nothing. Claims are the one local write,
 
 from __future__ import annotations
 
+import _fixture_git  # first: keeps every Git fixture out of an inherited repository
+_fixture_git.isolate()
 import hashlib
 import json
 import os
