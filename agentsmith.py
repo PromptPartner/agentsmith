@@ -8929,10 +8929,12 @@ def tracked_secret_records(root: Path) -> Iterable[tuple[str, int, str]]:
 
 
 def staged_secret_records(root: Path) -> Iterable[tuple[str, int, str]]:
+    # --text: for a file Git treats as binary (a NUL byte, or a `binary` attribute) the diff is only
+    # "Binary files ... differ", with no added lines, so a staged secret in it would pass unseen.
     result = subprocess.run(
         [
             "git", "-C", str(root), "-c", "core.quotepath=false", "diff", "--cached",
-            "--no-color", "--no-ext-diff", "--unified=0", "--diff-filter=ACMR",
+            "--no-color", "--no-ext-diff", "--text", "--unified=0", "--diff-filter=ACMR",
         ],
         capture_output=True,
         text=True,

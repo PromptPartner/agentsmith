@@ -129,6 +129,31 @@ class SecretScanTests(unittest.TestCase):
             self.assertIn(f"{staged.name}:2", combined)
             self.assertNotIn(value, combined)
 
+    def test_default_scans_staged_files_git_treats_as_binary(self) -> None:
+        # Git prints "Binary files ... differ" instead of added lines for a file with a NUL byte or
+        # a `binary` attribute, so the staged scan must ask for a textual diff to see the secret.
+        with tempfile.TemporaryDirectory(prefix="agentsmith scanner binary ") as temporary:
+            repo = Path(temporary)
+            git(repo, "init", "-q")
+            git(repo, "config", "user.name", "Scanner Test")
+            git(repo, "config", "user.email", "user@example.com")
+            (repo / ".gitattributes").write_text("*.cfg binary\n", encoding="utf-8")
+            git(repo, "add", ".gitattributes")
+            git(repo, "commit", "-qm", "baseline")
+
+            value = secret_shapes()[1][1]
+            with_nul = repo / "with nul.dat"
+            with_nul.write_bytes(value.encode("ascii") + b"\n\x00\x01\x02binary\n")
+            marked = repo / "marked.cfg"
+            marked.write_text("clean\n" + value + "\n", encoding="utf-8")
+            git(repo, "add", with_nul.name, marked.name)
+            result = run_scan(cwd=repo)
+            combined = result.stdout + result.stderr
+            self.assertEqual(result.returncode, 1, combined)
+            self.assertIn(f"{with_nul.name}:1", combined)
+            self.assertIn(f"{marked.name}:2", combined)
+            self.assertNotIn(value, combined)
+
     def test_staged_deletion_is_clean(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith scanner deletion ") as temporary:
             repo = Path(temporary)
