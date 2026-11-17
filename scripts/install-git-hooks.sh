@@ -53,17 +53,20 @@ write_hook() {  # <hookname> <body> — managed write w/ foreign-backup; empty b
   chmod +x "$f"; echo "  installed $name"
 }
 
-pc='if [ -x "$ROOT/scripts/secret-scan.sh" ]; then "$ROOT/scripts/secret-scan.sh" || exit 1; fi'
-$PROTECT_MAIN && pc+=$'\n''if [ -x "$ROOT/hooks/git/protect-main.sh" ]; then "$ROOT/hooks/git/protect-main.sh" || exit 1; fi'
+# Guards run through bash when present, not only when executable: they are tracked at mode 100644,
+# and a ZIP download or core.fileMode=false checkout drops the bit, so an [ -x ] test would skip the
+# guard and let the commit through without a word.
+pc='if [ -f "$ROOT/scripts/secret-scan.sh" ]; then bash "$ROOT/scripts/secret-scan.sh" || exit 1; fi'
+$PROTECT_MAIN && pc+=$'\n''if [ -f "$ROOT/hooks/git/protect-main.sh" ]; then bash "$ROOT/hooks/git/protect-main.sh" || exit 1; fi'
 write_hook pre-commit "$pc"
 
 cm=''
-$CONVENTIONAL && cm='if [ -x "$ROOT/hooks/git/conventional-commit.sh" ]; then "$ROOT/hooks/git/conventional-commit.sh" "$1" || exit 1; fi'
+$CONVENTIONAL && cm='if [ -f "$ROOT/hooks/git/conventional-commit.sh" ]; then bash "$ROOT/hooks/git/conventional-commit.sh" "$1" || exit 1; fi'
 write_hook commit-msg "$cm"
 
 pp=''
-$BRANCH_NAMING && pp+='if [ -x "$ROOT/hooks/git/branch-naming.sh" ]; then "$ROOT/hooks/git/branch-naming.sh" || exit 1; fi'$'\n'
-$TESTS_GREEN   && pp+='if [ -x "$ROOT/scripts/verify.sh" ]; then "$ROOT/scripts/verify.sh" || exit 1; fi'$'\n'
+$BRANCH_NAMING && pp+='if [ -f "$ROOT/hooks/git/branch-naming.sh" ]; then bash "$ROOT/hooks/git/branch-naming.sh" || exit 1; fi'$'\n'
+$TESTS_GREEN   && pp+='if [ -f "$ROOT/scripts/verify.sh" ]; then bash "$ROOT/scripts/verify.sh" || exit 1; fi'$'\n'
 write_hook pre-push "$pp"
 
 echo "Git guardrails installed in $HOOKS_DIR:"
