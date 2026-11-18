@@ -589,7 +589,18 @@ It refuses, and names every reason, unless all of these hold:
   or URL dependency, an editable install, another index) and a changed `go.mod`, `Cargo.toml` or
   `Gemfile`, which `deliver` cannot check, are *unverified* and refuse too: a check that could not
   run never counts as a pass. Local `file:`, `link:` and `workspace:` npm dependencies are listed
-  but not looked up. The new packages and their lookup appear in the body under Dependencies.
+  but not looked up. The new packages and their lookup appear in the body under Dependencies;
+- when the accepted commit is behind the fresh base, the merge of the two passes verification.
+  A clean `merge-tree` only proves that the diff applies; the merged code can still fail a test.
+  So `deliver` runs the manifest's verify command on the merge result, in the same verifier
+  sandbox as the run, after every other check has passed and before it prints anything to land.
+  The merge is built in a private object folder and checked out into a throwaway folder under
+  `/tmp`, which is removed afterwards. It is not a `git worktree`, because a new worktree or
+  object would change the Git metadata that parallel runs compare to catch tampering; the
+  repository gains nothing. A merge that fails (or whose verification is incomplete) refuses with
+  `the accepted commit merged with <remote>/<base> fails verification`. The outcome, the base
+  commit, the merge tree and the output hash are in the `--json` report under
+  `merge_verification`, and the body's Base section says that the merge passed.
 
 It then recomputes the risk tier with the policy at the base commit, over every path that any
 commit between the base and the accepted commit touches (renames, copies and each side of a merge
@@ -612,7 +623,7 @@ implementation ticket and the run branch. The body holds:
 - the checker calibration status;
 - the budgets used;
 - the new packages and their registry lookup, when a manifest gained any;
-- the base staleness;
+- the base staleness, and the merge verification when the accepted commit is behind the base;
 - the eligibility line.
 
 The maker's free-text summary is left out. The only text that a model wrote is the checker

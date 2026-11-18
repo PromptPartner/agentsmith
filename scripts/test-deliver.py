@@ -139,7 +139,8 @@ class DeliverTests(unittest.TestCase):
                               check=True).stdout.strip()
 
     def accepted_run(self, *, policy_tier: str = "B", declared: str | None = None, run_id: str = "deliver",
-                     spec_note: str = "", allowed_paths: tuple[str, ...] = ("src/**",)) -> Path:
+                     spec_note: str = "", allowed_paths: tuple[str, ...] = ("src/**",),
+                     verify: str = "test -f src/change.txt") -> Path:
         origin = self.root / "origin.git"
         subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], env=self.env, check=True)
         repo = self.root / "repo"
@@ -162,8 +163,7 @@ class DeliverTests(unittest.TestCase):
         for role in manifest["roles"].values():
             role["model"] = "fixture-model"
         manifest["scope"]["allowed_paths"] = list(allowed_paths)
-        manifest["verify"]["command"] = ('test -f src/change.txt && '
-                                         'echo "fixture verification passed for src/change.txt"')
+        manifest["verify"]["command"] = verify + ' && echo "fixture verification passed for src/change.txt"'
         manifest["limits"].update(max_attempts=3, wall_minutes=5,
                                   budget_rationale="size S fixture; set by Test Operator")
         if declared:
@@ -337,17 +337,46 @@ class DeliverTests(unittest.TestCase):
         tier = json.loads(self.deliver(repo, "--dry-run", "--json").stdout)["tier"]
         self.assertEqual((tier["recorded"], tier["recomputed"], tier["tier"]), ("A", "C", "C"))
 
-    def test_staleness_counts_commits_behind_the_base(self) -> None:
-        repo = self.accepted_run()
+    def move_base(self, name: str, text: str) -> str:
+        """Another clone pushes one commit to origin/main, and the run's repository fetches it."""
         clone = self.root / "other"
         subprocess.run(["git", "clone", "-q", str(self.root / "origin.git"), str(clone)], env=self.env, check=True)
-        (clone / "README.md").write_text("moved on\n", encoding="utf-8")
-        self.git(clone, "-c", "user.name=Other", "-c", "user.email=user@example.com", "commit", "-qam", "base moves")
+        (clone / name).write_text(text, encoding="utf-8")
+        self.git(clone, "add", name)
+        self.git(clone, "-c", "user.name=Other", "-c", "user.email=user@example.com", "commit", "-qm", "base moves")
         self.git(clone, "push", "-q", "origin", "main")
-        self.git(repo, "fetch", "-q", "origin")
+        self.git(self.root / "repo", "fetch", "-q", "origin")
+        return self.git(clone, "rev-parse", "HEAD")
+
+    def git_footprint(self, repo: Path) -> tuple[str, str]:
+        return self.git(repo, "worktree", "list", "--porcelain"), self.git(repo, "count-objects", "-v")
+
+    def test_staleness_counts_commits_behind_the_base(self) -> None:
+        repo = self.accepted_run()
+        moved = self.move_base("README.md", "moved on\n")
+        before = self.git_footprint(repo)
         report = json.loads(self.deliver(repo, "--dry-run", "--json").stdout)
         self.assertEqual(report["staleness"], {"base": "origin/main", "behind": 1, "applies": True})
         self.assertIn("1 commit behind origin/main", report["body"])
+        # Behind the base, the merge result itself is verified, and the receipt says so.
+        merge = report["merge_verification"]
+        self.assertEqual((merge["base_commit"], merge["verification"], merge["exit_code"]), (moved, "passed", 0))
+        self.assertRegex(merge["output_sha256"], r"^[0-9a-f]{64}$")
+        self.assertIn("The merge with origin/main passed verification (exit 0", report["body"])
+        self.assertEqual(self.git_footprint(repo), before, "deliver adds no worktree and no object to the repository")
+
+    def test_a_merge_result_that_fails_verification_refuses(self) -> None:
+        # The accepted diff applies cleanly, and each side passes on its own; only the merge fails.
+        repo = self.accepted_run(verify="test -f src/change.txt && test ! -f BREAKS_MERGE")
+        self.move_base("BREAKS_MERGE", "a base change that the accepted commit never saw\n")
+        before = self.git_footprint(repo)
+        self.refused(repo, "the accepted commit merged with origin/main fails verification (failed, exit 1)")
+        self.assertEqual(self.git_footprint(repo), before)
+
+    def test_no_merge_is_verified_when_the_accepted_commit_is_on_the_base(self) -> None:
+        repo = self.accepted_run()
+        report = json.loads(self.deliver(repo, "--dry-run", "--json").stdout)
+        self.assertEqual(report["merge_verification"], {"needed": False})
 
     def add_evidence(self, repo: Path, *items: str) -> None:
         """Extra checker evidence that quotes no log, so only its hash binds it, as at acceptance."""

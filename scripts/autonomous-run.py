@@ -4048,6 +4048,67 @@ def urllib_quote(package: str) -> str:
     return urllib.parse.quote(package, safe="@")  # a scoped npm name keeps @ and sends / as %2F
 
 
+def merge_verification(repo: Path, state: dict[str, Any], manifest: dict[str, Any], remote: str, base: str,
+                       accepted: str) -> tuple[dict[str, Any], str | None]:
+    """Run the manifest's verify command on the merge of the accepted commit with the fresh base,
+    in the same sandbox as `execute`, before deliver prints anything to land.
+
+    A clean `merge-tree` only proves the diff applies; the merge can still break a test. The merge
+    is built in a private object folder that borrows the repository's objects, and checked out
+    from a private index into a throwaway folder under /tmp. A `git worktree add` would change the
+    shared worktree metadata and object store, which peer runs compare to catch tampering, so the
+    repository gains no worktree, object or file, and the folder goes when the check ends."""
+    ref = f"refs/remotes/{remote}/{base}"
+    base_commit = git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}")
+    timeout = int(float((manifest.get("limits") or {}).get("wall_minutes") or 60) * 60)
+    with private_scratch("agentsmith-merge-") as scratch:
+        workspace, run_dir = scratch / "merge", scratch / "run"
+        (scratch / "objects").mkdir()
+        run_dir.mkdir()
+        private = {**os.environ, "GIT_OBJECT_DIRECTORY": str(scratch / "objects"),
+                   "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(resolved_git_path(repo, "--git-common-dir") / "objects"),
+                   "GIT_INDEX_FILE": str(scratch / "index")}
+        merged = run(["git", "merge-tree", "--write-tree", ref, accepted], repo, env=private)
+        tree = merged.stdout.split()[0] if merged.returncode == 0 and merged.stdout.split() else ""
+        if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", tree):
+            return {}, f"cannot build the merge of the accepted commit with {remote}/{base} to verify it"
+        workspace.mkdir()
+        for command in (["git", "read-tree", tree],
+                        ["git", f"--work-tree={workspace}", "checkout-index", "--all", "--force"]):
+            result = run(command, repo, env=private)
+            if result.returncode:
+                return {}, f"cannot check out the merge with {remote}/{base} to verify it: {result.stderr.strip()[:200]}"
+        # One commit of exactly the merged files, so a verify command that lists tracked files
+        # sees them, as in a checkout. No user or system Git configuration takes part.
+        clean = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+                 "GIT_AUTHOR_NAME": "agentsmith", "GIT_AUTHOR_EMAIL": "agentsmith@example.com",
+                 "GIT_COMMITTER_NAME": "agentsmith", "GIT_COMMITTER_EMAIL": "agentsmith@example.com"}
+        for command in (["git", "init", "-q"], ["git", "add", "--all", "--force"],
+                        ["git", "commit", "-q", "--no-verify", "-m", f"merge of {accepted[:12]} with {remote}/{base}"]):
+            result = run(command, workspace, env=clean)
+            if result.returncode:
+                return {}, f"cannot prepare the merge with {remote}/{base} to verify it: {result.stderr.strip()[:200]}"
+        # The verifier's own launch records go to the private folder, not the run's; the run's
+        # state, manifest and spec stay protected as in execute.
+        sandbox_state = {"run_id": state.get("run_id"), "repo": state["repo"], "manifest_path": state["manifest_path"],
+                         "spec_path": state["spec_path"], "state_path": str(run_dir / "state.json"),
+                         "attempt": state.get("attempt", 0), "stage": "delivering", "active_pid": None}
+        result = sandboxed_verify(manifest["verify"]["command"], workspace, timeout, verifier_env(),
+                                  state=sandbox_state, prefix="deliver-merge-verify")
+    outcome = verification_outcome(result)
+    output = hashlib.sha256(f"exit={result.returncode}\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+                            .encode("utf-8", "replace")).hexdigest()
+    record = {"needed": True, "base": f"{remote}/{base}", "base_commit": base_commit, "merge_tree": tree,
+              "verification": outcome["verification"], "exit_code": result.returncode,
+              "failing": outcome["failing"], "output_sha256": output}
+    if outcome["verification"] != "passed":
+        failing = ", ".join(outcome["failing"][:3])
+        return record, (f"the accepted commit merged with {remote}/{base} fails verification "
+                        f"({outcome['verification']}, exit {result.returncode})"
+                        + (f"; failing checks: {failing}" if failing else "") + "; rework the run on the new base")
+    return record, None
+
+
 def delivery_checks(repo: Path, state: dict[str, Any], remote: str, base: str | None,
                     fetch: Callable[[str], int] | None = None) -> dict[str, Any]:
     """Every check `deliver` makes. Any mismatch refuses, with all reasons at once."""
@@ -4129,7 +4190,13 @@ def delivery_checks(repo: Path, state: dict[str, Any], remote: str, base: str | 
     tier = risk_map.raise_tier(report["tier"], recorded if recorded in risk_map.TIERS else "A")
     tier = risk_map.raise_tier(tier, declared if declared in risk_map.TIERS else "A")
     floor = sorted(row["path"] for row in report["paths"] if any(reason.startswith("floor:") for reason in row["matched"]))
-    return {"state": state, "proof": proof, "checker": checker, "manifest": manifest, "accepted": accepted,
+    # Last, once every cheaper check passed: behind the base, the merge result itself must pass.
+    merge: dict[str, Any] = {"needed": False}
+    if staleness.get("behind"):
+        merge, problem = merge_verification(repo, state, manifest, remote, str(base), accepted)
+        if problem:
+            raise RunError("deliver refused: " + problem)
+    return {"state": state, "merge_verification": merge, "proof": proof, "checker": checker, "manifest": manifest, "accepted": accepted,
             "branch": branch, "staleness": staleness, "packages": packages,
             "paths": changed_paths(repo, str(state["base_head"]), accepted),
             "tier": {"tier": tier, "recorded": recorded, "recomputed": report["tier"], "declared": declared,
@@ -4216,7 +4283,7 @@ def eligibility(checks: dict[str, Any], sha: str, ci: dict[str, Any] | None,
 def delivery_body(checks: dict[str, Any], verdict: dict[str, Any]) -> str:
     state, proof, checker, manifest = checks["state"], checks["proof"], checks["checker"], checks["manifest"]
     tier, limits, staleness = checks["tier"], manifest.get("limits") or {}, checks["staleness"]
-    calibration = checks["calibration"]
+    calibration, merge = checks["calibration"], checks["merge_verification"]
     lines = [
         f"## Autonomous run {state['run_id']}",
         "",
@@ -4255,7 +4322,9 @@ def delivery_body(checks: dict[str, Any], verdict: dict[str, Any]) -> str:
            ""] if checks["packages"] else []),
         "### Base",
         f"{staleness['behind']} commit{'s' if staleness['behind'] != 1 else ''} behind {staleness['base']}; "
-        "the accepted diff applies cleanly.",
+        "the accepted diff applies cleanly."
+        + (f" The merge with {merge['base']} passed verification (exit {merge['exit_code']}; output "
+           f"`{merge['output_sha256']}`)." if merge.get("needed") else ""),
         "",
         verdict["line"],
         "",
@@ -4303,7 +4372,8 @@ def deliver(args: argparse.Namespace) -> int:
     report = {"run_id": args.run_id, "head": checks["accepted"], "branch": checks["branch"],
               "push_command": push_command(args.remote, checks["accepted"], checks["branch"]),
               "title": title, "body": body, "tier": checks["tier"],
-              "staleness": checks["staleness"], "packages": checks["packages"], "calibration": calibration,
+              "staleness": checks["staleness"], "merge_verification": checks["merge_verification"],
+              "packages": checks["packages"], "calibration": calibration,
               "eligibility": verdict}
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
