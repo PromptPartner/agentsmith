@@ -20,7 +20,7 @@ Status accepted; every citation was checked at acceptance, and the ones that quo
 ```
 
 ### Calibration
-Checker calibration: none.
+Checker calibration: none. This makes it checker advisory: its acceptance is advice, not a gate, so a human reviews the change before it lands.
 
 ### Budgets used
 Attempts: 1 of 3. Claude: 0.25 USD of 20. Codex: 10 tokens of 2500000.

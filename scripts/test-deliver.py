@@ -120,8 +120,21 @@ class DeliverTests(unittest.TestCase):
         return subprocess.run(["git", *args], cwd=repo, env=self.env, text=True, capture_output=True,
                               check=True).stdout.strip()
 
+    def calibrate(self, repo: Path) -> None:
+        """A passed calibration of the fixture checker, as `calibrate` writes it."""
+        checker = {"runtime": "claude", "model": "fixture-model", "effort": "high"}
+        cases = [{"label": "clean", "expected": "accepted", "verdict": "accepted", "correct": True},
+                 {"label": "defect", "expected": "rejected", "verdict": "rejected", "correct": True}]
+        CONTROLLER.write_json(CONTROLLER.calibration_path(repo, "claude", "fixture-model", "high"),
+                              CONTROLLER.calibration_record(checker, cases, client_version="fixture",
+                                                            usage={"claude_cost_usd": 0.0, "codex_tokens_used": 0}))
+
+    def uncalibrate(self, repo: Path) -> None:
+        CONTROLLER.calibration_path(repo, "claude", "fixture-model", "high").unlink()
+
     def accepted_run(self, *, policy_tier: str = "B", declared: str | None = None, run_id: str = "deliver",
-                     spec_note: str = "", allowed_paths: tuple[str, ...] = ("src/**",)) -> Path:
+                     spec_note: str = "", allowed_paths: tuple[str, ...] = ("src/**",),
+                     calibrated: bool = True) -> Path:
         origin = self.root / "origin.git"
         subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], env=self.env, check=True)
         repo = self.root / "repo"
@@ -158,9 +171,12 @@ class DeliverTests(unittest.TestCase):
         self.git(repo, "push", "-q", "origin", "main")
         self.git(repo, "fetch", "-q", "origin")
         self.git(repo, "remote", "set-head", "origin", "main")
+        if calibrated:
+            self.calibrate(repo)
         started = subprocess.run([sys.executable, str(CONTROLLER_PATH), "start", f".harness/runs/{run_id}.json"],
                                  cwd=repo, env=self.env, text=True, capture_output=True, check=False)
-        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        # Without a passed calibration the checker is advisory: its acceptance waits for a human.
+        self.assertEqual(started.returncode, 0 if calibrated else 3, started.stdout + started.stderr)
         return repo
 
     def deliver(self, repo: Path, *args: str, run_id: str = "deliver") -> subprocess.CompletedProcess[str]:
@@ -188,6 +204,8 @@ class DeliverTests(unittest.TestCase):
     def test_dry_run_prints_the_push_command_and_a_body_built_from_receipts(self) -> None:
         repo = self.accepted_run()
         accepted = self.state(repo)["accepted_commit"]
+        # The calibration is gone since the acceptance: the body says the checker is now advisory.
+        self.uncalibrate(repo)
         result = self.deliver(repo, "--dry-run", "--json")
         self.assertEqual(result.returncode, 0, result.stderr)
         report = json.loads(result.stdout)
@@ -196,6 +214,7 @@ class DeliverTests(unittest.TestCase):
         self.assertEqual(report["staleness"], {"base": "origin/main", "behind": 0, "applies": True})
         self.assertEqual(report["tier"]["tier"], "B")
         self.assertFalse(report["eligibility"]["eligible"])
+        self.assertIn("checker advisory", report["body"])
         self.assert_golden(report["body"], "eligible-no.md")
         self.assertNotIn(str(self.root), result.stdout, "the body must not name a local path")
         # The text form shows the same body and the exact push command.
@@ -208,9 +227,6 @@ class DeliverTests(unittest.TestCase):
         """An A-tier accepted run, calibrated, pushed to a remote that reads as github.com/fixture/deliver."""
         repo = self.accepted_run(policy_tier="A")
         accepted = self.state(repo)["accepted_commit"]
-        CONTROLLER.write_json(CONTROLLER.calibration_path(repo, "claude", "fixture-model", "high"),
-                              {"status": "passed", "calibrated_at": "2026-11-06T09:00:00+00:00",
-                               "client_version": "fixture"})
         # Git rewrites the GitHub address to the local bare origin, so nothing reaches the network.
         self.git(repo, "config", f"url.{self.root / 'origin.git'}.insteadOf", "https://github.com/fixture/deliver.git")
         self.git(repo, "remote", "set-url", "origin", "https://github.com/fixture/deliver.git")
@@ -237,6 +253,7 @@ class DeliverTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         report = json.loads(result.stdout)
         self.assertTrue(report["eligibility"]["eligible"], report["eligibility"])
+        self.assertNotIn("checker advisory", report["body"])
         self.assert_golden(report["body"], "eligible-yes.md")
         # Before CI the same run is "pending CI", so not eligible yet.
         pending = json.loads(self.deliver(repo, "--dry-run", "--json").stdout)
@@ -302,6 +319,7 @@ class DeliverTests(unittest.TestCase):
 
     def test_each_eligibility_fact_is_listed_met_or_unmet(self) -> None:
         repo = self.accepted_run(policy_tier="B")
+        self.uncalibrate(repo)
         line = json.loads(self.deliver(repo, "--dry-run", "--json").stdout)["eligibility"]["line"]
         accepted = self.state(repo)["accepted_commit"]
         self.assertTrue(line.startswith(f"Auto-merge eligible: no for {accepted} — "), line)
@@ -347,8 +365,6 @@ class DeliverTests(unittest.TestCase):
         repo = self.accepted_run()
         # Split so that the leak gate, which scans this file, does not read them as real home folders.
         mac_home, linux_home = "/Users/" + "alice", "/home/" + "alice"
-        CONTROLLER.write_json(CONTROLLER.calibration_path(repo, "claude", "fixture-model", "high"),
-                              {"status": "passed", "calibrated_at": "2026-11-06T09:00:00+00:00"})
         path = repo / ".git/agentsmith-runs/deliver/state.json"
         state = json.loads(path.read_text(encoding="utf-8"))
         state["maker_receipt"]["summary"] = f"see {mac_home}/private/strategy.md @alice private-doc:BOARD-42"
@@ -397,6 +413,22 @@ class DeliverTests(unittest.TestCase):
         state["status"] = "escalated"
         path.write_text(json.dumps(state), encoding="utf-8")
         self.refused(repo, "run deliver is escalated, not accepted")
+
+    def test_an_uncalibrated_checker_holds_the_run_and_deliver_refuses_it(self) -> None:
+        # SF-09: a real run with no calibration record ends awaiting-human, never accepted. Its
+        # receipt says the checker was advisory, and deliver names the step a human takes.
+        repo = self.accepted_run(calibrated=False)
+        state = self.state(repo)
+        self.assertEqual(state["status"], "awaiting-human")
+        self.assertNotIn("accepted_commit", state)
+        self.assertEqual(state["held_commit"], self.git(repo, "rev-parse", "agentsmith/deliver"))
+        proof = json.loads(Path(state["verification_receipt"]).read_text(encoding="utf-8"))
+        self.assertIs(proof["checker_advisory"], True)
+        self.assertEqual(proof["checker_calibration"], {"status": "none"})
+        self.refused(repo, "run deliver is awaiting-human, not accepted")
+        result = self.deliver(repo, "--dry-run")
+        self.assertIn("checker advisory", result.stderr)
+        self.assertIn("a human reviews and re-runs with an explicit approval", result.stderr)
 
     def test_refuses_when_the_branch_moved(self) -> None:
         repo = self.accepted_run()
