@@ -1,8 +1,8 @@
 """Risk map: the tier of a commit range, from a committed path policy (standard library only).
 
 The policy is read at the base commit, so a candidate cannot relax the policy that classifies it.
-A fixed floor of always-human paths is checked here, not in the policy, so no policy can remove
-it. Every changed path counts, and a rename or copy counts by its old and its new path.
+A fixed floor is checked here, not in the policy, so no policy can remove it: most floor paths are
+always human, and dependency manifests and lockfiles are always at least C. Every changed path counts, and a rename or copy counts by its old and its new path.
 """
 from __future__ import annotations
 
@@ -34,6 +34,13 @@ AGENT_CONFIGURATION_FOLDERS = frozenset({".claude", ".codex", ".agents", ".curso
 HARNESS_FOLDERS = frozenset({".harness", ".agentsmith"})
 HARNESS_FILES = frozenset({"agentsmith.py", "scripts/autonomous-run.py", "native_launcher.py",
                            "work_graph.py", "windows_verifier_sandbox.py", "risk_map.py"})
+# Dependency manifests and lockfiles, at any depth, plus requirements*.txt. They pull in code from
+# outside the diff, so they are never below C. templates/risk-policy.json lists the same names.
+DEPENDENCY_FILES = frozenset({"package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
+                              "pyproject.toml", "poetry.lock", "uv.lock", "pipfile", "pipfile.lock",
+                              "go.mod", "go.sum", "cargo.toml", "cargo.lock", "gemfile", "gemfile.lock"})
+# Floor reasons that set a minimum of C instead of human.
+TIER_C_FLOOR = frozenset({"floor:dependencies"})
 
 
 class PolicyError(ValueError):
@@ -70,6 +77,8 @@ def floor_reasons(path: str) -> list[str]:
         reasons.append("floor:credentials")
     if "migrations" in parts:
         reasons.append("floor:migrations")
+    if name in DEPENDENCY_FILES or (name.startswith("requirements") and name.endswith(".txt")):
+        reasons.append("floor:dependencies")
     return reasons
 
 
@@ -171,14 +180,15 @@ def classify_path(path: str, policy: dict[str, Any], kinds: Iterable[str] = ()) 
     folded = _fold(path)
     # A name that is not UTF-8 cannot be matched reliably, so no rule may lower it.
     floor = (["unreadable-name"] if _unreadable(path) else []) + floor_reasons(path)
+    human = [reason for reason in floor if reason not in TIER_C_FLOOR]
     special = [f"type:{kind}" for kind in sorted(set(kinds))]
     hits = [rule for rule in policy["rules"] if any(_matches(pattern, folded) for pattern in rule["patterns"])]
-    tier = "human" if floor or not hits else "C" if special else "A"
+    tier = "human" if human or not hits else "C" if special or floor else "A"
     lenses: set[str] = set()
     for rule in hits:
         tier = raise_tier(tier, rule["tier"])
         lenses.update(rule["lenses"])
-    matched = floor + special + [rule["id"] for rule in hits] + ([] if floor or hits else ["unmatched"])
+    matched = floor + special + [rule["id"] for rule in hits] + ([] if human or hits else ["unmatched"])
     return {"path": path, "tier": tier, "lenses": sorted(lenses), "matched": matched}
 
 

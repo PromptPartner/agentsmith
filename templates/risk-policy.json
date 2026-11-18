@@ -6,7 +6,9 @@
     {"paths": ["src/**"], "tier": "B"},
     {"paths": ["**/locales/**", "**/i18n/**"], "tier": "B", "lenses": ["locales"]},
     {"paths": ["src/auth/**", "src/**/permissions/**"], "tier": "C", "lenses": ["security"]},
-    {"paths": ["package.json", "package-lock.json", "pyproject.toml", "requirements*.txt",
-               "go.mod", "go.sum", "Cargo.toml", "Cargo.lock"], "tier": "C", "lenses": ["dependencies"]}
+    {"paths": ["**/package.json", "**/package-lock.json", "**/pnpm-lock.yaml", "**/yarn.lock",
+               "**/requirements*.txt", "**/pyproject.toml", "**/poetry.lock", "**/uv.lock",
+               "**/Pipfile", "**/Pipfile.lock", "**/go.mod", "**/go.sum", "**/Cargo.toml", "**/Cargo.lock",
+               "**/Gemfile", "**/Gemfile.lock"], "tier": "C", "lenses": ["dependencies"]}
   ]
 }
