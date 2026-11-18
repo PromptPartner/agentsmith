@@ -30,7 +30,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Iterator
 
 try:
     from native_launcher import (
@@ -3747,16 +3747,75 @@ def without_local_paths(text: str, repo: Path) -> str:
     return HOME_PATH.sub("~", text)
 
 
+def secret_findings(records: Iterable[tuple[str, int, str]],
+                    allow: tuple[re.Pattern[str], ...]) -> list[tuple[str, int, str]]:
+    """`scan_secret_records` in agentsmith.py: (place, line number, pattern name) for each line that
+    a pattern matches, the first pattern only, never the value. `allow` holds the repository's
+    .harness/secret-scan.allow rules, which skip a whole line. scripts/test-deliver.py keeps the two equal."""
+    findings = []
+    for place, number, line in records:
+        if not line.strip() or any(rule.search(line) for rule in allow):
+            continue
+        name = next((name for name, pattern in SECRET_PATTERNS if pattern.search(line)), None)
+        if name:
+            findings.append((place, number, name))
+    return findings
+
+
+def diff_secret_records(repo: Path, base: str, head: str) -> Iterator[tuple[str, int, str]]:
+    """The added lines of base..head with their path and new line number, read as
+    `staged_secret_records` in agentsmith.py reads the staged diff."""
+    result = run(["git", "-c", "core.quotepath=false", "diff", "--no-color", "--no-ext-diff", "--unified=0",
+                  "--diff-filter=ACMR", base, head], repo)
+    if result.returncode:
+        raise RunError(f"deliver refused: cannot read the diff {base[:12]}..{head[:12]} to scan it for secrets")
+    path, number, in_hunk = "", 0, False
+    for raw in result.stdout.splitlines():
+        if raw.startswith("+++ "):
+            path = raw[4:].split("\t", 1)[0]
+            path = path[2:] if path.startswith("b/") else path
+            in_hunk = False
+        elif raw.startswith("@@ "):
+            match = re.search(r"\+(\d+)(?:,\d+)?", raw)
+            in_hunk = bool(match)
+            number = int(match.group(1)) if match else 0
+        elif in_hunk and raw.startswith("+"):
+            yield path, number, raw[1:]
+            number += 1
+        elif in_hunk and not raw.startswith(("-", "\\ No newline")):
+            number += 1
+
+
+def history_secret_problems(repo: Path, base: str, head: str, allow: tuple[re.Pattern[str], ...]) -> list[str]:
+    """The secret scanner over what a push publishes: the accepted diff, the changes of every
+    commit in base..head (a secret added and removed again is still in the history), and every
+    commit message. Each finding names a path or commit and a line, never the value."""
+    endpoint = secret_findings(diff_secret_records(repo, base, head), allow)
+    problems = [f"the accepted diff holds a likely secret at {path}:{number} ({name})" for path, number, name in endpoint]
+    seen = {(path, name) for path, _, name in endpoint}
+    for commit in history_commits(repo, base, head):
+        parent = git(repo, "rev-parse", f"{commit}^")  # a merge counts against its first parent
+        for path, number, name in secret_findings(diff_secret_records(repo, parent, commit), allow):
+            if (path, name) not in seen:
+                seen.add((path, name))
+                problems.append(f"commit {commit[:12]} adds a likely secret at {path}:{number} ({name}), "
+                                "which a later commit removes but the push still publishes")
+        message = git(repo, "log", "-1", "--format=%B", commit).splitlines()
+        problems += [f"the message of commit {commit[:12]} holds a likely secret at line {number} ({name})"
+                     for _, number, name in secret_findings((("message", index, line) for index, line
+                                                             in enumerate(message, 1)), allow)]
+    return problems
+
+
 def leak_problems(fields: dict[str, str], allow: tuple[re.Pattern[str], ...] = ()) -> list[str]:
-    """The secret scanner's patterns over the final pull-request text, one finding per field.
-    `allow` holds the repository's .harness/secret-scan.allow rules, which skip a whole line."""
+    """The secret scanner over the final pull-request text, one finding per field."""
     problems = []
     for field, text in fields.items():
-        lines = [line for line in text.splitlines() if not any(rule.search(line) for rule in allow)]
-        hit = next((name for name, pattern in SECRET_PATTERNS for line in lines if pattern.search(line)), None)
+        lines = list(enumerate(text.splitlines(), 1))
+        hit = secret_findings(((field, number, line) for number, line in lines), allow)
         if hit:
-            problems.append(f"the pull-request {field} holds a likely secret ({hit})")
-        elif any(HOME_PATH.search(line) for line in lines):
+            problems.append(f"the pull-request {field} holds a likely secret ({hit[0][2]})")
+        elif any(HOME_PATH.search(line) for _, line in lines if not any(rule.search(line) for rule in allow)):
             problems.append(f"the pull-request {field} names a home folder")
     return problems
 
@@ -3862,6 +3921,8 @@ def delivery_checks(repo: Path, state: dict[str, Any], remote: str, base: str | 
         staleness, problem = base_staleness(repo, remote, base, accepted)
         if problem:
             problems.append(problem)
+    # Every mode refuses a likely secret, --dry-run included: the push would publish it.
+    problems += history_secret_problems(repo, str(state["base_head"]), accepted, secret_allow_rules(repo))
     if problems:
         raise RunError("deliver refused: " + "; ".join(problems))
     import risk_map

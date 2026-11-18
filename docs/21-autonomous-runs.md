@@ -574,7 +574,12 @@ It refuses, and names every reason, unless all of these hold:
   fresh: `git ls-remote` (read-only) shows the remote still has it at the fetched commit. A remote
   that cannot be reached, or a base that moved since the last fetch, refuses with
   `base not fresh: … run git fetch <remote>`, because a stale copy could hide a conflict;
-- the accepted diff still applies to that fresh base (`git merge-tree`, Git 2.38 or later).
+- the accepted diff still applies to that fresh base (`git merge-tree`, Git 2.38 or later);
+- nothing the push would publish holds a likely secret. The `agentsmith secret-scan` patterns run
+  over the added lines of the accepted diff, over the changes of every commit between the base and
+  the accepted commit (a secret that a later commit removes is still in the pushed history), and
+  over every commit message, honouring `.harness/secret-scan.allow` in your checkout. This holds
+  for `--dry-run` too. Each finding names the path or commit and the line, never the value.
 
 It then recomputes the risk tier with the policy at the base commit, over every path that any
 commit between the base and the accepted commit touches (renames, copies and each side of a merge

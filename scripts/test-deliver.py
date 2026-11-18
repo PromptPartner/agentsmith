@@ -41,11 +41,24 @@ FAKE_CLIENT = textwrap.dedent('''\
         subprocess.run(["git", "add", "secrets/fixture.txt"], check=True)
         subprocess.run(["git", "commit", "-qm", "fixture: floor path"], check=True)
         subprocess.run(["git", "rm", "-q", "secrets/fixture.txt"], check=True)
+    spec = pathlib.Path("docs/specs/task.md").read_text()
+    # Assembled at run time, so this file never holds a secret-shaped literal.
+    token = "gh" + "p_" + "Z9y8" * 9
+    if not checker and "Fixture: secret added then removed" in spec:
+        pathlib.Path("src").mkdir(exist_ok=True)
+        pathlib.Path("src/old.txt").write_text("key = '" + token + "'\\n", encoding="utf-8")
+        subprocess.run(["git", "add", "src/old.txt"], check=True)
+        subprocess.run(["git", "commit", "-qm", "fixture: secret"], check=True)
+        subprocess.run(["git", "rm", "-q", "src/old.txt"], check=True)
     if not checker:
         pathlib.Path("src").mkdir(exist_ok=True)
-        pathlib.Path("src/change.txt").write_text("fixed\\n", encoding="utf-8")
+        body = "fixed\\n" + ("note = 1\\nauth = '" + token + "'\\n" if "Fixture: seed a secret" in spec else "")
+        pathlib.Path("src/change.txt").write_text(body, encoding="utf-8")
         subprocess.run(["git", "add", "src/change.txt"], check=True)
-        subprocess.run(["git", "commit", "-qm", "fix: bounded fixture change"], check=True)
+        message = "fix: bounded fixture change"
+        if "Fixture: secret in a commit message" in spec:
+            message += "\\n\\nused " + token + " to test"
+        subprocess.run(["git", "commit", "-qm", message], check=True)
     commit = subprocess.run(["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
     log = re.search(r"attempt-[0-9]+-verify[.]txt", prompt)
     evidence = (["fixture verification passed :: " + log.group(0) + " :: fixture verification passed"]
@@ -384,6 +397,35 @@ class DeliverTests(unittest.TestCase):
 
     # --- refusals ----------------------------------------------------------------------------
 
+    def test_a_secret_in_the_accepted_diff_blocks_a_dry_run(self) -> None:
+        repo = self.accepted_run(spec_note="Fixture: seed a secret.\n")
+        result = self.deliver(repo, "--dry-run", "--json")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("deliver refused: the accepted diff holds a likely secret at src/change.txt:3 (GitHub token)",
+                      result.stderr)
+        self.assertNotIn("Z9y8", result.stdout + result.stderr, "the report names the line, never the value")
+        self.assertNotIn("git push", result.stdout)
+        # An allow rule in the operator's checkout covers a genuine inert fixture, as for secret-scan.
+        (repo / ".harness/secret-scan.allow").write_text("^auth = 'ghp_Z9y8\n", encoding="utf-8")
+        self.assertEqual(self.deliver(repo, "--dry-run").returncode, 0)
+
+    def test_a_secret_that_a_later_commit_removes_still_blocks(self) -> None:
+        repo = self.accepted_run(spec_note="Fixture: secret added then removed.\n")
+        state = self.state(repo)
+        first = self.git(repo, "rev-list", "--reverse", f"{state['base_head']}..{state['accepted_commit']}").split()[0]
+        self.refused(repo, f"commit {first[:12]} adds a likely secret at src/old.txt:1 (GitHub token), "
+                           "which a later commit removes but the push still publishes")
+
+    def test_a_secret_in_a_commit_message_blocks_a_dry_run(self) -> None:
+        repo = self.accepted_run(spec_note="Fixture: secret in a commit message.\n")
+        accepted = self.state(repo)["accepted_commit"]
+        result = self.deliver(repo, "--dry-run")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn(f"the message of commit {accepted[:12]} holds a likely secret at line 3 (GitHub token)",
+                      result.stderr)
+        self.assertNotIn("Z9y8", result.stdout + result.stderr)
+
+
     def test_deliver_never_pushes(self) -> None:
         repo = self.accepted_run()
         result = self.deliver(repo)
@@ -550,6 +592,44 @@ class LandingContractTests(unittest.TestCase):
         spec.loader.exec_module(core)
         self.assertEqual([(name, pattern.pattern, pattern.flags) for name, pattern in CONTROLLER.SECRET_PATTERNS],
                          [(name, pattern.pattern, pattern.flags) for name, pattern in core.SECRET_PATTERNS])
+
+    def core(self):
+        spec = importlib.util.spec_from_file_location("agentsmith_core_for_scan", ROOT / "agentsmith.py")
+        assert spec and spec.loader
+        core = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(core)
+        return core
+
+    def test_the_diff_scan_finds_what_secret_scan_finds_in_the_same_change(self) -> None:
+        # The installed controller cannot import agentsmith.py, so it carries the scanner's reading
+        # of a diff. Stage one change and compare it with `agentsmith secret-scan` on the same bytes.
+        core = self.core()
+        with tempfile.TemporaryDirectory(prefix="agentsmith scan parity ") as temporary:
+            repo = Path(temporary)
+            env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+            git = lambda *args: subprocess.run(["git", "-c", "user.name=T", "-c", "user.email=t@example.com",
+                                                "-c", "commit.gpgsign=false", *args], cwd=repo, env=env,
+                                               check=True, capture_output=True)
+            git("init", "-q", "-b", "main")
+            (repo / "kept.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")
+            git("add", ".")
+            git("commit", "-qm", "base")
+            key = "AK" + "IA" + "ABCDEFGHIJKLMNOP"
+            (repo / "kept.txt").write_text("one\n" + key + "\nthree\nfour " + key + "\n", encoding="utf-8")
+            (repo / "new dir").mkdir()
+            (repo / "new dir/a b.txt").write_text("x\n" + "pass" + 'word = "correcthorsebattery"\n',
+                                                  encoding="utf-8")
+            (repo / "allowed.txt").write_text("fixture " + key + "\n", encoding="utf-8")
+            git("add", ".")
+            allow = [re.compile("^fixture ")]
+            expected = core.scan_secret_records(core.staged_secret_records(repo), allow)
+            git("commit", "-qm", "change")
+            found = CONTROLLER.secret_findings(CONTROLLER.diff_secret_records(repo, "HEAD~1", "HEAD"), tuple(allow))
+            self.assertEqual(found, expected)
+            self.assertEqual([(path, line) for path, line, _ in found],
+                             [("kept.txt", 2), ("kept.txt", 4), ("new dir/a b.txt", 2)])
+        records = [("f", 1, "clean"), ("f", 2, "token = 'abcdefghij'"), ("f", 3, "   ")]
+        self.assertEqual(CONTROLLER.secret_findings(records, ()), core.scan_secret_records(records, []))
 
     def test_the_controller_has_no_push_or_pull_request_code_path(self) -> None:
         source = CONTROLLER_PATH.read_text(encoding="utf-8")
