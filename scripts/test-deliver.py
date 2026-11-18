@@ -50,6 +50,10 @@ FAKE_CLIENT = textwrap.dedent('''\
         subprocess.run(["git", "add", "src/old.txt"], check=True)
         subprocess.run(["git", "commit", "-qm", "fixture: secret"], check=True)
         subprocess.run(["git", "rm", "-q", "src/old.txt"], check=True)
+    if not checker and "Fixture: add dependencies" in spec:
+        pathlib.Path("package.json").write_text(json.dumps(
+            {"dependencies": {"left-pad": "1.3.0", "leftpad-invented-zz9": "^1.0.0"}}), encoding="utf-8")
+        subprocess.run(["git", "add", "package.json"], check=True)
     if not checker:
         pathlib.Path("src").mkdir(exist_ok=True)
         body = "fixed\\n" + ("note = 1\\nauth = '" + token + "'\\n" if "Fixture: seed a secret" in spec else "")
@@ -65,7 +69,8 @@ FAKE_CLIENT = textwrap.dedent('''\
                 if checker else ["maker ran the fixture verification"])
     status = "accepted" if checker else "completed"
     receipt = {"status": status, "summary": "Make src/change.txt hold the fixed value; ping @someone",
-               "commit": commit, "changed_paths": ["src/change.txt"], "evidence": evidence,
+               "commit": commit, "evidence": evidence,
+               "changed_paths": ["src/change.txt"] + (["package.json"] if "Fixture: add dependencies" in spec else []),
                "unresolved": [], "next_state": status}
     if receipt_path is not None:
         receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
@@ -409,6 +414,33 @@ class DeliverTests(unittest.TestCase):
         (repo / ".harness/secret-scan.allow").write_text("^auth = 'ghp_Z9y8\n", encoding="utf-8")
         self.assertEqual(self.deliver(repo, "--dry-run").returncode, 0)
 
+    def test_an_invented_package_refuses_the_landing(self) -> None:
+        repo = self.accepted_run(spec_note="Fixture: add dependencies.\n", allowed_paths=("src/**", "package.json"))
+        asked: list[str] = []
+
+        def registry(found: set[str]):
+            def fetch(url: str) -> int:
+                asked.append(url)
+                return 200 if any(url.endswith("/" + name) for name in found) else 404
+            return fetch
+
+        state = CONTROLLER.load_run(repo, "deliver")
+        with self.assertRaises(CONTROLLER.RunError) as refused:
+            CONTROLLER.delivery_checks(repo, state, "origin", None, fetch=registry({"left-pad"}))
+        self.assertIn("package.json adds npm package leftpad-invented-zz9, which registry.npmjs.org does not have",
+                      str(refused.exception))
+        self.assertNotIn("left-pad,", str(refused.exception))
+        self.assertEqual(sorted(asked), ["https://registry.npmjs.org/left-pad",
+                                         "https://registry.npmjs.org/leftpad-invented-zz9"])
+        checks = CONTROLLER.delivery_checks(repo, state, "origin", None,
+                                            fetch=registry({"left-pad", "leftpad-invented-zz9"}))
+        self.assertEqual([(row["name"], row["status"]) for row in checks["packages"]],
+                         [("left-pad", "exists"), ("leftpad-invented-zz9", "exists")])
+        self.assertEqual(checks["tier"]["recomputed"], "human", "package.json matches no rule of this policy")
+        body = CONTROLLER.delivery_body(checks, CONTROLLER.eligibility(checks, checks["accepted"], None))
+        self.assertIn("### Dependencies\nNew packages and their registry lookup (local ones are not looked up):\n"
+                      "```text\n- left-pad (npm, exists)\n- leftpad-invented-zz9 (npm, exists)\n```", body)
+
     def test_a_secret_that_a_later_commit_removes_still_blocks(self) -> None:
         repo = self.accepted_run(spec_note="Fixture: secret added then removed.\n")
         state = self.state(repo)
@@ -532,6 +564,106 @@ class DeliverTests(unittest.TestCase):
         self.git(clone, "push", "-q", "origin", "main")
         self.git(repo, "fetch", "-q", "origin")
         self.refused(repo, "the accepted diff does not apply to origin/main")
+
+
+class PackageExistenceTests(unittest.TestCase):
+    """New packages in a manifest are looked up in their registry, read-only; the fetcher is injected."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="agentsmith packages ")
+        self.addCleanup(temporary.cleanup)
+        self.repo = Path(temporary.name)
+        self.env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        self.git("init", "-q", "-b", "main")
+        self.base = self.commit({
+            "package.json": json.dumps({"dependencies": {"left-pad": "1.3.0"}}),
+            "requirements.txt": "requests==2.32.0\n",
+            "pyproject.toml": '[project]\nname = "x"\ndependencies = ["attrs>=23"]\n'})
+
+    def git(self, *args: str) -> str:
+        return subprocess.run(["git", "-c", "user.name=T", "-c", "user.email=t@example.com", "-c",
+                               "commit.gpgsign=false", *args], cwd=self.repo, env=self.env, check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    def commit(self, files: dict[str, str]) -> str:
+        for name, text in files.items():
+            (self.repo / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.repo / name).write_text(text, encoding="utf-8")
+        self.git("add", ".")
+        self.git("commit", "-qm", "change")
+        return self.git("rev-parse", "HEAD")
+
+    def check(self, head: str, answers: dict[str, object]) -> tuple[list[dict], list[str]]:
+        def fetch(url: str) -> int:
+            answer = answers.get(url, 404)
+            if isinstance(answer, Exception):
+                raise answer
+            return int(answer)  # type: ignore[call-overload]
+        return CONTROLLER.package_checks(self.repo, self.base, head, fetch)
+
+    def test_new_packages_are_looked_up_and_an_invented_one_refuses(self) -> None:
+        head = self.commit({
+            "package.json": json.dumps({"dependencies": {"left-pad": "1.3.0", "@types/node": "^20"},
+                                        "devDependencies": {"invented-js-zz9": "1.0.0", "aliased": "npm:chalk@5",
+                                                            "local": "file:../local", "ws": "workspace:*"}}),
+            "requirements.txt": "requests==2.32.0\n# a comment\n-r other.txt\nFlask[async]>=2.0 ; python_version > '3.8'\n"
+                                "invented_py.zz9==1\n",
+            "pyproject.toml": '[project]\nname = "x"\ndependencies = ["attrs>=23", "rich"]\n'
+                              '[project.optional-dependencies]\ndev = ["pytest>=8"]\n'})
+        rows, problems = self.check(head, {
+            "https://registry.npmjs.org/@types%2Fnode": 200, "https://registry.npmjs.org/chalk": 200,
+            "https://pypi.org/pypi/flask/json": 200, "https://pypi.org/pypi/rich/json": 200,
+            "https://pypi.org/pypi/pytest/json": 200})
+        self.assertEqual(sorted((row["manifest"], row["ecosystem"], row["name"], row["status"]) for row in rows), [
+            ("package.json", "npm", "@types/node", "exists"), ("package.json", "npm", "chalk", "exists"),
+            ("package.json", "npm", "invented-js-zz9", "missing"),
+            ("package.json", "npm", "local", "local"), ("package.json", "npm", "ws", "local"),
+            ("pyproject.toml", "pypi", "pytest", "exists"), ("pyproject.toml", "pypi", "rich", "exists"),
+            ("requirements.txt", "pypi", "flask", "exists"), ("requirements.txt", "pypi", "invented-py-zz9", "missing")])
+        self.assertEqual(problems, [
+            "package.json adds npm package invented-js-zz9, which registry.npmjs.org does not have",
+            "requirements.txt adds PyPI package invented-py-zz9, which pypi.org does not have"])
+
+    def test_a_package_that_cannot_be_checked_is_unverified_and_refuses(self) -> None:
+        head = self.commit({
+            "requirements.txt": "requests==2.32.0\nslowpkg\ngit+https://example.com/x.git#egg=x\n",
+            "services/go.mod": "module example.com/x\n\nrequire example.com/y v1.0.0\n",
+            "package.json": "{not json"})
+        rows, problems = self.check(head, {"https://pypi.org/pypi/slowpkg/json": OSError("timed out")})
+        statuses = {(row["manifest"], row["name"]): row["status"] for row in rows}
+        self.assertEqual(statuses[("requirements.txt", "slowpkg")], "unverified")
+        self.assertEqual(problems, [
+            "cannot read package.json to check its new packages; the landing stays refused until it parses",
+            "cannot check requirements.txt line 3 (git+https://example.com/x.git#egg=x): only registry "
+            "packages can be checked",
+            "cannot check PyPI package slowpkg from requirements.txt: pypi.org did not answer (timed out); "
+            "retry when it answers",
+            "services/go.mod changed, and deliver cannot check go packages against a registry; "
+            "review the new requirements by hand"])
+        self.assertTrue(all(row["status"] != "exists" for row in rows if row["name"] in {"slowpkg"}))
+
+    def test_a_requirements_option_that_leaves_the_registry_is_unverified(self) -> None:
+        head = self.commit({"requirements.txt": "requests==2.32.0\n--extra-index-url https://example.com/simple\n"
+                                                "-e ./vendored\n-c constraints.txt\n"})
+        _, problems = self.check(head, {})
+        self.assertEqual(problems, [
+            "cannot check requirements.txt line 2 (--extra-index-url https://example.com/simple): only registry "
+            "packages can be checked",
+            "cannot check requirements.txt line 3 (-e ./vendored): only registry packages can be checked"])
+
+    def test_an_unchanged_or_removed_dependency_needs_no_lookup(self) -> None:
+        head = self.commit({"package.json": json.dumps({"dependencies": {}}), "README.md": "x\n"})
+
+        def fetch(url: str) -> int:
+            raise AssertionError(f"no lookup expected, got {url}")
+        self.assertEqual(CONTROLLER.package_checks(self.repo, self.base, head, fetch), ([], []))
+
+    def test_a_name_that_cannot_be_a_package_is_never_sent(self) -> None:
+        head = self.commit({"package.json": json.dumps({"dependencies": {"../../etc": "1", "a b": "1"}})})
+        rows, problems = self.check(head, {})
+        self.assertEqual([row["status"] for row in rows], ["invalid", "invalid"])
+        self.assertEqual(len(problems), 2)
+        self.assertIn("is not a valid npm package name", problems[0])
 
 
 def command_words(node: ast.AST) -> list[str]:

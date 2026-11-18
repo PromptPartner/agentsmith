@@ -579,7 +579,17 @@ It refuses, and names every reason, unless all of these hold:
   over the added lines of the accepted diff, over the changes of every commit between the base and
   the accepted commit (a secret that a later commit removes is still in the pushed history), and
   over every commit message, honouring `.harness/secret-scan.allow` in your checkout. This holds
-  for `--dry-run` too. Each finding names the path or commit and the line, never the value.
+  for `--dry-run` too. Each finding names the path or commit and the line, never the value;
+- every package that a manifest gains between the base and the accepted commit exists in its
+  registry. `deliver` reads `package.json` (npm, `registry.npmjs.org`) and `requirements*.txt`,
+  `pyproject.toml` and `Pipfile` (PyPI, `pypi.org`), and looks up each new package once, as a
+  read-only request with no credentials. A package the registry does not have (404) refuses: a
+  model can name a package that does not exist, and whoever registers that name later decides
+  what an install runs. A lookup that gets no clear answer, a source outside the registry (a Git
+  or URL dependency, an editable install, another index) and a changed `go.mod`, `Cargo.toml` or
+  `Gemfile`, which `deliver` cannot check, are *unverified* and refuse too: a check that could not
+  run never counts as a pass. Local `file:`, `link:` and `workspace:` npm dependencies are listed
+  but not looked up. The new packages and their lookup appear in the body under Dependencies.
 
 It then recomputes the risk tier with the policy at the base commit, over every path that any
 commit between the base and the accepted commit touches (renames, copies and each side of a merge
@@ -601,6 +611,7 @@ implementation ticket and the run branch. The body holds:
 - the verifier and checker evidence;
 - the checker calibration status;
 - the budgets used;
+- the new packages and their registry lookup, when a manifest gained any;
 - the base staleness;
 - the eligibility line.
 

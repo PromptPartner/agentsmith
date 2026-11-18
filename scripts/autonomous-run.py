@@ -30,7 +30,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 
 try:
     from native_launcher import (
@@ -3859,7 +3859,197 @@ def base_staleness(repo: Path, remote: str, base: str, accepted: str) -> tuple[d
     return staleness, None
 
 
-def delivery_checks(repo: Path, state: dict[str, Any], remote: str, base: str | None) -> dict[str, Any]:
+# Package existence. A model can name a package that does not exist; whoever registers that name
+# later decides what an install runs. deliver looks up every package that is new in a manifest, as
+# one read-only GET with no credentials. A 404 refuses; an answer it cannot read, a network error,
+# a non-registry source or an ecosystem it cannot check is "unverified" and also refuses, as an
+# unreachable remote does in base_staleness: a check that could not run never counts as a pass.
+REGISTRIES = {"npm": ("registry.npmjs.org", "https://registry.npmjs.org/{}"),
+              "pypi": ("pypi.org", "https://pypi.org/pypi/{}/json")}
+ECOSYSTEM_NAMES = {"npm": "npm", "pypi": "PyPI"}
+NPM_NAME = re.compile(r"(?:@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._~-]*")
+PYPI_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")
+PEP508_NAME = re.compile(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*(\[[^\]]*\])?\s*(.*)")
+NPM_DEPENDENCY_KEYS = ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies")
+# Manifests with no registry check here: a change is unverified. Lockfiles list what a manifest
+# already names, so the manifests are what is checked.
+UNCHECKED_MANIFESTS = {"go.mod": "go", "cargo.toml": "cargo", "gemfile": "ruby"}
+MAX_PACKAGE_LOOKUPS = 100
+
+
+def registry_status(url: str) -> int:
+    """One read-only GET; the HTTP status. Raises OSError when the registry gives no answer."""
+    import urllib.error
+    import urllib.request
+    request = urllib.request.Request(url, method="GET", headers={"User-Agent": "agentsmith-deliver",
+                                                                 "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            return int(response.status)
+    except urllib.error.HTTPError as exc:
+        return int(exc.code)
+
+
+def pypi_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()  # PEP 503 normalisation
+
+
+def pep508_entry(text: str) -> tuple[str | None, str | None]:
+    """(normalised name, None) for a registry requirement, or (None, why it cannot be checked)."""
+    match = PEP508_NAME.fullmatch(text)
+    if not match or re.match(r"[a-z+]+://", text.strip()) or match.group(3).lstrip().startswith("@"):
+        return None, "only registry packages can be checked"
+    return pypi_name(match.group(1)), None
+
+
+def manifest_packages(name: str, text: str) -> tuple[str, dict[str, str], list[str]]:
+    """(ecosystem, {package: source}, entries that cannot be checked) for one manifest. The source
+    is "registry" or "local". Raises ValueError when the manifest does not parse."""
+    if name == "package.json":
+        data = json.loads(text)
+        if not isinstance(data, dict):
+            raise ValueError("not an object")
+        packages: dict[str, str] = {}
+        for key in NPM_DEPENDENCY_KEYS:
+            section = data.get(key) or {}
+            if not isinstance(section, dict):
+                raise ValueError(f"{key} is not an object")
+            for package, spec in section.items():
+                spec = str(spec)
+                if spec.startswith(("file:", "link:", "workspace:")):
+                    packages[package] = "local"
+                elif spec.startswith("npm:"):  # an alias installs the package it names
+                    target = spec[4:]
+                    packages[target.rsplit("@", 1)[0] if "@" in target[1:] else target] = "registry"
+                elif re.match(r"[a-z+]+:|[./~]|[^@/\s]+/[^@/\s]+$", spec):
+                    packages[package] = "unverified"  # git, http, path or GitHub shorthand
+                else:
+                    packages[package] = "registry"
+        return "npm", packages, []
+    if name.startswith("requirements") and name.endswith(".txt"):
+        packages, unchecked = {}, []
+        for number, line in enumerate(text.splitlines(), 1):
+            entry = line.split(" #", 1)[0].strip()
+            # Another requirements or constraints file is read where it is; any other option
+            # (an editable install, another index or a find-links folder) leaves the registry.
+            if not entry or entry.startswith("#") or re.match(r"(-r|-c|--requirement|--constraint)\b", entry):
+                continue
+            if entry.startswith("-"):
+                unchecked.append(f"line {number} ({entry[:80]}): only registry packages can be checked")
+                continue
+            package, why = pep508_entry(entry.split(";", 1)[0])
+            if package:
+                packages[package] = "registry"
+            else:
+                unchecked.append(f"line {number} ({entry[:80]}): {why}")
+        return "pypi", packages, unchecked
+    import tomllib
+    data = tomllib.loads(text)
+    requirements: list[Any] = []
+    if name == "pyproject.toml":
+        project = data.get("project") or {}
+        requirements += list(project.get("dependencies") or [])
+        for group in (project.get("optional-dependencies") or {}).values():
+            requirements += list(group)
+        for group in (data.get("dependency-groups") or {}).values():
+            requirements += [item for item in group if isinstance(item, str)]
+        requirements += list((data.get("build-system") or {}).get("requires") or [])
+        poetry = (data.get("tool") or {}).get("poetry") or {}
+        sections = [poetry.get("dependencies") or {}, poetry.get("dev-dependencies") or {},
+                    *((group.get("dependencies") or {}) for group in (poetry.get("group") or {}).values())]
+        requirements += [key for section in sections for key in section if key.casefold() != "python"]
+    else:  # Pipfile
+        requirements += [key for section in ("packages", "dev-packages") for key in (data.get(section) or {})]
+    packages, unchecked = {}, []
+    for item in requirements:
+        package, why = pep508_entry(str(item).split(";", 1)[0])
+        if package:
+            packages[package] = "registry"
+        else:
+            unchecked.append(f"{str(item)[:80]}: {why}")
+    return "pypi", packages, unchecked
+
+
+def package_checks(repo: Path, base: str, head: str,
+                   fetch: Callable[[str], int] | None = None) -> tuple[list[dict[str, str]], list[str]]:
+    """Every package that a manifest in base..head adds, with its registry verdict, and the
+    problems that refuse the landing. Packages a manifest already had at base are not looked up."""
+    fetch = fetch or registry_status
+    rows: list[dict[str, str]] = []
+    problems: list[str] = []
+    lookups = 0
+    for path in changed_paths(repo, base, head):
+        name = path.rsplit("/", 1)[-1].casefold()
+        if name in UNCHECKED_MANIFESTS:
+            if run(["git", "cat-file", "-e", f"{head}:{path}"], repo).returncode == 0:  # not a removal
+                problems.append(f"{path} changed, and deliver cannot check {UNCHECKED_MANIFESTS[name]} packages "
+                                "against a registry; review the new requirements by hand")
+            continue
+        if not (name in {"package.json", "pyproject.toml", "pipfile"}
+                or (name.startswith("requirements") and name.endswith(".txt"))):
+            continue
+        shown = run(["git", "show", f"{head}:{path}"], repo)
+        if shown.returncode:
+            continue  # removed: nothing new to install
+        try:
+            ecosystem, packages, unchecked = manifest_packages(name, shown.stdout)
+        except (ValueError, UnicodeError):  # json and tomllib errors are ValueErrors
+            problems.append(f"cannot read {path} to check its new packages; the landing stays refused until it parses")
+            continue
+        before = run(["git", "show", f"{base}:{path}"], repo)
+        try:
+            known = manifest_packages(name, before.stdout)[1] if before.returncode == 0 else {}
+        except (ValueError, UnicodeError):
+            known = {}  # an unreadable base manifest: every package counts as new
+        problems += [f"cannot check {path} {item}" for item in unchecked]
+        host, template = REGISTRIES[ecosystem]
+        label = ECOSYSTEM_NAMES[ecosystem]
+        for package in sorted(set(packages) - set(known)):
+            source = packages[package]
+            row = {"manifest": path, "ecosystem": ecosystem, "name": package, "status": source}
+            rows.append(row)
+            if source == "local":
+                continue
+            if source == "unverified":
+                problems.append(f"cannot check {label} package {package} from {path}: it does not come from "
+                                f"{host}")
+                continue
+            if not (NPM_NAME if ecosystem == "npm" else PYPI_NAME).fullmatch(package):
+                row["status"] = "invalid"
+                problems.append(f"{path} adds {package!r}, which is not a valid {label} package name")
+                continue
+            lookups += 1
+            if lookups > MAX_PACKAGE_LOOKUPS:
+                row["status"] = "unverified"
+                problems.append(f"cannot check {label} package {package} from {path}: more than "
+                                f"{MAX_PACKAGE_LOOKUPS} new packages")
+                continue
+            try:
+                status = fetch(template.format(urllib_quote(package)))
+            except (OSError, ValueError) as exc:
+                row["status"] = "unverified"
+                problems.append(f"cannot check {label} package {package} from {path}: {host} did not answer "
+                                f"({str(exc)[:80]}); retry when it answers")
+                continue
+            if status == 200:
+                row["status"] = "exists"
+            elif status == 404:
+                row["status"] = "missing"
+                problems.append(f"{path} adds {label} package {package}, which {host} does not have")
+            else:
+                row["status"] = "unverified"
+                problems.append(f"cannot check {label} package {package} from {path}: {host} answered "
+                                f"HTTP {status}; retry when it answers")
+    return rows, problems
+
+
+def urllib_quote(package: str) -> str:
+    import urllib.parse
+    return urllib.parse.quote(package, safe="@")  # a scoped npm name keeps @ and sends / as %2F
+
+
+def delivery_checks(repo: Path, state: dict[str, Any], remote: str, base: str | None,
+                    fetch: Callable[[str], int] | None = None) -> dict[str, Any]:
     """Every check `deliver` makes. Any mismatch refuses, with all reasons at once."""
     run_id = state.get("run_id")
     if state.get("status") != "accepted":
@@ -3923,6 +4113,8 @@ def delivery_checks(repo: Path, state: dict[str, Any], remote: str, base: str | 
             problems.append(problem)
     # Every mode refuses a likely secret, --dry-run included: the push would publish it.
     problems += history_secret_problems(repo, str(state["base_head"]), accepted, secret_allow_rules(repo))
+    packages, package_problems = package_checks(repo, str(state["base_head"]), accepted, fetch)
+    problems += package_problems
     if problems:
         raise RunError("deliver refused: " + "; ".join(problems))
     import risk_map
@@ -3938,7 +4130,8 @@ def delivery_checks(repo: Path, state: dict[str, Any], remote: str, base: str | 
     tier = risk_map.raise_tier(tier, declared if declared in risk_map.TIERS else "A")
     floor = sorted(row["path"] for row in report["paths"] if any(reason.startswith("floor:") for reason in row["matched"]))
     return {"state": state, "proof": proof, "checker": checker, "manifest": manifest, "accepted": accepted,
-            "branch": branch, "staleness": staleness, "paths": changed_paths(repo, str(state["base_head"]), accepted),
+            "branch": branch, "staleness": staleness, "packages": packages,
+            "paths": changed_paths(repo, str(state["base_head"]), accepted),
             "tier": {"tier": tier, "recorded": recorded, "recomputed": report["tier"], "declared": declared,
                      "lenses": report["lenses"], "policy_blob": report["policy"]["blob"], "floor_paths": floor},
             "calibration": calibration_status(repo, (manifest.get("roles") or {}).get("checker") or {})}
@@ -4056,6 +4249,10 @@ def delivery_body(checks: dict[str, Any], verdict: dict[str, Any]) -> str:
         f"{float(state.get('claude_cost_usd', 0.0)):.2f} USD of {limits.get('claude_max_usd')}. Codex: "
         f"{state.get('codex_tokens_used')} tokens of {limits.get('codex_goal_tokens')}.",
         "",
+        # A maker chose these names, so they sit in a code block like the checker evidence.
+        *(["### Dependencies", "New packages and their registry lookup (local ones are not looked up):",
+           fenced("\n".join(f"- {row['name']} ({row['ecosystem']}, {row['status']})" for row in checks["packages"])),
+           ""] if checks["packages"] else []),
         "### Base",
         f"{staleness['behind']} commit{'s' if staleness['behind'] != 1 else ''} behind {staleness['base']}; "
         "the accepted diff applies cleanly.",
@@ -4106,7 +4303,8 @@ def deliver(args: argparse.Namespace) -> int:
     report = {"run_id": args.run_id, "head": checks["accepted"], "branch": checks["branch"],
               "push_command": push_command(args.remote, checks["accepted"], checks["branch"]),
               "title": title, "body": body, "tier": checks["tier"],
-              "staleness": checks["staleness"], "calibration": calibration, "eligibility": verdict}
+              "staleness": checks["staleness"], "packages": checks["packages"], "calibration": calibration,
+              "eligibility": verdict}
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
         return 0
