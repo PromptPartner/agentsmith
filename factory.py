@@ -18,6 +18,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 from typing import Any, Callable, Iterable
 import unicodedata
@@ -27,7 +28,7 @@ SCHEMA_VERSION = 1
 MIN_SAMPLE = 5
 DEFAULT_WINDOW_DAYS = 28
 TOUCH_EVENTS = ("run_escalated", "run_interrupted", "run_resumed")
-TERMINAL = ("accepted", "escalated", "interrupted")
+TERMINAL = ("accepted", "awaiting-human", "escalated", "interrupted")
 TIERS = ("A", "B", "C", "human")
 PASSING = {"success", "skipped", "neutral"}
 GITHUB_DEFAULT_TIMEOUT_MINUTES = 360
@@ -317,8 +318,10 @@ def job_timeout(workflow: str, job_name: str) -> int | None:
 
 # --- readiness ---------------------------------------------------------------------------------
 
-def check(name: str, passed: bool, evidence: str, next_step: str) -> dict[str, Any]:
-    return {"name": name, "status": "pass" if passed else "fail", "evidence": evidence,
+def check(name: str, passed: bool, evidence: str, next_step: str, *, warn: bool = False) -> dict[str, Any]:
+    """A check passes or fails. `warn` turns a failure into a warning: the risk is named with its
+    next step, and readiness is not held back by it."""
+    return {"name": name, "status": "pass" if passed else "warn" if warn else "fail", "evidence": evidence,
             "next_step": "none" if passed else next_step}
 
 
@@ -343,6 +346,173 @@ def refusal_holds(repo: Path, item: dict[str, Any], now: datetime) -> bool:
     roots = {repo.resolve(), common_dir(repo).parent.resolve()}
     return (marker.is_absolute() and marker.name.casefold() == "autonomy_paused"
             and marker.parent.name == ".harness" and marker.parent.parent.resolve() in roots)
+
+
+# The oldest native client readiness accepts. Claude Code 2.1.319 carries the fix for the worktree
+# sandbox escape; Codex 0.167 is the factory's floor for Codex.
+MIN_CLIENT_VERSIONS = {"claude": (2, 1, 319), "codex": (0, 167, 0)}
+# A version: numbers, then an optional prerelease of non-empty dot-separated [0-9A-Za-z-] identifiers.
+# Anything joined to it other than a sentence's closing dot (`2.1.319-`, `2.1.319-beta_1`) is unreadable.
+VERSION = r"v?(?P<major>\d+)\.(?P<minor>\d+)(?:\.(?P<patch>\d+))?(?:-(?P<pre>[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+CLIENT_VERSION = re.compile(rf"(?<![\w.+-]){VERSION}(?![\w+-]|\.(?!\s|$))")
+# What each client calls itself in its `--version` line: `2.1.327 (Claude Code)`, `codex-cli 0.169.0`.
+CLIENT_NAMES = {"claude": ("claude code", "claude"), "codex": ("codex-cli", "codex")}
+
+
+def client_version_match(text: str, runtime: str) -> re.Match[str] | None:
+    """The version next to the client's own name; without the name, the only version in the text.
+    None (an unknown version) when the name is there without a readable version beside it, or when
+    the text holds no version or more than one."""
+    named = False
+    for name in CLIENT_NAMES[runtime]:
+        word = rf"(?<![\w-]){re.escape(name)}(?![\w-])"
+        if re.search(word, text, re.IGNORECASE):
+            named = True
+            beside = re.search(rf"{word}\s+(?P<v>\S+)|(?P<w>\S+)\s*\(\s*{word}\s*\)", text, re.IGNORECASE)
+            if beside:
+                token = beside["v"] or beside["w"]
+                found = CLIENT_VERSION.fullmatch(token.rstrip(".;,"))
+                if found:
+                    return found
+    if named:
+        return None
+    versions = list(CLIENT_VERSION.finditer(text))
+    return versions[0] if len(versions) == 1 else None
+
+
+def parse_client_version(text: str, runtime: str) -> tuple[int, int, int, int] | None:
+    """(major, minor, patch, 1) from a client's `--version` line, with 0 last for a prerelease,
+    which comes before its release. None when no version can be read."""
+    found = client_version_match(text, runtime)
+    if found is None:
+        return None
+    return int(found["major"]), int(found["minor"]), int(found["patch"] or 0), 0 if found["pre"] else 1
+
+
+def probe_client(runtime: str) -> dict[str, Any]:
+    """Where the configured native client is and what `--version` says, as a run would launch it."""
+    import native_launcher
+    command = native_launcher.native_command_prefix(runtime)
+    found = shutil.which(command[-1]) or (command[-1] if Path(command[-1]).is_file() else None)
+    if found is None:
+        return {"runtime": runtime, "path": None, "text": "not found", "version": None}
+    try:
+        text = native_launcher.client_version([*command[:-1], found])
+    except (OSError, subprocess.SubprocessError):
+        text = "unknown"
+    return {"runtime": runtime, "path": found, "text": text, "version": parse_client_version(text, runtime)}
+
+
+# Editor folders whose `extensions` folder holds marketplace extensions that bundle a client binary.
+EDITOR_FOLDERS = {".vscode": "VS Code", ".vscode-insiders": "VS Code Insiders", ".vscode-server": "VS Code Server",
+                  ".vscode-server-insiders": "VS Code Server", ".vscode-oss": "VSCodium", ".cursor": "Cursor",
+                  ".cursor-server": "Cursor Server", ".windsurf": "Windsurf", ".windsurf-server": "Windsurf Server",
+                  ".positron": "Positron"}
+
+
+def marketplace_editor(path: str) -> str | None:
+    """The editor whose extensions folder holds `path`, such as `~/.vscode/extensions/...`; None for
+    a client installed as a command-line tool. Only the editor folders listed above count."""
+    parts = [part for part in re.split(r"[\\/]+", path.casefold()) if part]
+    for folder, child in zip(parts, parts[1:]):
+        if child == "extensions" and folder in EDITOR_FOLDERS:
+            return EDITOR_FOLDERS[folder]
+    return None
+
+
+def client_sources(clients: list[dict[str, Any]]) -> dict[str, Any]:
+    rows, bundled = [], []
+    for client in clients:
+        if client["path"] is None:
+            continue
+        real = str(Path(client["path"]).resolve())
+        editor = marketplace_editor(client["path"]) or marketplace_editor(real)
+        where = client["path"] + (f" (links to {real})" if real != client["path"] else "")
+        if editor:
+            bundled.append(f"{client['runtime']} at {where} comes from a {editor} extension: the editor "
+                           "updates or removes it on its own schedule, so the version checked here can change "
+                           "under a run")
+        else:
+            rows.append(f"{client['runtime']} at {where}")
+    return check("clients installed as a command-line tool", not bundled,
+                 "; ".join(bundled + rows) or "no native client found",
+                 "install the command-line client and point AGENTSMITH_CLAUDE_BIN or AGENTSMITH_CODEX_BIN at it",
+                 warn=True)
+
+
+def client_versions(clients: list[dict[str, Any]]) -> dict[str, Any]:
+    rows, low = [], []
+    for client in clients:
+        runtime, version = client["runtime"], client["version"]
+        floor = ".".join(map(str, MIN_CLIENT_VERSIONS[runtime]))
+        if client["path"] is None:
+            low.append(f"{runtime} not found (needs {floor} or later)")
+        elif version is None:
+            low.append(f"{runtime} version unknown ({client['text'][:80]!r}; needs {floor} or later)")
+        else:
+            found = client_version_match(client["text"], runtime)
+            shown = found[0].lstrip("v") if found else client["text"]
+            if version < (*MIN_CLIENT_VERSIONS[runtime], 1):
+                low.append(f"{runtime} {shown} is below {floor}")
+            else:
+                rows.append(f"{runtime} {shown} (needs {floor} or later)")
+    return check("client versions", not low, "; ".join(low + rows) or "no native client named",
+                 "update each client named above to its minimum version or later, then run readiness again")
+
+
+def files_at(repo: Path, commit: str) -> list[str]:
+    result = subprocess.run(["git", "-C", str(repo), "ls-tree", "-r", "-z", "--name-only", "--full-tree", commit],
+                            capture_output=True, env={k: v for k, v in os.environ.items() if k not in REPOSITORY_ENV},
+                            check=False)
+    if result.returncode != 0:
+        raise FactoryError(f"cannot list the files of {commit}: {result.stderr.decode('utf-8', 'replace').strip()}")
+    return [name.decode("utf-8", "replace") for name in result.stdout.split(b"\0") if name]
+
+
+def pattern_drift(repo: Path, base_commit: str, base: str, policy: str | None, lens_file: str | None) -> dict[str, Any]:
+    """Each risk-policy pattern, lens trigger path and lens must-read document names something at
+    the base: a pattern that matches no file there has drifted from the tree it was written for."""
+    import lenses
+    import risk_map
+    name, step = "policy and lens paths match files at the base", \
+        "fix or remove each dead pattern, or commit the files it should name"
+    if not base_commit:
+        return check(name, False, f"cannot read {base}", step)
+    problems: list[str] = []
+    rules: list[dict[str, Any]] = []
+    lens_rows: list[dict[str, Any]] = []
+    if policy is None:
+        problems.append("no risk policy to check")
+    else:
+        try:
+            risk_map.load_policy(policy.encode("utf-8"))
+            rules = json.loads(policy)["rules"]
+        except (risk_map.PolicyError, ValueError) as exc:
+            problems.append(f"risk policy invalid: {exc}")
+    if lens_file is None:
+        problems.append("no lens file to check")
+    else:
+        try:
+            lens_rows = lenses.load_lenses(lens_file.encode("utf-8"))
+        except lenses.LensError as exc:
+            problems.append(f"lens file invalid: {exc}")
+    files = files_at(repo, base_commit)
+    present = set(files)
+    named: list[tuple[str, bool]] = []
+    for number, rule in enumerate(rules, start=1):
+        named += [(f"risk policy rule {number} `{pattern}`", any(risk_map.glob_match(pattern, path) for path in files))
+                  for pattern in rule["paths"]]
+    for lens in lens_rows:
+        named += [(f"lens {lens['id']} path `{pattern}`", any(risk_map.glob_match(pattern, path) for path in files))
+                  for pattern in lens["paths"]]
+        named += [(f"lens {lens['id']} must-read `{path}`", path in present) for path in lens["must_read"]]
+    dead = [label for label, alive in named if not alive]
+    if problems:  # nothing to match against: the policy or the lens file is missing or invalid
+        step = "commit a valid .harness/risk-policy.json and .harness/lenses.json" + (", then " + step if dead else "")
+    if dead:
+        problems.append(f"match no file at {base}: " + ", ".join(dead))
+    return check(name, not problems,
+                 "; ".join(problems) or f"{len(named)} pattern(s) and path(s) each match a file at {base}", step)
 
 
 def load_controller(repo: Path) -> Any:
@@ -434,14 +604,21 @@ def readiness(repo: Path, *, controller: Any, gh: Any | None, manifest: dict[str
                             f"{checker.get('runtime')} {checker.get('model')} ({checker.get('effort')}): "
                             f"{status.get('status')}" + (f" at {status['calibrated_at']}" if status.get("calibrated_at") else ""),
                             "run `autonomous-run.py calibrate <manifest>` with this checker"))
-    # 5. The kill switch has been seen to stop work. A local log is evidence, not proof: each record
+    # 5-6. Each native client the manifest names (both without one): at its minimum version, and
+    # installed as a command-line tool rather than bundled with an editor extension (a warning).
+    runtimes = sorted({role.get("runtime") for role in ((manifest or {}).get("roles") or {}).values()
+                       if isinstance(role, dict)} & set(MIN_CLIENT_VERSIONS)) if manifest else sorted(MIN_CLIENT_VERSIONS)
+    clients = [probe_client(runtime) for runtime in runtimes]
+    checks.append(client_versions(clients))
+    checks.append(client_sources(clients))
+    # 7. The kill switch has been seen to stop work. A local log is evidence, not proof: each record
     # must carry the refusal's facts, and the facts that can be checked are.
     refusals = [item for item in read_jsonl(factory_dir(repo) / "events.jsonl") if refusal_holds(repo, item, now)]
     checks.append(check("kill switch tested", bool(refusals),
                         f"{len(refusals)} refusal(s) recorded with their facts"
                         + (f", latest {refusals[-1].get('at')} ({refusals[-1].get('action')})" if refusals else ""),
                         "create .harness/AUTONOMY_PAUSED, try a start, see it refused, then remove the file"))
-    # 6-7. What the base commit carries.
+    # 8-10. What the base commit carries, and whether its policy and lens paths still name files.
     def at_base(path: str) -> str | None:
         if not base_commit:
             return None
@@ -466,13 +643,14 @@ def readiness(repo: Path, *, controller: Any, gh: Any | None, manifest: dict[str
                         f"risk policy {'valid' if policy_ok else 'missing or invalid'}, lens file "
                         f"{'present' if lenses is not None else 'missing'} at {base}",
                         "commit .harness/risk-policy.json and .harness/lenses.json"))
-    # 8. Receipts can leave the Git folder.
+    checks.append(pattern_drift(repo, base_commit, base, policy, lenses))
+    # 11. Receipts can leave the Git folder.
     try:
         exported = collect_export(repo)
         checks.append(check("receipts exportable", True, f"{len(exported['runs'])} run(s) readable for export", ""))
     except FactoryError as exc:
         checks.append(check("receipts exportable", False, str(exc), "repair or archive the unreadable run"))
-    return {"schema_version": SCHEMA_VERSION, "base": base, "ready": all(item["status"] == "pass" for item in checks),
+    return {"schema_version": SCHEMA_VERSION, "base": base, "ready": all(item["status"] != "fail" for item in checks),
             "checks": checks}
 
 

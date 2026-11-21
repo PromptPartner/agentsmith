@@ -92,10 +92,26 @@ class FactoryTests(unittest.TestCase):
         (self.repo / ".harness/lenses.json").write_text('{"schema_version": 1, "lenses": []}\n', encoding="utf-8")
         (self.repo / ".github/workflows").mkdir(parents=True)
         (self.repo / ".github/workflows/verify.yml").write_text(WORKFLOW, encoding="utf-8")
+        (self.repo / "src").mkdir()
+        (self.repo / "src/app.py").write_text("", encoding="utf-8")  # what the policy's `src/**` names
         self.git("add", ".")
         self.git("commit", "-qm", "base")
         self.git("remote", "add", "origin", "https://github.com/owner/project.git")
         self.runs = self.repo / ".git/agentsmith-runs"
+        # Readiness asks each native client for its version: fixture clients, never the host's.
+        patched = mock.patch.dict(os.environ, {"AGENTSMITH_CLAUDE_BIN": "", "AGENTSMITH_CODEX_BIN": ""})
+        patched.start()
+        self.addCleanup(patched.stop)
+        self.client("claude", "2.1.325 (Claude Code)")
+        self.client("codex", "codex-cli 0.169.0")
+
+    def client(self, runtime: str, output: str, folder: str = "clients") -> Path:
+        """A fixture client that prints `output` for `--version`, installed under `folder`."""
+        path = self.repo.parent / folder / f"{runtime}.py"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"import sys\nprint({output!r})\n", encoding="utf-8")
+        os.environ["AGENTSMITH_CLAUDE_BIN" if runtime == "claude" else "AGENTSMITH_CODEX_BIN"] = str(path)
+        return path
 
     def git(self, *args: str) -> str:
         return subprocess.run(["git", *args], cwd=self.repo, env=CLEAN_ENV, text=True, capture_output=True,
@@ -383,7 +399,7 @@ class FactoryTests(unittest.TestCase):
         headroom = next(item for item in report["checks"] if item["name"] == "CI headroom")
         self.assertIn("windows compatibility (windows-latest): 20 of 45 min", headroom["evidence"])
         self.assertIn("linux compatibility (ubuntu-latest): 6 of 20 min", headroom["evidence"])
-        self.assertEqual(len(report["checks"]), 8)
+        self.assertEqual(len(report["checks"]), 11)
 
     def test_each_readiness_check_fails_with_its_reason_and_a_next_step(self) -> None:
         def broken_preflight(*_args, **_kwargs):
@@ -412,6 +428,126 @@ class FactoryTests(unittest.TestCase):
         self.assertEqual(self.failing(offline)["default branch green"], "cannot read CI: gh is not installed")
         unnamed = self.readiness(manifest=None)
         self.assertIn("checker calibration passed", self.failing(unnamed))
+
+    def test_a_client_below_its_minimum_version_is_not_ready(self) -> None:
+        both = {"roles": {"maker": {"runtime": "codex"},
+                          "checker": {"runtime": "claude", "model": "m", "effort": "high"}}}
+        passing = next(item for item in self.readiness(manifest=both)["checks"] if item["name"] == "client versions")
+        self.assertEqual(passing["status"], "pass", passing)
+        self.assertIn("claude 2.1.325 (needs 2.1.319 or later)", passing["evidence"])
+        self.assertIn("codex 0.169.0 (needs 0.167.0 or later)", passing["evidence"])
+        cases = {
+            "old claude": ("claude", "2.1.300 (Claude Code)", "claude 2.1.300 is below 2.1.319"),
+            "old codex": ("codex", "codex-cli 0.166.9", "codex 0.166.9 is below 0.167.0"),
+            "prerelease of the floor": ("codex", "codex-cli 0.167.0-alpha.3", "codex 0.167.0-alpha.3 is below 0.167.0"),
+            "unparseable": ("claude", "Claude Code (dev build)", "claude version unknown ('Claude Code (dev build)'; needs 2.1.319"),
+            "another program's version first": ("claude", "Node.js 22.0.0; Claude Code 2.1.318",
+                                                "claude 2.1.318 is below 2.1.319"),
+            "two versions, no client name": ("claude", "1.0.0 2.1.400", "claude version unknown ('1.0.0 2.1.400'"),
+            "empty prerelease": ("claude", "2.1.319-", "claude version unknown ('2.1.319-'"),
+            "prerelease with an underscore": ("claude", "2.1.319-beta_1", "claude version unknown ('2.1.319-beta_1'"),
+            "a valid prerelease": ("claude", "2.1.319-beta.1", "claude 2.1.319-beta.1 is below 2.1.319"),
+        }
+        for label, (runtime, output, reason) in cases.items():
+            with self.subTest(case=label):
+                self.client("claude", "2.1.325 (Claude Code)")
+                self.client("codex", "codex-cli 0.169.0")
+                self.client(runtime, output)
+                report = self.readiness(manifest=both)
+                self.assertFalse(report["ready"])
+                self.assertIn(reason, self.failing(report)["client versions"])
+                failed = next(item for item in report["checks"] if item["name"] == "client versions")
+                self.assertIn("update", failed["next_step"])
+        self.client("claude", "Node 1.0.0; Claude Code 2.1.319")
+        self.assertNotIn("client versions", self.failing(self.readiness()))
+        for runtime, text, version in (("claude", "2.1.327 (Claude Code)", (2, 1, 327, 1)),
+                                       ("claude", "Claude Code 2.1.318", (2, 1, 318, 1)),
+                                       ("codex", "codex-cli 0.169.0", (0, 169, 0, 1)),
+                                       ("codex", "codex-cli 0.169.0-alpha.2", (0, 169, 0, 0)),
+                                       ("claude", "Node 1.0.0, Claude Code 2.1.319", (2, 1, 319, 1)),
+                                       ("claude", "2.1.319", (2, 1, 319, 1)),
+                                       ("claude", "Claude Code 2.1.319-", None),
+                                       ("claude", "2.1.319-.1", None),
+                                       ("claude", "2.1.319-beta..1", None)):
+            with self.subTest(text=text):
+                self.assertEqual(factory.parse_client_version(text, runtime), version)
+        os.environ["AGENTSMITH_CLAUDE_BIN"] = str(self.repo.parent / "nowhere/claude")
+        self.assertIn("claude not found", self.failing(self.readiness())["client versions"])
+        self.client("claude", "2.1.319 (Claude Code)")
+        self.client("codex", "codex-cli 0.100.0")  # not named by the manifest, so not asked
+        self.assertNotIn("client versions", self.failing(self.readiness()))
+
+    def test_a_client_from_an_editor_extension_is_a_warning(self) -> None:
+        both = {"roles": {"maker": {"runtime": "codex"},
+                          "checker": {"runtime": "claude", "model": "m", "effort": "high"}}}
+        source = next(item for item in self.readiness(manifest=both)["checks"]
+                      if item["name"] == "clients installed as a command-line tool")
+        self.assertEqual(source["status"], "pass", source)
+        extension = self.client("claude", "2.1.330 (Claude Code)",
+                                "home/.vscode/extensions/anthropic.claude-code-2.1.330-darwin-arm64/resources/native-binary")
+        # A command on PATH that links into an editor's extensions folder is that extension's binary.
+        linked = self.repo.parent / "home/.local/bin/codex.py"
+        linked.parent.mkdir(parents=True)
+        linked.symlink_to(self.client("codex", "codex-cli 0.169.0", "home/.cursor/extensions/openai.chatgpt-26.5/bin"))
+        os.environ["AGENTSMITH_CODEX_BIN"] = str(linked)
+        report = self.readiness(manifest=both)
+        source = next(item for item in report["checks"] if item["name"] == "clients installed as a command-line tool")
+        self.assertEqual(source["status"], "warn", source)
+        self.assertIn(f"claude at {extension} comes from a VS Code extension", source["evidence"])
+        self.assertIn("codex at", source["evidence"])
+        self.assertIn("comes from a Cursor extension", source["evidence"])
+        self.assertIn("install the command-line client", source["next_step"])
+        self.assertTrue(report["ready"], "a warning names a risk; it does not block")
+        self.assertEqual([item["name"] for item in report["checks"] if item["status"] == "fail"], [])
+        text = factory.render(report)
+        self.assertIn("  warn clients installed as a command-line tool:", text)
+        self.assertIn("readiness: ready (base main)", text)
+        self.assertEqual(factory.marketplace_editor(r"D:\Tools\.VSCode-Insiders\extensions\x\claude.exe"),
+                         "VS Code Insiders")
+        self.assertIsNone(factory.marketplace_editor("/opt/homebrew/Caskroom/codex/0.169.0/bin/codex"))
+        # Only the editors' own folders count, not any dot folder that has an `extensions` folder.
+        # A Linux home path, split so the leak gate does not read a fixture as an operator's home folder.
+        self.assertIsNone(factory.marketplace_editor("/" + "home/tester/.myapp/extensions/tool/claude"))
+        self.assertIsNone(factory.marketplace_editor(r"D:\Tools\.config\extensions\claude.exe"))
+
+    def test_a_policy_pattern_or_lens_path_that_matches_no_file_is_drift(self) -> None:
+        name = "policy and lens paths match files at the base"
+        alive = next(item for item in self.readiness()["checks"] if item["name"] == name)
+        self.assertEqual(alive["status"], "pass", alive)
+        self.assertIn("1 pattern(s) and path(s) each match a file at main", alive["evidence"])
+        policy = {"schema_version": 1, "rules": [{"paths": ["src/**", "billing/**"], "tier": "C"},
+                                                 {"paths": ["SRC/*.py"], "tier": "B"}]}
+        lens = {"id": "security", "paths": ["auth/**"], "must_read": ["docs/security.md"],
+                "brief": "look for authorization gaps", "evidence": "cite the line", "min_tier": "B"}
+        (self.repo / ".harness/risk-policy.json").write_text(json.dumps(policy), encoding="utf-8")
+        (self.repo / ".harness/lenses.json").write_text(json.dumps({"schema_version": 1, "lenses": [lens]}),
+                                                        encoding="utf-8")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "policy and a lens for paths the base does not have")
+        (self.repo / "billing").mkdir()
+        (self.repo / "billing/invoice.py").write_text("", encoding="utf-8")  # in the work tree only
+        report = self.readiness()
+        self.assertFalse(report["ready"])
+        dead = self.failing(report)[name]
+        self.assertIn("match no file at main: risk policy rule 1 `billing/**`, lens security path `auth/**`, "
+                      "lens security must-read `docs/security.md`", dead)
+        self.assertNotIn("`src/**`", dead)
+        self.assertNotIn("`SRC/*.py`", dead)  # patterns ignore case, as the risk map does
+        failed = next(item for item in report["checks"] if item["name"] == name)
+        self.assertIn("fix or remove each dead pattern", failed["next_step"])
+        for path in ("billing/invoice.py", "auth/login.py", "docs/security.md"):
+            (self.repo / path).parent.mkdir(exist_ok=True)
+            (self.repo / path).write_text("", encoding="utf-8")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "the files the patterns name")
+        alive = next(item for item in self.readiness()["checks"] if item["name"] == name)
+        self.assertEqual(alive["status"], "pass", alive)
+        self.assertIn("5 pattern(s) and path(s) each match a file at main", alive["evidence"])
+        (self.repo / ".harness/lenses.json").write_text('{"schema_version": 1, "lenses": [{}]}', encoding="utf-8")
+        self.git("commit", "-qam", "an invalid lens file")
+        invalid = next(item for item in self.readiness()["checks"] if item["name"] == name)
+        self.assertIn("lens file invalid: lens 1 needs exactly", invalid["evidence"])
+        self.assertIn("commit a valid .harness/risk-policy.json and .harness/lenses.json", invalid["next_step"])
 
     def test_an_unknown_timeout_fails_the_headroom_check(self) -> None:
         self.git("rm", "-q", ".github/workflows/verify.yml")

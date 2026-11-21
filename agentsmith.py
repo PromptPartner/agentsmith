@@ -9934,7 +9934,7 @@ def parser() -> argparse.ArgumentParser:
     classify.add_argument("--json", action="store_true", help="schema-versioned, byte-stable report")
     inbox_parser = sub.add_parser(
         "inbox", help="list everything that waits on you, derived from runs, graphs, specs and Git",
-        description="List escalated, interrupted and dead runs, accepted work not yet landed, integration "
+        description="List escalated, interrupted, dead and awaiting-human runs, accepted work not yet landed, integration "
                     "candidates, and specs and run manifests that need you. Every row is derived on each call "
                     "and re-checked against Git; listing writes no file. --issues also reads open GitHub "
                     "issues through gh, read-only. `claim` and `release` keep local claims under the Git "

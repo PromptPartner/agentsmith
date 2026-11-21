@@ -30,8 +30,9 @@ that need CI say so, and the rest still run.
 
 ## Readiness
 
-Each check passes or fails with its evidence, and a failing check names the next step. The
-exit status is 0 when every check passes and 1 otherwise.
+Each check passes, fails or warns, with its evidence, and a check that does not pass names the
+next step. A warning names a risk that does not hold readiness back. The exit status is 0 when no
+check fails and 1 otherwise. In `--json`, each check's `status` is `pass`, `fail` or `warn`.
 
 | Check | Passes when |
 |---|---|
@@ -39,9 +40,12 @@ exit status is 0 when every check passes and 1 otherwise.
 | CI headroom | For each of Windows, macOS and Linux, the latest job of each workflow stays under `--headroom` (default 70%) of its `timeout-minutes`. The operating system comes from the job name, and the timeout from the workflow file at the base: a number, or the `matrix.os == '<os>' && <a> \|\| <b>` form; a job without the key has GitHub's default of 360 minutes. When the workflow, the job or the value cannot be read, the timeout is unknown and the check fails. |
 | Checker can execute on this host | The checker and verifier sandboxes run one command, as `start` checks before a run. Needs `--manifest`. |
 | Checker calibration passed | A passing calibration matches the manifest's checker (client, model, effort and checker prompt); see `calibrate` in [autonomous runs](21-autonomous-runs.md). |
+| Client versions | Each native client the manifest's roles name (both Claude Code and Codex without `--manifest`) is at its minimum version or later: Claude Code 2.1.319, which carries the fix for the worktree sandbox escape, and Codex 0.167. The client is the one a run launches (`AGENTSMITH_CLAUDE_BIN` or `AGENTSMITH_CODEX_BIN`, else `claude` or `codex` on `PATH`), asked for `--version`. The version read is the one next to the client's own name (`2.1.327 (Claude Code)`, `Claude Code 2.1.318`, `codex-cli 0.169.0`); when the name is not in the output and it holds exactly one version, that one. A prerelease is one or more non-empty, dot-separated identifiers of letters, digits and `-` (`2.1.319-beta.1`), and counts as below its release. Anything else, such as `2.1.319-` or `2.1.319-beta_1`, is unreadable. A client that is not found, or whose version cannot be read, fails the check: an unknown version is never a pass. |
+| Clients installed as a command-line tool | Warns, and never fails, when a client is a binary bundled with an editor's marketplace extension: its path, or the path its link points to, is inside the `extensions` folder of one of these editor folders: `.vscode`, `.vscode-insiders`, `.vscode-server`, `.vscode-server-insiders`, `.vscode-oss`, `.cursor`, `.cursor-server`, `.windsurf`, `.windsurf-server` or `.positron` (for example `~/.vscode/extensions` or `~/.cursor/extensions`). Other folders named `extensions` do not count. The editor updates or removes that binary on its own schedule, so the version checked above can change under a run. Install the command-line client and point `AGENTSMITH_CLAUDE_BIN` or `AGENTSMITH_CODEX_BIN` at it. |
 | Kill switch tested | At least one `autonomy_pause_refused` event is recorded with its facts: the refused command, the run or graph ID, the marker at `.harness/AUTONOMY_PAUSED` of this checkout or its main checkout, the marker's modification time (no later than the refusal) and a time that is not in the future. |
 | Pipeline guard in the verifier | `.harness/verify.conf` at the base runs `autonomous-run.py check-specs`. |
 | Risk policy and lens file at the base | `.harness/risk-policy.json` is a valid [risk policy](29-risk-map.md) and `.harness/lenses.json` exists, both at the base. The lens file's format comes with the review lenses; until it is committed, this check fails. |
+| Policy and lens paths match files at the base | Every path pattern of every risk-policy rule, and every trigger path of every lens, matches at least one file committed at the base, with the [risk map](29-risk-map.md)'s glob rules (case ignored). Every lens must-read document is a file at the base. A pattern that matches nothing has drifted from the tree it was written for, so the change it should catch goes unclassified: the check fails and names each dead pattern with its rule number or lens ID. It also fails when the policy or the lens file is missing or invalid, because there is nothing to check. Only committed files count, not the work tree. |
 | Receipts exportable | Every run's state, events and receipts read as JSON, so `factory export` can write them out of the Git folder. |
 
 To exercise the kill switch on purpose, create `.harness/AUTONOMY_PAUSED`, try a `start`, see it
@@ -58,7 +62,7 @@ counts in the window when it started there.
 
 | Number | From |
 |---|---|
-| Accepted without human rework | Share of finished runs (accepted, escalated or interrupted) that were accepted with no operator touch. |
+| Accepted without human rework | Share of finished runs (accepted, awaiting-human, escalated or interrupted) that were accepted with no operator touch. |
 | Defects found after merge, per tier | The operator's defect log against the landed changes of each tier (the tier each run recorded). |
 | Operator touches per landed change | `run_escalated`, `run_interrupted` and `run_resumed` events of the runs that reached acceptance, per accepted run. Delivery consents will count too once they are recorded. |
 | Human minutes per landed change | The operator's minutes log, over the landed changes that have minutes logged. |

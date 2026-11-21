@@ -138,6 +138,24 @@ class RowKindTests(InboxCase):
             self.assertTrue(row["next_step"] and "\n" not in row["next_step"], row)
         self.assertEqual(escalated, self.repo.git("rev-parse", "agentsmith/esc"))
 
+    def test_a_run_held_for_an_advisory_checker_is_a_row(self) -> None:
+        # SF-09: an acceptance from an uncalibrated checker holds the run for a person.
+        held = self.repo.branch("agentsmith/held", self.base, {"src/a.py": b"a\n"})
+        self.repo.run_state("held", status="awaiting-human", base_head=self.base, held_commit=held,
+                            reason="checker advisory: calibration none")
+        report = self.collect()
+        self.assertEqual(report["warnings"], [])
+        row = self.rows(report)[("awaiting-human", "held")]
+        self.assertEqual(row["tier"], "A")
+        self.assertIn("checker advisory: calibration none", row["next_step"])
+        self.assertIn(held[:12], row["next_step"])
+        self.assertIn("re-runs with an explicit approval", row["next_step"])
+        # As for an acceptance, a held commit that its branch no longer contains is dropped.
+        self.repo.git("branch", "-f", "agentsmith/held", self.base)
+        report = self.collect()
+        self.assertEqual(report["rows"], [])
+        self.assertIn("held", "\n".join(report["warnings"]))
+
     def test_live_and_landed_work_is_not_waiting(self) -> None:
         live = self.repo.run_state("live", status="making", base_head=self.base)
         (live / "controller.lock").write_text(json.dumps({"pid": os.getpid(), "token": "t"}), encoding="utf-8")

@@ -16,6 +16,12 @@ been authorized, so the entries are kept here.
   between that check and the create is still followed, and a missing folder is created before the
   check, so a swap can leave an empty folder outside the repository. No draft or record is written
   in that case.
+- [ ] 2026-11-18 — Limit of the calibration staleness check (SF-09): a record goes stale when the
+  configured model version differs from the calibrated one, but the version is read from the model
+  name. A name with no version part, such as the alias `opus`, has an empty version, so when the
+  client maps the alias to a newer model the record still reads `passed`. The client version is
+  recorded but not compared, because every client update would then force a recalibration. Pin a
+  versioned model name for the checker to get the check.
 - [x] 2026-11-16 — `scripts/verify.sh` ended with exit 128 and no message when its project was
   not a Git repository: the gate-lock lookup `git rev-parse --absolute-git-dir` failed inside a
   command substitution under `set -e`, before the `.harness/verify.lock` fallback ran. Found when
@@ -55,7 +61,8 @@ been authorized, so the entries are kept here.
   candidates (three runs, about $0.04 in total): its receipts named `HEAD`, an empty value or free
   text instead of the candidate commit, and listed no changed paths, so neither verdict counted.
   The calibration receipt records this as `invalid-receipt`. Calibrate a stronger checker model
-  before relying on it, or simplify what the receipt asks for; nothing enforces calibration yet.
+  before relying on it, or simplify what the receipt asks for. Since 2026-11-18 an acceptance from
+  a checker without a passed calibration holds the run as `awaiting-human` instead of accepting it.
 - [x] 2026-11-06 — The Windows compatibility job ran close to its cap: over the 24 latest verify
   runs (push and pull request, 2026-10-26 to 2026-11-06) it took p50 35.3, p90 38.0 and at most
   40.8 minutes against a 45-minute cap, and a factory multiplies CI load. Slowest Windows steps

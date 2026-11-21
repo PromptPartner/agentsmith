@@ -22,6 +22,7 @@ import secrets
 import shlex
 import signal
 import shlex
+import stat
 import shutil
 import subprocess
 import sys
@@ -30,7 +31,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterable, Iterator
 
 try:
     from native_launcher import (
@@ -1456,7 +1457,7 @@ def prepare(args: argparse.Namespace) -> int:
         owner = read_lock(state_root(repo) / args.rework_of)
         if previous.get("status") not in TERMINAL_RUN_STATUSES or (owner and process_is_live(owner["pid"])):
             raise RunError(f"run {args.rework_of} is {previous.get('status')}; only a finished run "
-                           "(accepted, escalated or interrupted) can be reworked")
+                           "(accepted, awaiting-human, escalated or interrupted) can be reworked")
         note = (Path.cwd() / args.note).resolve()
         if not note.is_relative_to(repo) or not note.is_file():
             raise RunError(f"rework note {args.note} must be a file inside the repository")
@@ -1637,6 +1638,20 @@ def validate_verification_changes(worktree: Path, base: str, head: str,
                        + "; ".join(detail))
 
 
+# `awaiting-human`: the checker accepted, but no passed calibration lets it gate (SF-09). The run is
+# finished for the controller and holds its candidate for a person; nothing resumes or delivers it.
+TERMINAL_RUN_STATUSES = {"accepted", "awaiting-human", "escalated", "interrupted"}
+AWAITING_HUMAN_NEXT = ("a human reviews and re-runs with an explicit approval: review the held commit, "
+                       "calibrate the checker until it passes, then prepare a rework run "
+                       "(prepare ... --rework-of <run-id> --note <file>) and start it")
+
+
+def checker_calibration(state: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
+    """The latest calibration of this run's checker client, model and prompt, read now."""
+    return calibration_status(Path(state.get("repo") or state["worktree"]),
+                              (manifest.get("roles") or {}).get("checker") or {})
+
+
 def verification_binding(state: dict[str, Any], manifest: dict[str, Any], head: str) -> dict[str, Any]:
     """Controller-authored evidence identifies the exact policy and candidate checked."""
     worktree = Path(state["worktree"])
@@ -1654,9 +1669,10 @@ def verification_binding(state: dict[str, Any], manifest: dict[str, Any], head: 
             "controller": file_digest(Path(__file__)),
             "launcher": file_digest(Path(build_native_command.__code__.co_filename)),
         },
-        # Record-only: the latest calibration of this checker client, model and prompt.
-        "checker_calibration": calibration_status(Path(state.get("repo") or worktree),
-                                                  (manifest.get("roles") or {}).get("checker") or {}),
+        # The latest calibration of this checker client, model and prompt: unless it is `passed`,
+        # the checker is advisory and an acceptance waits for a human. The acceptance reads it
+        # again and records the value that gated in its place.
+        "checker_calibration": checker_calibration(state, manifest),
     }
 
 
@@ -1830,7 +1846,7 @@ def terminal_peer_git_artifacts(common: Path, active_ref: str, protected_refs: s
             run_id = state_file.parent.name
             if (state.get("run_id") != run_id or
                     state.get("branch") != f"agentsmith/{run_id}" or
-                    state.get("status") not in {"accepted", "escalated", "interrupted"}):
+                    state.get("status") not in TERMINAL_RUN_STATUSES):
                 continue
             repo_value = state.get("repo")
             manifest_value = state.get("manifest_path")
@@ -3235,6 +3251,28 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             moved = candidate_moved(worktree, state["branch"], checker_head)
             if moved:
                 raise RunError(moved)
+            # Last: the checker gates only while a calibration of it passes (SF-09). Otherwise its
+            # acceptance is advice, and the candidate waits for a person instead of being accepted.
+            # The calibration is read again here: the receipt's copy predates the checker, and the
+            # record may have changed while the checker ran.
+            proof["checker_calibration"] = checker_calibration(state, manifest)
+            calibration = str(proof["checker_calibration"].get("status") or "none")
+            proof["checker_advisory"] = calibration != "passed"
+            write_json(proof_path, proof)
+            # A stop that arrived up to the last receipt write still interrupts the run.
+            raise_if_stopped(Path(state["state_path"]).parent)
+            if proof["checker_advisory"]:
+                state["status"] = "awaiting-human"
+                state["stage"] = "awaiting-human"
+                state["held_commit"] = checker_head
+                state["last_checker_receipt"] = checker
+                state["reason"] = (f"checker advisory: calibration {calibration}; the checker accepted "
+                                   f"{checker_head[:12]}, but only a passed calibration lets it gate")
+                save_state(state, "run_awaiting_human", commit=checker_head, calibration=calibration)
+                print(f"awaiting a human: {state['branch']} at {checker_head}; {state['reason']}")
+                print(f"next: {AWAITING_HUMAN_NEXT}")
+                print("nothing was pushed, merged, or written to an external system")
+                return 3
             state["status"] = "accepted"
             state['stage'] = 'accepted'
             state["accepted_commit"] = checker_head
@@ -3279,7 +3317,7 @@ def run_controller(state: dict[str, Any], manifest: dict[str, Any]) -> int:
         # next safe point. Never raise here (see `_stop_signal_received`). A run that has
         # already recorded its result keeps it; a late stop changes nothing.
         global _stop_signal_received
-        if state.get("status") in {"accepted", "escalated", "interrupted"}:
+        if state.get("status") in TERMINAL_RUN_STATUSES:
             return
         _stop_signal_received = True
         active_pid = state.get("active_pid")
@@ -3303,7 +3341,7 @@ def run_controller(state: dict[str, Any], manifest: dict[str, Any]) -> int:
         print(f"escalated: {exc}", file=sys.stderr)
         return 2
     finally:
-        if state.get("status") in {"accepted", "escalated", "interrupted"}:
+        if state.get("status") in TERMINAL_RUN_STATUSES:
             terminal_head = git(Path(state["worktree"]), "rev-parse", "HEAD", check=False)
             if re.fullmatch(r"[0-9a-f]{40,64}", terminal_head):
                 state["terminal_head"] = terminal_head
@@ -3401,7 +3439,6 @@ def start(args: argparse.Namespace) -> int:
                     pass
 
 
-TERMINAL_RUN_STATUSES = {"accepted", "escalated", "interrupted"}
 UNFINISHED_RUN_STATUSES = {"prepared", "making", "checking", "retrying", "resuming"}
 TERMINAL_GRAPH_STATUSES = {"completed", "failed", "stopped", "blocked"}
 UNFINISHED_GRAPH_STATUSES = {"prepared", "running"}
@@ -3538,7 +3575,7 @@ def status_cmd(args: argparse.Namespace) -> int:
         raise RunError("status needs a run id, or --all-terminal for the live-run guard")
     state = load_run(repo, args.run_id)
     keys = ["run_id", "status", "stage", "attempt", "active_pid", "branch", "worktree", "base_head",
-            "accepted_commit", "deadline_epoch", "claude_cost_usd", "codex_tokens_used",
+            "accepted_commit", "held_commit", "deadline_epoch", "claude_cost_usd", "codex_tokens_used",
             "budget_rationale", "usage_accounting_incomplete", "reason", "updated_at"]
     view = {key: state.get(key) for key in keys if state.get(key) is not None}
     if isinstance(state.get("risk"), dict):
@@ -3577,7 +3614,7 @@ def stop(args: argparse.Namespace) -> int:
     current = load_run(repo, args.run_id)
     if current.get("status") == "interrupted":
         print(f"stopped {args.run_id}; local worktree retained")
-    elif current.get("status") in {"accepted", "escalated"}:
+    elif current.get("status") in {"accepted", "awaiting-human", "escalated"}:
         print(f"{args.run_id} already finished as {current['status']}; the stop changed nothing")
     elif not controller_pid or not process_is_live(controller_pid):
         print(f"stop requested for {args.run_id}; controller is gone and resume will reconcile it")
@@ -3638,6 +3675,9 @@ def resume(args: argparse.Namespace) -> int:
     state = load_run(repo, args.run_id)
     if state["status"] == "accepted":
         raise RunError("accepted runs do not resume")
+    if state["status"] == "awaiting-human":
+        # A new attempt would replace the held candidate that a person is to review.
+        raise RunError(f"awaiting-human runs do not resume: {AWAITING_HUMAN_NEXT}")
     run_dir = Path(state["state_path"]).parent
     token: str | None = None
     try:
@@ -3777,16 +3817,75 @@ def without_local_paths(text: str, repo: Path) -> str:
     return HOME_PATH.sub("~", text)
 
 
+def secret_findings(records: Iterable[tuple[str, int, str]],
+                    allow: tuple[re.Pattern[str], ...]) -> list[tuple[str, int, str]]:
+    """`scan_secret_records` in agentsmith.py: (place, line number, pattern name) for each line that
+    a pattern matches, the first pattern only, never the value. `allow` holds the repository's
+    .harness/secret-scan.allow rules, which skip a whole line. scripts/test-deliver.py keeps the two equal."""
+    findings = []
+    for place, number, line in records:
+        if not line.strip() or any(rule.search(line) for rule in allow):
+            continue
+        name = next((name for name, pattern in SECRET_PATTERNS if pattern.search(line)), None)
+        if name:
+            findings.append((place, number, name))
+    return findings
+
+
+def diff_secret_records(repo: Path, base: str, head: str) -> Iterator[tuple[str, int, str]]:
+    """The added lines of base..head with their path and new line number, read as
+    `staged_secret_records` in agentsmith.py reads the staged diff."""
+    result = run(["git", "-c", "core.quotepath=false", "diff", "--no-color", "--no-ext-diff", "--unified=0",
+                  "--diff-filter=ACMR", base, head], repo)
+    if result.returncode:
+        raise RunError(f"deliver refused: cannot read the diff {base[:12]}..{head[:12]} to scan it for secrets")
+    path, number, in_hunk = "", 0, False
+    for raw in result.stdout.splitlines():
+        if raw.startswith("+++ "):
+            path = raw[4:].split("\t", 1)[0]
+            path = path[2:] if path.startswith("b/") else path
+            in_hunk = False
+        elif raw.startswith("@@ "):
+            match = re.search(r"\+(\d+)(?:,\d+)?", raw)
+            in_hunk = bool(match)
+            number = int(match.group(1)) if match else 0
+        elif in_hunk and raw.startswith("+"):
+            yield path, number, raw[1:]
+            number += 1
+        elif in_hunk and not raw.startswith(("-", "\\ No newline")):
+            number += 1
+
+
+def history_secret_problems(repo: Path, base: str, head: str, allow: tuple[re.Pattern[str], ...]) -> list[str]:
+    """The secret scanner over what a push publishes: the accepted diff, the changes of every
+    commit in base..head (a secret added and removed again is still in the history), and every
+    commit message. Each finding names a path or commit and a line, never the value."""
+    endpoint = secret_findings(diff_secret_records(repo, base, head), allow)
+    problems = [f"the accepted diff holds a likely secret at {path}:{number} ({name})" for path, number, name in endpoint]
+    seen = {(path, name) for path, _, name in endpoint}
+    for commit in history_commits(repo, base, head):
+        parent = git(repo, "rev-parse", f"{commit}^")  # a merge counts against its first parent
+        for path, number, name in secret_findings(diff_secret_records(repo, parent, commit), allow):
+            if (path, name) not in seen:
+                seen.add((path, name))
+                problems.append(f"commit {commit[:12]} adds a likely secret at {path}:{number} ({name}), "
+                                "which a later commit removes but the push still publishes")
+        message = git(repo, "log", "-1", "--format=%B", commit).splitlines()
+        problems += [f"the message of commit {commit[:12]} holds a likely secret at line {number} ({name})"
+                     for _, number, name in secret_findings((("message", index, line) for index, line
+                                                             in enumerate(message, 1)), allow)]
+    return problems
+
+
 def leak_problems(fields: dict[str, str], allow: tuple[re.Pattern[str], ...] = ()) -> list[str]:
-    """The secret scanner's patterns over the final pull-request text, one finding per field.
-    `allow` holds the repository's .harness/secret-scan.allow rules, which skip a whole line."""
+    """The secret scanner over the final pull-request text, one finding per field."""
     problems = []
     for field, text in fields.items():
-        lines = [line for line in text.splitlines() if not any(rule.search(line) for rule in allow)]
-        hit = next((name for name, pattern in SECRET_PATTERNS for line in lines if pattern.search(line)), None)
+        lines = list(enumerate(text.splitlines(), 1))
+        hit = secret_findings(((field, number, line) for number, line in lines), allow)
         if hit:
-            problems.append(f"the pull-request {field} holds a likely secret ({hit})")
-        elif any(HOME_PATH.search(line) for line in lines):
+            problems.append(f"the pull-request {field} holds a likely secret ({hit[0][2]})")
+        elif any(HOME_PATH.search(line) for _, line in lines if not any(rule.search(line) for rule in allow)):
             problems.append(f"the pull-request {field} names a home folder")
     return problems
 
@@ -3830,9 +3929,523 @@ def base_staleness(repo: Path, remote: str, base: str, accepted: str) -> tuple[d
     return staleness, None
 
 
-def delivery_checks(repo: Path, state: dict[str, Any], remote: str, base: str | None) -> dict[str, Any]:
+# Package existence. A model can name a package that does not exist; whoever registers that name
+# later decides what an install runs. deliver looks up every package that is new in a manifest, as
+# one read-only GET with no credentials. A 404 refuses; an answer it cannot read, a network error,
+# a non-registry source or an ecosystem it cannot check is "unverified" and also refuses, as an
+# unreachable remote does in base_staleness: a check that could not run never counts as a pass.
+REGISTRIES = {"npm": ("registry.npmjs.org", "https://registry.npmjs.org/{}"),
+              "pypi": ("pypi.org", "https://pypi.org/pypi/{}/json")}
+ECOSYSTEM_NAMES = {"npm": "npm", "pypi": "PyPI"}
+NPM_NAME = re.compile(r"(?:@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._~-]*")
+_PYPI_NAME = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
+PYPI_NAME = re.compile(_PYPI_NAME)
+PEP508_REQUIREMENT = re.compile(rf"\s*({_PYPI_NAME})\s*(\[[^\]]*\])?\s*(.*?)\s*", re.S)
+PEP508_EXTRAS = re.compile(rf"\[\s*(?:{_PYPI_NAME}(?:\s*,\s*{_PYPI_NAME})*)?\s*\]")
+PEP508_CLAUSE = re.compile(r"\s*(?:===\s*[^\s,;]+|(?:~=|==|!=|<=|>=|<|>)\s*[A-Za-z0-9.*+!_-]+)\s*")
+# A conservative PEP 508 marker grammar: these variables and quoted strings, compared with these
+# operators, joined by and/or, grouped by parentheses. Anything else is not a marker deliver can read.
+MARKER_VARIABLES = frozenset({"python_version", "python_full_version", "os_name", "sys_platform",
+                              "platform_release", "platform_system", "platform_version", "platform_machine",
+                              "platform_python_implementation", "implementation_name", "implementation_version",
+                              "extra"})
+MARKER_TOKEN = re.compile(r"\s*(?:([()])|('[^']*'|\"[^\"]*\")|(===|==|!=|<=|>=|~=|<|>)|([A-Za-z_][A-Za-z0-9_.]*))")
+# pip's reading of a requirements file: a `#` at the start or after whitespace starts a comment, an
+# include names another file, and --hash only pins what the line already names.
+REQUIREMENT_COMMENT = re.compile(r"(^|\s+)#.*$")
+REQUIREMENT_INCLUDE = re.compile(r"(?:-r|-c|--requirement|--constraint)(?:\s*=\s*|\s+|(?<=-r)|(?<=-c))(\S.*)")
+REQUIREMENT_HASH = re.compile(r"\s--hash(?:=|\s+)\S+")
+URL_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:")
+ARCHIVE_SUFFIXES = (".whl", ".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz", ".tar.xz", ".txz")
+MAX_INCLUDED_FILES = 100
+NPM_DEPENDENCY_KEYS = ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies")
+NPM_LOCAL = ("file:", "link:", "workspace:")
+# A Poetry or Pipfile table dependency comes from the registry only when it says nothing but these.
+# git, path, url, file, develop, editable, source or index point the install somewhere else.
+REGISTRY_TABLE_KEYS = frozenset({"version", "extras", "markers", "python", "optional", "platform",
+                                 "allow-prereleases"})
+PIPFILE_SETTINGS = frozenset({"source", "requires", "pipenv", "scripts"})  # every other table is packages
+PYPI_INDEXES = frozenset({"https://pypi.org/simple", "https://pypi.org/simple/"})
+# Manifests with no registry check here: a change is unverified. Lockfiles list what a manifest
+# already names, so the manifests are what is checked.
+UNCHECKED_MANIFESTS = {"go.mod": "go", "cargo.toml": "cargo", "gemfile": "ruby"}
+MAX_PACKAGE_LOOKUPS = 100
+
+
+class ManifestShapeError(ValueError):
+    """A manifest that parses, but not into the shape its tool reads."""
+
+
+def registry_status(url: str) -> int:
+    """One read-only GET; the HTTP status. Raises OSError when the registry gives no answer."""
+    import urllib.error
+    import urllib.request
+    request = urllib.request.Request(url, method="GET", headers={"User-Agent": "agentsmith-deliver",
+                                                                 "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            return int(response.status)
+    except urllib.error.HTTPError as exc:
+        return int(exc.code)
+
+
+def pypi_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()  # PEP 503 normalisation
+
+
+def valid_marker(text: str) -> bool:
+    """Whether text is an environment marker in the conservative grammar above."""
+    tokens: list[tuple[int, str]] = []
+    position, text = 0, text.rstrip()
+    while position < len(text):
+        match = MARKER_TOKEN.match(text, position)
+        if not match:
+            return False
+        tokens.append((match.lastindex or 0, match.group(match.lastindex or 0)))
+        position = match.end()
+    paren, string, operator, word = 1, 2, 3, 4
+
+    def is_word(index: int, value: str) -> bool:
+        return 0 <= index < len(tokens) and tokens[index] == (word, value)
+
+    def operand(index: int) -> int:
+        if 0 <= index < len(tokens) and (tokens[index][0] == string or
+                                         (tokens[index][0] == word and tokens[index][1] in MARKER_VARIABLES)):
+            return index + 1
+        return -1
+
+    def comparison(index: int) -> int:
+        if 0 <= index < len(tokens) and tokens[index][0] == operator or is_word(index, "in"):
+            return index + 1
+        return index + 2 if is_word(index, "not") and is_word(index + 1, "in") else -1
+
+    def expression(index: int) -> int:
+        if 0 <= index < len(tokens) and tokens[index] == (paren, "("):
+            index = disjunction(index + 1)
+            return index + 1 if 0 <= index < len(tokens) and tokens[index] == (paren, ")") else -1
+        for step in (operand, comparison, operand):
+            index = step(index) if index >= 0 else -1
+        return index
+
+    def chain(index: int, step: Callable[[int], int], joiner: str) -> int:
+        index = step(index)
+        while index >= 0 and is_word(index, joiner):
+            index = step(index + 1)
+        return index
+
+    def disjunction(index: int) -> int:
+        return chain(index, lambda start: chain(start, expression, "and"), "or")
+
+    return disjunction(0) == len(tokens)
+
+
+def pep508_entry(text: str) -> tuple[str | None, str | None]:
+    """(normalised name, None) for a registry requirement, or (None, why it cannot be checked)."""
+    requirement, has_marker, marker = text.partition(";")
+    bare = requirement.strip()
+    if URL_SCHEME.match(bare) or "/" in bare or "\\" in bare or bare.casefold().endswith(ARCHIVE_SUFFIXES):
+        return None, "only registry packages can be checked"  # a URL, a VCS link, `name @ url` or a path
+    match = PEP508_REQUIREMENT.fullmatch(requirement)
+    if not match:
+        return None, "it is not a valid requirement"
+    name, extras, specifier = match.groups()
+    if specifier.startswith("(") and specifier.endswith(")"):
+        specifier = specifier[1:-1]
+    if ((extras and not PEP508_EXTRAS.fullmatch(extras))
+            or (specifier and not all(PEP508_CLAUSE.fullmatch(clause) for clause in specifier.split(",")))):
+        return None, "it is not a valid requirement"
+    if has_marker and not valid_marker(marker):
+        return None, "its environment marker is not valid"
+    return pypi_name(name), None
+
+
+def requirement_lines(text: str) -> list[tuple[int, str]]:
+    """(line number, entry) for each requirement line, read as pip reads it: a line that ends in a
+    backslash continues on the next, and a `#` at the start or after whitespace starts a comment."""
+    lines: list[tuple[int, str]] = []
+    pending: list[str] = []
+    first = 0
+    for number, line in enumerate(text.splitlines(), 1):
+        if line.endswith("\\") and not REQUIREMENT_COMMENT.match(line):
+            first = first if pending else number
+            pending.append(line.strip("\\"))
+            continue
+        if pending:
+            line, number, pending = "".join(pending) + (" " + line if REQUIREMENT_COMMENT.match(line) else line), \
+                first, []
+        entry = REQUIREMENT_COMMENT.sub("", line).strip()
+        if entry:
+            lines.append((number, entry))
+    entry = REQUIREMENT_COMMENT.sub("", "".join(pending)).strip()
+    if entry:  # the file ends inside a continuation
+        lines.append((first, entry))
+    return lines
+
+
+def included_path(including: str, target: str) -> str | None:
+    """The repository path that a requirements include names, relative to the including file, or
+    None when it leaves the repository: an absolute or home path, a URL, or a path above the top."""
+    if target.startswith(("/", "\\", "~")) or URL_SCHEME.match(target):
+        return None
+    path = posixpath.normpath(posixpath.join(posixpath.dirname(including), target))
+    return None if path == ".." or path.startswith("../") else path
+
+
+def requirements_entries(read: Callable[[str], str | None], root: str
+                         ) -> tuple[dict[Any, dict[str, Any]], list[str], set[str]]:
+    """The registry packages that a requirements file names, with the files it includes
+    (-r/--requirement and -c/--constraint, relative to the including file, each read once); the
+    entries that cannot be checked; and every file read. Any other option, a URL or a local path
+    changes where packages come from, so it cannot be checked."""
+    entries: dict[Any, dict[str, Any]] = {}
+    unchecked: list[str] = []
+    seen: list[str] = []
+
+    def visit(path: str, text: str) -> None:
+        seen.append(path)
+        for number, entry in requirement_lines(text):
+            where = f"{path} line {number} ({entry[:80]})"
+            include = REQUIREMENT_INCLUDE.fullmatch(entry)
+            if include:
+                target = included_path(path, include.group(1).strip())
+                if target is None:
+                    unchecked.append(f"{where}: it includes a file outside the repository")
+                elif target not in seen:
+                    included = read(target)
+                    if included is None:
+                        unchecked.append(f"{where}: the included file is not in the repository")
+                    elif len(seen) >= MAX_INCLUDED_FILES:
+                        unchecked.append(f"{where}: it includes more than {MAX_INCLUDED_FILES} files")
+                    else:
+                        visit(target, included)
+                continue
+            if entry.startswith("-"):
+                unchecked.append(f"{where}: only registry packages can be checked")
+                continue
+            package, why = pep508_entry(REQUIREMENT_HASH.sub("", entry))
+            if package:
+                entries.setdefault(package, {"name": package, "lookup": package, "source": "registry",
+                                             "spec": "", "file": path})
+            else:
+                unchecked.append(f"{where}: {why}")
+
+    text = read(root)
+    if text is not None:
+        visit(root, text)
+    return entries, unchecked, set(seen)
+
+
+def shaped(value: Any, kind: type, where: str) -> Any:
+    if not isinstance(value, kind):
+        raise ManifestShapeError(f"{where} has the wrong type")
+    return value
+
+
+def strings(value: Any, where: str) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ManifestShapeError(f"{where} is not a list of strings")
+    return value
+
+
+def npm_source(package: str, spec: str) -> tuple[str, str | None]:
+    """("registry", the name to look up), ("local", None) or ("unverified", None) for one spec."""
+    if spec.startswith(NPM_LOCAL):
+        return "local", None
+    if spec.startswith("npm:"):  # an alias installs the package it names
+        target = spec[4:]
+        at = target.find("@", 1)
+        return "registry", target[:at] if at > 0 else target
+    # A URL, Git or hosted-Git source (git+, git:, http:, github:, gitlab:, bitbucket:...), GitHub
+    # user/repo shorthand, or a path. A range such as ~1.2 or a dist-tag has no colon and no slash.
+    if URL_SCHEME.match(spec) or "/" in spec or "\\" in spec or spec in {".", ".."}:
+        return "unverified", None
+    return "registry", package
+
+
+def npm_entries(path: str, text: str) -> dict[Any, dict[str, Any]]:
+    """Each dependency keyed by its section and its name in the manifest: an alias never merges with
+    another entry for the package it installs, so each gets its own verdict."""
+    data = shaped(json.loads(text), dict, "the top level")
+    entries: dict[Any, dict[str, Any]] = {}
+    for section in NPM_DEPENDENCY_KEYS:
+        if section not in data:
+            continue
+        for package, spec in shaped(data[section], dict, section).items():
+            source, lookup = npm_source(package, shaped(spec, str, f"a {section} version"))
+            entries[(section, package)] = {"name": package, "lookup": lookup, "source": source, "spec": spec,
+                                           "file": path}
+    return entries
+
+
+def python_manifest_entries(path: str, name: str, text: str) -> tuple[dict[Any, dict[str, Any]], list[str]]:
+    """The registry packages of a pyproject.toml or Pipfile, and the entries that cannot be checked."""
+    import tomllib
+    data = tomllib.loads(text)
+    requirements: list[str] = []
+    tables: list[dict[str, Any]] = []  # Poetry and Pipfile: {name: version, table or list of them}
+    unchecked: list[str] = []
+    if name == "pyproject.toml":
+        project = shaped(data.get("project", {}), dict, "[project]")
+        requirements += strings(project.get("dependencies", []), "[project] dependencies")
+        for group in shaped(project.get("optional-dependencies", {}), dict, "[project.optional-dependencies]").values():
+            requirements += strings(group, "a [project.optional-dependencies] group")
+        for group in shaped(data.get("dependency-groups", {}), dict, "[dependency-groups]").values():
+            for item in shaped(group, list, "a [dependency-groups] group"):
+                if isinstance(item, str):
+                    requirements.append(item)
+                elif not (isinstance(item, dict) and set(item) == {"include-group"}
+                          and isinstance(item["include-group"], str)):
+                    raise ManifestShapeError("a [dependency-groups] entry has the wrong type")
+        requirements += strings(shaped(data.get("build-system", {}), dict, "[build-system]").get("requires", []),
+                                "[build-system] requires")
+        tool = shaped(data.get("tool", {}), dict, "[tool]")
+        poetry = shaped(tool.get("poetry", {}), dict, "[tool.poetry]")
+        uv = shaped(tool.get("uv", {}), dict, "[tool.uv]")
+        pdm = shaped(tool.get("pdm", {}), dict, "[tool.pdm]")
+        tables += [shaped(poetry.get(key, {}), dict, f"[tool.poetry.{key}]")
+                   for key in ("dependencies", "dev-dependencies")]
+        for group in shaped(poetry.get("group", {}), dict, "[tool.poetry.group]").values():
+            tables.append(shaped(shaped(group, dict, "a [tool.poetry.group] group").get("dependencies", {}), dict,
+                                 "a [tool.poetry.group] dependencies table"))
+        for configured, label in ((poetry.get("source"), "[tool.poetry.source]"), (uv.get("index"), "[tool.uv.index]"),
+                                  (pdm.get("source"), "[tool.pdm.source]")):
+            if configured:
+                unchecked.append(f"{path} {label}: it names another index")
+        for package in shaped(uv.get("sources", {}), dict, "[tool.uv.sources]"):
+            unchecked.append(f"{path} {package[:80]} (tool.uv.sources): only registry packages can be checked")
+    else:  # Pipfile
+        for source in shaped(data.get("source", []), list, "[[source]]"):
+            url = shaped(source, dict, "a [[source]] entry").get("url")
+            if url not in PYPI_INDEXES:
+                unchecked.append(f"{path} [[source]] {str(url)[:80]}: it names another index")
+        tables += [shaped(section, dict, "a Pipfile package section")
+                   for key, section in data.items() if key not in PIPFILE_SETTINGS]
+    entries: dict[Any, dict[str, Any]] = {}
+    for table in tables:
+        for package, value in table.items():
+            if package.casefold() == "python":  # Poetry: the Python version, not a package
+                continue
+            options = value if isinstance(value, list) else [value]
+            if not options or not all(isinstance(option, (str, dict)) for option in options):
+                raise ManifestShapeError("a dependency has the wrong type")
+            if any(isinstance(option, dict) and not set(option) <= REGISTRY_TABLE_KEYS for option in options):
+                unchecked.append(f"{path} {package[:80]}: only registry packages can be checked")
+                continue
+            normalised = pypi_name(package)
+            entries.setdefault(normalised, {"name": normalised, "lookup": normalised, "source": "registry",
+                                            "spec": "", "file": path})
+    for item in requirements:
+        package, why = pep508_entry(item)
+        if package:
+            entries.setdefault(package, {"name": package, "lookup": package, "source": "registry", "spec": "",
+                                         "file": path})
+        else:
+            unchecked.append(f"{path} {item[:80]}: {why}")
+    return entries, unchecked
+
+
+def manifest_entries(path: str, text: str) -> tuple[str, dict[Any, dict[str, Any]], list[str]]:
+    """(ecosystem, {key: entry}, entries that cannot be checked) for a package.json, pyproject.toml or
+    Pipfile. An entry names its package, the name to look up, its source ("registry", "local" or
+    "unverified"), its spec and its file. Raises ValueError when the manifest does not parse or does
+    not have the shape its tool reads."""
+    name = path.rsplit("/", 1)[-1].casefold()
+    if name == "package.json":
+        return "npm", npm_entries(path, text), []
+    return ("pypi", *python_manifest_entries(path, name, text))
+
+
+def is_requirements_file(path: str) -> bool:
+    name = path.rsplit("/", 1)[-1].casefold()
+    return name.startswith("requirements") and name.endswith(".txt")
+
+
+def package_checks(repo: Path, base: str, head: str,
+                   fetch: Callable[[str], int] | None = None) -> tuple[list[dict[str, str]], list[str]]:
+    """Every package that a manifest in base..head adds, or moves to another source, with its
+    registry verdict, and the problems that refuse the landing. A package a manifest already had at
+    base, from the same source, is not looked up. A requirements file counts as changed when a file
+    it includes changed."""
+    fetch = fetch or registry_status
+    rows: list[dict[str, str]] = []
+    problems: list[str] = []
+    answers: dict[str, int | Exception] = {}
+    seen_rows: set[tuple[str, ...]] = set()
+    lookups = 0
+
+    def reader(revision: str) -> Callable[[str], str | None]:
+        cache: dict[str, str | None] = {}
+
+        def read(path: str) -> str | None:
+            if path not in cache:
+                shown = run(["git", "cat-file", "blob", f"{revision}:{path}"], repo)
+                cache[path] = None if shown.returncode else shown.stdout
+            return cache[path]
+        return read
+
+    read_head, read_base = reader(head), reader(base)
+    changed = changed_paths(repo, base, head)
+    requirements = {path: requirements_entries(read_head, path)
+                    for path in git_paths(repo, "ls-tree", "-r", "--name-only", head) if is_requirements_file(path)}
+    candidates = set(changed) | {path for path, (_, _, files) in requirements.items() if files & set(changed)}
+    for path in sorted(candidates):
+        name = path.rsplit("/", 1)[-1].casefold()
+        if name in UNCHECKED_MANIFESTS:
+            if read_head(path) is not None:  # not a removal
+                problems.append(f"{path} changed, and deliver cannot check {UNCHECKED_MANIFESTS[name]} packages "
+                                "against a registry; review the new requirements by hand")
+            continue
+        if path in requirements:
+            ecosystem, (entries, unchecked, _) = "pypi", requirements[path]
+            known = requirements_entries(read_base, path)[0]
+        elif name in {"package.json", "pyproject.toml", "pipfile"}:
+            text = read_head(path)
+            if text is None:
+                continue  # removed: nothing new to install
+            try:
+                ecosystem, entries, unchecked = manifest_entries(path, text)
+            except (ValueError, RecursionError) as exc:  # json, tomllib and shape errors are ValueErrors
+                problems.append(f"cannot read {path} to check its new packages ({str(exc)[:80]}); the landing "
+                                "stays refused until it parses")
+                continue
+            before = read_base(path)
+            try:
+                known = manifest_entries(path, before)[1] if before is not None else {}
+            except (ValueError, RecursionError):
+                known = {}  # an unreadable base manifest: every package counts as new
+        else:
+            continue
+        problems += [f"cannot check {item}" for item in unchecked]
+        host, template = REGISTRIES[ecosystem]
+        label = ECOSYSTEM_NAMES[ecosystem]
+        for key, entry in sorted(entries.items(), key=lambda item: (item[1]["name"], str(item[0]))):
+            old = known.get(key)
+            if old is not None and (old["spec"] == entry["spec"] or (
+                    entry["source"] == old["source"] == "registry" and entry["lookup"] == old["lookup"])):
+                continue  # the same package from the same source; only its version may have changed
+            row = {"manifest": entry["file"], "ecosystem": ecosystem, "name": entry["name"], "status": entry["source"]}
+            lookup = entry["lookup"]
+            if lookup and lookup != entry["name"]:
+                row["lookup"] = lookup
+            identity = (row["manifest"], ecosystem, row["name"], row.get("lookup", ""))
+            if identity in seen_rows:  # a file that two requirements files include
+                continue
+            seen_rows.add(identity)
+            rows.append(row)
+            shown = entry["name"] + (f" -> {lookup}" if "lookup" in row else "")
+            if entry["source"] == "local":
+                continue
+            if entry["source"] == "unverified":
+                problems.append(f"cannot check {label} package {shown} from {entry['file']}: it does not come from "
+                                f"{host}")
+                continue
+            if not (NPM_NAME if ecosystem == "npm" else PYPI_NAME).fullmatch(lookup):
+                row["status"] = "invalid"
+                problems.append(f"{entry['file']} adds {shown!r}, which is not a valid {label} package name")
+                continue
+            url = template.format(urllib_quote(lookup))
+            if url not in answers:
+                lookups += 1
+                if lookups > MAX_PACKAGE_LOOKUPS:
+                    row["status"] = "unverified"
+                    problems.append(f"cannot check {label} package {shown} from {entry['file']}: more than "
+                                    f"{MAX_PACKAGE_LOOKUPS} new packages")
+                    continue
+                try:
+                    answers[url] = fetch(url)
+                except (OSError, ValueError) as exc:
+                    answers[url] = exc
+            answer = answers[url]
+            if isinstance(answer, Exception):
+                row["status"] = "unverified"
+                problems.append(f"cannot check {label} package {shown} from {entry['file']}: {host} did not answer "
+                                f"({str(answer)[:80]}); retry when it answers")
+            elif answer == 200:
+                row["status"] = "exists"
+            elif answer == 404:
+                row["status"] = "missing"
+                problems.append(f"{entry['file']} adds {label} package {shown}, which {host} does not have")
+            else:
+                row["status"] = "unverified"
+                problems.append(f"cannot check {label} package {shown} from {entry['file']}: {host} answered "
+                                f"HTTP {answer}; retry when it answers")
+    return rows, list(dict.fromkeys(problems))
+
+
+def urllib_quote(package: str) -> str:
+    import urllib.parse
+    return urllib.parse.quote(package, safe="@")  # a scoped npm name keeps @ and sends / as %2F
+
+
+def merge_verification(repo: Path, state: dict[str, Any], manifest: dict[str, Any], remote: str, base: str,
+                       accepted: str) -> tuple[dict[str, Any], str | None]:
+    """Run the manifest's verify command on the merge of the accepted commit with the fresh base,
+    in the same sandbox as `execute`, before deliver prints anything to land.
+
+    A clean `merge-tree` only proves the diff applies; the merge can still break a test. The merge
+    is built in a private object folder that borrows the repository's objects, and checked out
+    from a private index into a throwaway folder under /tmp. A `git worktree add` would change the
+    shared worktree metadata and object store, which peer runs compare to catch tampering, so the
+    repository gains no worktree, object or file, and the folder goes when the check ends."""
+    ref = f"refs/remotes/{remote}/{base}"
+    base_commit = git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}")
+    timeout = int(float((manifest.get("limits") or {}).get("wall_minutes") or 60) * 60)
+    with private_scratch("agentsmith-merge-") as scratch:
+        workspace, run_dir = scratch / "merge", scratch / "run"
+        (scratch / "objects").mkdir()
+        run_dir.mkdir()
+        private = {**os.environ, "GIT_OBJECT_DIRECTORY": str(scratch / "objects"),
+                   "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(resolved_git_path(repo, "--git-common-dir") / "objects"),
+                   "GIT_INDEX_FILE": str(scratch / "index")}
+        merged = run(["git", "merge-tree", "--write-tree", ref, accepted], repo, env=private)
+        tree = merged.stdout.split()[0] if merged.returncode == 0 and merged.stdout.split() else ""
+        if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", tree):
+            return {}, f"cannot build the merge of the accepted commit with {remote}/{base} to verify it"
+        workspace.mkdir()
+        for command in (["git", "read-tree", tree],
+                        ["git", f"--work-tree={workspace}", "checkout-index", "--all", "--force"]):
+            result = run(command, repo, env=private)
+            if result.returncode:
+                return {}, f"cannot check out the merge with {remote}/{base} to verify it: {result.stderr.strip()[:200]}"
+        # One commit of exactly the merged files, so a verify command that lists tracked files
+        # sees them, as in a checkout. No user or system Git configuration takes part.
+        clean = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+                 "GIT_AUTHOR_NAME": "agentsmith", "GIT_AUTHOR_EMAIL": "agentsmith@example.com",
+                 "GIT_COMMITTER_NAME": "agentsmith", "GIT_COMMITTER_EMAIL": "agentsmith@example.com"}
+        for command in (["git", "init", "-q"], ["git", "add", "--all", "--force"],
+                        ["git", "commit", "-q", "--no-verify", "-m", f"merge of {accepted[:12]} with {remote}/{base}"]):
+            result = run(command, workspace, env=clean)
+            if result.returncode:
+                return {}, f"cannot prepare the merge with {remote}/{base} to verify it: {result.stderr.strip()[:200]}"
+        # The verifier's own launch records go to the private folder, not the run's; the run's
+        # state, manifest and spec stay protected as in execute.
+        sandbox_state = {"run_id": state.get("run_id"), "repo": state["repo"], "manifest_path": state["manifest_path"],
+                         "spec_path": state["spec_path"], "state_path": str(run_dir / "state.json"),
+                         "attempt": state.get("attempt", 0), "stage": "delivering", "active_pid": None}
+        result = sandboxed_verify(manifest["verify"]["command"], workspace, timeout, verifier_env(),
+                                  state=sandbox_state, prefix="deliver-merge-verify")
+    outcome = verification_outcome(result)
+    output = hashlib.sha256(f"exit={result.returncode}\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+                            .encode("utf-8", "replace")).hexdigest()
+    record = {"needed": True, "base": f"{remote}/{base}", "base_commit": base_commit, "merge_tree": tree,
+              "verification": outcome["verification"], "exit_code": result.returncode,
+              "failing": outcome["failing"], "output_sha256": output}
+    if outcome["verification"] != "passed":
+        failing = ", ".join(outcome["failing"][:3])
+        return record, (f"the accepted commit merged with {remote}/{base} fails verification "
+                        f"({outcome['verification']}, exit {result.returncode})"
+                        + (f"; failing checks: {failing}" if failing else "") + "; rework the run on the new base")
+    return record, None
+
+
+def delivery_checks(repo: Path, state: dict[str, Any], remote: str, base: str | None,
+                    fetch: Callable[[str], int] | None = None) -> dict[str, Any]:
     """Every check `deliver` makes. Any mismatch refuses, with all reasons at once."""
     run_id = state.get("run_id")
+    if state.get("status") == "awaiting-human":
+        # No approve verb exists, so a held run is never delivered as it stands.
+        raise RunError(f"deliver refused: run {run_id} is awaiting-human, not accepted: "
+                       f"{state.get('reason')}; {AWAITING_HUMAN_NEXT}")
     if state.get("status") != "accepted":
         raise RunError(f"deliver refused: run {run_id} is {state.get('status')}, not accepted")
     # The names reach git arguments and the printed push command: check them before anything else.
@@ -3892,6 +4505,10 @@ def delivery_checks(repo: Path, state: dict[str, Any], remote: str, base: str | 
         staleness, problem = base_staleness(repo, remote, base, accepted)
         if problem:
             problems.append(problem)
+    # Every mode refuses a likely secret, --dry-run included: the push would publish it.
+    problems += history_secret_problems(repo, str(state["base_head"]), accepted, secret_allow_rules(repo))
+    packages, package_problems = package_checks(repo, str(state["base_head"]), accepted, fetch)
+    problems += package_problems
     if problems:
         raise RunError("deliver refused: " + "; ".join(problems))
     import risk_map
@@ -3906,8 +4523,15 @@ def delivery_checks(repo: Path, state: dict[str, Any], remote: str, base: str | 
     tier = risk_map.raise_tier(report["tier"], recorded if recorded in risk_map.TIERS else "A")
     tier = risk_map.raise_tier(tier, declared if declared in risk_map.TIERS else "A")
     floor = sorted(row["path"] for row in report["paths"] if any(reason.startswith("floor:") for reason in row["matched"]))
-    return {"state": state, "proof": proof, "checker": checker, "manifest": manifest, "accepted": accepted,
-            "branch": branch, "staleness": staleness, "paths": changed_paths(repo, str(state["base_head"]), accepted),
+    # Last, once every cheaper check passed: behind the base, the merge result itself must pass.
+    merge: dict[str, Any] = {"needed": False}
+    if staleness.get("behind"):
+        merge, problem = merge_verification(repo, state, manifest, remote, str(base), accepted)
+        if problem:
+            raise RunError("deliver refused: " + problem)
+    return {"state": state, "merge_verification": merge, "proof": proof, "checker": checker, "manifest": manifest, "accepted": accepted,
+            "branch": branch, "staleness": staleness, "packages": packages,
+            "paths": changed_paths(repo, str(state["base_head"]), accepted),
             "tier": {"tier": tier, "recorded": recorded, "recomputed": report["tier"], "declared": declared,
                      "lenses": report["lenses"], "policy_blob": report["policy"]["blob"], "floor_paths": floor},
             "calibration": calibration_status(repo, (manifest.get("roles") or {}).get("checker") or {})}
@@ -3992,7 +4616,7 @@ def eligibility(checks: dict[str, Any], sha: str, ci: dict[str, Any] | None,
 def delivery_body(checks: dict[str, Any], verdict: dict[str, Any]) -> str:
     state, proof, checker, manifest = checks["state"], checks["proof"], checks["checker"], checks["manifest"]
     tier, limits, staleness = checks["tier"], manifest.get("limits") or {}, checks["staleness"]
-    calibration = checks["calibration"]
+    calibration, merge = checks["calibration"], checks["merge_verification"]
     lines = [
         f"## Autonomous run {state['run_id']}",
         "",
@@ -4018,16 +4642,26 @@ def delivery_body(checks: dict[str, Any], verdict: dict[str, Any]) -> str:
         "",
         "### Calibration",
         f"Checker calibration: {calibration.get('status')}"
-        + (f" ({calibration.get('calibrated_at')})" if calibration.get("calibrated_at") else "") + ".",
+        + (f" ({calibration.get('calibrated_at')})" if calibration.get("calibrated_at") else "") + "."
+        + ("" if calibration.get("status") == "passed" else
+           " This makes it checker advisory: its acceptance is advice, not a gate, so a human reviews the "
+           "change before it lands."),
         "",
         "### Budgets used",
         f"Attempts: {state.get('attempt')} of {limits.get('max_attempts')}. Claude: "
         f"{float(state.get('claude_cost_usd', 0.0)):.2f} USD of {limits.get('claude_max_usd')}. Codex: "
         f"{state.get('codex_tokens_used')} tokens of {limits.get('codex_goal_tokens')}.",
         "",
+        # A maker chose these names, so they sit in a code block like the checker evidence.
+        *(["### Dependencies", "New packages and their registry lookup (local ones are not looked up):",
+           fenced("\n".join(f"- {row['name']}{' -> ' + row['lookup'] if 'lookup' in row else ''} "
+                             f"({row['ecosystem']}, {row['status']})" for row in checks["packages"])),
+           ""] if checks["packages"] else []),
         "### Base",
         f"{staleness['behind']} commit{'s' if staleness['behind'] != 1 else ''} behind {staleness['base']}; "
-        "the accepted diff applies cleanly.",
+        "the accepted diff applies cleanly."
+        + (f" The merge with {merge['base']} passed verification (exit {merge['exit_code']}; output "
+           f"`{merge['output_sha256']}`)." if merge.get("needed") else ""),
         "",
         verdict["line"],
         "",
@@ -4075,7 +4709,9 @@ def deliver(args: argparse.Namespace) -> int:
     report = {"run_id": args.run_id, "head": checks["accepted"], "branch": checks["branch"],
               "push_command": push_command(args.remote, checks["accepted"], checks["branch"]),
               "title": title, "body": body, "tier": checks["tier"],
-              "staleness": checks["staleness"], "calibration": calibration, "eligibility": verdict}
+              "staleness": checks["staleness"], "merge_verification": checks["merge_verification"],
+              "packages": checks["packages"], "calibration": calibration,
+              "eligibility": verdict}
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
         return 0
@@ -4136,25 +4772,131 @@ def checker_prompt_sha256() -> str:
     return hashlib.sha256(role_prompt(state, manifest, "checker").encode("utf-8")).hexdigest()
 
 
+# Wrong verdicts the held-out set may hold before the calibration fails.
+CALIBRATION_ERROR_BUDGET = 0
+CALIBRATION_SCHEMA = 2
+CALIBRATION_FIELDS = ("model_family", "model_version", "held_out_sha256", "n", "pass_rate", "error_budget")
+# A calibration record is a few kilobytes; a larger file is not read.
+CALIBRATION_MAX_BYTES = 1 << 20
+
+
+def model_identity(model: str) -> tuple[str, str]:
+    """A model name as family and version: `claude-opus-5-5` is `claude-opus` and `5-5`, `gpt-5.4` is
+    `gpt` and `5.4`. The version starts at the first part that begins with a digit; a name with no
+    such part (an alias such as `opus`, or `o3`) has an empty version."""
+    match = re.fullmatch(r"(.+?)[-_.@:](\d.*)", model)
+    return (match.group(1), match.group(2)) if match else (model, "")
+
+
+def calibration_set_sha256() -> str:
+    """The held-out set: the labelled candidates, their spec, test and verify command."""
+    return hashlib.sha256(json.dumps([CALIBRATION_SPEC, CALIBRATION_TEST, CALIBRATION_VERIFY,
+                                      CALIBRATION_CANDIDATES]).encode("utf-8")).hexdigest()
+
+
 def calibration_path(repo: Path, runtime: str, model: str, effort: str) -> Path:
-    key = hashlib.sha256(json.dumps([runtime, model, effort, checker_prompt_sha256()]).encode()).hexdigest()
+    """Keyed by the model family, not its version, so a new version finds the old record and
+    reads it as stale instead of as missing."""
+    key = hashlib.sha256(json.dumps([runtime, model_identity(model)[0], effort,
+                                     checker_prompt_sha256()]).encode()).hexdigest()
     return state_root(repo).parent / "agentsmith-calibrations" / f"{key[:32]}.json"
 
 
+def calibration_record(checker: dict[str, Any], cases: list[dict[str, Any]], *, client_version: str,
+                       usage: dict[str, Any]) -> dict[str, Any]:
+    """What `calibrate` writes: the verdicts scored as a pass rate over N against the error budget."""
+    family, version = model_identity(str(checker.get("model")))
+    wrong = sum(1 for case in cases if not case.get("correct"))
+    errors = any(case.get("verdict") == "error" for case in cases)
+    status = ("error" if errors or not cases else "passed" if wrong <= CALIBRATION_ERROR_BUDGET
+              else "failed")
+    return {"schema_version": CALIBRATION_SCHEMA, "status": status, "calibrated_at": now(),
+            "client": checker.get("runtime"), "model": checker.get("model"), "effort": checker.get("effort"),
+            "model_family": family, "model_version": version, "client_version": client_version,
+            "checker_prompt_sha256": checker_prompt_sha256(), "held_out_sha256": calibration_set_sha256(),
+            "n": len(cases), "pass_rate": round((len(cases) - wrong) / len(cases), 3) if cases else 0.0,
+            "error_budget": CALIBRATION_ERROR_BUDGET, "cases": cases, **usage}
+
+
+def read_calibration_file(path: Path) -> bytes | None:
+    """The record's bytes, or None when there is no file. A symbolic link, anything that is not a
+    regular file, and a file over the size cap raise instead of being read."""
+    try:
+        mode = os.lstat(path).st_mode
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(mode):
+        raise OSError(f"not a regular file: {path}")
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+                         | getattr(os, "O_BINARY", 0))
+    with os.fdopen(descriptor, "rb") as handle:
+        # A file swapped in after the check: O_NOFOLLOW refuses a link, and this anything else.
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise OSError(f"not a regular file: {path}")
+        data = handle.read(CALIBRATION_MAX_BYTES + 1)
+    if len(data) > CALIBRATION_MAX_BYTES:
+        raise OSError(f"over {CALIBRATION_MAX_BYTES} bytes: {path}")
+    return data
+
+
+def calibration_score_problem(record: dict[str, Any]) -> str | None:
+    """Why a `passed` record's score does not bear out its status, if it does not: N of at least
+    one, one case per N, wrong verdicts within the controller's error budget, and the pass rate
+    `calibration_record` gives them. A record cannot raise its own budget."""
+    n, cases = record.get("n"), record.get("cases")
+    if type(n) is not int or n < 1:
+        return f"n is {n!r}, not a count of at least 1"
+    if not isinstance(cases, list) or len(cases) != n or not all(isinstance(case, dict) for case in cases):
+        return f"the record does not hold {n} case records"
+    if type(record.get("error_budget")) is not int or record["error_budget"] != CALIBRATION_ERROR_BUDGET:
+        return f"error budget {record.get('error_budget')!r}, the controller's is {CALIBRATION_ERROR_BUDGET}"
+    wrong = sum(1 for case in cases if not case.get("correct"))
+    if wrong > CALIBRATION_ERROR_BUDGET:
+        return f"{wrong} wrong verdicts, over the error budget of {CALIBRATION_ERROR_BUDGET}"
+    if record.get("pass_rate") != round((n - wrong) / n, 3):
+        return f"pass rate {record.get('pass_rate')!r} for {n - wrong} of {n} right"
+    return None
+
+
 def calibration_status(repo: Path, checker: dict[str, Any]) -> dict[str, Any]:
-    """The latest calibration for this checker client, model, effort and prompt. Record-only, so
-    no content of the file, and no error reading it, may affect the run: it reads "unreadable"."""
+    """The latest calibration for this checker client, model family, effort and prompt. Only
+    `passed` lets a checker acceptance count; every other value leaves the checker advisory:
+    "stale" (a record for another checker, model version or held-out set, or one that does not
+    name them), "invalid" (a `passed` whose score does not bear it out) and "unreadable" (not a
+    small regular JSON file). No content of the file, and no error reading it, may stop a run."""
     try:
         path = calibration_path(repo, str(checker.get("runtime")), str(checker.get("model")),
                                 str(checker.get("effort")))
-        if not path.is_file():
+        data = read_calibration_file(path)
+        if data is None:
             return {"status": "none"}
-        record = json.loads(path.read_bytes().decode("utf-8"))
+        record = json.loads(data.decode("utf-8"))
         if not isinstance(record, dict) or record.get("status") not in {"passed", "failed", "error"}:
             return {"status": "unreadable"}
-        return {"status": record["status"], "calibrated_at": str(record.get("calibrated_at")),
-                "client_version": str(record.get("client_version")), "receipt": str(path)}
-    except Exception:  # record-only: never let a calibration file stop a run
+        status = {"status": record["status"], "calibrated_at": str(record.get("calibrated_at")),
+                  "client_version": str(record.get("client_version")),
+                  **{key: record.get(key) for key in CALIBRATION_FIELDS}, "receipt": str(path)}
+        family, version = model_identity(str(checker.get("model")))
+        identity = {"client": checker.get("runtime"), "effort": checker.get("effort"),
+                    "checker_prompt_sha256": checker_prompt_sha256(), "model_family": family}
+        missing = [key for key in CALIBRATION_FIELDS if key not in record]
+        other = [key for key, value in identity.items() if key not in record or record[key] != value]
+        if record.get("schema_version") != CALIBRATION_SCHEMA or missing:
+            stale = ("the record does not name the model version and held-out set it calibrated"
+                     + (f" (missing {', '.join(missing)})" if missing else ""))
+        elif other:
+            stale = f"the record calibrated another checker: {', '.join(other)} differ"
+        elif record["model_version"] != version:
+            stale = (f"calibrated model version {record['model_version'] or 'none'}, "
+                     f"configured {version or 'none'}")
+        elif record["held_out_sha256"] != calibration_set_sha256():
+            stale = "the held-out set changed since this calibration"
+        elif record["status"] == "passed" and (problem := calibration_score_problem(record)):
+            return {**status, "status": "invalid", "invalid_reason": problem}
+        else:
+            return status
+        return {**status, "status": "stale", "stale_reason": stale}
+    except Exception:  # never let a calibration file stop a run: it reads "unreadable"
         return {"status": "unreadable"}
 
 
@@ -4246,8 +4988,9 @@ def calibrate_case(repo: Path, base: str, head: str, label: str, attempt: int, m
 
 
 def calibrate(args: argparse.Namespace) -> int:
-    """Run the configured checker against the labelled candidates and record the result.
-    Record-only: no run depends on it yet. 0 passed, 1 failed, 2 could not run."""
+    """Run the configured checker against the labelled candidates and record the result. Until a
+    record for this checker reads `passed`, its acceptances are advisory and a run that would be
+    accepted waits for a human. 0 passed, 1 failed, 2 could not run."""
     repo = repo_root(Path.cwd())
     assert_autonomy_not_paused(repo, action="calibrate")
     manifest = load_json(Path(args.manifest).resolve())
@@ -4271,13 +5014,9 @@ def calibrate(args: argparse.Namespace) -> int:
             outcome = calibrate_case(fixture, base, heads[label], label, attempt, cal_manifest, usage)
             outcome.update(expected=expected, correct=outcome["verdict"] == expected)
             cases.append(outcome)
-    errors = [case for case in cases if case["verdict"] == "error"]
-    status = "error" if errors else "passed" if all(case["correct"] for case in cases) else "failed"
-    command = native_command_prefix(checker["runtime"])
-    record = {"schema_version": 1, "status": status, "calibrated_at": now(),
-              "client": checker["runtime"], "model": checker["model"], "effort": checker["effort"],
-              "client_version": client_version(command),
-              "checker_prompt_sha256": checker_prompt_sha256(), "cases": cases, **usage}
+    record = calibration_record(checker, cases, client_version=client_version(native_command_prefix(checker["runtime"])),
+                                usage=usage)
+    status = record["status"]
     path = calibration_path(repo, checker["runtime"], checker["model"], checker["effort"])
     write_json(path, record)
     for case in cases:
