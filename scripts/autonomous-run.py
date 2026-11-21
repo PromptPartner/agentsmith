@@ -1068,11 +1068,30 @@ def hidden_tripwire(manifest: dict[str, Any]):
         path.unlink(missing_ok=True)
 
 
+def file_holds(path: Path, needles: tuple[str, ...]) -> set[str]:
+    """Which of `needles` a file holds anywhere, read in overlapping chunks so a large file is
+    searched to its end without being loaded whole."""
+    wanted = [needle.encode("utf-8") for needle in needles]
+    overlap = max(map(len, wanted)) - 1
+    found, tail = set(), b""
+    try:
+        with path.open("rb") as handle:
+            while chunk := handle.read(1 << 20):
+                window = tail + chunk
+                found.update(needle for needle, raw in zip(needles, wanted) if raw in window)
+                tail = window[-overlap:] if overlap else b""
+    except OSError:
+        pass
+    return found
+
+
 def probe_surfaces(tripwire: dict[str, str], role_output: str, receipt_path: Path, worktree: Path,
                    before_head: str) -> tuple[list[str], bool]:
     """Where a role showed the canary or the tripwire's name: its output, its receipt, the changes
-    it left in its worktree (committed, uncommitted or untracked) and its new commit messages; and
-    whether the canary token itself was among them."""
+    it left in its worktree (committed, uncommitted or untracked), every commit it made with its
+    message and patch (so a commit it reverted later still counts), and the files Git ignores in
+    its worktree; and whether the canary token itself was among them."""
+    needles = (tripwire["token"], tripwire["name"])
     untracked = git(worktree, "ls-files", "--others", "--exclude-standard", "-z", check=False).split("\0")
     changes = [git(worktree, "diff", "--no-ext-diff", "--text", before_head, check=False)]
     for name in filter(None, untracked):
@@ -1082,10 +1101,21 @@ def probe_surfaces(tripwire: dict[str, str], role_output: str, receipt_path: Pat
         "output": role_output,
         "receipt": receipt_path.read_text(encoding="utf-8", errors="replace") if receipt_path.is_file() else "",
         "worktree changes": "\n".join(changes),
-        "commit messages": git(worktree, "log", "--format=%B", f"{before_head}..HEAD", check=False),
+        "commit history": git(worktree, "log", "-p", "--no-ext-diff", "--text", "--format=%B",
+                              f"{before_head}..HEAD", check=False),
     }
-    hits = [label for label, text in surfaces.items() if tripwire["token"] in text or tripwire["name"] in text]
-    return hits, any(tripwire["token"] in text for text in surfaces.values())
+    hits = {label for label, text in surfaces.items() if any(needle in text for needle in needles)}
+    token_seen = any(tripwire["token"] in text for text in surfaces.values())
+    # Ignored files are searched on disk to their end, by name and content: Git hides them from
+    # every other surface, which makes them the obvious place to keep what a role read.
+    ignored = git(worktree, "ls-files", "--others", "--ignored", "--exclude-standard", "-z", check=False).split("\0")
+    for name in filter(None, ignored):
+        held = file_holds(worktree / name, needles) | {needle for needle in needles if needle in name}
+        if held:
+            hits.add("ignored files")
+            token_seen = token_seen or tripwire["token"] in held
+    order = ["output", "receipt", "worktree changes", "commit history", "ignored files"]
+    return [label for label in order if label in hits], token_seen
 
 
 def probed_attempt(state: dict[str, Any], probe: HiddenTestProbe, commit: str, paths: list[str]) -> dict[str, Any]:
@@ -1657,6 +1687,73 @@ def acceptance_ready(verify_exit: int, checker: dict[str, Any]) -> bool:
             and not checker["unresolved"])
 
 
+# Verification outcomes, compared with a baseline of the base commit. The rules are ported from
+# CodeAF (https://github.com/Agent-Field/CodeAF, Apache-2.0): `internal/verify/baseline.go` (one
+# baseline of the tree before the job's first change, inherited by every later round, so a check
+# broken in round one is still a finding in round four) and `internal/seniordev/app/
+# full_verification.go` with `verification_no_tests.go` (an empty suite and a hung suite are
+# incomplete observations, never a pass; a verify command runs with pipefail).
+VERIFY_COMMAND_CHECK = "the verify command"
+EMPTY_SUITE = re.compile(r"\bRan 0 tests?\b|\bno tests (?:ran|found|collected|to run)\b|\bcollected 0 items?\b"
+                         r"|(?<![\w.])0 tests?\b|\bno test files (?:found|matched)\b", re.IGNORECASE)
+SOME_TESTS = re.compile(r"\bRan [1-9]\d* tests?\b|\bcollected [1-9]\d* items?\b|(?<![\w.])[1-9]\d* (?:tests?|passed)\b"
+                        r"|\brunning [1-9]\d* tests?\b|\bTests run: [1-9]", re.IGNORECASE)
+PYTEST_NO_TESTS_EXIT = 5
+# Named checks a runner reports, so a regression names a test and not only the command: phases of
+# scripts/verify.sh, Python unittest (plain and verbose) and pytest (summary and verbose).
+NAMED_CHECKS = (
+    ("failing", re.compile(r"^verify\.sh: phase '(.+)' failed\.$"), "phase: {}"),
+    ("phase", re.compile(r"^\[\d+/\d+\] (.+)$"), "phase: {}"),
+    ("failing", re.compile(r"^(?:FAIL|ERROR): (\S+ \(\S+\))$"), "{}"),
+    ("passing", re.compile(r"^(\S+ \(\S+\)) \.\.\. ok$"), "{}"),
+    ("failing", re.compile(r"^(\S+ \(\S+\)) \.\.\. (?:FAIL|ERROR)$"), "{}"),
+    ("failing", re.compile(r"^(?:FAILED|ERROR) (\S+::\S+)"), "{}"),
+    ("passing", re.compile(r"^(\S+::\S+) PASSED\b"), "{}"),
+    ("failing", re.compile(r"^(\S+::\S+) (?:FAILED|ERROR)\b"), "{}"),
+)
+
+
+def verifier_timed_out(result: subprocess.CompletedProcess[str]) -> bool:
+    return bool(getattr(result, "timed_out", False))
+
+
+def named_checks(output: str) -> tuple[set[str], set[str]]:
+    """The checks an output names as passing and as failing. A verify.sh phase that started and
+    is not the failed one passed, because verify.sh stops at its first failing phase."""
+    found: dict[str, set[str]] = {"passing": set(), "failing": set(), "phase": set()}
+    for line in output.splitlines():
+        for kind, pattern, label in NAMED_CHECKS:
+            match = pattern.match(line.strip())
+            if match:
+                found[kind].add(label.format(match.group(1)))
+    failing = found["failing"]
+    return found["passing"] | (found["phase"] - failing), failing
+
+
+def verification_outcome(result: subprocess.CompletedProcess[str]) -> dict[str, Any]:
+    """`passed`, `failed` or `incomplete`, with the named checks. A timeout or an empty suite
+    is incomplete: it observed nothing, so it can neither pass nor name a failure."""
+    output = f"{result.stdout}\n{result.stderr}"
+    if verifier_timed_out(result):
+        return {"verification": "incomplete", "passing": [], "failing": [],
+                "reason": "the verify command timed out before it finished; a hung suite reported no result"}
+    if (result.returncode == PYTEST_NO_TESTS_EXIT or EMPTY_SUITE.search(output)) and not SOME_TESTS.search(output):
+        return {"verification": "incomplete", "passing": [], "failing": [],
+                "reason": "the verify command ran no tests (an empty suite proves nothing)"}
+    passing, failing = named_checks(output)
+    (failing if result.returncode else passing).add(VERIFY_COMMAND_CHECK)
+    return {"verification": "failed" if result.returncode else "passed", "reason": None,
+            "passing": sorted(passing - failing), "failing": sorted(failing)}
+
+
+def regressions(baseline: dict[str, Any] | None, outcome: dict[str, Any]) -> list[str]:
+    """Checks that passed on the base commit and fail now. Always against the base commit,
+    never against an earlier attempt, so a check one attempt broke stays a regression."""
+    if not baseline:
+        return []
+    return sorted(set(baseline.get("passing", [])) & set(outcome["failing"]))
+
+
 def file_digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "missing"
 
@@ -2066,11 +2163,13 @@ def checker_environment(env: dict[str, str], scratch: Path) -> dict[str, str]:
 def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str],
                      *, state: dict[str, Any] | None = None,
                      read_dirs: tuple[Path, ...] = (),
-                     shared_tmp: bool = True) -> subprocess.CompletedProcess[str]:
+                     shared_tmp: bool = True,
+                     prefix: str | None = None) -> subprocess.CompletedProcess[str]:
     """Run the human-approved verifier with no network and no writes outside its worktree and a
     private home, temporary and cache folder that exists only for this run of the verifier.
     `read_dirs` are extra folders it may read but not write (the hidden suite). With `shared_tmp`
-    off, it may not write the shared /tmp either (Linux never allows that)."""
+    off, it may not write the shared /tmp either (Linux never allows that). A timeout returns the
+    partial result marked `timed_out` (see `verifier_timed_out`)."""
     common = resolved_git_path(cwd, "--git-common-dir")
     if sys.platform == "win32" and read_dirs:
         return subprocess.CompletedProcess([], 126, "", "hidden tests need the macOS or Linux verifier sandbox")
@@ -2078,16 +2177,24 @@ def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str],
         # The Windows verifier points HOME, USERPROFILE, APPDATA, TEMP and TMP at the disposable
         # worktree and LOCALAPPDATA at a temporary AppContainer profile, both private to it.
         from windows_verifier_sandbox import run_verifier
-        return run_verifier(command, cwd, common, timeout, env)
+        result = run_verifier(command, cwd, common, timeout, env)
+        # Its runner reports a timeout as exit 126 with exactly this message. A command that
+        # prints it itself is only judged incomplete, which is never a pass either.
+        if result.returncode == 126 and result.stderr.strip() == "verifier timed out":
+            result.timed_out = True  # type: ignore[attr-defined]
+        return result
     with private_scratch("agentsmith-verify-") as scratch:
         return posix_sandboxed_verify(command, cwd, common, timeout,
                                       private_tool_environment(env, scratch, home=True), scratch, state,
-                                      tuple(path.resolve() for path in read_dirs), shared_tmp)
+                                      tuple(path.resolve() for path in read_dirs), shared_tmp, prefix)
 
 
 def posix_sandboxed_verify(command: str, cwd: Path, common: Path, timeout: int, env: dict[str, str],
                            scratch: Path, state: dict[str, Any] | None,
-                           read_dirs: tuple[Path, ...] = (), shared_tmp: bool = True) -> subprocess.CompletedProcess[str]:
+                           read_dirs: tuple[Path, ...] = (), shared_tmp: bool = True,
+                           prefix: str | None = None) -> subprocess.CompletedProcess[str]:
+    # `pipefail`: a pipeline such as `pytest | tee log` fails when its test command fails, not
+    # only when its last command does. scripts/verify.sh runs with the same option.
     if sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").exists():
         escaped = str(cwd).replace('"', '\\"')
         escaped_common = str(common).replace('"', '\\"')
@@ -2112,8 +2219,8 @@ def posix_sandboxed_verify(command: str, cwd: Path, common: Path, timeout: int, 
             *[f'(deny file-write-unlink (literal {json.dumps(str(parent), ensure_ascii=False)}))'
               for parent in sorted(protected_ancestors)],
         ])
-        args = ["/usr/bin/sandbox-exec", "-p", profile, "/bin/bash", "-c", command]
-        return verifier_process(args, cwd, timeout, env, state)
+        args = ["/usr/bin/sandbox-exec", "-p", profile, "/bin/bash", "-o", "pipefail", "-c", command]
+        return verifier_process(args, cwd, timeout, env, state, prefix)
     if sys.platform.startswith("linux") and shutil.which("bwrap"):
         home = Path.home().resolve()
         temporary = Path("/tmp")
@@ -2138,8 +2245,8 @@ def posix_sandboxed_verify(command: str, cwd: Path, common: Path, timeout: int, 
                  "--bind", str(scratch), str(scratch),
                  *[item for path in read_dirs for item in ("--ro-bind", str(path), str(path))],
                  "--dev", "/dev", "--proc", "/proc",
-                 "--chdir", str(cwd), "/bin/bash", "-c", command]
-        return verifier_process(args, cwd, timeout, env, state)
+                 "--chdir", str(cwd), "/bin/bash", "-o", "pipefail", "-c", command]
+        return verifier_process(args, cwd, timeout, env, state, prefix)
     return subprocess.CompletedProcess([], 126, "", "no supported fail-closed verifier sandbox")
 
 
@@ -2420,13 +2527,17 @@ def supervised_process(command: list[str], cwd: Path, timeout: int, env: dict[st
 
 
 def verifier_process(command: list[str], cwd: Path, timeout: int, env: dict[str, str],
-                     state: dict[str, Any] | None) -> subprocess.CompletedProcess[str]:
+                     state: dict[str, Any] | None, prefix: str | None = None) -> subprocess.CompletedProcess[str]:
     with contextlib.ExitStack() as stack:
         if state is None:
             temporary = stack.enter_context(tempfile.TemporaryDirectory(prefix='agentsmith-verifier-'))
             state = {'state_path': str(Path(temporary) / 'state.json'), 'attempt': 0}
         result, error = supervised_process(command, cwd, timeout, env, state,
-                                           f"attempt-{state['attempt']}-verify")
+                                           prefix or f"attempt-{state['attempt']}-verify")
+        if isinstance(error, subprocess.TimeoutExpired):
+            # A hung verifier is an incomplete attempt, not a failed run: keep what it printed.
+            result.timed_out = True  # type: ignore[attr-defined]
+            return result
         if error is not None:
             raise error
         if result.returncode:
@@ -2809,30 +2920,40 @@ Use status accepted, rejected, or blocked."""
 
 @contextlib.contextmanager
 def checker_worktree_session(state: dict[str, Any], manifest: dict[str, Any],
-                             worktree: Path, checker_head: str, checker_worktree: Path):
-    """Keep shared worktree-admin writes and checker inspection in one exclusive phase."""
-    with git_phase(worktree, "checker", timeout_seconds=remaining_seconds(state, manifest)):
-        if checker_worktree.exists():
-            raise RunError(f"refusing to overwrite checker worktree {checker_worktree}")
-        state["checker_worktree"] = str(checker_worktree)
-        save_state(state)
-        added = run(["git", "worktree", "add", "--detach", str(checker_worktree), checker_head],
-                    Path(state["repo"]))
-        if added.returncode:
-            state.pop("checker_worktree", None)
+                             worktree: Path, checker_head: str, checker_worktree: Path,
+                             *, phase: str = "checker"):
+    """Keep shared worktree-admin writes and checker inspection in one exclusive phase.
+
+    The base-commit baseline only runs the verifier, so it takes the shared maker phase instead
+    and does not wait for peer makers. It then adds and removes its worktree under the
+    coordination lock, as `start` does, so a peer's metadata snapshot always sees the worktree
+    together with the state entry that exempts it."""
+    publish = (lambda: coordination_lock(state_root(worktree), interruptible=False)) if phase == "maker" \
+        else contextlib.nullcontext
+    with git_phase(worktree, phase, timeout_seconds=remaining_seconds(state, manifest)):
+        with publish():
+            if checker_worktree.exists():
+                raise RunError(f"refusing to overwrite checker worktree {checker_worktree}")
+            state["checker_worktree"] = str(checker_worktree)
             save_state(state)
-            raise RunError(added.stderr.strip() or "checker worktree creation failed")
+            added = run(["git", "worktree", "add", "--detach", str(checker_worktree), checker_head],
+                        Path(state["repo"]))
+            if added.returncode:
+                state.pop("checker_worktree", None)
+                save_state(state)
+                raise RunError(added.stderr.strip() or "checker worktree creation failed")
         try:
             yield checker_worktree
         finally:
-            removed = run(["git", "worktree", "remove", "--force", str(checker_worktree)],
-                          Path(state["repo"]))
-            if removed.returncode:
-                event(state, "checker_worktree_cleanup_failed", path=str(checker_worktree),
-                      error=removed.stderr.strip())
-                raise RunError(f"could not remove disposable checker worktree: {removed.stderr.strip()}")
-            state.pop("checker_worktree", None)
-            save_state(state)
+            with publish():
+                removed = run(["git", "worktree", "remove", "--force", str(checker_worktree)],
+                              Path(state["repo"]))
+                if removed.returncode:
+                    event(state, "checker_worktree_cleanup_failed", path=str(checker_worktree),
+                          error=removed.stderr.strip())
+                    raise RunError(f"could not remove disposable checker worktree: {removed.stderr.strip()}")
+                state.pop("checker_worktree", None)
+                save_state(state)
 
 
 def pending_candidate(state: dict[str, Any]) -> bool:
@@ -2846,6 +2967,39 @@ def checkpoint_stage(state: dict[str, Any], stage: str) -> None:
     # result. Not at `making`: resume would compare HEAD with the previous attempt's start.
     if stage != 'making':
         raise_if_stopped(Path(state['state_path']).parent)
+
+
+def ensure_verification_baseline(state: dict[str, Any], manifest: dict[str, Any]) -> None:
+    """Run the verify command once on the base commit, in a disposable worktree, and store the
+    result with the run. A resumed run inherits it: the baseline is a fact about the base
+    commit, so it is never taken again from a later tree. It is taken at the first verify stage,
+    not before the first maker: the base commit cannot change, and on Windows every verifier
+    call holds one machine-wide lock, so a baseline before the maker staggered parallel makers."""
+    if isinstance(state.get("verification_baseline"), dict):
+        return
+    worktree = Path(state["worktree"])
+    base = state["base_head"]
+    run_dir = Path(state["state_path"]).parent
+    with checker_worktree_session(state, manifest, worktree, base, worktree.with_name(f"{worktree.name}-baseline"),
+                                  phase="maker") as baseline_worktree:
+        archive_artifacts(run_dir, "baseline-verify")
+        verify = sandboxed_verify(manifest["verify"]["command"], baseline_worktree,
+                                  remaining_seconds(state, manifest), verifier_env(), state=state,
+                                  prefix="baseline-verify")
+    output_path = run_dir / "baseline-verify.txt"
+    output_path.write_text(f"exit={verify.returncode}\nSTDOUT:\n{verify.stdout}\nSTDERR:\n{verify.stderr}",
+                           encoding="utf-8")
+    outcome = verification_outcome(verify)
+    state["verification_baseline"] = {"commit": base, "exit_code": verify.returncode, **outcome,
+                                      "output_sha256": file_digest(output_path)}
+    save_state(state, "baseline_recorded", commit=base, verification=outcome["verification"],
+               exit_code=verify.returncode)
+
+
+def controller_rejection(commit: str, paths: list[str], reason: str) -> dict[str, Any]:
+    """The feedback a maker gets when the controller rejects an attempt before any checker."""
+    return {"status": "rejected", "summary": f"controller rejected the attempt: {reason}", "commit": commit,
+            "changed_paths": paths, "evidence": [], "unresolved": [reason], "next_state": "retrying"}
 
 
 def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
@@ -2954,7 +3108,10 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
         validate_verification_changes(worktree, state["base_head"], after_head, manifest)
         state["status"] = "checking"
         checkpoint_stage(state, 'verifying')
+        # Read the candidate before the baseline: a commit that lands while the baseline runs was
+        # never validated, so it must not become the checked commit (acceptance then refuses it).
         checker_head = git(worktree, "rev-parse", "HEAD")
+        ensure_verification_baseline(state, manifest)
         checker_worktree = worktree.with_name(f"{worktree.name}-check-{state['attempt']}")
         with checker_worktree_session(state, manifest, worktree, checker_head, checker_worktree):
             archive_artifacts(Path(state['state_path']).parent, f"attempt-{state['attempt']}-verify")
@@ -2963,8 +3120,14 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             verify_output = f"exit={verify.returncode}\nSTDOUT:\n{verify.stdout}\nSTDERR:\n{verify.stderr}"
             verify_path = Path(state["state_path"]).parent / f"attempt-{state['attempt']}-verify.txt"
             verify_path.write_text(verify_output, encoding="utf-8")
+            outcome = verification_outcome(verify)
+            baseline = state.get("verification_baseline") or {}
+            regressed = regressions(baseline, outcome)
             proof = verification_binding(state, manifest, checker_head)
-            proof.update(exit_code=verify.returncode, output_sha256=file_digest(verify_path))
+            proof.update(exit_code=verify.returncode, output_sha256=file_digest(verify_path),
+                         verification=outcome["verification"], verification_reason=outcome["reason"],
+                         baseline_commit=baseline.get("commit"),
+                         baseline_verification=baseline.get("verification"), regressions=regressed)
             proof_path = verify_path.with_suffix(".json")
             write_json(proof_path, proof)
             state["verification_receipt"] = str(proof_path)
@@ -2973,6 +3136,22 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             checker_status = git(checker_worktree, "status", "--porcelain")
             if checker_status:
                 raise RunError("verifier modified tracked state")
+            # The checker reads the controller's verdict first; the raw output follows it.
+            verify_output = (f"verification={outcome['verification']}"
+                             + (f" ({outcome['reason']})" if outcome["reason"] else "")
+                             + f"\nbaseline on {baseline.get('commit')}: {baseline.get('verification')}"
+                             + f"\nregressions against the baseline (passed there, fail now): {json.dumps(regressed)}"
+                             + f"\n{verify_output}")
+            if outcome["verification"] == "incomplete":
+                # Nothing was observed, so no checker can accept it: reject without spending one.
+                # Leaving the block removes the disposable worktree as usual.
+                prior = controller_rejection(checker_head, paths, f"verification incomplete: {outcome['reason']}")
+                state["last_checker_receipt"] = prior
+                state["status"] = "retrying"
+                state['stage'] = 'retrying'
+                save_state(state, "attempt_rejected", attempt=state["attempt"], verify_exit=verify.returncode,
+                           verification="incomplete", regressions=regressed)
+                continue
             checker_ignored = ignored_paths(checker_worktree)
             evidence = verifier_evidence(verify_path, checker_worktree, checker_ignored)
             proof["evidence_files"] = evidence
@@ -3043,7 +3222,9 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             event(state, "checker_defect", attempt=state["attempt"], reason=defect)
             checker = {**checker, "status": "rejected", "unresolved": [
                 *checker["unresolved"], f"the checker's acceptance was not trusted: {defect}"]}
-        if acceptance_ready(verify.returncode, checker):
+        # Every condition applies: the verification passed against the base-commit baseline with no
+        # regression, and then a trusted checker acceptance.
+        if outcome["verification"] == "passed" and not regressed and acceptance_ready(verify.returncode, checker):
             # A stop that arrived before the acceptance record still interrupts the run.
             raise_if_stopped(Path(state["state_path"]).parent)
             risk = risk_record(worktree, state["base_head"], checker_head, manifest.get("risk_tier"))
@@ -3068,6 +3249,7 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
         state["status"] = "retrying"
         state['stage'] = 'retrying'
         save_state(state, "attempt_rejected", attempt=state["attempt"], verify_exit=verify.returncode,
+                   verification=outcome["verification"], regressions=regressed,
                    **({"reason": HIDDEN_PROBE, "role": "checker"} if checker_probe else {}))
     # As with acceptance, a stop that arrived before this record still interrupts the run.
     raise_if_stopped(Path(state["state_path"]).parent)

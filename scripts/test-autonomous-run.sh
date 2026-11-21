@@ -338,6 +338,24 @@ assert s['codex_tokens_used'] == 10
 assert s['claude_cost_usd'] == 0.25
 PY
 
+assert 'baseline verify ran once on the base commit and is stored with the run' python3 - "$repo/.git/agentsmith-runs/success/state.json" "$repo-success-baseline" <<'PY'
+import json, pathlib, sys
+state = json.load(open(sys.argv[1]))
+baseline = state['verification_baseline']
+# The fixture verifier needs src/change.txt, which only the maker creates: red at the base.
+assert baseline['commit'] == state['base_head'], baseline
+assert (baseline['verification'], baseline['exit_code']) == ('failed', 1), baseline
+assert baseline['failing'] == ['the verify command'], baseline
+events = [json.loads(line)['event'] for line in (pathlib.Path(sys.argv[1]).parent / 'events.jsonl').read_text().splitlines()]
+# Taken at the first verify stage: after the maker, before the candidate is judged.
+assert events.count('baseline_recorded') == 1, events
+stages = [json.loads(line) for line in (pathlib.Path(sys.argv[1]).parent / 'events.jsonl').read_text().splitlines()]
+order = [(record['event'], record.get('role') or record.get('stage')) for record in stages]
+assert order.index(('role_completed', 'maker')) < order.index(('baseline_recorded', None)) < order.index(('stage_started', 'checking')), order
+proof = json.load(open(state['verification_receipt']))
+assert (proof['verification'], proof['regressions'], proof['baseline_commit']) == ('passed', [], state['base_head']), proof
+assert not pathlib.Path(sys.argv[2]).exists(), 'baseline worktree was not removed'
+PY
 assert 'capped Claude role receives the remaining USD allowance' grep -q -- '--max-budget-usd 20' "$repo/../fake/argv.log"
 assert 'capped Codex maker receives its goal token budget' grep -q 'token budget 2500000' "$repo/../fake/argv.log"
 

@@ -124,6 +124,38 @@ verification receipt, and the next maker is told that the acceptance was not tru
 needs no citations. The receipt shape does not change, so a stored receipt stays valid, and a
 checker whose evidence already uses this form passes as it is.
 
+Before the first attempt is judged, the controller runs the verify command once on the base
+commit, in a disposable worktree, and stores the result with the run as `verification_baseline`
+in the run state (`baseline-verify.txt` keeps the raw output, and the events file has one
+`baseline_recorded`). It does this at the first verify stage, after the first maker: the base
+commit cannot change, so the result is the same, and parallel runs do not delay each other's
+makers (on Windows every verifier call holds one machine-wide lock). A run that stops before
+its first verification takes no baseline. A resumed run keeps a stored baseline; it is never
+taken again from a later tree. Every attempt is compared with it, not with the attempt before: a check that passed on the
+base commit and fails now is listed under `regressions` in the attempt's verification receipt and
+in its `attempt_rejected` event, even when an earlier attempt broke it. A check is a
+`scripts/verify.sh` phase, a Python `unittest` or `pytest` test named in the output, or the verify
+command as a whole. A base commit that already fails does not lower the bar: only a verify
+command that exits 0 can be accepted.
+
+Each attempt's verification is `passed`, `failed` or `incomplete`. It is `incomplete` when the
+verify command timed out, or when it ran an empty suite: pytest exit code 5, or output such as
+`Ran 0 tests`, `no tests ran`, `collected 0 items` or `0 tests` with no count of tests that did
+run. An incomplete attempt observed nothing, so it is never a pass: the controller rejects it
+without launching a checker, and the next maker reads why. A timeout therefore no longer fails
+the whole run by itself; the run escalates only when no wall-clock time is left for the next
+attempt. On macOS and Linux the verify command runs as `bash -o pipefail -c <command>`, so
+`pytest | tee log` fails when `pytest` fails. The Windows verifier runs the command through
+`cmd.exe`, which has no pipefail. The baseline and incomplete rules are ported from
+[CodeAF](https://github.com/Agent-Field/CodeAF) (Apache-2.0): `internal/verify/baseline.go` and
+`internal/seniordev/app/full_verification.go`.
+
+Every condition applies, in this order. An `incomplete` verification is rejected before the hidden
+tests and before any checker. An attempt is accepted only when its verification `passed`, it has
+no regression against the baseline, and a checker accepted with evidence that the citation check
+trusts; a checker defect is reworked as described above. The hidden-test tripwire is checked
+separately and wins over all of these.
+
 Acceptance is bound to the exact commit the checks passed. Just before it records `accepted`,
 the controller confirms that the run branch and the run worktree's `HEAD` still point at that
 commit and that the worktree is clean, and it reads both commit IDs again after that clean
@@ -502,7 +534,9 @@ content, and removes it when the role ends. The suite comes from `git archive` o
 commit, so this untracked file never joins it, but the controller needs write access to the
 clone and refuses to launch a role without it. After the role ends, the controller looks for the
 token or the file's name in the role's output, its receipt, the changes it left in its worktree
-(committed, uncommitted or untracked) and its new commit messages, and records a
+(committed, uncommitted or untracked), every commit it made with its message and patch (so a
+commit it reverted later still counts), and the files Git ignores in its worktree, which are read
+to their end. It records a
 `hidden_test_probe` event that names the role, where the hit was and whether it was the token.
 Either hit is never counted as an infrastructure failure, so the role is not relaunched, and the
 role's output files keep only a hash and its receipt is not saved.
