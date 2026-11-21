@@ -22,6 +22,7 @@ import secrets
 import shlex
 import signal
 import shlex
+import stat
 import shutil
 import subprocess
 import sys
@@ -4145,6 +4146,8 @@ def checker_prompt_sha256() -> str:
 CALIBRATION_ERROR_BUDGET = 0
 CALIBRATION_SCHEMA = 2
 CALIBRATION_FIELDS = ("model_family", "model_version", "held_out_sha256", "n", "pass_rate", "error_budget")
+# A calibration record is a few kilobytes; a larger file is not read.
+CALIBRATION_MAX_BYTES = 1 << 20
 
 
 def model_identity(model: str) -> tuple[str, str]:
@@ -4175,7 +4178,8 @@ def calibration_record(checker: dict[str, Any], cases: list[dict[str, Any]], *, 
     family, version = model_identity(str(checker.get("model")))
     wrong = sum(1 for case in cases if not case.get("correct"))
     errors = any(case.get("verdict") == "error" for case in cases)
-    status = "error" if errors else "passed" if wrong <= CALIBRATION_ERROR_BUDGET else "failed"
+    status = ("error" if errors or not cases else "passed" if wrong <= CALIBRATION_ERROR_BUDGET
+              else "failed")
     return {"schema_version": CALIBRATION_SCHEMA, "status": status, "calibrated_at": now(),
             "client": checker.get("runtime"), "model": checker.get("model"), "effort": checker.get("effort"),
             "model_family": family, "model_version": version, "client_version": client_version,
@@ -4184,30 +4188,81 @@ def calibration_record(checker: dict[str, Any], cases: list[dict[str, Any]], *, 
             "error_budget": CALIBRATION_ERROR_BUDGET, "cases": cases, **usage}
 
 
+def read_calibration_file(path: Path) -> bytes | None:
+    """The record's bytes, or None when there is no file. A symbolic link, anything that is not a
+    regular file, and a file over the size cap raise instead of being read."""
+    try:
+        mode = os.lstat(path).st_mode
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(mode):
+        raise OSError(f"not a regular file: {path}")
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+                         | getattr(os, "O_BINARY", 0))
+    with os.fdopen(descriptor, "rb") as handle:
+        # A file swapped in after the check: O_NOFOLLOW refuses a link, and this anything else.
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise OSError(f"not a regular file: {path}")
+        data = handle.read(CALIBRATION_MAX_BYTES + 1)
+    if len(data) > CALIBRATION_MAX_BYTES:
+        raise OSError(f"over {CALIBRATION_MAX_BYTES} bytes: {path}")
+    return data
+
+
+def calibration_score_problem(record: dict[str, Any]) -> str | None:
+    """Why a `passed` record's score does not bear out its status, if it does not: N of at least
+    one, one case per N, wrong verdicts within the controller's error budget, and the pass rate
+    `calibration_record` gives them. A record cannot raise its own budget."""
+    n, cases = record.get("n"), record.get("cases")
+    if type(n) is not int or n < 1:
+        return f"n is {n!r}, not a count of at least 1"
+    if not isinstance(cases, list) or len(cases) != n or not all(isinstance(case, dict) for case in cases):
+        return f"the record does not hold {n} case records"
+    if type(record.get("error_budget")) is not int or record["error_budget"] != CALIBRATION_ERROR_BUDGET:
+        return f"error budget {record.get('error_budget')!r}, the controller's is {CALIBRATION_ERROR_BUDGET}"
+    wrong = sum(1 for case in cases if not case.get("correct"))
+    if wrong > CALIBRATION_ERROR_BUDGET:
+        return f"{wrong} wrong verdicts, over the error budget of {CALIBRATION_ERROR_BUDGET}"
+    if record.get("pass_rate") != round((n - wrong) / n, 3):
+        return f"pass rate {record.get('pass_rate')!r} for {n - wrong} of {n} right"
+    return None
+
+
 def calibration_status(repo: Path, checker: dict[str, Any]) -> dict[str, Any]:
     """The latest calibration for this checker client, model family, effort and prompt. Only
-    `passed` lets a checker acceptance count; every other value, including "stale" (another model
-    version or held-out set, or a record that names neither) and "unreadable", leaves the checker
-    advisory. No content of the file, and no error reading it, may stop a run."""
+    `passed` lets a checker acceptance count; every other value leaves the checker advisory:
+    "stale" (a record for another checker, model version or held-out set, or one that does not
+    name them), "invalid" (a `passed` whose score does not bear it out) and "unreadable" (not a
+    small regular JSON file). No content of the file, and no error reading it, may stop a run."""
     try:
         path = calibration_path(repo, str(checker.get("runtime")), str(checker.get("model")),
                                 str(checker.get("effort")))
-        if not path.is_file():
+        data = read_calibration_file(path)
+        if data is None:
             return {"status": "none"}
-        record = json.loads(path.read_bytes().decode("utf-8"))
+        record = json.loads(data.decode("utf-8"))
         if not isinstance(record, dict) or record.get("status") not in {"passed", "failed", "error"}:
             return {"status": "unreadable"}
         status = {"status": record["status"], "calibrated_at": str(record.get("calibrated_at")),
                   "client_version": str(record.get("client_version")),
                   **{key: record.get(key) for key in CALIBRATION_FIELDS}, "receipt": str(path)}
-        version = model_identity(str(checker.get("model")))[1]
-        if record.get("schema_version") != CALIBRATION_SCHEMA or any(key not in record for key in CALIBRATION_FIELDS):
-            stale = "the record does not name the model version and held-out set it calibrated"
+        family, version = model_identity(str(checker.get("model")))
+        identity = {"client": checker.get("runtime"), "effort": checker.get("effort"),
+                    "checker_prompt_sha256": checker_prompt_sha256(), "model_family": family}
+        missing = [key for key in CALIBRATION_FIELDS if key not in record]
+        other = [key for key, value in identity.items() if key not in record or record[key] != value]
+        if record.get("schema_version") != CALIBRATION_SCHEMA or missing:
+            stale = ("the record does not name the model version and held-out set it calibrated"
+                     + (f" (missing {', '.join(missing)})" if missing else ""))
+        elif other:
+            stale = f"the record calibrated another checker: {', '.join(other)} differ"
         elif record["model_version"] != version:
             stale = (f"calibrated model version {record['model_version'] or 'none'}, "
                      f"configured {version or 'none'}")
         elif record["held_out_sha256"] != calibration_set_sha256():
             stale = "the held-out set changed since this calibration"
+        elif record["status"] == "passed" and (problem := calibration_score_problem(record)):
+            return {**status, "status": "invalid", "invalid_reason": problem}
         else:
             return status
         return {**status, "status": "stale", "stale_reason": stale}

@@ -184,20 +184,34 @@ of the checker prompt template, each candidate's verdict and the spend. It also 
 
 The status is `passed` (wrong verdicts within the error budget), `failed` (a wrong verdict, an
 acceptance whose citations do not hold, or a receipt that does not name the candidate) or `error`
-(the client could not run). The exit code is 0, 1 or 2 to match. `--max-usd` (default 1.0) caps
-Claude spend, `--max-tokens` (default 400,000) caps Codex tokens and `--wall-minutes` (default 20)
-caps time. Every later run records the latest calibration for its checker client, model family,
+(the client could not run, or no case was judged). The exit code is 0, 1 or 2 to match.
+`--max-usd` (default 1.0) caps Claude spend, `--max-tokens` (default 400,000) caps Codex tokens
+and `--wall-minutes` (default 20) caps time. Every later run records the latest calibration for its checker client, model family,
 effort and prompt hash as `checker_calibration` in its verification receipt, or
-`{"status": "none"}` when none matches. A changed prompt template needs a new calibration. A
-record whose model version or held-out set differs from the current one, or which does not name
-them (an older record), reads `stale`, with the reason in `stale_reason`. Roles cannot write the
-calibration folder. In a measured run on 2026-11-06, a small model (`haiku` at low effort) failed
-calibration because its receipts did not name the candidate commit.
+`{"status": "none"}` when none matches. A changed prompt template needs a new calibration. The
+run does not trust the record's `passed` on its own word:
+
+- A record that names another checker reads `stale`: its `client`, `effort`,
+  `checker_prompt_sha256` and `model_family` must equal the configured checker's. So does a record
+  whose model version or held-out set differs from the current one, or which does not name them
+  (an older record). The reason is in `stale_reason`.
+- A `passed` record whose score does not bear it out reads `invalid`, with the reason in
+  `invalid_reason`. The score must hold: `n` is at least 1, `cases` holds exactly `n` case
+  records, the wrong verdicts are within the error budget, `pass_rate` equals the share judged
+  right (rounded to three places), and `error_budget` equals the controller's own budget, so a
+  record cannot raise it.
+- A record that is a symbolic link, is not a regular file, or is over 1 MiB is not read: it
+  reads `unreadable`, as does one that is not valid JSON. No calibration file stops or crashes
+  a run.
+
+Roles cannot write the calibration folder. In a measured run on 2026-11-06, a small model
+(`haiku` at low effort) failed calibration because its receipts did not name the candidate commit.
 
 **The checker is advisory until its calibration passes.** Only a `passed` calibration lets a
 checker acceptance count. When every other gate passes (the verifier, the baseline comparison,
 the citations, the stop check and the branch check) but the calibration is `none`, `failed`,
-`error`, `stale` or `unreadable`, the run does not become `accepted`. It ends in the held state
+`error`, `stale`, `invalid` or `unreadable`, the run does not become `accepted`. It ends in the
+held state
 `awaiting-human` and exits 3:
 
 - `held_commit` names the candidate the checker accepted, and `reason` begins with

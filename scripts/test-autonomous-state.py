@@ -2782,6 +2782,89 @@ class AutonomousStateTests(unittest.TestCase):
             path.write_bytes(b"\xff")
             self.assertEqual(CONTROLLER.calibration_status(repo, checker), {"status": "unreadable"})
 
+    def calibration_fixture_repo(self, repo: Path) -> tuple[dict[str, Any], Path, dict[str, Any]]:
+        self.committed_fixture(repo, {"a.txt": "a\n"})
+        checker = {"runtime": "claude", "model": "claude-opus-5-5", "effort": "high"}
+        path = CONTROLLER.calibration_path(repo, "claude", "claude-opus-5-5", "high")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return checker, path, self.calibration_record(checker)
+
+    def test_a_passed_calibration_counts_only_when_its_score_is_consistent(self) -> None:
+        # A `passed` status is a claim; the record must bear it out: N of at least one, one case
+        # per N, wrong verdicts within the controller's own error budget, and the pass rate they give.
+        with tempfile.TemporaryDirectory(prefix="agentsmith calibration score ") as temporary:
+            repo = Path(temporary)
+            checker, path, good = self.calibration_fixture_repo(repo)
+            wrong_case = {**self.CALIBRATION_CASES[1], "verdict": "accepted", "correct": False}
+            invalid = {
+                "n zero": {**good, "n": 0, "pass_rate": 0.0, "cases": []},
+                "n negative": {**good, "n": -2},
+                "n not a number": {**good, "n": None},
+                "n a boolean": {**good, "n": True, "cases": good["cases"][:1]},
+                "pass rate too low": {**good, "pass_rate": 0.0},
+                "pass rate too high": {**good, "pass_rate": 1.0, "cases": [good["cases"][0], wrong_case]},
+                "no cases": {key: value for key, value in good.items() if key != "cases"},
+                "empty cases": {**good, "cases": []},
+                "fewer cases than n": {**good, "cases": good["cases"][:1]},
+                "a case that is not a record": {**good, "cases": [good["cases"][0], "correct"]},
+                "over the error budget": {**good, "pass_rate": 0.5, "cases": [good["cases"][0], wrong_case]},
+                "a raised error budget": {**good, "pass_rate": 0.5, "error_budget": 1,
+                                          "cases": [good["cases"][0], wrong_case]},
+                "no error budget": {**good, "error_budget": None},
+            }
+            for label, record in invalid.items():
+                with self.subTest(label):
+                    CONTROLLER.write_json(path, record)
+                    self.assertEqual(CONTROLLER.calibration_status(repo, checker)["status"], "invalid")
+            CONTROLLER.write_json(path, good)
+            self.assertEqual(CONTROLLER.calibration_status(repo, checker)["status"], "passed")
+        # `calibrate` never writes a passed record with no cases.
+        empty = CONTROLLER.calibration_record({"runtime": "claude", "model": "m", "effort": "high"}, [],
+                                              client_version="fixture 1.0", usage={})
+        self.assertNotEqual(empty["status"], "passed")
+
+    def test_a_calibration_for_another_checker_at_the_lookup_path_is_stale(self) -> None:
+        # The lookup path is a hash; the record itself must name this checker's client, effort,
+        # prompt and model family, or it reads `stale`.
+        with tempfile.TemporaryDirectory(prefix="agentsmith calibration identity ") as temporary:
+            repo = Path(temporary)
+            checker, path, good = self.calibration_fixture_repo(repo)
+            for field, value in (("client", "codex"), ("effort", "low"), ("checker_prompt_sha256", "f" * 64),
+                                 ("model_family", "claude-sonnet")):
+                for record in ({**good, field: value}, {key: v for key, v in good.items() if key != field}):
+                    with self.subTest(field=field, present=field in record):
+                        CONTROLLER.write_json(path, record)
+                        status = CONTROLLER.calibration_status(repo, checker)
+                        self.assertEqual(status["status"], "stale")
+                        self.assertIn(field, status["stale_reason"])
+
+    def test_a_calibration_file_that_is_not_a_small_regular_file_is_unreadable(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith calibration unsafe ") as temporary:
+            repo = Path(temporary)
+            checker, path, good = self.calibration_fixture_repo(repo)
+            # A symbolic link to a valid passed record.
+            target = repo / "elsewhere.json"
+            CONTROLLER.write_json(target, good)
+            try:
+                path.symlink_to(target)
+            except OSError as error:  # Windows without the symlink privilege
+                self.skipTest(f"cannot create a symbolic link: {error}")
+            self.assertEqual(CONTROLLER.calibration_status(repo, checker), {"status": "unreadable"})
+            path.unlink()
+            # A directory where the record belongs.
+            path.mkdir()
+            self.assertEqual(CONTROLLER.calibration_status(repo, checker), {"status": "unreadable"})
+            path.rmdir()
+            # A valid passed record over the size cap.
+            path.write_text(json.dumps({**good, "padding": "x" * (CONTROLLER.CALIBRATION_MAX_BYTES + 1)}),
+                            encoding="utf-8")
+            self.assertEqual(CONTROLLER.calibration_status(repo, checker), {"status": "unreadable"})
+            # An error from the file system never escapes.
+            CONTROLLER.write_json(path, good)
+            self.assertEqual(CONTROLLER.calibration_status(repo, checker)["status"], "passed")
+            with mock.patch.object(CONTROLLER.os, "open", side_effect=PermissionError("denied")):
+                self.assertEqual(CONTROLLER.calibration_status(repo, checker), {"status": "unreadable"})
+
     def test_evidence_that_changes_after_the_verifier_finished_is_not_trusted(self) -> None:
         # A verifier child that escaped its process group can keep writing after the hashes were
         # taken. Any recorded evidence file that no longer matches makes the acceptance untrusted,
