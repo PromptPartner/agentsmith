@@ -290,6 +290,7 @@ jobs:
         shell: bash
         run: |
           bash scripts/test-secret-scan.sh
+          bash scripts/test-git-hooks.sh
           bash scripts/test-assemble.sh
           bash scripts/test-operator-identity.sh
           bash scripts/test-leak-gate.sh
