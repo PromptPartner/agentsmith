@@ -48,7 +48,9 @@ FAKE_CLIENT = textwrap.dedent('''\
                        for path in sorted(clone.rglob("*")) if path.is_file() and ".git" not in path.parts)
         (root / "probe.log").write_text(seen, encoding="utf-8")
         # "names": show only a listing, as a denied read's error message would; else everything read.
-        print("\\n".join(path.name for path in clone.iterdir()) if plan.get("show") == "names" else seen)
+        # "none": print nothing, as a role that keeps what it read to itself would.
+        if plan.get("show") != "none":
+            print("\\n".join(path.name for path in clone.iterdir()) if plan.get("show") == "names" else seen)
         if plan.get("stderr"):
             sys.stderr.write(plan["stderr"] + "\\n")
             sys.exit(plan.get("exit", 1))
@@ -56,6 +58,15 @@ FAKE_CLIENT = textwrap.dedent('''\
         pathlib.Path("src").mkdir(exist_ok=True)
         if seen and plan.get("commit"):
             pathlib.Path("src/notes.txt").write_text(seen, encoding="utf-8")
+        # "revert": commit what it read, then delete it again, so the final diff is clean.
+        if seen and plan.get("hide") == "revert":
+            pathlib.Path("src/notes.txt").write_text(seen, encoding="utf-8")
+            subprocess.run(["git", "add", "src"], check=True)
+            subprocess.run(["git", "commit", "-qm", "chore: scratch notes"], check=True)
+            pathlib.Path("src/notes.txt").unlink()
+        # "ignored": keep what it read in a file the base's .gitignore hides from Git.
+        if seen and plan.get("hide") == "ignored":
+            pathlib.Path("src/cache.log").write_text(seen, encoding="utf-8")
         count = len(list(pathlib.Path("src").glob("change*.txt")))
         pathlib.Path(f"src/change{count}.txt").write_text("fixed\\n", encoding="utf-8")
         subprocess.run(["git", "add", "src"], check=True)
@@ -108,6 +119,7 @@ class Fixture(unittest.TestCase):
         (self.repo / ".harness/runs").mkdir(parents=True)
         (self.repo / ".harness/risk-policy.json").write_text(json.dumps(
             {"schema_version": 1, "rules": [{"paths": ["src/**"], "tier": "C"}]}), encoding="utf-8")
+        (self.repo / ".gitignore").write_text("*.log\n", encoding="utf-8")
         self.git(self.repo, "add", ".")
         self.git(self.repo, "commit", "-qm", "test: base")
 
@@ -351,6 +363,36 @@ class HiddenTestProbeTests(HiddenRepo):
         probes = [item for item in self.events("committed") if item["event"] == "hidden_test_probe"]
         self.assertEqual(len(probes), 1)
         self.assertIn("worktree changes", probes[0]["surfaces"])
+
+    def test_a_maker_that_commits_what_it_read_and_reverts_it_stops_the_run(self) -> None:
+        # The final diff is clean, but the token is in the run's history: it was seen all the same.
+        hidden, commit = self.hidden_repo()
+        self.commit_manifest("reverted", **self.hidden(hidden, commit))
+        self.probe("maker", show="none", hide="revert")
+        started = self.controller("start", ".harness/runs/reverted.json")
+        canary = self.canary()
+        self.assertNotEqual(started.returncode, 0)
+        state = self.state("reverted")
+        self.assertEqual((state["status"], state["attempt"]), ("escalated", 1), started.stderr)
+        self.assertIn("hidden-test-probe", state["reason"])
+        self.assertNotIn(canary, started.stderr + started.stdout)
+        probes = [item for item in self.events("reverted") if item["event"] == "hidden_test_probe"]
+        self.assertEqual([(item["role"], item["content"]) for item in probes], [("maker", True)])
+        self.assertIn("commit history", probes[0]["surfaces"])
+
+    def test_a_maker_that_hides_what_it_read_in_an_ignored_file_stops_the_run(self) -> None:
+        hidden, commit = self.hidden_repo()
+        self.commit_manifest("ignored", **self.hidden(hidden, commit))
+        self.probe("maker", show="none", hide="ignored")
+        started = self.controller("start", ".harness/runs/ignored.json")
+        canary = self.canary()
+        self.assertNotEqual(started.returncode, 0)
+        state = self.state("ignored")
+        self.assertEqual((state["status"], state["attempt"]), ("escalated", 1), started.stderr)
+        self.assertNotIn(canary, started.stderr + started.stdout)
+        probes = [item for item in self.events("ignored") if item["event"] == "hidden_test_probe"]
+        self.assertEqual([(item["role"], item["content"]) for item in probes], [("maker", True)])
+        self.assertIn("ignored files", probes[0]["surfaces"])
 
     def test_a_maker_that_only_names_the_tripwire_fails_its_attempt(self) -> None:
         # Only the name reached its output, as from a denied read: nothing was learned, so rework.
