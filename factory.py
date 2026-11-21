@@ -4,8 +4,10 @@
 Nothing here is a stored board: every report is computed from run state, `events.jsonl`, the
 operator's own logs and read-only GitHub reads. `readiness`, `numbers` and `sweep` write nothing
 in the repository or its Git folder (the checker preflight uses a throwaway system temporary folder)
-and switch nothing on. The only writers are `export` (to a folder the operator names) and the two
-operator logs (`defect add`, `minutes add`) under the Git folder.
+and switch nothing on. The only writers are `export` (to a folder the operator names), the two
+operator logs (`defect add`, `minutes add`) under the Git folder, and `intake` with a verdict: its
+record under the Git folder and, when asked, one new `status: draft` spec. Intake reads GitHub and
+never writes to it.
 """
 
 from __future__ import annotations
@@ -17,8 +19,10 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
+import unicodedata
 
 SCHEMA_VERSION = 1
 # Below this many cases a number says "insufficient data" instead of a value that looks precise.
@@ -324,8 +328,10 @@ def job_timeout(workflow: str, job_name: str) -> int | None:
 
 # --- readiness ---------------------------------------------------------------------------------
 
-def check(name: str, passed: bool, evidence: str, next_step: str) -> dict[str, Any]:
-    return {"name": name, "status": "pass" if passed else "fail", "evidence": evidence,
+def check(name: str, passed: bool, evidence: str, next_step: str, *, warn: bool = False) -> dict[str, Any]:
+    """A check passes or fails. `warn` turns a failure into a warning: the risk is named with its
+    next step, and readiness is not held back by it."""
+    return {"name": name, "status": "pass" if passed else "warn" if warn else "fail", "evidence": evidence,
             "next_step": "none" if passed else next_step}
 
 
@@ -350,6 +356,173 @@ def refusal_holds(repo: Path, item: dict[str, Any], now: datetime) -> bool:
     roots = {repo.resolve(), common_dir(repo).parent.resolve()}
     return (marker.is_absolute() and marker.name.casefold() == "autonomy_paused"
             and marker.parent.name == ".harness" and marker.parent.parent.resolve() in roots)
+
+
+# The oldest native client readiness accepts. Claude Code 2.1.319 carries the fix for the worktree
+# sandbox escape; Codex 0.167 is the factory's floor for Codex.
+MIN_CLIENT_VERSIONS = {"claude": (2, 1, 319), "codex": (0, 167, 0)}
+# A version: numbers, then an optional prerelease of non-empty dot-separated [0-9A-Za-z-] identifiers.
+# Anything joined to it other than a sentence's closing dot (`2.1.319-`, `2.1.319-beta_1`) is unreadable.
+VERSION = r"v?(?P<major>\d+)\.(?P<minor>\d+)(?:\.(?P<patch>\d+))?(?:-(?P<pre>[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+CLIENT_VERSION = re.compile(rf"(?<![\w.+-]){VERSION}(?![\w+-]|\.(?!\s|$))")
+# What each client calls itself in its `--version` line: `2.1.327 (Claude Code)`, `codex-cli 0.169.0`.
+CLIENT_NAMES = {"claude": ("claude code", "claude"), "codex": ("codex-cli", "codex")}
+
+
+def client_version_match(text: str, runtime: str) -> re.Match[str] | None:
+    """The version next to the client's own name; without the name, the only version in the text.
+    None (an unknown version) when the name is there without a readable version beside it, or when
+    the text holds no version or more than one."""
+    named = False
+    for name in CLIENT_NAMES[runtime]:
+        word = rf"(?<![\w-]){re.escape(name)}(?![\w-])"
+        if re.search(word, text, re.IGNORECASE):
+            named = True
+            beside = re.search(rf"{word}\s+(?P<v>\S+)|(?P<w>\S+)\s*\(\s*{word}\s*\)", text, re.IGNORECASE)
+            if beside:
+                token = beside["v"] or beside["w"]
+                found = CLIENT_VERSION.fullmatch(token.rstrip(".;,"))
+                if found:
+                    return found
+    if named:
+        return None
+    versions = list(CLIENT_VERSION.finditer(text))
+    return versions[0] if len(versions) == 1 else None
+
+
+def parse_client_version(text: str, runtime: str) -> tuple[int, int, int, int] | None:
+    """(major, minor, patch, 1) from a client's `--version` line, with 0 last for a prerelease,
+    which comes before its release. None when no version can be read."""
+    found = client_version_match(text, runtime)
+    if found is None:
+        return None
+    return int(found["major"]), int(found["minor"]), int(found["patch"] or 0), 0 if found["pre"] else 1
+
+
+def probe_client(runtime: str) -> dict[str, Any]:
+    """Where the configured native client is and what `--version` says, as a run would launch it."""
+    import native_launcher
+    command = native_launcher.native_command_prefix(runtime)
+    found = shutil.which(command[-1]) or (command[-1] if Path(command[-1]).is_file() else None)
+    if found is None:
+        return {"runtime": runtime, "path": None, "text": "not found", "version": None}
+    try:
+        text = native_launcher.client_version([*command[:-1], found])
+    except (OSError, subprocess.SubprocessError):
+        text = "unknown"
+    return {"runtime": runtime, "path": found, "text": text, "version": parse_client_version(text, runtime)}
+
+
+# Editor folders whose `extensions` folder holds marketplace extensions that bundle a client binary.
+EDITOR_FOLDERS = {".vscode": "VS Code", ".vscode-insiders": "VS Code Insiders", ".vscode-server": "VS Code Server",
+                  ".vscode-server-insiders": "VS Code Server", ".vscode-oss": "VSCodium", ".cursor": "Cursor",
+                  ".cursor-server": "Cursor Server", ".windsurf": "Windsurf", ".windsurf-server": "Windsurf Server",
+                  ".positron": "Positron"}
+
+
+def marketplace_editor(path: str) -> str | None:
+    """The editor whose extensions folder holds `path`, such as `~/.vscode/extensions/...`; None for
+    a client installed as a command-line tool. Only the editor folders listed above count."""
+    parts = [part for part in re.split(r"[\\/]+", path.casefold()) if part]
+    for folder, child in zip(parts, parts[1:]):
+        if child == "extensions" and folder in EDITOR_FOLDERS:
+            return EDITOR_FOLDERS[folder]
+    return None
+
+
+def client_sources(clients: list[dict[str, Any]]) -> dict[str, Any]:
+    rows, bundled = [], []
+    for client in clients:
+        if client["path"] is None:
+            continue
+        real = str(Path(client["path"]).resolve())
+        editor = marketplace_editor(client["path"]) or marketplace_editor(real)
+        where = client["path"] + (f" (links to {real})" if real != client["path"] else "")
+        if editor:
+            bundled.append(f"{client['runtime']} at {where} comes from a {editor} extension: the editor "
+                           "updates or removes it on its own schedule, so the version checked here can change "
+                           "under a run")
+        else:
+            rows.append(f"{client['runtime']} at {where}")
+    return check("clients installed as a command-line tool", not bundled,
+                 "; ".join(bundled + rows) or "no native client found",
+                 "install the command-line client and point AGENTSMITH_CLAUDE_BIN or AGENTSMITH_CODEX_BIN at it",
+                 warn=True)
+
+
+def client_versions(clients: list[dict[str, Any]]) -> dict[str, Any]:
+    rows, low = [], []
+    for client in clients:
+        runtime, version = client["runtime"], client["version"]
+        floor = ".".join(map(str, MIN_CLIENT_VERSIONS[runtime]))
+        if client["path"] is None:
+            low.append(f"{runtime} not found (needs {floor} or later)")
+        elif version is None:
+            low.append(f"{runtime} version unknown ({client['text'][:80]!r}; needs {floor} or later)")
+        else:
+            found = client_version_match(client["text"], runtime)
+            shown = found[0].lstrip("v") if found else client["text"]
+            if version < (*MIN_CLIENT_VERSIONS[runtime], 1):
+                low.append(f"{runtime} {shown} is below {floor}")
+            else:
+                rows.append(f"{runtime} {shown} (needs {floor} or later)")
+    return check("client versions", not low, "; ".join(low + rows) or "no native client named",
+                 "update each client named above to its minimum version or later, then run readiness again")
+
+
+def files_at(repo: Path, commit: str) -> list[str]:
+    result = subprocess.run(["git", "-C", str(repo), "ls-tree", "-r", "-z", "--name-only", "--full-tree", commit],
+                            capture_output=True, env={k: v for k, v in os.environ.items() if k not in REPOSITORY_ENV},
+                            check=False)
+    if result.returncode != 0:
+        raise FactoryError(f"cannot list the files of {commit}: {result.stderr.decode('utf-8', 'replace').strip()}")
+    return [name.decode("utf-8", "replace") for name in result.stdout.split(b"\0") if name]
+
+
+def pattern_drift(repo: Path, base_commit: str, base: str, policy: str | None, lens_file: str | None) -> dict[str, Any]:
+    """Each risk-policy pattern, lens trigger path and lens must-read document names something at
+    the base: a pattern that matches no file there has drifted from the tree it was written for."""
+    import lenses
+    import risk_map
+    name, step = "policy and lens paths match files at the base", \
+        "fix or remove each dead pattern, or commit the files it should name"
+    if not base_commit:
+        return check(name, False, f"cannot read {base}", step)
+    problems: list[str] = []
+    rules: list[dict[str, Any]] = []
+    lens_rows: list[dict[str, Any]] = []
+    if policy is None:
+        problems.append("no risk policy to check")
+    else:
+        try:
+            risk_map.load_policy(policy.encode("utf-8"))
+            rules = json.loads(policy)["rules"]
+        except (risk_map.PolicyError, ValueError) as exc:
+            problems.append(f"risk policy invalid: {exc}")
+    if lens_file is None:
+        problems.append("no lens file to check")
+    else:
+        try:
+            lens_rows = lenses.load_lenses(lens_file.encode("utf-8"))
+        except lenses.LensError as exc:
+            problems.append(f"lens file invalid: {exc}")
+    files = files_at(repo, base_commit)
+    present = set(files)
+    named: list[tuple[str, bool]] = []
+    for number, rule in enumerate(rules, start=1):
+        named += [(f"risk policy rule {number} `{pattern}`", any(risk_map.glob_match(pattern, path) for path in files))
+                  for pattern in rule["paths"]]
+    for lens in lens_rows:
+        named += [(f"lens {lens['id']} path `{pattern}`", any(risk_map.glob_match(pattern, path) for path in files))
+                  for pattern in lens["paths"]]
+        named += [(f"lens {lens['id']} must-read `{path}`", path in present) for path in lens["must_read"]]
+    dead = [label for label, alive in named if not alive]
+    if problems:  # nothing to match against: the policy or the lens file is missing or invalid
+        step = "commit a valid .harness/risk-policy.json and .harness/lenses.json" + (", then " + step if dead else "")
+    if dead:
+        problems.append(f"match no file at {base}: " + ", ".join(dead))
+    return check(name, not problems,
+                 "; ".join(problems) or f"{len(named)} pattern(s) and path(s) each match a file at {base}", step)
 
 
 def load_controller(repo: Path) -> Any:
@@ -441,14 +614,21 @@ def readiness(repo: Path, *, controller: Any, gh: Any | None, manifest: dict[str
                             f"{checker.get('runtime')} {checker.get('model')} ({checker.get('effort')}): "
                             f"{status.get('status')}" + (f" at {status['calibrated_at']}" if status.get("calibrated_at") else ""),
                             "run `autonomous-run.py calibrate <manifest>` with this checker"))
-    # 5. The kill switch has been seen to stop work. A local log is evidence, not proof: each record
+    # 5-6. Each native client the manifest names (both without one): at its minimum version, and
+    # installed as a command-line tool rather than bundled with an editor extension (a warning).
+    runtimes = sorted({role.get("runtime") for role in ((manifest or {}).get("roles") or {}).values()
+                       if isinstance(role, dict)} & set(MIN_CLIENT_VERSIONS)) if manifest else sorted(MIN_CLIENT_VERSIONS)
+    clients = [probe_client(runtime) for runtime in runtimes]
+    checks.append(client_versions(clients))
+    checks.append(client_sources(clients))
+    # 7. The kill switch has been seen to stop work. A local log is evidence, not proof: each record
     # must carry the refusal's facts, and the facts that can be checked are.
     refusals = [item for item in read_jsonl(factory_dir(repo) / "events.jsonl") if refusal_holds(repo, item, now)]
     checks.append(check("kill switch tested", bool(refusals),
                         f"{len(refusals)} refusal(s) recorded with their facts"
                         + (f", latest {refusals[-1].get('at')} ({refusals[-1].get('action')})" if refusals else ""),
                         "create .harness/AUTONOMY_PAUSED, try a start, see it refused, then remove the file"))
-    # 6-7. What the base commit carries.
+    # 8-10. What the base commit carries, and whether its policy and lens paths still name files.
     def at_base(path: str) -> str | None:
         if not base_commit:
             return None
@@ -473,13 +653,14 @@ def readiness(repo: Path, *, controller: Any, gh: Any | None, manifest: dict[str
                         f"risk policy {'valid' if policy_ok else 'missing or invalid'}, lens file "
                         f"{'present' if lenses is not None else 'missing'} at {base}",
                         "commit .harness/risk-policy.json and .harness/lenses.json"))
-    # 8. Receipts can leave the Git folder.
+    checks.append(pattern_drift(repo, base_commit, base, policy, lenses))
+    # 11. Receipts can leave the Git folder.
     try:
         exported = collect_export(repo)
         checks.append(check("receipts exportable", True, f"{len(exported['runs'])} run(s) readable for export", ""))
     except FactoryError as exc:
         checks.append(check("receipts exportable", False, str(exc), "repair or archive the unreadable run"))
-    return {"schema_version": SCHEMA_VERSION, "base": base, "ready": all(item["status"] == "pass" for item in checks),
+    return {"schema_version": SCHEMA_VERSION, "base": base, "ready": all(item["status"] != "fail" for item in checks),
             "checks": checks}
 
 
@@ -741,4 +922,308 @@ def render(report: dict[str, Any]) -> str:
         lines.append(f"  unreadable run: {name}")
     for warning in report.get("warnings", []):
         lines.append(f"  warning: {warning}")
+    return "\n".join(lines) + "\n"
+
+
+# --- intake: one GitHub issue, read only, sanitised, with the operator's verdict ----------------
+
+VERDICTS = ("ACCEPT", "ACCEPT-RESCOPED", "NEEDS-INFO", "REJECT")
+# Where the operating system can open relative to a folder handle (POSIX), the draft is written by
+# walking from the repository root without following links; elsewhere (Windows) by checking again.
+DIR_FD = os.open in os.supports_dir_fd and os.mkdir in os.supports_dir_fd
+ISSUE_FIELDS = "number,title,body,author,url"
+COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+BIDI = {0x061C, 0x200E, 0x200F, *range(0x202A, 0x202F), *range(0x2066, 0x206A)}
+ZERO_WIDTH = {0x200B, 0x200C, 0x200D, *range(0x2060, 0x2065), 0xFEFF}
+# The whole tag block, unassigned codes too: none of it is visible, and it can spell hidden ASCII.
+TAGS = set(range(0xE0000, 0xE0080))
+# Variation selectors (category Mn, not Cf) can encode hidden bytes; dropping U+FE0F only loses an
+# emoji's presentation hint.
+VARIATION_SELECTORS = {*range(0xFE00, 0xFE10), *range(0xE0100, 0xE01F0)}
+
+
+def hidden_kind(char: str) -> str | None:
+    """Why a character is removed, or None to keep it. Newline and tab are the only controls kept."""
+    code = ord(char)
+    if code in ZERO_WIDTH:
+        return "zero-width"
+    if code in BIDI:
+        return "bidi-control"
+    if code in TAGS:
+        return "tag-character"
+    if code in VARIATION_SELECTORS:
+        return "variation-selector"
+    category = unicodedata.category(char)
+    if category == "Cf":
+        return "other-format"
+    if category == "Cc" and char not in "\n\t":
+        return "control"
+    return None
+
+
+def sanitise(text: str) -> tuple[str, dict[str, Any]]:
+    """Text without invisible characters and HTML comments, and a report of what was removed:
+    kinds and counts only, never the removed text. Characters go first, so a marker split by a
+    zero-width character is still a comment; comments are removed until none is left, and an
+    unclosed `<!--` hides everything after it when rendered, so that is removed too."""
+    removed: dict[str, int] = {}
+    kept = []
+    text = text.replace("\r\n", "\n")
+    for char in text:
+        kind = hidden_kind(char)
+        if kind is None:
+            kept.append(char)
+        else:
+            removed[kind] = removed.get(kind, 0) + 1
+    clean = "".join(kept)
+    while True:
+        clean, count = COMMENT.subn("", clean)
+        if not count:
+            break
+        removed["html-comment"] = removed.get("html-comment", 0) + count
+    if "<!--" in clean:
+        removed["html-comment"] = removed.get("html-comment", 0) + 1
+        clean = clean[:clean.index("<!--")]
+    return clean, {"removed": removed, "characters_removed": len(text) - len(clean)}
+
+
+def issue_number(reference: str, slug: str) -> int:
+    """The issue number from `7`, `#7` or the issue's URL in the origin repository."""
+    number = re.fullmatch(r"#?([1-9][0-9]{0,9})", reference.strip())
+    if number:
+        return int(number.group(1))
+    url = re.fullmatch(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/([1-9][0-9]{0,9})/?",
+                       reference.strip())
+    if url:
+        if url.group(1).casefold() != slug.casefold():
+            raise FactoryError(f"issue {reference} is not in {slug}, the origin remote's repository")
+        return int(url.group(2))
+    raise FactoryError(f"intake needs an issue number or URL of {slug}, not {reference!r}")
+
+
+def intake_verdict(verdict: str | None, left_out: Iterable[str] = (), questions: Iterable[str] = (),
+                   reason: str | None = None, draft_spec: str | None = None) -> dict[str, Any] | None:
+    """The operator's verdict with exactly its own fields, or None to only show the issue."""
+    left_out, questions = list(left_out), list(questions)
+    given = {"--left-out": bool(left_out), "--question": bool(questions), "--reason": reason is not None,
+             "--draft-spec": draft_spec is not None}
+    if verdict is None:
+        for flag, present in given.items():
+            if present:
+                raise FactoryError(f"{flag} needs --verdict")
+        return None
+    if verdict not in VERDICTS:
+        raise FactoryError(f"--verdict must be one of {', '.join(VERDICTS)}")
+    owners = {"--left-out": "ACCEPT-RESCOPED", "--question": "NEEDS-INFO", "--reason": "REJECT"}
+    for flag, owner in owners.items():
+        if given[flag] and verdict != owner:
+            raise FactoryError(f"{flag} belongs to {owner}, not {verdict}")
+    if draft_spec is not None and verdict not in ("ACCEPT", "ACCEPT-RESCOPED"):
+        raise FactoryError(f"--draft-spec needs ACCEPT or ACCEPT-RESCOPED, not {verdict}")
+    items = lambda values: [" ".join(value.split()) for value in values if value.strip()]  # noqa: E731
+    if verdict == "ACCEPT-RESCOPED":
+        if not items(left_out):
+            raise FactoryError("ACCEPT-RESCOPED must name what was left out: pass --left-out at least once")
+        return {"verdict": verdict, "left_out": items(left_out)}
+    if verdict == "NEEDS-INFO":
+        if not items(questions):
+            raise FactoryError("NEEDS-INFO must ask something: pass --question at least once")
+        return {"verdict": verdict, "questions": items(questions)}
+    if verdict == "REJECT":
+        if not (reason or "").strip():
+            raise FactoryError("REJECT needs a reason: pass --reason")
+        return {"verdict": verdict, "reason": " ".join(reason.split())}
+    return {"verdict": verdict}
+
+
+def draft_spec_path(repo: Path, value: str, cwd: Path) -> Path:
+    """Where a new draft spec may go: inside the repository, outside its Git folder, not existing."""
+    candidate = Path(value).expanduser()
+    candidate = candidate if candidate.is_absolute() else cwd / candidate
+    if candidate.is_symlink() or candidate.exists():
+        raise FactoryError(f"refusing to overwrite: {value} exists")
+    resolved, root = candidate.resolve(), repo.resolve()
+    if not resolved.is_relative_to(root):
+        raise FactoryError(f"the draft spec must be inside the repository, not {value}")
+    if resolved.is_relative_to(common_dir(repo)) or ".git" in resolved.relative_to(root).parts:
+        raise FactoryError(f"the draft spec must not be in the Git folder: {value}")
+    return resolved
+
+
+def write_draft(root: Path, relative: Path, text: str) -> None:
+    """Create `relative` under `root` exclusively. The path was checked before the issue was read, and
+    a folder can be swapped for a link since; the write itself must not follow one.
+
+    With folder handles (POSIX): open the root, then each folder with O_NOFOLLOW relative to its
+    parent, creating a missing one, and create the file with O_EXCL | O_NOFOLLOW in the last one.
+    Without them (Windows): resolve the parent again just before the exclusive create. A window
+    remains there between that check and the create; KNOWN-ISSUES.md records it."""
+    parts = relative.parts
+    if not parts or any(part in ("", ".", "..") or part.casefold() == ".git" for part in parts):
+        raise FactoryError(f"the draft spec must be a plain path inside the repository, outside .git: {relative}")
+    changed = f"the folders of {relative.as_posix()} changed while intake ran (a folder is now a link); nothing written"
+    if not DIR_FD:
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        parent = target.parent.resolve()
+        if parent != (root / relative.parent) or not parent.is_relative_to(root):
+            raise FactoryError(changed)
+        try:
+            with target.open("x", encoding="utf-8", newline="\n") as handle:
+                handle.write(text)
+        except FileExistsError:
+            raise FactoryError(f"refusing to overwrite: {relative.as_posix()} exists") from None
+        return
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    folder_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | nofollow | getattr(os, "O_CLOEXEC", 0)
+    handles = [os.open(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0))]
+    try:
+        for name in parts[:-1]:
+            try:
+                handles.append(os.open(name, folder_flags, dir_fd=handles[-1]))
+            except FileNotFoundError:
+                try:
+                    os.mkdir(name, 0o755, dir_fd=handles[-1])
+                except FileExistsError:
+                    pass  # made meanwhile: the open below decides whether it is a real folder
+                try:
+                    handles.append(os.open(name, folder_flags, dir_fd=handles[-1]))
+                except OSError:
+                    raise FactoryError(changed) from None
+            except OSError:  # ELOOP or ENOTDIR: a link or a file where a folder was checked
+                raise FactoryError(changed) from None
+        try:
+            fd = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow | getattr(os, "O_CLOEXEC", 0),
+                         0o644, dir_fd=handles[-1])
+        except FileExistsError:
+            raise FactoryError(f"refusing to overwrite: {relative.as_posix()} exists") from None
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(text)
+        except BaseException:
+            os.unlink(parts[-1], dir_fd=handles[-1])  # no half-written draft is left behind
+            raise
+    finally:
+        for handle in reversed(handles):
+            os.close(handle)
+
+
+def read_issue(gh: Any, repo: Path, slug: str, number: int) -> dict[str, Any]:
+    """One `gh issue view`, the only call intake makes; an answer that is not that issue is refused."""
+    if not gh.which("gh"):
+        raise FactoryError("GitHub CLI (gh) is not installed; intake reads the issue with it: install it "
+                           "from https://cli.github.com, then run `gh auth login`")
+    try:
+        data = gh._json(repo, "issue", "view", str(number), "--repo", slug, "--json", ISSUE_FIELDS)
+    except RuntimeError as exc:  # inbox.GhError: gh failed, or printed no JSON
+        raise FactoryError(str(exc)) from None
+    if not isinstance(data, dict):
+        raise FactoryError("gh issue view returned an unexpected shape")
+    url = data.get("url")
+    if isinstance(url, str) and re.fullmatch(rf"https://github\.com/{re.escape(slug)}/pull/{number}/?", url,
+                                             re.IGNORECASE):
+        raise FactoryError(f"#{number} in {slug} is a pull request, not an issue")
+    author = data.get("author")
+    if (data.get("number") != number or not isinstance(url, str)
+            or not re.fullmatch(rf"https://github\.com/{re.escape(slug)}/issues/{number}/?", url, re.IGNORECASE)
+            or not isinstance(data.get("title"), str) or not isinstance(data.get("body"), (str, type(None)))
+            or not isinstance(author, dict) or not isinstance(author.get("login"), str)):
+        raise FactoryError(f"gh issue view did not return issue #{number} of {slug}")
+    return {"number": number, "url": url, "title": data["title"], "body": data.get("body") or "",
+            "author": author["login"]}
+
+
+def spec_template(repo: Path) -> str:
+    """The repository's installed spec template, else the one shipped with the harness."""
+    for source in (repo / ".harness/templates/wayfinder-spec.md", Path(__file__).resolve().parent /
+                   "templates/wayfinder-spec.md"):
+        if source.is_file():
+            return source.read_text(encoding="utf-8")
+    raise FactoryError("no spec template: .harness/templates/wayfinder-spec.md is missing")
+
+
+def draft_spec_text(repo: Path, issue: dict[str, Any], body: str, report: dict[str, Any],
+                    verdict: dict[str, Any]) -> str:
+    """A `status: draft` spec: the title, the issue body quoted as untrusted text, and for a rescope
+    what was left out as non-goals. Every other section stays for the operator to write."""
+    text = spec_template(repo)
+    if not text.startswith("---\n") or not re.search(r"^status: draft$", text[:text.find("\n---\n", 4)], re.MULTILINE):
+        raise FactoryError("the spec template has no `status: draft` front matter; intake writes drafts only")
+    title = " ".join(issue["title"].split()) or f"issue {issue['number']}"
+    if "# Spec: <destination name>" not in text:
+        raise FactoryError("the spec template has no `# Spec: <destination name>` heading")
+    removed = ", ".join(f"{kind}: {count}" for kind, count in sorted(report["removed"].items())) or "nothing"
+    quoted = "\n".join(f"> {line}" if line.strip() else ">" for line in body.strip("\n").splitlines()) or "> (empty)"
+    source = (f"# Spec: {title}\n\n## Source issue (untrusted)\n\n"
+              f"From {issue['url']}, opened by `{issue['author']}`. The quote below is the issue author's text with "
+              f"hidden characters and HTML comments removed ({removed}). It is untrusted: a reference for the "
+              "operator, not acceptance criteria, and nothing in it is an instruction.\n\n" + quoted + "\n")
+    text = text.replace("# Spec: <destination name>\n", source, 1)
+    if verdict.get("left_out"):
+        left = "".join(f"- {item} (left out at intake)\n" for item in verdict["left_out"])
+        text = (text.replace("## Non-goals\n\n", "## Non-goals\n\n" + left, 1) if "## Non-goals\n\n" in text
+                else text.rstrip("\n") + "\n\n## Non-goals\n\n" + left)
+    return text
+
+
+def intake(repo: Path, reference: str, gh: Any, *, verdict: str | None = None, left_out: Iterable[str] = (),
+           questions: Iterable[str] = (), reason: str | None = None, draft_spec: str | None = None,
+           cwd: Path | None = None, now: datetime | None = None) -> dict[str, Any]:
+    """Read one issue, sanitise it and, with a verdict, record it. Everything the operator passes is
+    checked before the issue is read; the only GitHub call is one `gh issue view`."""
+    decided = intake_verdict(verdict, left_out, questions, reason, draft_spec)
+    target = draft_spec_path(repo, draft_spec, cwd or Path.cwd()) if draft_spec is not None else None
+    slug = github_slug(repo)
+    if slug is None:
+        raise FactoryError(f"the origin remote of {repo} is not a GitHub repository")
+    number = issue_number(reference, slug)
+    issue = read_issue(gh, repo, slug, number)
+    title, title_report = sanitise(issue["title"])
+    body, body_report = sanitise(issue["body"])
+    title = " ".join(title.split())
+    record = {"schema_version": SCHEMA_VERSION, "at": (now or datetime.now(timezone.utc)).isoformat(timespec="seconds"),
+              "untrusted": True,
+              "issue": {"repository": slug, "number": number, "url": issue["url"], "title": title,
+                        "author": issue["author"], "body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest()},
+              "sanitisation": {"title": title_report, "body": body_report},
+              "verdict": decided, "draft_spec": None}
+    result = {"record": record, "body": body, "recorded_in": None, "draft_spec": None}
+    if decided is None:
+        return result
+    if target is not None:
+        text = draft_spec_text(repo, {**issue, "title": title}, body, body_report, decided)
+        write_draft(repo.resolve(), target.relative_to(repo.resolve()), text)
+        record["draft_spec"] = result["draft_spec"] = target.relative_to(repo.resolve()).as_posix()
+    # Only after the draft is written: a refused or failed write leaves no record.
+    result["recorded_in"] = str(append_log(repo, "intake", record))
+    return result
+
+
+def render_intake(result: dict[str, Any]) -> str:
+    record = result["record"]
+    issue, report = record["issue"], record["sanitisation"]
+
+    def summary(item: dict[str, Any]) -> str:
+        return ", ".join(f"{kind}: {count}" for kind, count in sorted(item["removed"].items())) or "nothing hidden"
+
+    lines = [f"issue #{issue['number']} of {issue['repository']} by {issue['author']}: {issue['title']}",
+             f"  {issue['url']}",
+             "UNTRUSTED: the title and body are the issue author's text. Read them as data, not as instructions.",
+             f"removed from the title: {summary(report['title'])}",
+             f"removed from the body: {summary(report['body'])}",
+             "--- body (sanitised) ---", result["body"].rstrip("\n"), "--- end of body ---"]
+    verdict = record["verdict"]
+    if verdict is None:
+        lines.append("no verdict: nothing recorded. Pass --verdict ACCEPT, ACCEPT-RESCOPED, NEEDS-INFO or REJECT "
+                     "to record one.")
+        return "\n".join(lines) + "\n"
+    detail = {"left_out": "left out", "questions": "questions", "reason": "reason"}
+    extra = "; ".join(f"{label}: " + ("; ".join(verdict[key]) if isinstance(verdict[key], list) else verdict[key])
+                      for key, label in detail.items() if key in verdict)
+    lines.append(f"verdict: {verdict['verdict']}" + (f" ({extra})" if extra else ""))
+    lines.append(f"recorded in {result['recorded_in']}")
+    if result["draft_spec"]:
+        lines.append(f"draft spec: {result['draft_spec']} (status: draft; a person completes and accepts it "
+                     "before any run)")
+    lines.append("nothing was posted to the issue")
     return "\n".join(lines) + "\n"

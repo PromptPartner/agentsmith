@@ -40,11 +40,11 @@ Product templates, demos, and the [spec format](specs/README.md) remain public. 
 
 - [Configuration audit](27-config-audit.md) — selected local checks, completeness and explicit CI gates.
 
-- [Risk map](29-risk-map.md) — the tier of a change from a committed path policy and a fixed always-human floor.
+- [Risk map](29-risk-map.md) — the tier of a change from a committed path policy and a fixed floor (always human; dependency files at least C).
 
 - [CI watch](30-ci-watch.md) — one end state for a commit's CI, read-only, from the runs for its exact SHA.
 
-- [Factory readiness](31-factory-readiness.md) — readiness checks, the six numbers and the sweep (stalled, waiting and over-cap runs), derived and read-only.
+- [Factory readiness](31-factory-readiness.md) — readiness checks, the six numbers and the sweep (stalled, waiting and over-cap runs), derived and read-only; untrusted issue intake with your verdict.
 
 - [Inbox](31-inbox.md) — everything that waits on the operator, derived on every call; local issue claims.
 

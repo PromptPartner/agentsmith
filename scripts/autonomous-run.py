@@ -32,7 +32,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Callable, Iterable, Iterator
 
 try:
     from native_launcher import (
@@ -3871,16 +3871,75 @@ def without_local_paths(text: str, repo: Path) -> str:
     return HOME_PATH.sub("~", text)
 
 
+def secret_findings(records: Iterable[tuple[str, int, str]],
+                    allow: tuple[re.Pattern[str], ...]) -> list[tuple[str, int, str]]:
+    """`scan_secret_records` in agentsmith.py: (place, line number, pattern name) for each line that
+    a pattern matches, the first pattern only, never the value. `allow` holds the repository's
+    .harness/secret-scan.allow rules, which skip a whole line. scripts/test-deliver.py keeps the two equal."""
+    findings = []
+    for place, number, line in records:
+        if not line.strip() or any(rule.search(line) for rule in allow):
+            continue
+        name = next((name for name, pattern in SECRET_PATTERNS if pattern.search(line)), None)
+        if name:
+            findings.append((place, number, name))
+    return findings
+
+
+def diff_secret_records(repo: Path, base: str, head: str) -> Iterator[tuple[str, int, str]]:
+    """The added lines of base..head with their path and new line number, read as
+    `staged_secret_records` in agentsmith.py reads the staged diff."""
+    result = run(["git", "-c", "core.quotepath=false", "diff", "--no-color", "--no-ext-diff", "--unified=0",
+                  "--diff-filter=ACMR", base, head], repo)
+    if result.returncode:
+        raise RunError(f"deliver refused: cannot read the diff {base[:12]}..{head[:12]} to scan it for secrets")
+    path, number, in_hunk = "", 0, False
+    for raw in result.stdout.splitlines():
+        if raw.startswith("+++ "):
+            path = raw[4:].split("\t", 1)[0]
+            path = path[2:] if path.startswith("b/") else path
+            in_hunk = False
+        elif raw.startswith("@@ "):
+            match = re.search(r"\+(\d+)(?:,\d+)?", raw)
+            in_hunk = bool(match)
+            number = int(match.group(1)) if match else 0
+        elif in_hunk and raw.startswith("+"):
+            yield path, number, raw[1:]
+            number += 1
+        elif in_hunk and not raw.startswith(("-", "\\ No newline")):
+            number += 1
+
+
+def history_secret_problems(repo: Path, base: str, head: str, allow: tuple[re.Pattern[str], ...]) -> list[str]:
+    """The secret scanner over what a push publishes: the accepted diff, the changes of every
+    commit in base..head (a secret added and removed again is still in the history), and every
+    commit message. Each finding names a path or commit and a line, never the value."""
+    endpoint = secret_findings(diff_secret_records(repo, base, head), allow)
+    problems = [f"the accepted diff holds a likely secret at {path}:{number} ({name})" for path, number, name in endpoint]
+    seen = {(path, name) for path, _, name in endpoint}
+    for commit in history_commits(repo, base, head):
+        parent = git(repo, "rev-parse", f"{commit}^")  # a merge counts against its first parent
+        for path, number, name in secret_findings(diff_secret_records(repo, parent, commit), allow):
+            if (path, name) not in seen:
+                seen.add((path, name))
+                problems.append(f"commit {commit[:12]} adds a likely secret at {path}:{number} ({name}), "
+                                "which a later commit removes but the push still publishes")
+        message = git(repo, "log", "-1", "--format=%B", commit).splitlines()
+        problems += [f"the message of commit {commit[:12]} holds a likely secret at line {number} ({name})"
+                     for _, number, name in secret_findings((("message", index, line) for index, line
+                                                             in enumerate(message, 1)), allow)]
+    return problems
+
+
 def leak_problems(fields: dict[str, str], allow: tuple[re.Pattern[str], ...] = ()) -> list[str]:
-    """The secret scanner's patterns over the final pull-request text, one finding per field.
-    `allow` holds the repository's .harness/secret-scan.allow rules, which skip a whole line."""
+    """The secret scanner over the final pull-request text, one finding per field."""
     problems = []
     for field, text in fields.items():
-        lines = [line for line in text.splitlines() if not any(rule.search(line) for rule in allow)]
-        hit = next((name for name, pattern in SECRET_PATTERNS for line in lines if pattern.search(line)), None)
+        lines = list(enumerate(text.splitlines(), 1))
+        hit = secret_findings(((field, number, line) for number, line in lines), allow)
         if hit:
-            problems.append(f"the pull-request {field} holds a likely secret ({hit})")
-        elif any(HOME_PATH.search(line) for line in lines):
+            problems.append(f"the pull-request {field} holds a likely secret ({hit[0][2]})")
+        elif any(HOME_PATH.search(line) for _, line in lines if not any(rule.search(line) for rule in allow)):
             problems.append(f"the pull-request {field} names a home folder")
     return problems
 
@@ -3924,7 +3983,517 @@ def base_staleness(repo: Path, remote: str, base: str, accepted: str) -> tuple[d
     return staleness, None
 
 
-def delivery_checks(repo: Path, state: dict[str, Any], remote: str, base: str | None) -> dict[str, Any]:
+# Package existence. A model can name a package that does not exist; whoever registers that name
+# later decides what an install runs. deliver looks up every package that is new in a manifest, as
+# one read-only GET with no credentials. A 404 refuses; an answer it cannot read, a network error,
+# a non-registry source or an ecosystem it cannot check is "unverified" and also refuses, as an
+# unreachable remote does in base_staleness: a check that could not run never counts as a pass.
+REGISTRIES = {"npm": ("registry.npmjs.org", "https://registry.npmjs.org/{}"),
+              "pypi": ("pypi.org", "https://pypi.org/pypi/{}/json")}
+ECOSYSTEM_NAMES = {"npm": "npm", "pypi": "PyPI"}
+NPM_NAME = re.compile(r"(?:@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._~-]*")
+_PYPI_NAME = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
+PYPI_NAME = re.compile(_PYPI_NAME)
+PEP508_REQUIREMENT = re.compile(rf"\s*({_PYPI_NAME})\s*(\[[^\]]*\])?\s*(.*?)\s*", re.S)
+PEP508_EXTRAS = re.compile(rf"\[\s*(?:{_PYPI_NAME}(?:\s*,\s*{_PYPI_NAME})*)?\s*\]")
+PEP508_CLAUSE = re.compile(r"\s*(?:===\s*[^\s,;]+|(?:~=|==|!=|<=|>=|<|>)\s*[A-Za-z0-9.*+!_-]+)\s*")
+# A conservative PEP 508 marker grammar: these variables and quoted strings, compared with these
+# operators, joined by and/or, grouped by parentheses. Anything else is not a marker deliver can read.
+MARKER_VARIABLES = frozenset({"python_version", "python_full_version", "os_name", "sys_platform",
+                              "platform_release", "platform_system", "platform_version", "platform_machine",
+                              "platform_python_implementation", "implementation_name", "implementation_version",
+                              "extra"})
+MARKER_TOKEN = re.compile(r"\s*(?:([()])|('[^']*'|\"[^\"]*\")|(===|==|!=|<=|>=|~=|<|>)|([A-Za-z_][A-Za-z0-9_.]*))")
+# pip's reading of a requirements file: a `#` at the start or after whitespace starts a comment, an
+# include names another file, and --hash only pins what the line already names.
+REQUIREMENT_COMMENT = re.compile(r"(^|\s+)#.*$")
+REQUIREMENT_INCLUDE = re.compile(r"(?:-r|-c|--requirement|--constraint)(?:\s*=\s*|\s+|(?<=-r)|(?<=-c))(\S.*)")
+REQUIREMENT_HASH = re.compile(r"\s--hash(?:=|\s+)\S+")
+URL_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:")
+ARCHIVE_SUFFIXES = (".whl", ".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz", ".tar.xz", ".txz")
+MAX_INCLUDED_FILES = 100
+NPM_DEPENDENCY_KEYS = ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies")
+NPM_LOCAL = ("file:", "link:", "workspace:")
+# A Poetry or Pipfile table dependency comes from the registry only when it says nothing but these.
+# git, path, url, file, develop, editable, source or index point the install somewhere else.
+REGISTRY_TABLE_KEYS = frozenset({"version", "extras", "markers", "python", "optional", "platform",
+                                 "allow-prereleases"})
+PIPFILE_SETTINGS = frozenset({"source", "requires", "pipenv", "scripts"})  # every other table is packages
+PYPI_INDEXES = frozenset({"https://pypi.org/simple", "https://pypi.org/simple/"})
+# Manifests with no registry check here: a change is unverified. Lockfiles list what a manifest
+# already names, so the manifests are what is checked.
+UNCHECKED_MANIFESTS = {"go.mod": "go", "cargo.toml": "cargo", "gemfile": "ruby"}
+MAX_PACKAGE_LOOKUPS = 100
+
+
+class ManifestShapeError(ValueError):
+    """A manifest that parses, but not into the shape its tool reads."""
+
+
+def registry_status(url: str) -> int:
+    """One read-only GET; the HTTP status. Raises OSError when the registry gives no answer."""
+    import urllib.error
+    import urllib.request
+    request = urllib.request.Request(url, method="GET", headers={"User-Agent": "agentsmith-deliver",
+                                                                 "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            return int(response.status)
+    except urllib.error.HTTPError as exc:
+        return int(exc.code)
+
+
+def pypi_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()  # PEP 503 normalisation
+
+
+def valid_marker(text: str) -> bool:
+    """Whether text is an environment marker in the conservative grammar above."""
+    tokens: list[tuple[int, str]] = []
+    position, text = 0, text.rstrip()
+    while position < len(text):
+        match = MARKER_TOKEN.match(text, position)
+        if not match:
+            return False
+        tokens.append((match.lastindex or 0, match.group(match.lastindex or 0)))
+        position = match.end()
+    paren, string, operator, word = 1, 2, 3, 4
+
+    def is_word(index: int, value: str) -> bool:
+        return 0 <= index < len(tokens) and tokens[index] == (word, value)
+
+    def operand(index: int) -> int:
+        if 0 <= index < len(tokens) and (tokens[index][0] == string or
+                                         (tokens[index][0] == word and tokens[index][1] in MARKER_VARIABLES)):
+            return index + 1
+        return -1
+
+    def comparison(index: int) -> int:
+        if 0 <= index < len(tokens) and tokens[index][0] == operator or is_word(index, "in"):
+            return index + 1
+        return index + 2 if is_word(index, "not") and is_word(index + 1, "in") else -1
+
+    def expression(index: int) -> int:
+        if 0 <= index < len(tokens) and tokens[index] == (paren, "("):
+            index = disjunction(index + 1)
+            return index + 1 if 0 <= index < len(tokens) and tokens[index] == (paren, ")") else -1
+        for step in (operand, comparison, operand):
+            index = step(index) if index >= 0 else -1
+        return index
+
+    def chain(index: int, step: Callable[[int], int], joiner: str) -> int:
+        index = step(index)
+        while index >= 0 and is_word(index, joiner):
+            index = step(index + 1)
+        return index
+
+    def disjunction(index: int) -> int:
+        return chain(index, lambda start: chain(start, expression, "and"), "or")
+
+    return disjunction(0) == len(tokens)
+
+
+def pep508_entry(text: str) -> tuple[str | None, str | None]:
+    """(normalised name, None) for a registry requirement, or (None, why it cannot be checked)."""
+    requirement, has_marker, marker = text.partition(";")
+    bare = requirement.strip()
+    if URL_SCHEME.match(bare) or "/" in bare or "\\" in bare or bare.casefold().endswith(ARCHIVE_SUFFIXES):
+        return None, "only registry packages can be checked"  # a URL, a VCS link, `name @ url` or a path
+    match = PEP508_REQUIREMENT.fullmatch(requirement)
+    if not match:
+        return None, "it is not a valid requirement"
+    name, extras, specifier = match.groups()
+    if specifier.startswith("(") and specifier.endswith(")"):
+        specifier = specifier[1:-1]
+    if ((extras and not PEP508_EXTRAS.fullmatch(extras))
+            or (specifier and not all(PEP508_CLAUSE.fullmatch(clause) for clause in specifier.split(",")))):
+        return None, "it is not a valid requirement"
+    if has_marker and not valid_marker(marker):
+        return None, "its environment marker is not valid"
+    return pypi_name(name), None
+
+
+def requirement_lines(text: str) -> list[tuple[int, str]]:
+    """(line number, entry) for each requirement line, read as pip reads it: a line that ends in a
+    backslash continues on the next, and a `#` at the start or after whitespace starts a comment."""
+    lines: list[tuple[int, str]] = []
+    pending: list[str] = []
+    first = 0
+    for number, line in enumerate(text.splitlines(), 1):
+        if line.endswith("\\") and not REQUIREMENT_COMMENT.match(line):
+            first = first if pending else number
+            pending.append(line.strip("\\"))
+            continue
+        if pending:
+            line, number, pending = "".join(pending) + (" " + line if REQUIREMENT_COMMENT.match(line) else line), \
+                first, []
+        entry = REQUIREMENT_COMMENT.sub("", line).strip()
+        if entry:
+            lines.append((number, entry))
+    entry = REQUIREMENT_COMMENT.sub("", "".join(pending)).strip()
+    if entry:  # the file ends inside a continuation
+        lines.append((first, entry))
+    return lines
+
+
+def included_path(including: str, target: str) -> str | None:
+    """The repository path that a requirements include names, relative to the including file, or
+    None when it leaves the repository: an absolute or home path, a URL, or a path above the top."""
+    if target.startswith(("/", "\\", "~")) or URL_SCHEME.match(target):
+        return None
+    path = posixpath.normpath(posixpath.join(posixpath.dirname(including), target))
+    return None if path == ".." or path.startswith("../") else path
+
+
+def requirements_entries(read: Callable[[str], str | None], root: str
+                         ) -> tuple[dict[Any, dict[str, Any]], list[str], set[str]]:
+    """The registry packages that a requirements file names, with the files it includes
+    (-r/--requirement and -c/--constraint, relative to the including file, each read once); the
+    entries that cannot be checked; and every file read. Any other option, a URL or a local path
+    changes where packages come from, so it cannot be checked."""
+    entries: dict[Any, dict[str, Any]] = {}
+    unchecked: list[str] = []
+    seen: list[str] = []
+
+    def visit(path: str, text: str) -> None:
+        seen.append(path)
+        for number, entry in requirement_lines(text):
+            where = f"{path} line {number} ({entry[:80]})"
+            include = REQUIREMENT_INCLUDE.fullmatch(entry)
+            if include:
+                target = included_path(path, include.group(1).strip())
+                if target is None:
+                    unchecked.append(f"{where}: it includes a file outside the repository")
+                elif target not in seen:
+                    included = read(target)
+                    if included is None:
+                        unchecked.append(f"{where}: the included file is not in the repository")
+                    elif len(seen) >= MAX_INCLUDED_FILES:
+                        unchecked.append(f"{where}: it includes more than {MAX_INCLUDED_FILES} files")
+                    else:
+                        visit(target, included)
+                continue
+            if entry.startswith("-"):
+                unchecked.append(f"{where}: only registry packages can be checked")
+                continue
+            package, why = pep508_entry(REQUIREMENT_HASH.sub("", entry))
+            if package:
+                entries.setdefault(package, {"name": package, "lookup": package, "source": "registry",
+                                             "spec": "", "file": path})
+            else:
+                unchecked.append(f"{where}: {why}")
+
+    text = read(root)
+    if text is not None:
+        visit(root, text)
+    return entries, unchecked, set(seen)
+
+
+def shaped(value: Any, kind: type, where: str) -> Any:
+    if not isinstance(value, kind):
+        raise ManifestShapeError(f"{where} has the wrong type")
+    return value
+
+
+def strings(value: Any, where: str) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ManifestShapeError(f"{where} is not a list of strings")
+    return value
+
+
+def npm_source(package: str, spec: str) -> tuple[str, str | None]:
+    """("registry", the name to look up), ("local", None) or ("unverified", None) for one spec."""
+    if spec.startswith(NPM_LOCAL):
+        return "local", None
+    if spec.startswith("npm:"):  # an alias installs the package it names
+        target = spec[4:]
+        at = target.find("@", 1)
+        return "registry", target[:at] if at > 0 else target
+    # A URL, Git or hosted-Git source (git+, git:, http:, github:, gitlab:, bitbucket:...), GitHub
+    # user/repo shorthand, or a path. A range such as ~1.2 or a dist-tag has no colon and no slash.
+    if URL_SCHEME.match(spec) or "/" in spec or "\\" in spec or spec in {".", ".."}:
+        return "unverified", None
+    return "registry", package
+
+
+def npm_entries(path: str, text: str) -> dict[Any, dict[str, Any]]:
+    """Each dependency keyed by its section and its name in the manifest: an alias never merges with
+    another entry for the package it installs, so each gets its own verdict."""
+    data = shaped(json.loads(text), dict, "the top level")
+    entries: dict[Any, dict[str, Any]] = {}
+    for section in NPM_DEPENDENCY_KEYS:
+        if section not in data:
+            continue
+        for package, spec in shaped(data[section], dict, section).items():
+            source, lookup = npm_source(package, shaped(spec, str, f"a {section} version"))
+            entries[(section, package)] = {"name": package, "lookup": lookup, "source": source, "spec": spec,
+                                           "file": path}
+    return entries
+
+
+def python_manifest_entries(path: str, name: str, text: str) -> tuple[dict[Any, dict[str, Any]], list[str]]:
+    """The registry packages of a pyproject.toml or Pipfile, and the entries that cannot be checked."""
+    import tomllib
+    data = tomllib.loads(text)
+    requirements: list[str] = []
+    tables: list[dict[str, Any]] = []  # Poetry and Pipfile: {name: version, table or list of them}
+    unchecked: list[str] = []
+    if name == "pyproject.toml":
+        project = shaped(data.get("project", {}), dict, "[project]")
+        requirements += strings(project.get("dependencies", []), "[project] dependencies")
+        for group in shaped(project.get("optional-dependencies", {}), dict, "[project.optional-dependencies]").values():
+            requirements += strings(group, "a [project.optional-dependencies] group")
+        for group in shaped(data.get("dependency-groups", {}), dict, "[dependency-groups]").values():
+            for item in shaped(group, list, "a [dependency-groups] group"):
+                if isinstance(item, str):
+                    requirements.append(item)
+                elif not (isinstance(item, dict) and set(item) == {"include-group"}
+                          and isinstance(item["include-group"], str)):
+                    raise ManifestShapeError("a [dependency-groups] entry has the wrong type")
+        requirements += strings(shaped(data.get("build-system", {}), dict, "[build-system]").get("requires", []),
+                                "[build-system] requires")
+        tool = shaped(data.get("tool", {}), dict, "[tool]")
+        poetry = shaped(tool.get("poetry", {}), dict, "[tool.poetry]")
+        uv = shaped(tool.get("uv", {}), dict, "[tool.uv]")
+        pdm = shaped(tool.get("pdm", {}), dict, "[tool.pdm]")
+        tables += [shaped(poetry.get(key, {}), dict, f"[tool.poetry.{key}]")
+                   for key in ("dependencies", "dev-dependencies")]
+        for group in shaped(poetry.get("group", {}), dict, "[tool.poetry.group]").values():
+            tables.append(shaped(shaped(group, dict, "a [tool.poetry.group] group").get("dependencies", {}), dict,
+                                 "a [tool.poetry.group] dependencies table"))
+        for configured, label in ((poetry.get("source"), "[tool.poetry.source]"), (uv.get("index"), "[tool.uv.index]"),
+                                  (pdm.get("source"), "[tool.pdm.source]")):
+            if configured:
+                unchecked.append(f"{path} {label}: it names another index")
+        for package in shaped(uv.get("sources", {}), dict, "[tool.uv.sources]"):
+            unchecked.append(f"{path} {package[:80]} (tool.uv.sources): only registry packages can be checked")
+    else:  # Pipfile
+        for source in shaped(data.get("source", []), list, "[[source]]"):
+            url = shaped(source, dict, "a [[source]] entry").get("url")
+            if url not in PYPI_INDEXES:
+                unchecked.append(f"{path} [[source]] {str(url)[:80]}: it names another index")
+        tables += [shaped(section, dict, "a Pipfile package section")
+                   for key, section in data.items() if key not in PIPFILE_SETTINGS]
+    entries: dict[Any, dict[str, Any]] = {}
+    for table in tables:
+        for package, value in table.items():
+            if package.casefold() == "python":  # Poetry: the Python version, not a package
+                continue
+            options = value if isinstance(value, list) else [value]
+            if not options or not all(isinstance(option, (str, dict)) for option in options):
+                raise ManifestShapeError("a dependency has the wrong type")
+            if any(isinstance(option, dict) and not set(option) <= REGISTRY_TABLE_KEYS for option in options):
+                unchecked.append(f"{path} {package[:80]}: only registry packages can be checked")
+                continue
+            normalised = pypi_name(package)
+            entries.setdefault(normalised, {"name": normalised, "lookup": normalised, "source": "registry",
+                                            "spec": "", "file": path})
+    for item in requirements:
+        package, why = pep508_entry(item)
+        if package:
+            entries.setdefault(package, {"name": package, "lookup": package, "source": "registry", "spec": "",
+                                         "file": path})
+        else:
+            unchecked.append(f"{path} {item[:80]}: {why}")
+    return entries, unchecked
+
+
+def manifest_entries(path: str, text: str) -> tuple[str, dict[Any, dict[str, Any]], list[str]]:
+    """(ecosystem, {key: entry}, entries that cannot be checked) for a package.json, pyproject.toml or
+    Pipfile. An entry names its package, the name to look up, its source ("registry", "local" or
+    "unverified"), its spec and its file. Raises ValueError when the manifest does not parse or does
+    not have the shape its tool reads."""
+    name = path.rsplit("/", 1)[-1].casefold()
+    if name == "package.json":
+        return "npm", npm_entries(path, text), []
+    return ("pypi", *python_manifest_entries(path, name, text))
+
+
+def is_requirements_file(path: str) -> bool:
+    name = path.rsplit("/", 1)[-1].casefold()
+    return name.startswith("requirements") and name.endswith(".txt")
+
+
+def package_checks(repo: Path, base: str, head: str,
+                   fetch: Callable[[str], int] | None = None) -> tuple[list[dict[str, str]], list[str]]:
+    """Every package that a manifest in base..head adds, or moves to another source, with its
+    registry verdict, and the problems that refuse the landing. A package a manifest already had at
+    base, from the same source, is not looked up. A requirements file counts as changed when a file
+    it includes changed."""
+    fetch = fetch or registry_status
+    rows: list[dict[str, str]] = []
+    problems: list[str] = []
+    answers: dict[str, int | Exception] = {}
+    seen_rows: set[tuple[str, ...]] = set()
+    lookups = 0
+
+    def reader(revision: str) -> Callable[[str], str | None]:
+        cache: dict[str, str | None] = {}
+
+        def read(path: str) -> str | None:
+            if path not in cache:
+                shown = run(["git", "cat-file", "blob", f"{revision}:{path}"], repo)
+                cache[path] = None if shown.returncode else shown.stdout
+            return cache[path]
+        return read
+
+    read_head, read_base = reader(head), reader(base)
+    changed = changed_paths(repo, base, head)
+    requirements = {path: requirements_entries(read_head, path)
+                    for path in git_paths(repo, "ls-tree", "-r", "--name-only", head) if is_requirements_file(path)}
+    candidates = set(changed) | {path for path, (_, _, files) in requirements.items() if files & set(changed)}
+    for path in sorted(candidates):
+        name = path.rsplit("/", 1)[-1].casefold()
+        if name in UNCHECKED_MANIFESTS:
+            if read_head(path) is not None:  # not a removal
+                problems.append(f"{path} changed, and deliver cannot check {UNCHECKED_MANIFESTS[name]} packages "
+                                "against a registry; review the new requirements by hand")
+            continue
+        if path in requirements:
+            ecosystem, (entries, unchecked, _) = "pypi", requirements[path]
+            known = requirements_entries(read_base, path)[0]
+        elif name in {"package.json", "pyproject.toml", "pipfile"}:
+            text = read_head(path)
+            if text is None:
+                continue  # removed: nothing new to install
+            try:
+                ecosystem, entries, unchecked = manifest_entries(path, text)
+            except (ValueError, RecursionError) as exc:  # json, tomllib and shape errors are ValueErrors
+                problems.append(f"cannot read {path} to check its new packages ({str(exc)[:80]}); the landing "
+                                "stays refused until it parses")
+                continue
+            before = read_base(path)
+            try:
+                known = manifest_entries(path, before)[1] if before is not None else {}
+            except (ValueError, RecursionError):
+                known = {}  # an unreadable base manifest: every package counts as new
+        else:
+            continue
+        problems += [f"cannot check {item}" for item in unchecked]
+        host, template = REGISTRIES[ecosystem]
+        label = ECOSYSTEM_NAMES[ecosystem]
+        for key, entry in sorted(entries.items(), key=lambda item: (item[1]["name"], str(item[0]))):
+            old = known.get(key)
+            if old is not None and (old["spec"] == entry["spec"] or (
+                    entry["source"] == old["source"] == "registry" and entry["lookup"] == old["lookup"])):
+                continue  # the same package from the same source; only its version may have changed
+            row = {"manifest": entry["file"], "ecosystem": ecosystem, "name": entry["name"], "status": entry["source"]}
+            lookup = entry["lookup"]
+            if lookup and lookup != entry["name"]:
+                row["lookup"] = lookup
+            identity = (row["manifest"], ecosystem, row["name"], row.get("lookup", ""))
+            if identity in seen_rows:  # a file that two requirements files include
+                continue
+            seen_rows.add(identity)
+            rows.append(row)
+            shown = entry["name"] + (f" -> {lookup}" if "lookup" in row else "")
+            if entry["source"] == "local":
+                continue
+            if entry["source"] == "unverified":
+                problems.append(f"cannot check {label} package {shown} from {entry['file']}: it does not come from "
+                                f"{host}")
+                continue
+            if not (NPM_NAME if ecosystem == "npm" else PYPI_NAME).fullmatch(lookup):
+                row["status"] = "invalid"
+                problems.append(f"{entry['file']} adds {shown!r}, which is not a valid {label} package name")
+                continue
+            url = template.format(urllib_quote(lookup))
+            if url not in answers:
+                lookups += 1
+                if lookups > MAX_PACKAGE_LOOKUPS:
+                    row["status"] = "unverified"
+                    problems.append(f"cannot check {label} package {shown} from {entry['file']}: more than "
+                                    f"{MAX_PACKAGE_LOOKUPS} new packages")
+                    continue
+                try:
+                    answers[url] = fetch(url)
+                except (OSError, ValueError) as exc:
+                    answers[url] = exc
+            answer = answers[url]
+            if isinstance(answer, Exception):
+                row["status"] = "unverified"
+                problems.append(f"cannot check {label} package {shown} from {entry['file']}: {host} did not answer "
+                                f"({str(answer)[:80]}); retry when it answers")
+            elif answer == 200:
+                row["status"] = "exists"
+            elif answer == 404:
+                row["status"] = "missing"
+                problems.append(f"{entry['file']} adds {label} package {shown}, which {host} does not have")
+            else:
+                row["status"] = "unverified"
+                problems.append(f"cannot check {label} package {shown} from {entry['file']}: {host} answered "
+                                f"HTTP {answer}; retry when it answers")
+    return rows, list(dict.fromkeys(problems))
+
+
+def urllib_quote(package: str) -> str:
+    import urllib.parse
+    return urllib.parse.quote(package, safe="@")  # a scoped npm name keeps @ and sends / as %2F
+
+
+def merge_verification(repo: Path, state: dict[str, Any], manifest: dict[str, Any], remote: str, base: str,
+                       accepted: str) -> tuple[dict[str, Any], str | None]:
+    """Run the manifest's verify command on the merge of the accepted commit with the fresh base,
+    in the same sandbox as `execute`, before deliver prints anything to land.
+
+    A clean `merge-tree` only proves the diff applies; the merge can still break a test. The merge
+    is built in a private object folder that borrows the repository's objects, and checked out
+    from a private index into a throwaway folder under /tmp. A `git worktree add` would change the
+    shared worktree metadata and object store, which peer runs compare to catch tampering, so the
+    repository gains no worktree, object or file, and the folder goes when the check ends."""
+    ref = f"refs/remotes/{remote}/{base}"
+    base_commit = git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}")
+    timeout = int(float((manifest.get("limits") or {}).get("wall_minutes") or 60) * 60)
+    with private_scratch("agentsmith-merge-") as scratch:
+        workspace, run_dir = scratch / "merge", scratch / "run"
+        (scratch / "objects").mkdir()
+        run_dir.mkdir()
+        private = {**os.environ, "GIT_OBJECT_DIRECTORY": str(scratch / "objects"),
+                   "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(resolved_git_path(repo, "--git-common-dir") / "objects"),
+                   "GIT_INDEX_FILE": str(scratch / "index")}
+        merged = run(["git", "merge-tree", "--write-tree", ref, accepted], repo, env=private)
+        tree = merged.stdout.split()[0] if merged.returncode == 0 and merged.stdout.split() else ""
+        if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", tree):
+            return {}, f"cannot build the merge of the accepted commit with {remote}/{base} to verify it"
+        workspace.mkdir()
+        for command in (["git", "read-tree", tree],
+                        ["git", f"--work-tree={workspace}", "checkout-index", "--all", "--force"]):
+            result = run(command, repo, env=private)
+            if result.returncode:
+                return {}, f"cannot check out the merge with {remote}/{base} to verify it: {result.stderr.strip()[:200]}"
+        # One commit of exactly the merged files, so a verify command that lists tracked files
+        # sees them, as in a checkout. No user or system Git configuration takes part.
+        clean = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+                 "GIT_AUTHOR_NAME": "agentsmith", "GIT_AUTHOR_EMAIL": "agentsmith@example.com",
+                 "GIT_COMMITTER_NAME": "agentsmith", "GIT_COMMITTER_EMAIL": "agentsmith@example.com"}
+        for command in (["git", "init", "-q"], ["git", "add", "--all", "--force"],
+                        ["git", "commit", "-q", "--no-verify", "-m", f"merge of {accepted[:12]} with {remote}/{base}"]):
+            result = run(command, workspace, env=clean)
+            if result.returncode:
+                return {}, f"cannot prepare the merge with {remote}/{base} to verify it: {result.stderr.strip()[:200]}"
+        # The verifier's own launch records go to the private folder, not the run's; the run's
+        # state, manifest and spec stay protected as in execute.
+        sandbox_state = {"run_id": state.get("run_id"), "repo": state["repo"], "manifest_path": state["manifest_path"],
+                         "spec_path": state["spec_path"], "state_path": str(run_dir / "state.json"),
+                         "attempt": state.get("attempt", 0), "stage": "delivering", "active_pid": None}
+        result = sandboxed_verify(manifest["verify"]["command"], workspace, timeout, verifier_env(),
+                                  state=sandbox_state, prefix="deliver-merge-verify")
+    outcome = verification_outcome(result)
+    output = hashlib.sha256(f"exit={result.returncode}\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+                            .encode("utf-8", "replace")).hexdigest()
+    record = {"needed": True, "base": f"{remote}/{base}", "base_commit": base_commit, "merge_tree": tree,
+              "verification": outcome["verification"], "exit_code": result.returncode,
+              "failing": outcome["failing"], "output_sha256": output}
+    if outcome["verification"] != "passed":
+        failing = ", ".join(outcome["failing"][:3])
+        return record, (f"the accepted commit merged with {remote}/{base} fails verification "
+                        f"({outcome['verification']}, exit {result.returncode})"
+                        + (f"; failing checks: {failing}" if failing else "") + "; rework the run on the new base")
+    return record, None
+
+
+def delivery_checks(repo: Path, state: dict[str, Any], remote: str, base: str | None,
+                    fetch: Callable[[str], int] | None = None) -> dict[str, Any]:
     """Every check `deliver` makes. Any mismatch refuses, with all reasons at once."""
     run_id = state.get("run_id")
     if state.get("status") == "awaiting-human":
@@ -3990,6 +4559,10 @@ def delivery_checks(repo: Path, state: dict[str, Any], remote: str, base: str | 
         staleness, problem = base_staleness(repo, remote, base, accepted)
         if problem:
             problems.append(problem)
+    # Every mode refuses a likely secret, --dry-run included: the push would publish it.
+    problems += history_secret_problems(repo, str(state["base_head"]), accepted, secret_allow_rules(repo))
+    packages, package_problems = package_checks(repo, str(state["base_head"]), accepted, fetch)
+    problems += package_problems
     if problems:
         raise RunError("deliver refused: " + "; ".join(problems))
     import risk_map
@@ -4004,8 +4577,15 @@ def delivery_checks(repo: Path, state: dict[str, Any], remote: str, base: str | 
     tier = risk_map.raise_tier(report["tier"], recorded if recorded in risk_map.TIERS else "A")
     tier = risk_map.raise_tier(tier, declared if declared in risk_map.TIERS else "A")
     floor = sorted(row["path"] for row in report["paths"] if any(reason.startswith("floor:") for reason in row["matched"]))
-    return {"state": state, "proof": proof, "checker": checker, "manifest": manifest, "accepted": accepted,
-            "branch": branch, "staleness": staleness, "paths": changed_paths(repo, str(state["base_head"]), accepted),
+    # Last, once every cheaper check passed: behind the base, the merge result itself must pass.
+    merge: dict[str, Any] = {"needed": False}
+    if staleness.get("behind"):
+        merge, problem = merge_verification(repo, state, manifest, remote, str(base), accepted)
+        if problem:
+            raise RunError("deliver refused: " + problem)
+    return {"state": state, "merge_verification": merge, "proof": proof, "checker": checker, "manifest": manifest, "accepted": accepted,
+            "branch": branch, "staleness": staleness, "packages": packages,
+            "paths": changed_paths(repo, str(state["base_head"]), accepted),
             "tier": {"tier": tier, "recorded": recorded, "recomputed": report["tier"], "declared": declared,
                      "lenses": report["lenses"], "policy_blob": report["policy"]["blob"], "floor_paths": floor},
             "calibration": calibration_status(repo, (manifest.get("roles") or {}).get("checker") or {})}
@@ -4090,7 +4670,7 @@ def eligibility(checks: dict[str, Any], sha: str, ci: dict[str, Any] | None,
 def delivery_body(checks: dict[str, Any], verdict: dict[str, Any]) -> str:
     state, proof, checker, manifest = checks["state"], checks["proof"], checks["checker"], checks["manifest"]
     tier, limits, staleness = checks["tier"], manifest.get("limits") or {}, checks["staleness"]
-    calibration = checks["calibration"]
+    calibration, merge = checks["calibration"], checks["merge_verification"]
     lines = [
         f"## Autonomous run {state['run_id']}",
         "",
@@ -4126,9 +4706,16 @@ def delivery_body(checks: dict[str, Any], verdict: dict[str, Any]) -> str:
         f"{float(state.get('claude_cost_usd', 0.0)):.2f} USD of {limits.get('claude_max_usd')}. Codex: "
         f"{state.get('codex_tokens_used')} tokens of {limits.get('codex_goal_tokens')}.",
         "",
+        # A maker chose these names, so they sit in a code block like the checker evidence.
+        *(["### Dependencies", "New packages and their registry lookup (local ones are not looked up):",
+           fenced("\n".join(f"- {row['name']}{' -> ' + row['lookup'] if 'lookup' in row else ''} "
+                             f"({row['ecosystem']}, {row['status']})" for row in checks["packages"])),
+           ""] if checks["packages"] else []),
         "### Base",
         f"{staleness['behind']} commit{'s' if staleness['behind'] != 1 else ''} behind {staleness['base']}; "
-        "the accepted diff applies cleanly.",
+        "the accepted diff applies cleanly."
+        + (f" The merge with {merge['base']} passed verification (exit {merge['exit_code']}; output "
+           f"`{merge['output_sha256']}`)." if merge.get("needed") else ""),
         "",
         verdict["line"],
         "",
@@ -4176,7 +4763,9 @@ def deliver(args: argparse.Namespace) -> int:
     report = {"run_id": args.run_id, "head": checks["accepted"], "branch": checks["branch"],
               "push_command": push_command(args.remote, checks["accepted"], checks["branch"]),
               "title": title, "body": body, "tier": checks["tier"],
-              "staleness": checks["staleness"], "calibration": calibration, "eligibility": verdict}
+              "staleness": checks["staleness"], "merge_verification": checks["merge_verification"],
+              "packages": checks["packages"], "calibration": calibration,
+              "eligibility": verdict}
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
         return 0

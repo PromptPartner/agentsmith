@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Risk map contracts: tiers from a committed policy, a fixed always-human floor, and renames
+"""Risk map contracts: tiers from a committed policy, a fixed floor (human, or C for dependencies), and renames
 classified by both paths. The JSON must be byte-identical on macOS, Linux and Windows."""
 
 from __future__ import annotations
@@ -167,6 +167,36 @@ class PureClassifyTests(unittest.TestCase):
         for path in lookalikes:
             with self.subTest(path=path):
                 self.assertEqual(risk_map.classify([path], rules)["tier"], "A")
+
+    def test_dependency_manifests_and_lockfiles_are_at_least_tier_c(self) -> None:
+        # A dependency change pulls in code from outside the diff, so no policy can rate it below C.
+        rules = self.rules({"paths": ["**"], "tier": "A"})
+        manifests = ("package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "requirements.txt",
+                     "requirements-dev.txt", "pyproject.toml", "poetry.lock", "uv.lock", "Pipfile",
+                     "Pipfile.lock", "go.mod", "go.sum", "Cargo.toml", "Cargo.lock", "Gemfile", "Gemfile.lock",
+                     "packages/web/package.json", "services/API/Requirements.TXT", "yarn.lock.")
+        for path in manifests:
+            with self.subTest(path=path):
+                row = risk_map.classify([path], rules)["paths"][0]
+                self.assertEqual(row["tier"], "C", row)
+                self.assertIn("floor:dependencies", row["matched"])
+        # The floor only raises: a stricter rule or the always-human floor still wins.
+        self.assertEqual(risk_map.classify(["package.json"], self.rules(
+            {"paths": ["**"], "tier": "human"}))["tier"], "human")
+        self.assertEqual(risk_map.classify([".harness/requirements.txt"], rules)["tier"], "human")
+        # With no matching rule the path stays human, as every unmatched path is.
+        self.assertEqual(risk_map.classify(["go.mod"], self.rules({"paths": ["src/**"], "tier": "A"}))["tier"],
+                         "human")
+        for path in ("docs/package.json.md", "src/requirements.py", "src/cargo_tool.rs", "gemfile_notes.txt"):
+            with self.subTest(lookalike=path):
+                self.assertEqual(risk_map.classify([path], rules)["tier"], "A")
+
+    def test_the_sample_policy_names_every_dependency_file_the_floor_names(self) -> None:
+        # templates/risk-policy.json mirrors the floor so a copied policy reads the same as the code.
+        sample = json.loads((ROOT / "templates" / "risk-policy.json").read_text(encoding="utf-8"))
+        listed = next(rule["paths"] for rule in sample["rules"] if "dependencies" in rule.get("lenses", []))
+        floor = sorted("**/" + name for name in risk_map.DEPENDENCY_FILES) + ["**/requirements*.txt"]
+        self.assertEqual(sorted(path.casefold() for path in listed), sorted(floor))
 
     def test_floor_folders_cover_the_folder_entry_itself(self) -> None:
         # A submodule or symlink can sit exactly at a floor folder's path.

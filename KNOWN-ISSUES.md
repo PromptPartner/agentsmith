@@ -12,6 +12,19 @@ been authorized, so the entries are kept here.
 - [ ] 2026-11-21 — Known limit of the attention budget (SF-18a), found by an independent Codex
   test: it is a soft limit. Two `prepare` or `start` calls made at the same moment, one run below
   the limit, can both pass, because nothing reserves a place between counting and writing.
+- [x] 2026-11-21 — Found by an independent test of SF-12b: `factory intake --draft-spec` checked
+  the path before reading the issue, then wrote it with a plain exclusive create. A folder on the
+  path replaced by a link during the read carried the draft out of the repository or into `.git`,
+  and a success record was appended. Fixed: on POSIX the write opens the repository root and
+  walks each folder with `O_NOFOLLOW` relative to its parent, refuses `.git` as any part, and
+  creates the file with `O_EXCL | O_NOFOLLOW`; the record is appended only after the draft is
+  written.
+- [ ] 2026-11-21 — Limit of `factory intake --draft-spec` on Windows, where Python cannot open a
+  file relative to a folder handle: the write resolves the parent folder again just before the
+  exclusive create, and refuses if it moved. A folder swapped for a link in the short window
+  between that check and the create is still followed, and a missing folder is created before the
+  check, so a swap can leave an empty folder outside the repository. No draft or record is written
+  in that case.
 - [ ] 2026-11-18 — Limit of the calibration staleness check (SF-09): a record goes stale when the
   configured model version differs from the calibrated one, but the version is read from the model
   name. A name with no version part, such as the alias `opus`, has an empty version, so when the

@@ -71,8 +71,9 @@ output.
 
 ## The fixed floor
 
-Some paths are `human` whatever the policy says. The floor is part of the program, not of the
-policy, so no policy can remove it. Names match ignoring case and trailing dots and spaces.
+Some paths are `human` whatever the policy says, and dependency files are never below `C`. The
+floor is part of the program, not of the policy, so no policy can remove it. Names match ignoring
+case and trailing dots and spaces.
 
 | Floor | Paths |
 |---|---|
@@ -81,6 +82,12 @@ policy, so no policy can remove it. Names match ignoring case and trailing dots 
 | Harness | `.harness/**` (including the policy itself), `.agentsmith/**`, `agentsmith.py`, `scripts/autonomous-run.py`, `native_launcher.py`, `work_graph.py`, `windows_verifier_sandbox.py`, `risk_map.py`, `scripts/verify*` |
 | Credentials | Names starting with `.env` or `id_`, names ending in `.pem` or `_key`, a `secrets` folder and anything inside it |
 | Migrations | A `migrations` folder and anything inside it |
+| Dependencies (at least `C`, not `human`) | `package.json`, `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `requirements*.txt`, `pyproject.toml`, `poetry.lock`, `uv.lock`, `Pipfile`, `Pipfile.lock`, `go.mod`, `go.sum`, `Cargo.toml`, `Cargo.lock`, `Gemfile` and `Gemfile.lock` at any depth |
+
+A dependency change pulls in code that is not in the diff, so the operator reviews it every time.
+The dependency floor only raises: a policy rule can still make the path `human`, and a dependency
+file that no rule matches is `human` like any unmatched path. The dependency rule in
+`templates/risk-policy.json` lists the same names.
 
 The floor errs toward review. The credential names can match ordinary files, such as
 `id_utils.py`; such a change is `human` and the operator reviews it.

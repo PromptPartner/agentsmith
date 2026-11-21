@@ -9393,12 +9393,29 @@ def cmd_lens(args: argparse.Namespace) -> int:
 
 
 def cmd_factory(args: argparse.Namespace) -> int:
-    """Readiness and numbers derived from runs, events, operator logs and read-only CI reads."""
+    """Readiness and numbers derived from runs, events, operator logs and read-only CI reads;
+    intake of one GitHub issue (read only) with the operator's verdict."""
     sys.dont_write_bytecode = True
     import factory
     import ci_watch
     repo = Path(args.target or os.getcwd()).expanduser().resolve()
     try:
+        if args.factory_command == "intake":
+            import inbox
+            result = factory.intake(repo, args.issue, inbox.Gh(), verdict=args.verdict, left_out=args.left_out or [],
+                                    questions=args.question or [], reason=args.reason, draft_spec=args.draft_spec,
+                                    cwd=Path.cwd())
+            text = (json.dumps(result, indent=2, sort_keys=True) + "\n" if args.json
+                    else factory.render_intake(result))
+            # The issue text is someone else's: write it so that no console encoding can fail on it.
+            stream = getattr(sys.stdout, "buffer", None)
+            if stream is None:
+                sys.stdout.write(text)
+            else:
+                sys.stdout.flush()
+                stream.write(text.encode(sys.stdout.encoding or "utf-8", "backslashreplace"))
+                stream.flush()
+            return 0
         if args.factory_command == "defect":
             print(f"recorded in {factory.add_defect(repo, args.sha, args.tier, args.note or '')}")
             return 0
@@ -9974,7 +9991,8 @@ def parser() -> argparse.ArgumentParser:
     for command in (lens_plan, lens_record, lens_report):
         command.add_argument("--json", action="store_true", help="schema-versioned output")
     factory_parser = sub.add_parser("factory", description="readiness and numbers for autonomous work, derived "
-                                                         "from runs, events and read-only CI reads; no stored board")
+                                                         "from runs, events and read-only CI reads; no stored board; "
+                                                         "and intake of one GitHub issue, read only")
     factory_sub = factory_parser.add_subparsers(dest="factory_command", required=True)
     ready = factory_sub.add_parser("readiness", description="Check whether this repository is ready for wider "
                                    "autonomy. Writes nothing in the repository or its Git folder (the sandbox probe uses a "
@@ -10010,7 +10028,24 @@ def parser() -> argparse.ArgumentParser:
     minutes_add = minutes_sub.add_parser("add")
     minutes_add.add_argument("run_id")
     minutes_add.add_argument("minutes", type=float)
-    for item in (exporting, defect_add, minutes_add):
+    intake = factory_sub.add_parser(
+        "intake", description="Read one GitHub issue of the origin remote's repository (one `gh issue view`, "
+        "a read only), remove hidden characters and HTML comments, and show it labelled untrusted. With "
+        "--verdict, record your verdict under the Git folder; with --draft-spec, also write a new `status: draft` "
+        "spec. Nothing is ever posted to the issue: no comments, no labels.")
+    intake.add_argument("issue", help="the issue number (7 or #7) or its URL")
+    intake.add_argument("--verdict", choices=["ACCEPT", "ACCEPT-RESCOPED", "NEEDS-INFO", "REJECT"],
+                        help="your verdict; without it the command only shows the sanitised issue")
+    intake.add_argument("--left-out", action="append", metavar="ITEM",
+                        help="for ACCEPT-RESCOPED (required, repeatable): what the rescope leaves out")
+    intake.add_argument("--question", action="append",
+                        help="for NEEDS-INFO (required, repeatable): what the issue must answer")
+    intake.add_argument("--reason", help="for REJECT (required): why")
+    intake.add_argument("--draft-spec", metavar="PATH",
+                        help="with ACCEPT or ACCEPT-RESCOPED: write a new status: draft spec here, inside the "
+                        "repository; an existing file is never overwritten")
+    intake.add_argument("--json", action="store_true", help="schema-versioned output")
+    for item in (exporting, defect_add, minutes_add, intake):
         item.add_argument("--target", help="Git repository (default: current directory)")
     ci = sub.add_parser("ci", description="report-only continuous-integration tools (GitHub, through gh)")
     ci_sub = ci.add_subparsers(dest="ci_command", required=True)

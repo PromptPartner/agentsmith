@@ -662,7 +662,43 @@ It refuses, and names every reason, unless all of these hold:
   fresh: `git ls-remote` (read-only) shows the remote still has it at the fetched commit. A remote
   that cannot be reached, or a base that moved since the last fetch, refuses with
   `base not fresh: … run git fetch <remote>`, because a stale copy could hide a conflict;
-- the accepted diff still applies to that fresh base (`git merge-tree`, Git 2.38 or later).
+- the accepted diff still applies to that fresh base (`git merge-tree`, Git 2.38 or later);
+- nothing the push would publish holds a likely secret. The `agentsmith secret-scan` patterns run
+  over the added lines of the accepted diff, over the changes of every commit between the base and
+  the accepted commit (a secret that a later commit removes is still in the pushed history), and
+  over every commit message, honouring `.harness/secret-scan.allow` in your checkout. This holds
+  for `--dry-run` too. Each finding names the path or commit and the line, never the value;
+- every package that a manifest gains between the base and the accepted commit exists in its
+  registry. `deliver` reads `package.json` (npm, `registry.npmjs.org`) and `requirements*.txt`,
+  `pyproject.toml` and `Pipfile` (PyPI, `pypi.org`), and looks up each new package once, as a
+  read-only request with no credentials. A package the registry does not have (404) refuses: a
+  model can name a package that does not exist, and whoever registers that name later decides
+  what an install runs. A requirements file is read as pip reads it: continued lines are joined,
+  comments are stripped, and the files it includes with `-r` or `-c` are read too, relative to
+  it; a change to an included file counts as a change to the requirements file. An existing npm
+  package whose spec moves to another source (a version that becomes a Git or URL source) is
+  checked like a new one. An npm alias (`npm:<target>@<range>`) is looked up as its target, and
+  each entry in the manifest gets its own verdict. These are *unverified* and refuse too, because
+  a check that could not run never counts as a pass: a lookup that gets no clear answer; a source
+  outside the registry (a Git, URL or path dependency, a Poetry or Pipfile table with any key
+  other than `version`, `extras`, `markers`, `python`, `optional`, `platform` or
+  `allow-prereleases`, a `[tool.uv.sources]` entry, an editable install, another index, or any
+  other requirements option); an include outside the repository or missing from it; a
+  requirement or environment marker that `deliver` cannot read; a manifest that does not parse or
+  does not have the shape its tool reads; and a changed `go.mod`, `Cargo.toml` or `Gemfile`, which
+  `deliver` cannot check. Local `file:`, `link:` and `workspace:` npm dependencies are listed but
+  not looked up. The new packages and their lookup appear in the body under Dependencies;
+- when the accepted commit is behind the fresh base, the merge of the two passes verification.
+  A clean `merge-tree` only proves that the diff applies; the merged code can still fail a test.
+  So `deliver` runs the manifest's verify command on the merge result, in the same verifier
+  sandbox as the run, after every other check has passed and before it prints anything to land.
+  The merge is built in a private object folder and checked out into a throwaway folder under
+  `/tmp`, which is removed afterwards. It is not a `git worktree`, because a new worktree or
+  object would change the Git metadata that parallel runs compare to catch tampering; the
+  repository gains nothing. A merge that fails (or whose verification is incomplete) refuses with
+  `the accepted commit merged with <remote>/<base> fails verification`. The outcome, the base
+  commit, the merge tree and the output hash are in the `--json` report under
+  `merge_verification`, and the body's Base section says that the merge passed.
 
 It then recomputes the risk tier with the policy at the base commit, over every path that any
 commit between the base and the accepted commit touches (renames, copies and each side of a merge
@@ -685,7 +721,8 @@ implementation ticket and the run branch. The body holds:
 - the checker calibration status. When it is not `passed` (for example, the record went stale
   after the acceptance), the body says the checker is advisory ("checker advisory");
 - the budgets used;
-- the base staleness;
+- the new packages and their registry lookup, when a manifest gained any;
+- the base staleness, and the merge verification when the accepted commit is behind the base;
 - the eligibility line.
 
 The maker's free-text summary is left out. The only text that a model wrote is the checker
