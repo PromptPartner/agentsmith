@@ -122,6 +122,14 @@ class Fixture(unittest.TestCase):
         (self.repo / ".gitignore").write_text("*.log\n", encoding="utf-8")
         self.git(self.repo, "add", ".")
         self.git(self.repo, "commit", "-qm", "test: base")
+        # A passed calibration of the fixture checker, so its acceptances gate instead of waiting for a human.
+        CONTROLLER.write_json(
+            CONTROLLER.calibration_path(self.repo, "claude", "fixture-model", "high"),
+            CONTROLLER.calibration_record(
+                {"runtime": "claude", "model": "fixture-model", "effort": "high"},
+                [{"label": "clean", "expected": "accepted", "verdict": "accepted", "correct": True},
+                 {"label": "defect", "expected": "rejected", "verdict": "rejected", "correct": True}],
+                client_version="fixture", usage={"claude_cost_usd": 0.0, "codex_tokens_used": 0}))
 
     def git(self, repo: Path, *args: str) -> str:
         return subprocess.run(["git", *args], cwd=repo, env=self.env, text=True, capture_output=True,

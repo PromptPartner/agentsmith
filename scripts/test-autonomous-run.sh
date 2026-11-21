@@ -149,8 +149,27 @@ new_repo() {
   sed '1d' "$d/docs/specs/test.md" > "$d/docs/specs/test.md.tmp"
   mv "$d/docs/specs/test.md.tmp" "$d/docs/specs/test.md"
   git -C "$d" add . && git -C "$d" commit -qm 'test: fixture'
+  calibrate_fixture "$d"
   printf '%s' "$d"
 }
+
+# A passed calibration of the fixture checkers (Claude and Codex), so their acceptances gate
+# instead of waiting for a human. `uncalibrate_fixture` removes it again.
+calibrate_fixture() {
+  python3 - "$1" "$ROOT/scripts/autonomous-run.py" <<'PY'
+import importlib.util, pathlib, sys
+spec = importlib.util.spec_from_file_location("fixture_controller", sys.argv[2])
+controller = importlib.util.module_from_spec(spec); spec.loader.exec_module(controller)
+cases = [{"label": "clean", "expected": "accepted", "verdict": "accepted", "correct": True},
+         {"label": "defect", "expected": "rejected", "verdict": "rejected", "correct": True}]
+for runtime in ("claude", "codex"):
+    checker = {"runtime": runtime, "model": "fixture-model", "effort": "high"}
+    controller.write_json(controller.calibration_path(pathlib.Path(sys.argv[1]), runtime, "fixture-model", "high"),
+                          controller.calibration_record(checker, cases, client_version="fixture",
+                                                        usage={"claude_cost_usd": 0.0, "codex_tokens_used": 0}))
+PY
+}
+uncalibrate_fixture() { rm -rf "$1/.git/agentsmith-calibrations"; }
 
 manifest() {
   local repo="$1" id="$2"
@@ -1118,7 +1137,7 @@ PY
 }
 for case in calibrate-correct:passed:0 calibrate-accept:failed:1 calibrate-reject:failed:1; do
   mode="${case%%:*}"; rest="${case#*:}"; expected="${rest%%:*}"; code="${rest#*:}"
-  repo="$(new_repo "$mode")"; make_fake "$repo/../fake"; manifest "$repo" "$mode"
+  repo="$(new_repo "$mode")"; make_fake "$repo/../fake"; manifest "$repo" "$mode"; uncalibrate_fixture "$repo"
   (cd "$repo" && invoke "$repo" "$mode" calibrate ".harness/runs/$mode.json" >../out 2>../err); rc=$?
   assert "$mode: calibrate exits $code" test "$rc" = "$code"
   assert "$mode: the calibration receipt says $expected" python3 - "$(calibration_record "$repo")" "$expected" "$mode" <<'PY'
@@ -1127,6 +1146,9 @@ record, expected, mode = json.loads(sys.argv[1]), sys.argv[2], sys.argv[3]
 assert record['status'] == expected, record
 assert (record['client'], record['model'], record['effort']) == ('claude', 'fixture-model', 'high'), record
 assert re.fullmatch(r'[0-9a-f]{64}', record['checker_prompt_sha256']) and record['calibrated_at']
+assert (record['model_family'], record['model_version'], record['n'], record['error_budget']) == ('fixture-model', '', 2, 0), record
+assert re.fullmatch(r'[0-9a-f]{64}', record['held_out_sha256']), record
+assert record['pass_rate'] == (1.0 if expected == 'passed' else 0.5), record
 cases = {case['label']: case for case in record['cases']}
 assert (cases['clean']['expected'], cases['defect']['expected']) == ('accepted', 'rejected'), cases
 wrong = {'calibrate-correct': set(), 'calibrate-accept': {'defect'}, 'calibrate-reject': {'clean'}}[mode]
@@ -1134,7 +1156,7 @@ assert {label for label, case in cases.items() if not case['correct']} == wrong,
 PY
 done
 # A run started after a passing calibration records it in its verification receipt.
-repo="$(new_repo calibrated-run)"; make_fake "$repo/../fake"; manifest "$repo" calibrated-run
+repo="$(new_repo calibrated-run)"; make_fake "$repo/../fake"; manifest "$repo" calibrated-run; uncalibrate_fixture "$repo"
 (cd "$repo" && invoke "$repo" calibrate-correct calibrate .harness/runs/calibrated-run.json >../out 2>../err)
 if (cd "$repo" && invoke "$repo" accept start .harness/runs/calibrated-run.json >../out 2>../err); then ok 'calibrated run accepted'
 else bad 'calibrated run was not accepted'; sed -n '1,5p' "$repo/../err"; fi
@@ -1145,12 +1167,16 @@ calibration = proof['checker_calibration']
 assert calibration['status'] == 'passed' and calibration['calibrated_at'], calibration
 PY
 repo="$(new_repo uncalibrated-run)"; make_fake "$repo/../fake"; manifest "$repo" uncalibrated-run
-(cd "$repo" && invoke "$repo" accept start .harness/runs/uncalibrated-run.json >../out 2>../err)
-assert 'an uncalibrated checker is recorded as such, and the run still proceeds' python3 - "$repo/.git/agentsmith-runs/uncalibrated-run/state.json" <<'PY'
+uncalibrate_fixture "$repo"
+(cd "$repo" && invoke "$repo" accept start .harness/runs/uncalibrated-run.json >../out 2>../err); rc=$?
+assert 'an uncalibrated checker acceptance exits 3, held for a human' test "$rc" = 3
+assert 'an uncalibrated checker is advisory: the run waits for a human, never accepted' python3 - "$repo/.git/agentsmith-runs/uncalibrated-run/state.json" <<'PY'
 import json, sys
 state = json.load(open(sys.argv[1])); proof = json.load(open(state['verification_receipt']))
-assert state['status'] == 'accepted' and proof['checker_calibration'] == {'status': 'none'}, proof.get('checker_calibration')
+assert state['status'] == 'awaiting-human' and 'accepted_commit' not in state, state['status']
+assert proof['checker_calibration'] == {'status': 'none'} and proof['checker_advisory'] is True, proof
 PY
+assert 'a held run is terminal for the live-run guard' bash -c "cd '$repo' && python3 '$repo/../fake/controller.py' status --all-terminal >/dev/null"
 
 echo 'autonomous-run — an acceptance must cite the verifier evidence'
 for mode in checker-no-citation checker-fabricated; do
