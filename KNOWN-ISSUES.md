@@ -20,6 +20,11 @@ been authorized, so the entries are kept here.
   so code written after reading the held-out tests could pass them later. Fixed: the canary token
   anywhere in a role's output, receipt, changes or commits now stops the run for a person; only a
   hit on the tripwire's name alone (a denied read) fails the attempt and keeps its commits.
+- [x] 2026-11-18 — Found by an independent test of the integration branch: a role could keep the
+  canary out of sight of the tripwire by committing it and reverting it in a later commit, or by
+  writing it to a file the worktree's `.gitignore` hides, and the run ended `accepted`. Fixed: the
+  tripwire also reads every commit the role made, with its patch, and every ignored file in the
+  worktree to its end.
 - [ ] 2026-11-14 — Limit of the hidden-test tripwire: it catches a role that shows the canary, not
   one that reads the held-out tests and never shows it, or changes the text first. The role
   sandbox's read denial stays the boundary.
