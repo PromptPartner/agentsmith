@@ -52,7 +52,8 @@ no text can move the cursor or clear the terminal. `--json` keeps the exact text
 (read-only `gh api --paginate` requests, so no list stops at a fixed limit). It needs `gh` installed and logged in, and fails with exit status 2
 and a clear message when it is not; without `--issues`, `gh` is never used. Triage is a draft
 disposition printed in the row (for example "direct" for an issue labelled `bug`). Nothing is
-written to GitHub: no labels, no comments, no assignment.
+written to GitHub: no labels, no comments, no assignment. To read one issue as untrusted input and
+record your verdict on it, use [`agentsmith factory intake`](31-factory-readiness.md#intake).
 
 A claim is local operator input, not part of the derived list: `inbox claim <issue>` records that
 you, or a session you started, are taking the issue. One claim per issue; a second claim is refused

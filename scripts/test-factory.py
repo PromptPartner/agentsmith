@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Factory readiness and numbers from fixture runs, events and recorded gh output. No network."""
+"""Factory readiness, numbers and intake from fixture runs, events and recorded gh output. No network."""
 
 from __future__ import annotations
 
