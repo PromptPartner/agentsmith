@@ -9,6 +9,11 @@ been authorized, so the entries are kept here.
   Windows, `prepare`, `start` and `resume` refuse a verify command that contains a pipeline, and the
   verifier refuses it again (exit 126, never a pass). A quoted or `^`-escaped `|` and `||` are
   allowed.
+- [x] 2026-11-21 — Test gap left open by SF-11: the Windows verifier's timeout was mapped to an
+  `incomplete` attempt, but only mocks proved it. Fixed: `scripts/test-windows-verifier-sandbox.py`
+  (Windows CI step "Windows verifier file and network boundary") now runs a slow command through
+  the real AppContainer verifier with a 15-second limit and asserts that it started, was stopped
+  well before it finished, and ends `incomplete`, not `passed`. It is skipped off Windows.
 - [ ] 2026-11-21 — Gap found while adding the attention budget (SF-18a): there is no command to
   dismiss a waiting run. A run leaves the inbox, and the budget count, only when it lands or when
   its branch is deleted; a deleted branch then shows as a warning for as long as the run folder

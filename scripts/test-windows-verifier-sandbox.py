@@ -216,6 +216,40 @@ class WindowsVerifierSandboxTests(unittest.TestCase):
         self.assertNotEqual(controller.verification_outcome(result)["verification"], "passed")
 
     @unittest.skipUnless(os.name == "nt", "requires native Windows AppContainer")
+    def test_a_slow_verify_command_ends_incomplete_not_passed(self) -> None:
+        # The real AppContainer path, no mocks: a suite that outlives the timeout is cut off, and
+        # its attempt is `incomplete` (it observed nothing), never `passed`.
+        spec = importlib.util.spec_from_file_location("agentsmith_timeout_verifier_test",
+                                                   ROOT / "scripts/autonomous-run.py")
+        assert spec and spec.loader
+        controller = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(controller)
+        with tempfile.TemporaryDirectory(prefix="agentsmith windows verifier timeout ") as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            probe = repo / "probe.py"
+            probe.write_text(
+                "from pathlib import Path\n"
+                "import time\n"
+                "Path('verifier-started').write_text('yes', encoding='utf-8')\n"
+                "time.sleep(600)\n"
+                "print('Ran 1 test')\n", encoding="utf-8",
+            )
+            started = time.monotonic()
+            result = controller.sandboxed_verify(f'"{sys.executable}" "{probe}"', repo, 15,
+                                                 controller.verifier_env())
+            elapsed = time.monotonic() - started
+            self.assertTrue((repo / "verifier-started").is_file(),
+                            f"the slow command never started: exit {result.returncode}; {result.stderr!r}")
+            self.assertTrue(controller.verifier_timed_out(result), (result.returncode, result.stderr))
+            outcome = controller.verification_outcome(result)
+            self.assertEqual(outcome["verification"], "incomplete", outcome)
+            self.assertIn("timed out", outcome["reason"])
+            self.assertLess(elapsed, 120, "the verifier waited for the slow command instead of stopping it")
+            self.assertEqual(list(repo.glob(".agentsmith-verifier-*")), [])
+
+    @unittest.skipUnless(os.name == "nt", "requires native Windows AppContainer")
     def test_parallel_verifiers_restore_shared_toolchain_acls(self) -> None:
         spec = importlib.util.spec_from_file_location("agentsmith_parallel_verifier_test",
                                                    ROOT / "scripts/autonomous-run.py")
