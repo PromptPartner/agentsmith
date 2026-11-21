@@ -181,7 +181,12 @@ without launching a checker, and the next maker reads why. A timeout therefore n
 the whole run by itself; the run escalates only when no wall-clock time is left for the next
 attempt. On macOS and Linux the verify command runs as `bash -o pipefail -c <command>`, so
 `pytest | tee log` fails when `pytest` fails. The Windows verifier runs the command through
-`cmd.exe`, which has no pipefail. The baseline and incomplete rules are ported from
+`cmd.exe`, which has no pipefail: `pytest | more` exits with the code of `more`, so a failing suite
+would pass. On Windows, `prepare`, `start` and `resume` therefore refuse a verify command that
+contains a pipeline, and the verifier refuses it again (exit 126, never a pass) if one reaches it.
+Use a single command, or a script that exits non-zero when its tests fail. A `|` inside double
+quotes, a `^|` escape and `||` (run the next command only on failure) are not pipelines and are
+allowed. The baseline and incomplete rules are ported from
 [CodeAF](https://github.com/Agent-Field/CodeAF) (Apache-2.0): `internal/verify/baseline.go` and
 `internal/seniordev/app/full_verification.go`.
 

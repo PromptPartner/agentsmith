@@ -199,6 +199,23 @@ class WindowsVerifierSandboxTests(unittest.TestCase):
             self.assertEqual(list(repo.glob(".agentsmith-verifier-*")), [])
 
     @unittest.skipUnless(os.name == "nt", "requires native Windows AppContainer")
+    def test_a_pipeline_is_refused_before_cmd_runs_it_without_pipefail(self) -> None:
+        spec = importlib.util.spec_from_file_location("agentsmith_pipeline_verifier_test",
+                                                   ROOT / "scripts/autonomous-run.py")
+        assert spec and spec.loader
+        controller = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(controller)
+        with tempfile.TemporaryDirectory(prefix="agentsmith windows pipeline ") as temporary:
+            repo = Path(temporary) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            command = f'"{sys.executable}" -c "raise SystemExit(3)" | sort'
+            result = controller.sandboxed_verify(command, repo, 20, controller.verifier_env())
+        self.assertEqual(result.returncode, 126)
+        self.assertIn("pipeline", result.stderr)
+        self.assertNotEqual(controller.verification_outcome(result)["verification"], "passed")
+
+    @unittest.skipUnless(os.name == "nt", "requires native Windows AppContainer")
     def test_parallel_verifiers_restore_shared_toolchain_acls(self) -> None:
         spec = importlib.util.spec_from_file_location("agentsmith_parallel_verifier_test",
                                                    ROOT / "scripts/autonomous-run.py")

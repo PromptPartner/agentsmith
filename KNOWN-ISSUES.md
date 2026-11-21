@@ -3,6 +3,12 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [x] 2026-11-21 — Gap left open by SF-11: on macOS and Linux the verify command runs under
+  `bash -o pipefail`, but the Windows verifier runs it through `cmd.exe`, which has no pipefail, so
+  a verify command such as `pytest | more` passed on Windows when its tests failed. Fixed: on
+  Windows, `prepare`, `start` and `resume` refuse a verify command that contains a pipeline, and the
+  verifier refuses it again (exit 126, never a pass). A quoted or `^`-escaped `|` and `||` are
+  allowed.
 - [ ] 2026-11-21 — Gap found while adding the attention budget (SF-18a): there is no command to
   dismiss a waiting run. A run leaves the inbox, and the budget count, only when it lands or when
   its branch is deleted; a deleted branch then shows as a warning for as long as the run folder

@@ -1315,6 +1315,9 @@ def validate_manifest(manifest: dict[str, Any], repo: Path) -> tuple[Path, str]:
     verify_config = manifest["verify"]
     if not isinstance(verify_config, dict) or not isinstance(verify_config.get("command"), str) or not verify_config["command"].strip():
         raise RunError("verify.command must name a required verification command")
+    refused = verify_command_problem(verify_config["command"])
+    if refused:
+        raise RunError(refused)
     validate_budgets(manifest)
     hidden = hidden_tests_problem(manifest, repo)
     if hidden:
@@ -1488,6 +1491,11 @@ def prepare(args: argparse.Namespace) -> int:
     if unset:
         raise RunError(f"{', '.join(unset)} are blank or placeholders; pass --maker-model and "
                        "--checker-model, or fill them in the template, before prepare writes a manifest")
+    verify_config = manifest.get("verify")
+    refused = verify_command_problem(verify_config["command"]) if isinstance(verify_config, dict) \
+        and isinstance(verify_config.get("command"), str) else None
+    if refused:
+        raise RunError(refused)
     validate_budgets(manifest)
     hidden = hidden_tests_problem(manifest, repo)
     if hidden:
@@ -1775,6 +1783,36 @@ NAMED_CHECKS = (
     ("passing", re.compile(r"^(\S+::\S+) PASSED\b"), "{}"),
     ("failing", re.compile(r"^(\S+::\S+) (?:FAILED|ERROR)\b"), "{}"),
 )
+
+
+WINDOWS_PIPELINE_REFUSAL = (
+    "the verify command contains a pipeline (`|`), and the Windows verifier runs it through cmd.exe, "
+    "which has no pipefail: `tests | more` would pass when the tests fail. Use a single command, or a "
+    "script that exits non-zero when its tests fail, as verify.command")
+
+
+def windows_pipeline(command: str) -> bool:
+    """Whether cmd.exe would run `command` as a pipeline. A `|` inside double quotes or escaped
+    with `^` is text, and `||` runs the next command only on failure, which is not a pipeline."""
+    quoted = False
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if char == '"':
+            quoted = not quoted
+        elif not quoted and char == "^":
+            index += 1
+        elif not quoted and char == "|":
+            if command[index + 1:index + 2] != "|":
+                return True
+            index += 1
+        index += 1
+    return False
+
+
+def verify_command_problem(command: str) -> str | None:
+    """Why this platform's verifier cannot judge `command` fail-closed, or None."""
+    return WINDOWS_PIPELINE_REFUSAL if sys.platform == "win32" and windows_pipeline(command) else None
 
 
 def verifier_timed_out(result: subprocess.CompletedProcess[str]) -> bool:
@@ -2238,6 +2276,11 @@ def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str],
     if sys.platform == "win32" and read_dirs:
         return subprocess.CompletedProcess([], 126, "", "hidden tests need the macOS or Linux verifier sandbox")
     if sys.platform == "win32":
+        # Checked again here, not only at prepare and start: deliver and a graph child reach the
+        # verifier too, and a pipeline cmd.exe runs without pipefail must never be judged.
+        refused = verify_command_problem(command)
+        if refused:
+            return subprocess.CompletedProcess([command], 126, "", refused)
         # The Windows verifier points HOME, USERPROFILE, APPDATA, TEMP and TMP at the disposable
         # worktree and LOCALAPPDATA at a temporary AppContainer profile, both private to it.
         from windows_verifier_sandbox import run_verifier
