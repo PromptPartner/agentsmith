@@ -105,6 +105,14 @@ class GraphDispatchTests(unittest.TestCase):
         git(self.repo, "init", "-q")
         git(self.repo, "config", "user.name", "Harness Test")
         git(self.repo, "config", "user.email", "user@example.com")
+        # A passed calibration of the fixture checker, so its acceptances gate instead of waiting for a human.
+        CONTROLLER.write_json(
+            CONTROLLER.calibration_path(self.repo, "claude", "fixture-model", "high"),
+            CONTROLLER.calibration_record(
+                {"runtime": "claude", "model": "fixture-model", "effort": "high"},
+                [{"label": "clean", "expected": "accepted", "verdict": "accepted", "correct": True},
+                 {"label": "defect", "expected": "rejected", "verdict": "rejected", "correct": True}],
+                client_version="fixture", usage={"claude_cost_usd": 0.0, "codex_tokens_used": 0}))
         spec = self.repo / "docs/specs/accepted.md"
         spec.parent.mkdir(parents=True)
         spec.write_text(

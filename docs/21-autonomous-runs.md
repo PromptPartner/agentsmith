@@ -41,7 +41,7 @@ python3 .agentsmith/autonomous-run.py prepare --run-id <new-id> --spec docs/spec
   --ticket <ticket> --rework-of <finished-run-id> --note <file in the repository>
 ```
 
-The run it reworks must be finished (`accepted`, `escalated` or `interrupted`), and it is never
+The run it reworks must be finished (`accepted`, `awaiting-human`, `escalated` or `interrupted`), and it is never
 reopened: a rework is always a new run with a new ID. The manifest pins the note by path and
 SHA-256 in `rework`, and `start` and `resume` refuse when the note changed after `prepare`.
 The maker receives the note through its prompt, marked as a rework of the earlier run. A note
@@ -172,16 +172,63 @@ so the verifier cannot see the defect, but the code breaks the spec, and the che
 it. Each candidate goes through the real verifier sandbox and the real checker launch. The command
 writes a calibration receipt to the repository's Git folder, under `agentsmith-calibrations/`. The
 receipt records the status, the date, the client and its version, the model, the effort, the hash
-of the checker prompt template, each candidate's verdict and the spend. The status is `passed`
-(both verdicts right), `failed` (a wrong verdict, an acceptance whose citations do not hold, or a
-receipt that does not name the candidate) or `error` (the client could not run). The exit code is
-0, 1 or 2 to match. `--max-usd` (default 1.0) caps Claude spend, `--max-tokens` (default 400,000)
-caps Codex tokens and `--wall-minutes` (default 20) caps time. Every later run records the latest
-calibration for its checker client, model, effort and prompt hash as `checker_calibration` in its
-verification receipt, or `{"status": "none"}` when none matches. A changed prompt template needs a
-new calibration. This is a record only: no run waits for or depends on a calibration yet. Roles
-cannot write the calibration folder. In a measured run on 2026-11-06, a small model (`haiku` at low
-effort) failed calibration because its receipts did not name the candidate commit.
+of the checker prompt template, each candidate's verdict and the spend. It also records:
+
+- the model family and version (`model_family`, `model_version`): `claude-opus-5-5` is the family
+  `claude-opus` and the version `5-5`, and a name with no version part, such as the alias `opus`,
+  has an empty version;
+- the held-out set by its hash (`held_out_sha256`): the labelled candidates, their spec, test and
+  verify command;
+- `n` (the number of cases), `pass_rate` (the share judged right) and `error_budget` (the wrong
+  verdicts allowed, now 0).
+
+The status is `passed` (wrong verdicts within the error budget), `failed` (a wrong verdict, an
+acceptance whose citations do not hold, or a receipt that does not name the candidate) or `error`
+(the client could not run, or no case was judged). The exit code is 0, 1 or 2 to match.
+`--max-usd` (default 1.0) caps Claude spend, `--max-tokens` (default 400,000) caps Codex tokens
+and `--wall-minutes` (default 20) caps time. Every later run records the latest calibration for its checker client, model family,
+effort and prompt hash as `checker_calibration` in its verification receipt, or
+`{"status": "none"}` when none matches. A changed prompt template needs a new calibration. The
+run does not trust the record's `passed` on its own word:
+
+- A record that names another checker reads `stale`: its `client`, `effort`,
+  `checker_prompt_sha256` and `model_family` must equal the configured checker's. So does a record
+  whose model version or held-out set differs from the current one, or which does not name them
+  (an older record). The reason is in `stale_reason`.
+- A `passed` record whose score does not bear it out reads `invalid`, with the reason in
+  `invalid_reason`. The score must hold: `n` is at least 1, `cases` holds exactly `n` case
+  records, the wrong verdicts are within the error budget, `pass_rate` equals the share judged
+  right (rounded to three places), and `error_budget` equals the controller's own budget, so a
+  record cannot raise it.
+- A record that is a symbolic link, is not a regular file, or is over 1 MiB is not read: it
+  reads `unreadable`, as does one that is not valid JSON. No calibration file stops or crashes
+  a run.
+
+Roles cannot write the calibration folder. In a measured run on 2026-11-06, a small model
+(`haiku` at low effort) failed calibration because its receipts did not name the candidate commit.
+
+**The checker is advisory until its calibration passes.** Only a `passed` calibration lets a
+checker acceptance count. The controller reads the calibration again at the acceptance decision,
+because the receipt's copy was taken before the checker ran, and the record may change while it
+runs. It gates on that fresh value and writes it to the receipt's `checker_calibration`. When
+every other gate passes (the verifier, the baseline comparison, the citations, the stop check and
+the branch check) but the calibration is `none`, `failed`, `error`, `stale`, `invalid` or
+`unreadable`, the run does not become `accepted`. It ends in the held state
+`awaiting-human` and exits 3:
+
+- `held_commit` names the candidate the checker accepted, and `reason` begins with
+  `checker advisory: calibration <status>`;
+- the `run_awaiting_human` event records the commit and the calibration status;
+- the verification receipt records `checker_advisory: true` (an accepted run records `false`).
+
+The run is finished for the controller: the live-run guard counts it as terminal, `stop` reports
+it as finished, and `resume` refuses it, because a new attempt would replace the held candidate.
+There is no approve command, so `deliver` refuses it too. The next step is the same everywhere: a
+human reviews and re-runs with an explicit approval. Review the held commit, run `calibrate`
+until it passes for this checker, then prepare a rework of the run (`prepare … --rework-of
+<run-id> --note <file>`) and start it. The inbox lists the run as `awaiting-human`. In a work
+graph, such a child is `blocked`, with its reason. Choosing another model, or escalating to a
+stronger one, is not automatic.
 
 **The run receipt records the risk tier.** At acceptance the controller classifies the change from
 the base commit to the accepted commit, as `agentsmith risk classify` does (see
@@ -255,7 +302,7 @@ Chain it in front of every Git metadata write, so the write runs only on exit 0:
 python3 .agentsmith/autonomous-run.py status --all-terminal && git worktree remove <path>
 ```
 
-Only `accepted`, `escalated` and `interrupted` runs and `completed`, `failed`, `stopped` and
+Only `accepted`, `awaiting-human`, `escalated` and `interrupted` runs and `completed`, `failed`, `stopped` and
 `blocked` graphs count as terminal, once no controller or role process for them is live. A run
 folder that holds files but no state (for example a lock left by a start that crashed) is
 undetermined: inspect it and remove it by hand before the guard can answer 0.
@@ -445,14 +492,15 @@ inside library code. The controller acts on the stop at its next safe point:
 - while a role or verifier runs, checked every half second; a process that ignores the signal
   is then killed;
 - a saved stage checkpoint;
-- the moment before the acceptance or attempt-cap record;
+- the moment before the acceptance or attempt-cap record, and again after the last write of the
+  verification receipt, just before the run becomes `accepted` or `awaiting-human`;
 - a wait for a Git phase or the coordination lock.
 
 It never acts inside a Git call or a lock release.
 `stop` never writes `state.json` itself. If the controller has already died,
 the request remains in place and `resume` reconciles the interruption after acquiring the stale
-lock. A run that has already recorded `accepted` or `escalated` keeps that result: a stop that
-arrives later changes nothing, and `stop` reports the finished result instead.
+lock. A run that has already recorded `accepted`, `awaiting-human` or `escalated` keeps that
+result: a stop that arrives later changes nothing, and `stop` reports the finished result instead.
 
 `resume <id>` works only when the committed manifest, accepted spec, base commit, recorded branch,
 and worktree still match and the worktree is clean. A changed contract requires a new run ID rather
@@ -478,8 +526,9 @@ ordinary descendants; detached daemons and hostile process interference require 
 Native Windows starts fail closed until native role containment is qualified; standalone Windows
 verifier support is unchanged.
 
-An accepted run prints the branch, commit, worktree, and evidence for human review. An escalated
-run prints the exact boundary that stopped it. Nothing leaves the machine until the operator
+An accepted run prints the branch, commit, worktree, and evidence for human review. A run held as
+`awaiting-human` prints the held commit, why the checker was advisory, and the next step. An
+escalated run prints the exact boundary that stopped it. Nothing leaves the machine until the operator
 separately authorizes the relevant external action.
 
 ### Hidden acceptance tests (opt-in)
@@ -534,7 +583,9 @@ content, and removes it when the role ends. The suite comes from `git archive` o
 commit, so this untracked file never joins it, but the controller needs write access to the
 clone and refuses to launch a role without it. After the role ends, the controller looks for the
 token or the file's name in the role's output, its receipt, the changes it left in its worktree
-(committed, uncommitted or untracked) and its new commit messages, and records a
+(committed, uncommitted or untracked), every commit it made with its message and patch (so a
+commit it reverted later still counts), and the files Git ignores in its worktree, which are read
+to their end. It records a
 `hidden_test_probe` event that names the role, where the hit was and whether it was the token.
 Either hit is never counted as an infrastructure failure, so the role is not relaunched, and the
 role's output files keep only a hash and its receipt is not saved.
@@ -564,7 +615,9 @@ python3 .agentsmith/autonomous-run.py deliver <run-id> --dry-run [--json]
 
 It refuses, and names every reason, unless all of these hold:
 
-- the run is `accepted`, and its branch `agentsmith/<run-id>` still points at the accepted commit;
+- the run is `accepted`, and its branch `agentsmith/<run-id>` still points at the accepted commit.
+  A run that is `awaiting-human` is refused with its reason and the next step: a human reviews and
+  re-runs with an explicit approval;
 - the verification receipt names that commit, the checker receipt still matches its recorded
   hash and accepts that commit, and the receipt records that the citations were checked;
 - the verifier log still matches its recorded hash, and the citations that quote it still hold
@@ -630,7 +683,8 @@ implementation ticket and the run branch. The body holds:
 - the paths that Git reports as changed;
 - the tier and its lenses;
 - the verifier and checker evidence;
-- the checker calibration status;
+- the checker calibration status. When it is not `passed` (for example, the record went stale
+  after the acceptance), the body says the checker is advisory ("checker advisory");
 - the budgets used;
 - the new packages and their registry lookup, when a manifest gained any;
 - the base staleness, and the merge verification when the accepted commit is behind the base;
