@@ -350,6 +350,7 @@ fi
 assert 'accepted run says no external action occurred' grep -q 'nothing was pushed' "$repo/../out"
 assert 'status reads durable accepted state' bash -c "cd '$repo' && python3 '$repo/../fake/controller.py' status success | grep -q '\"status\": \"accepted\"'"
 assert 'status reports who set the budget and why' bash -c "cd '$repo' && python3 '$repo/../fake/controller.py' status success | grep -q '\"budget_rationale\": \"size S fixture; set by Test Operator\"'"
+assert 'status shows the base commit verify result every attempt is compared with' bash -c "cd '$repo' && python3 '$repo/../fake/controller.py' status success | python3 -c 'import json, sys; b = json.load(sys.stdin)[\"verification_baseline\"]; assert (b[\"verification\"], b[\"exit_code\"], b[\"failing\"]) == (\"failed\", 1, [\"the verify command\"]), b'"
 assert 'run branch exists only locally' git -C "$repo" show-ref --verify --quiet refs/heads/agentsmith/success
 assert 'runtime usage is accumulated across the run' python3 - "$repo/.git/agentsmith-runs/success/state.json" <<'PY'
 import json, sys

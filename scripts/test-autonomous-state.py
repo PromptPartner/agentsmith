@@ -2519,6 +2519,39 @@ class AutonomousStateTests(unittest.TestCase):
         self.assertTrue(CONTROLLER.verifier_timed_out(result))
         self.assertEqual(CONTROLLER.verification_outcome(result)["verification"], "incomplete")
 
+    def test_status_shows_the_verifier_baseline_when_the_run_has_one(self) -> None:
+        # The base commit's verify result decides what counts as a regression, so the operator
+        # reading `status` sees it, and sees no baseline key before the first verify stage.
+        with tempfile.TemporaryDirectory(prefix="agentsmith status baseline ") as temporary:
+            repo = Path(temporary).resolve() / "repo"
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            run_dir = repo / ".git/agentsmith-runs/item"
+            run_dir.mkdir(parents=True)
+            state = {"run_id": "item", "status": "checking", "attempt": 1, "base_head": "b" * 40}
+
+            def shown() -> dict[str, Any]:
+                (run_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+                output = io.StringIO()
+                with mock.patch.object(CONTROLLER.Path, "cwd", return_value=repo), \
+                        contextlib.redirect_stdout(output):
+                    self.assertEqual(CONTROLLER.status_cmd(CONTROLLER.parser().parse_args(["status", "item"])), 0)
+                return json.loads(output.getvalue())
+
+            self.assertNotIn("verification_baseline", shown())
+            state["verification_baseline"] = {
+                "commit": "b" * 40, "exit_code": 1, "verification": "failed", "reason": None,
+                "passing": ["phase: build"], "failing": ["phase: tests", "the verify command"],
+                "output_sha256": "c" * 64}
+            self.assertEqual(shown()["verification_baseline"], {
+                "commit": "b" * 40, "verification": "failed", "exit_code": 1,
+                "passing": ["phase: build"], "failing": ["phase: tests", "the verify command"]})
+            state["verification_baseline"] = {
+                "commit": "b" * 40, "exit_code": 126, "verification": "incomplete", "passing": [],
+                "failing": [], "reason": "the verify command timed out before it finished",
+                "output_sha256": "c" * 64}
+            self.assertEqual(shown()["verification_baseline"]["reason"],
+                             "the verify command timed out before it finished")
+
     def test_windows_refuses_a_verify_pipeline_it_cannot_fail_closed(self) -> None:
         # cmd.exe has no pipefail: `pytest | more` exits with `more`'s code, so a failing suite
         # could pass. Windows refuses a pipeline; `||`, `&&` and a quoted or escaped `|` are not one.

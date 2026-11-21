@@ -166,7 +166,9 @@ in the run state (`baseline-verify.txt` keeps the raw output, and the events fil
 commit cannot change, so the result is the same, and parallel runs do not delay each other's
 makers (on Windows every verifier call holds one machine-wide lock). A run that stops before
 its first verification takes no baseline. A resumed run keeps a stored baseline; it is never
-taken again from a later tree. Every attempt is compared with it, not with the attempt before: a check that passed on the
+taken again from a later tree. Once it exists, `status <id>` shows it as `verification_baseline`:
+the base commit, its `verification` (`passed`, `failed` or `incomplete`), the exit code, the
+reason for an incomplete result, and the `passing` and `failing` checks. Every attempt is compared with it, not with the attempt before: a check that passed on the
 base commit and fails now is listed under `regressions` in the attempt's verification receipt and
 in its `attempt_rejected` event, even when an earlier attempt broke it. A check is a
 `scripts/verify.sh` phase, a Python `unittest` or `pytest` test named in the output, or the verify

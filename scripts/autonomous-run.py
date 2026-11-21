@@ -3677,6 +3677,12 @@ def status_cmd(args: argparse.Namespace) -> int:
     view = {key: state.get(key) for key in keys if state.get(key) is not None}
     if isinstance(state.get("risk"), dict):
         view["risk_tier"] = state["risk"].get("tier")  # report-only: it decides nothing yet
+    baseline = state.get("verification_baseline")
+    if isinstance(baseline, dict):
+        # What every attempt is compared with: a check passing here and failing later regressed.
+        view["verification_baseline"] = {key: baseline[key] for key in
+                                         ("commit", "verification", "exit_code", "reason", "passing", "failing")
+                                         if baseline.get(key) is not None}
     print(json.dumps(view, indent=2))
     return 0
 

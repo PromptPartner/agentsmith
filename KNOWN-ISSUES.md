@@ -14,6 +14,11 @@ been authorized, so the entries are kept here.
   (Windows CI step "Windows verifier file and network boundary") now runs a slow command through
   the real AppContainer verifier with a 15-second limit and asserts that it started, was stopped
   well before it finished, and ends `incomplete`, not `passed`. It is skipped off Windows.
+- [x] 2026-11-21 — Gap left open by SF-11: the run stored the verify result of its base commit as
+  `verification_baseline`, and every attempt is judged against it, but `status <id>` did not show
+  it, so an operator could not see why a check counted as a regression without reading
+  `state.json`. Fixed: `status` prints `verification_baseline` (commit, verification, exit code,
+  reason, passing and failing checks) once the run has one.
 - [ ] 2026-11-21 — Gap found while adding the attention budget (SF-18a): there is no command to
   dismiss a waiting run. A run leaves the inbox, and the budget count, only when it lands or when
   its branch is deleted; a deleted branch then shows as a warning for as long as the run folder
