@@ -19,6 +19,8 @@ POLICY_PATH = ".harness/risk-policy.json"
 TIERS = ("A", "B", "C", "human")
 LENS_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 MAX_POLICY_BYTES = 256 * 1024
+# The attention budget: how many runs may wait on the operator before `prepare` refuses a new one.
+DEFAULT_ATTENTION_LIMIT = 5
 # `git rev-parse --local-env-vars`: settings that point Git at a repository other than --target.
 REPOSITORY_ENV = frozenset({
     "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
@@ -125,18 +127,23 @@ def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 def load_policy(data: bytes | None) -> dict[str, Any]:
     """Validate policy bytes. None (no policy at the base commit) gives a policy with no rules."""
     if data is None:
-        return {"rules": []}
+        return {"rules": [], "attention_limit": DEFAULT_ATTENTION_LIMIT}
     if len(data) > MAX_POLICY_BYTES:
         raise PolicyError("policy is larger than 256 KiB")
     try:
         policy = json.loads(data.decode("utf-8"), object_pairs_hook=_strict_object)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise PolicyError(f"policy is not valid JSON: {exc}") from None
-    if not isinstance(policy, dict) or set(policy) != {"schema_version", "rules"}:
-        raise PolicyError("policy must be an object with exactly schema_version and rules")
+    if not isinstance(policy, dict) or not {"schema_version", "rules"} <= set(policy) \
+            <= {"schema_version", "rules", "attention_limit"}:
+        raise PolicyError("policy must be an object with schema_version and rules, and optionally attention_limit")
     if type(policy["schema_version"]) is not int or policy["schema_version"] != SCHEMA_VERSION \
             or not isinstance(policy["rules"], list):
         raise PolicyError(f"policy needs schema_version {SCHEMA_VERSION} and a rules array")
+    limit = policy.get("attention_limit", DEFAULT_ATTENTION_LIMIT)
+    if type(limit) is not int or limit < 1:
+        raise PolicyError("attention_limit must be a positive integer: the most runs that may wait on you "
+                          "before prepare refuses a new one")
     rules = []
     for number, rule in enumerate(policy["rules"], start=1):
         where = f"rule {number}"
@@ -154,7 +161,17 @@ def load_policy(data: bytes | None) -> dict[str, Any]:
             raise PolicyError(f"{where}: lenses must be lowercase ids such as 'security'")
         rules.append({"id": f"rule:{number}", "patterns": [_compile(path) for path in paths], "tier": rule["tier"],
                       "lenses": sorted(set(lenses))})
-    return {"rules": rules}
+    return {"rules": rules, "attention_limit": limit}
+
+
+def attention_limit(repo: Path, ref: str = "HEAD") -> int:
+    """The attention budget from the policy as committed at `ref`, so an uncommitted edit cannot
+    change it. A repository with no commit yet, or no policy, has the default."""
+    try:
+        commit = _commit(repo, ref)
+    except RiskError:
+        return DEFAULT_ATTENTION_LIMIT
+    return _policy_at(repo, commit)[0]["attention_limit"]
 
 
 def raise_tier(recorded: str, proposed: str) -> str:

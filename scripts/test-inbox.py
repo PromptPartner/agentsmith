@@ -148,6 +148,24 @@ class RowKindTests(InboxCase):
         self.assertEqual(self.collect()["rows"], [])
 
 
+class WaitingRunsTests(InboxCase):
+    def test_waiting_runs_are_exactly_the_run_rows_of_the_inbox(self) -> None:
+        # The attention budget and the sweep count these; they must never disagree with the inbox.
+        accepted = self.repo.branch("agentsmith/acc", self.base, {"src/a.py": b"a\n"})
+        self.repo.run_state("acc", status="accepted", base_head=self.base, accepted_commit=accepted)
+        self.repo.branch("agentsmith/esc", self.base, {"docs/x.md": b"x\n"})
+        self.repo.run_state("esc", status="escalated", base_head=self.base, reason="attempt cap reached (3)")
+        self.repo.branch("agentsmith/dead", self.base, {"src/c.py": b"c\n"})
+        self.repo.run_state("dead", status="making", base_head=self.base, active_pid=dead_pid())
+        self.repo.run_state("gone", status="escalated", base_head=self.base, reason="x")  # its branch is gone
+        self.repo.commit({"docs/specs/new-thing.md": b"---\nstatus: draft\n---\n# Spec\n"}, "a draft spec")
+        report = self.collect()
+        waiting = inbox.waiting_runs(self.repo.root, now=lambda: NOW)
+        self.assertEqual(waiting["rows"], [row for row in report["rows"] if row["kind"] in inbox.RUN_KINDS])
+        self.assertEqual({row["id"] for row in waiting["rows"]}, {"acc", "esc", "dead"})
+        self.assertTrue(any("gone" in warning for warning in waiting["warnings"]), waiting["warnings"])
+
+
 class OriginBaseTests(InboxCase):
     def test_a_dangling_origin_head_falls_back_to_an_existing_base_with_a_warning(self) -> None:
         landed = self.repo.branch("agentsmith/landed", self.base, {"src/a.py": b"a\n"})
@@ -199,25 +217,32 @@ class ContradictionTests(InboxCase):
         broken.mkdir(parents=True)
         (broken / "state.json").write_text("{not json", encoding="utf-8")
         report = self.collect()
-        self.assertEqual(report["rows"], [])
+        # A state that cannot be read is damage, not a contradiction: it is listed, never dropped.
+        self.assertEqual([(row["kind"], row["id"]) for row in report["rows"]], [("damaged", "broken")])
         joined = "\n".join(report["warnings"])
-        for name in ("gone", "rewritten", "ghost", "g2", "broken"):
+        for name in ("gone", "rewritten", "ghost", "g2"):
             self.assertIn(name, joined)
-        self.assertEqual(len(report["warnings"]), 5, report["warnings"])
+        self.assertEqual(len(report["warnings"]), 4, report["warnings"])
 
 
 class MalformedStateTests(InboxCase):
-    def test_a_malformed_run_state_becomes_a_warning_and_other_rows_stay(self) -> None:
+    def test_a_malformed_run_state_is_a_damaged_row_and_other_rows_stay(self) -> None:
         self.repo.branch("agentsmith/good", self.base, {"src/a.py": b"a\n"})
         self.repo.run_state("good", status="escalated", base_head=self.base, reason="needs operator")
         for name, fields in (("list-status", {"status": []}), ("dict-branch", {"status": "escalated", "branch": {}}),
                              ("odd-pid", {"status": "making", "active_pid": [1]}),
                              ("odd-times", {"status": "interrupted", "updated_at": [], "base_head": 5})):
             self.repo.run_state(name, **{"base_head": self.base, **fields})
+        self.repo.run_state("unknown", status="paused", base_head=self.base)
         report = self.collect()
-        self.assertEqual([(row["kind"], row["id"]) for row in report["rows"]], [("escalated", "good")], report)
-        for name in ("list-status", "dict-branch", "odd-pid", "odd-times"):
-            self.assertTrue(any(warning.startswith(f"run {name}:") for warning in report["warnings"]), report["warnings"])
+        # Damage fails closed: a run whose record cannot be trusted waits on the operator.
+        self.assertEqual([(row["kind"], row["id"]) for row in report["rows"]],
+                         [("damaged", "dict-branch"), ("damaged", "list-status"), ("damaged", "odd-times"),
+                          ("damaged", "unknown"), ("escalated", "good")], report)
+        # odd-pid's branch does not exist: Git contradicts it, so it is dropped with a warning.
+        self.assertTrue(any(warning.startswith("run odd-pid:") for warning in report["warnings"]), report["warnings"])
+        self.assertEqual({row["id"] for row in inbox.waiting_runs(self.repo.root, now=lambda: NOW)["rows"]},
+                         {"good", "dict-branch", "list-status", "odd-times", "unknown"})
 
 
 class NoWriteTests(InboxCase):
@@ -295,8 +320,8 @@ class GitHubTests(InboxCase):
         fake = FakeGh(self.ISSUES, [{"number": 70, "headRefOid": accepted, "url": "https://github.com/owner/name/pull/70"}])
         report = self.collect(gh=inbox.Gh(runner=fake, which=lambda _: "gh"), repo_name="owner/name")
         rows = self.rows(report)
-        # The accepted commit is an open pull request's head, so it waits on that PR, not here.
-        self.assertNotIn(("accepted", "acc"), rows)
+        # The accepted commit is an open pull request's head: merging it is still the operator's work.
+        self.assertIn("an open pull request has it as its head", rows[("accepted", "acc")]["next_step"])
         self.assertEqual(rows[("untriaged", "#12")]["age"], "3d")
         self.assertIn("claimed", rows[("untriaged", "#12")]["next_step"])
         self.assertIn("draft disposition", rows[("untriaged", "#13")]["next_step"])
@@ -314,7 +339,24 @@ class GitHubTests(InboxCase):
         report = self.collect(gh=inbox.Gh(runner=FakeGh(issues, prs), which=lambda _: "gh"), repo_name="owner/name")
         kinds = [row["kind"] for row in report["rows"]]
         self.assertEqual(kinds.count("untriaged"), 250)
-        self.assertNotIn("accepted", kinds)  # its pull request is the 201st open one
+        self.assertEqual(kinds.count("accepted"), 1)  # its pull request is the 201st open one
+        self.assertIn("an open pull request has it as its head",
+                      self.rows(report)[("accepted", "acc")]["next_step"])
+
+    def test_waiting_runs_agree_with_the_inbox_with_and_without_github(self) -> None:
+        in_pr = self.repo.branch("agentsmith/in-pr", self.base, {"src/a.py": b"a\n"})
+        self.repo.run_state("in-pr", status="accepted", base_head=self.base, accepted_commit=in_pr)
+        unpushed = self.repo.branch("agentsmith/unpushed", self.base, {"src/b.py": b"b\n"})
+        self.repo.run_state("unpushed", status="accepted", base_head=self.base, accepted_commit=unpushed)
+        self.repo.branch("agentsmith/esc", self.base, {"docs/x.md": b"x\n"})
+        self.repo.run_state("esc", status="escalated", base_head=self.base, reason="x")
+        waiting = [row["id"] for row in inbox.waiting_runs(self.repo.root, now=lambda: NOW)["rows"]]
+        gh = inbox.Gh(runner=FakeGh([], [{"number": 9, "headRefOid": in_pr}]), which=lambda _: "gh")
+        for mode, report in (("offline", self.collect()), ("gh", self.collect(gh=gh, repo_name="owner/name"))):
+            with self.subTest(mode=mode):
+                runs = [row["id"] for row in report["rows"] if row["kind"] in inbox.RUN_KINDS]
+                self.assertEqual(sorted(runs), sorted(waiting))
+                self.assertEqual(sorted(runs), ["esc", "in-pr", "unpushed"])
 
     def test_terminal_controls_in_titles_never_reach_the_table(self) -> None:
         title = "before\x1b[2J\x1b[Hafter\x07\x9b31m\x7fend"

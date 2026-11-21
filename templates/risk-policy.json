@@ -1,5 +1,6 @@
 {
   "schema_version": 1,
+  "attention_limit": 5,
   "rules": [
     {"paths": ["docs/**", "**/*.md"], "tier": "A"},
     {"paths": ["tests/**", "**/test_*.py", "**/*_test.go", "**/*.test.*"], "tier": "A"},

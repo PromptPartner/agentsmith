@@ -30,6 +30,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 try:
@@ -922,6 +923,7 @@ def unset_role_settings(manifest: dict[str, Any]) -> list[str]:
     return unset
 
 
+POLICY_FILE = ".harness/risk-policy.json"  # risk_map.POLICY_PATH
 # Risk tiers, lowest first, as in risk_map.TIERS. A manifest may declare one; it only raises.
 RISK_TIERS = ("A", "B", "C", "human")
 
@@ -1410,6 +1412,48 @@ def graph_effective_base(repo: Path, graph_path: str, manifest_path: Path,
         raise RunError(f"graph contract or checkpoint invalid: {exc}") from exc
 
 
+def attention_limit_at_base(repo: Path, risk_map: Any, base_ref: str) -> int:
+    """attention_limit from the risk policy committed at the run's base ref, resolved in the main
+    checkout (the Git common directory), not in this one. Run branches live in linked worktrees, so
+    a commit on one, or a checkout of one here, cannot raise the limit that gates new runs."""
+    if not isinstance(base_ref, str) or not base_ref or base_ref.startswith("-"):
+        raise RunError(f"base_ref {base_ref!r} is not a ref")
+    common = resolved_git_path(repo, "--git-common-dir")
+    commit = git(repo, f"--git-dir={common}", "rev-parse", "--verify", "--quiet", f"{base_ref}^{{commit}}",
+                 check=False)
+    return risk_map.attention_limit(repo, commit) if commit else risk_map.DEFAULT_ATTENTION_LIMIT
+
+
+def waiting_on_operator(repo: Path, base_ref: str = "HEAD") -> tuple[list[str], int]:
+    """The runs that wait on the operator, counted by the inbox's own derivation so the two never
+    disagree, and the attention limit at the base ref. Both modules sit next to this controller,
+    as risk_map does. A count that cannot be made refuses, never guesses."""
+    try:
+        import inbox
+        import risk_map
+    except ImportError as exc:
+        raise RunError(f"the attention budget cannot be checked: {exc}; reinstall with `agentsmith update`") from exc
+    liveness = SimpleNamespace(read_lock=read_lock, process_is_live=process_is_live)
+    try:
+        limit = attention_limit_at_base(repo, risk_map, base_ref)
+        report = inbox.waiting_runs(repo, controller=liveness)
+    except (risk_map.PolicyError, risk_map.RiskError, inbox.InboxError) as exc:
+        raise RunError(f"the attention budget cannot be checked: {exc}") from exc
+    return [row["id"] for row in report["rows"]], limit
+
+
+def assert_attention_budget(repo: Path, rework_of: Any, base_ref: str = "HEAD") -> None:
+    """A WIP limit, checked by prepare and again by start: no new run while as many runs wait on
+    the operator as the policy allows. A rework of a waiting run passes, because it turns that run
+    into work instead of adding one."""
+    waiting, limit = waiting_on_operator(repo, base_ref)
+    if len(waiting) >= limit and (not isinstance(rework_of, str) or rework_of not in waiting):
+        raise RunError(f"attention budget reached: {len(waiting)} runs wait on you and the limit is {limit} "
+                       f"(attention_limit in {POLICY_FILE}); land a waiting run (`deliver`), rework it "
+                       "(`prepare --rework-of <run-id>`), or delete its run branch to drop it from the inbox; "
+                       "`agentsmith inbox` lists them")
+
+
 def prepare(args: argparse.Namespace) -> int:
     repo = repo_root(Path.cwd())
     assert_autonomy_not_paused(repo, action="prepare", run_id=args.run_id)
@@ -1420,6 +1464,7 @@ def prepare(args: argparse.Namespace) -> int:
         if not source.exists():
             source = repo / ".harness/templates/autonomous-run.json"
     manifest = load_json(source)
+    assert_attention_budget(repo, args.rework_of, str(manifest.get("base_ref") or "HEAD"))
     manifest["run_id"] = args.run_id
     manifest["spec_path"] = args.spec
     manifest["implementation_ticket"] = args.ticket
@@ -1454,9 +1499,12 @@ def prepare(args: argparse.Namespace) -> int:
             raise RunError("a rework is a new run: choose a run id other than the one it reworks")
         previous = load_run(repo, args.rework_of)
         owner = read_lock(state_root(repo) / args.rework_of)
-        if previous.get("status") not in TERMINAL_RUN_STATUSES or (owner and process_is_live(owner["pid"])):
+        live = bool(owner and process_is_live(owner["pid"]))
+        if previous.get("status") not in TERMINAL_RUN_STATUSES or live:
+            step = ("" if live or previous.get("status") in TERMINAL_RUN_STATUSES else
+                    f"; it has no live controller: resume it (`resume {args.rework_of}`) so it finishes, then rework it")
             raise RunError(f"run {args.rework_of} is {previous.get('status')}; only a finished run "
-                           "(accepted, escalated or interrupted) can be reworked")
+                           f"(accepted, escalated or interrupted) can be reworked{step}")
         note = (Path.cwd() / args.note).resolve()
         if not note.is_relative_to(repo) or not note.is_file():
             raise RunError(f"rework note {args.note} must be a file inside the repository")
@@ -3320,6 +3368,12 @@ def start(args: argparse.Namespace) -> int:
     assert_autonomy_not_paused(repo, action="start", run_id=Path(args.manifest).stem)
     manifest_path = Path(args.manifest).resolve()
     manifest = load_json(manifest_path)
+    if not args.graph:
+        # A graph child belongs to a graph the operator already started as one unit; the budget gates
+        # the graph's own manifests at prepare, not each child as the graph dispatches it.
+        rework = manifest.get("rework")
+        assert_attention_budget(repo, rework.get("of") if isinstance(rework, dict) else None,
+                                str(manifest.get("base_ref") or "HEAD"))
     spec_rel, spec_hash = validate_manifest(manifest, repo)
     if not clean(repo):
         raise RunError("base worktree must be clean before an autonomous run starts")
@@ -4101,6 +4155,7 @@ Acceptance criteria:
 CALIBRATION_TEST = """import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from calc import add

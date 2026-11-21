@@ -3121,5 +3121,162 @@ class AutonomousStateTests(unittest.TestCase):
             self.assertEqual(stop.read_text(encoding="utf-8").count("requested_at="), 1)
 
 
+class AttentionBudgetTests(unittest.TestCase):
+    """`prepare` refuses a new run when as many runs wait on the operator as the policy allows.
+    The count is the inbox's own derivation of waiting runs, so the two never disagree."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="agentsmith attention ")
+        self.addCleanup(temporary.cleanup)
+        self.repo = Path(temporary.name).resolve() / "repo"
+        self.repo.mkdir()
+        self.git("init", "-q", "-b", "main")
+        template = self.repo / ".harness/templates/autonomous-run.json"
+        template.parent.mkdir(parents=True)
+        shutil.copy2(ROOT / "templates/autonomous-run.json", template)
+        (self.repo / "docs/notes").mkdir(parents=True)
+        (self.repo / "docs/notes/rework.md").write_text("Tighten the parser.\n", encoding="utf-8")
+        self.git("add", ".")
+        self.git("commit", "-qm", "base")
+        self.base = self.git("rev-parse", "HEAD")
+        self.common = Path(self.git("rev-parse", "--path-format=absolute", "--git-common-dir"))
+
+    def git(self, *args: str) -> str:
+        env = {**os.environ, "GIT_AUTHOR_NAME": "Fixture", "GIT_AUTHOR_EMAIL": "user@example.com",
+               "GIT_COMMITTER_NAME": "Fixture", "GIT_COMMITTER_EMAIL": "user@example.com"}
+        return subprocess.run(["git", "-C", str(self.repo), "-c", "commit.gpgsign=false", *args], env=env,
+                              check=True, capture_output=True, text=True).stdout.strip()
+
+    def waiting_run(self, run_id: str, status: str = "escalated") -> None:
+        """A finished run whose branch and base exist: the inbox lists it as waiting on the operator."""
+        self.git("branch", f"agentsmith/{run_id}", self.base)
+        folder = self.common / "agentsmith-runs" / run_id
+        folder.mkdir(parents=True)
+        (folder / "state.json").write_text(json.dumps({
+            "schema_version": 1, "run_id": run_id, "status": status, "attempt": 3, "branch": f"agentsmith/{run_id}",
+            "base_head": self.base, "reason": "attempt cap reached (3)", "active_pid": None,
+            "state_path": str(folder / "state.json"), "updated_at": "2026-11-20T10:00:00+00:00"}), encoding="utf-8")
+
+    def policy(self, value: object) -> None:
+        path = self.repo / ".harness/risk-policy.json"
+        path.write_text(json.dumps({"schema_version": 1, "rules": [], "attention_limit": value}), encoding="utf-8")
+        self.git("add", ".harness/risk-policy.json")
+        self.git("commit", "-qm", "policy")
+
+    def prepare(self, run_id: str = "next", *extra: str) -> int:
+        args = CONTROLLER.parser().parse_args([
+            "prepare", "--run-id", run_id, "--spec", "docs/specs/task.md", "--ticket", "TASK-1",
+            "--maker-model", "maker-x", "--checker-model", "checker-y", *extra])
+        with mock.patch.object(CONTROLLER.Path, "cwd", return_value=self.repo):
+            return CONTROLLER.prepare(args)
+
+    def test_five_waiting_runs_refuse_a_sixth_and_four_let_it_proceed(self) -> None:
+        for index in range(4):
+            self.waiting_run(f"esc-{index}")
+        self.assertEqual(self.prepare("fifth"), 0)
+        self.waiting_run("int-4", status="interrupted")
+        with self.assertRaises(CONTROLLER.RunError) as raised:
+            self.prepare("sixth")
+        message = str(raised.exception)
+        self.assertIn("5 runs wait on you", message)
+        self.assertIn("limit is 5", message)
+        self.assertIn("land a waiting run (`deliver`), rework it (`prepare --rework-of <run-id>`), "
+                      "or delete its run branch to drop it from the inbox", message)
+        self.assertNotIn("dismiss", message)
+        self.assertIn("`agentsmith inbox` lists them", message)
+        self.assertFalse((self.repo / ".harness/runs/sixth.json").exists())
+
+    def test_the_limit_comes_from_the_committed_policy(self) -> None:
+        self.policy(2)
+        self.waiting_run("esc-a")
+        self.assertEqual(self.prepare("one"), 0)
+        self.waiting_run("esc-b")
+        with self.assertRaisesRegex(CONTROLLER.RunError, r"2 runs wait on you .*limit is 2"):
+            self.prepare("two")
+        # An uncommitted edit does not raise it: the policy is read as committed at HEAD.
+        (self.repo / ".harness/risk-policy.json").write_text(
+            json.dumps({"schema_version": 1, "rules": [], "attention_limit": 9}), encoding="utf-8")
+        with self.assertRaisesRegex(CONTROLLER.RunError, r"limit is 2"):
+            self.prepare("two")
+        self.git("commit", "-qam", "raise the limit")
+        self.assertEqual(self.prepare("two"), 0)
+
+    def test_an_invalid_attention_limit_is_refused_by_name(self) -> None:
+        for value in (0, -1, "5", True, 2.5, None):
+            with self.subTest(value=value):
+                self.policy(value)
+                with self.assertRaisesRegex(CONTROLLER.RunError, r"attention_limit must be a positive integer"):
+                    self.prepare("draft")
+                self.assertFalse((self.repo / ".harness/runs/draft.json").exists())
+
+    def test_a_running_run_does_not_count(self) -> None:
+        self.policy(1)
+        self.git("branch", "agentsmith/live", self.base)
+        live = self.common / "agentsmith-runs" / "live"
+        live.mkdir(parents=True)
+        (live / "state.json").write_text(json.dumps({
+            "run_id": "live", "status": "making", "branch": "agentsmith/live", "base_head": self.base,
+            "active_pid": os.getpid()}), encoding="utf-8")
+        self.assertEqual(self.prepare("next"), 0)
+
+    def start(self, run_id: str) -> int:
+        args = CONTROLLER.parser().parse_args(["start", str(self.repo / f".harness/runs/{run_id}.json")])
+        with mock.patch.object(CONTROLLER.Path, "cwd", return_value=self.repo):
+            return CONTROLLER.start(args)
+
+    def test_start_refuses_when_the_budget_filled_after_prepare(self) -> None:
+        # Runs prepared while little waited must not all start later and bypass the budget.
+        for index in range(4):
+            self.waiting_run(f"esc-{index}")
+        self.assertEqual(self.prepare("early-a"), 0)
+        self.assertEqual(self.prepare("early-b"), 0)
+        self.assertEqual(self.prepare("rework-0", "--rework-of", "esc-0", "--note", "docs/notes/rework.md"), 0)
+        self.waiting_run("esc-4")
+        with self.assertRaisesRegex(CONTROLLER.RunError, r"attention budget reached: 5 runs wait on you"):
+            self.start("early-a")
+        # A run prepared as a rework of a waiting run may start: the budget passes, later checks decide.
+        with self.assertRaises(CONTROLLER.RunError) as raised:
+            self.start("rework-0")
+        self.assertNotIn("attention budget", str(raised.exception))
+
+    def test_resume_never_checks_the_budget(self) -> None:
+        with mock.patch.object(CONTROLLER, "assert_attention_budget",
+                               side_effect=AssertionError("resume checked the budget")):
+            args = CONTROLLER.parser().parse_args(["resume", "esc-0"])
+            with mock.patch.object(CONTROLLER.Path, "cwd", return_value=self.repo):
+                with self.assertRaisesRegex(CONTROLLER.RunError, "no run state"):
+                    CONTROLLER.resume(args)
+
+    def test_a_commit_on_a_run_branch_cannot_raise_the_limit(self) -> None:
+        self.policy(1)
+        self.waiting_run("esc-a")
+        maker = self.repo.parent / "repo-maker"
+        self.git("worktree", "add", "-q", "-b", "agentsmith/maker", str(maker), "HEAD")
+        (maker / ".harness/risk-policy.json").write_text(
+            json.dumps({"schema_version": 1, "rules": [], "attention_limit": 999}), encoding="utf-8")
+        subprocess.run(["git", "-C", str(maker), "-c", "commit.gpgsign=false", "-c", "user.name=Maker",
+                        "-c", "user.email=maker@example.com", "commit", "-qam", "raise the limit"], check=True)
+        args = CONTROLLER.parser().parse_args([
+            "prepare", "--run-id", "from-maker", "--spec", "docs/specs/task.md", "--ticket", "TASK-1",
+            "--maker-model", "maker-x", "--checker-model", "checker-y"])
+        with mock.patch.object(CONTROLLER.Path, "cwd", return_value=maker):
+            with self.assertRaisesRegex(CONTROLLER.RunError, r"1 runs wait on you and the limit is 1"):
+                CONTROLLER.prepare(args)
+
+    def test_a_dead_run_is_resumed_before_it_can_be_reworked(self) -> None:
+        self.policy(1)
+        self.waiting_run("dead", status="making")
+        with self.assertRaisesRegex(CONTROLLER.RunError, r"resume it \(`resume dead`\) so it finishes, then rework it"):
+            self.prepare("dead-rework", "--rework-of", "dead", "--note", "docs/notes/rework.md")
+
+    def test_a_rework_of_a_waiting_run_is_allowed_at_the_limit(self) -> None:
+        # Reworking turns a waiting run into work; it does not add to what waits on the operator.
+        self.policy(1)
+        self.waiting_run("esc-a")
+        self.assertEqual(self.prepare("esc-a-rework", "--rework-of", "esc-a", "--note", "docs/notes/rework.md"), 0)
+        with self.assertRaisesRegex(CONTROLLER.RunError, r"1 runs wait on you"):
+            self.prepare("unrelated")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

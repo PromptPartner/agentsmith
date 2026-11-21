@@ -57,6 +57,11 @@ The policy is `.harness/risk-policy.json`. A starting point is
 - Names match ignoring case, because macOS and Windows open `Src/Auth` for `src/auth`, and
   ignoring trailing dots and spaces in each name, because Windows opens `AGENTS.md.` for `AGENTS.md`.
 - A path that matches no rule is `human`.
+- The optional `attention_limit` (a positive integer, default 5) is the attention budget: the
+  most runs that may wait on you before `prepare` refuses a new one (see
+  [autonomous runs](21-autonomous-runs.md)), checked by `prepare` and `start`. It does not change
+  any tier. It is read at the run's base ref as the main checkout resolves it, so a commit on a
+  run branch cannot raise it.
 
 **The policy is read at `--base`.** A change that edits the policy is still classified by the
 policy it started from, so a candidate cannot relax the rules that judge it. Pass the commit the
