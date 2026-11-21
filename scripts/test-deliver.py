@@ -637,6 +637,7 @@ class PackageExistenceTests(unittest.TestCase):
                                                             "local": "file:../local", "ws": "workspace:*"}}),
             "requirements.txt": "requests==2.32.0\n# a comment\n-r other.txt\nFlask[async]>=2.0 ; python_version > '3.8'\n"
                                 "invented_py.zz9==1\n",
+            "other.txt": "rich\n",
             "pyproject.toml": '[project]\nname = "x"\ndependencies = ["attrs>=23", "rich"]\n'
                               '[project.optional-dependencies]\ndev = ["pytest>=8"]\n'})
         rows, problems = self.check(head, {
@@ -644,7 +645,8 @@ class PackageExistenceTests(unittest.TestCase):
             "https://pypi.org/pypi/flask/json": 200, "https://pypi.org/pypi/rich/json": 200,
             "https://pypi.org/pypi/pytest/json": 200})
         self.assertEqual(sorted((row["manifest"], row["ecosystem"], row["name"], row["status"]) for row in rows), [
-            ("package.json", "npm", "@types/node", "exists"), ("package.json", "npm", "chalk", "exists"),
+            ("other.txt", "pypi", "rich", "exists"),
+            ("package.json", "npm", "@types/node", "exists"), ("package.json", "npm", "aliased", "exists"),
             ("package.json", "npm", "invented-js-zz9", "missing"),
             ("package.json", "npm", "local", "local"), ("package.json", "npm", "ws", "local"),
             ("pyproject.toml", "pypi", "pytest", "exists"), ("pyproject.toml", "pypi", "rich", "exists"),
@@ -662,7 +664,8 @@ class PackageExistenceTests(unittest.TestCase):
         statuses = {(row["manifest"], row["name"]): row["status"] for row in rows}
         self.assertEqual(statuses[("requirements.txt", "slowpkg")], "unverified")
         self.assertEqual(problems, [
-            "cannot read package.json to check its new packages; the landing stays refused until it parses",
+            "cannot read package.json to check its new packages (Expecting property name enclosed in double "
+            "quotes: line 1 column 2 (char 1)); the landing stays refused until it parses",
             "cannot check requirements.txt line 3 (git+https://example.com/x.git#egg=x): only registry "
             "packages can be checked",
             "cannot check PyPI package slowpkg from requirements.txt: pypi.org did not answer (timed out); "
@@ -678,7 +681,8 @@ class PackageExistenceTests(unittest.TestCase):
         self.assertEqual(problems, [
             "cannot check requirements.txt line 2 (--extra-index-url https://example.com/simple): only registry "
             "packages can be checked",
-            "cannot check requirements.txt line 3 (-e ./vendored): only registry packages can be checked"])
+            "cannot check requirements.txt line 3 (-e ./vendored): only registry packages can be checked",
+            "cannot check requirements.txt line 4 (-c constraints.txt): the included file is not in the repository"])
 
     def test_an_unchanged_or_removed_dependency_needs_no_lookup(self) -> None:
         head = self.commit({"package.json": json.dumps({"dependencies": {}}), "README.md": "x\n"})
@@ -686,6 +690,180 @@ class PackageExistenceTests(unittest.TestCase):
         def fetch(url: str) -> int:
             raise AssertionError(f"no lookup expected, got {url}")
         self.assertEqual(CONTROLLER.package_checks(self.repo, self.base, head, fetch), ([], []))
+
+    # --- requirements files: includes, continuations, comments, markers --------------------------
+
+    def test_an_included_requirements_file_is_read_and_its_new_packages_are_looked_up(self) -> None:
+        head = self.commit({"requirements.txt": "requests==2.32.0\n-r deps.txt\n",
+                            "deps.txt": "imaginary-sf13-unpublished==1\n--requirement=sub/more.txt\n",
+                            "sub/more.txt": "-c ../deps.txt\nrich\n"})  # a cycle back to deps.txt ends
+        rows, problems = self.check(head, {"https://pypi.org/pypi/rich/json": 200})
+        self.assertEqual(sorted((row["manifest"], row["name"], row["status"]) for row in rows), [
+            ("deps.txt", "imaginary-sf13-unpublished", "missing"), ("sub/more.txt", "rich", "exists")])
+        self.assertEqual(problems, ["deps.txt adds PyPI package imaginary-sf13-unpublished, which pypi.org does "
+                                    "not have"])
+
+    def test_a_change_to_an_already_included_file_is_checked(self) -> None:
+        self.base = self.commit({"requirements.txt": "requests==2.32.0\n-r deps.txt\n", "deps.txt": "attrs\n"})
+        head = self.commit({"deps.txt": "attrs\ninvented-in-include-zz9\n"})
+        rows, problems = self.check(head, {})
+        self.assertEqual([(row["manifest"], row["name"], row["status"]) for row in rows],
+                         [("deps.txt", "invented-in-include-zz9", "missing")])
+        self.assertEqual(len(problems), 1)
+
+    def test_an_include_that_leaves_the_repository_or_is_missing_is_unverified(self) -> None:
+        head = self.commit({"requirements.txt": "requests==2.32.0\n-r ../outside.txt\n-r /etc/reqs.txt\n"
+                                                "-r https://example.com/r.txt\n-c gone.txt\n-rsub\n"
+                                                "./vendored/pkg\nlocal.whl\n--trusted-host example.com\n"
+                                                "-i https://example.com/simple\n-f ./wheels\n",
+                            "sub/x.txt": "attrs\n"})
+        _, problems = self.check(head, {})
+        self.assertEqual(problems, [
+            "cannot check requirements.txt line 2 (-r ../outside.txt): it includes a file outside the repository",
+            "cannot check requirements.txt line 3 (-r /etc/reqs.txt): it includes a file outside the repository",
+            "cannot check requirements.txt line 4 (-r https://example.com/r.txt): it includes a file outside the "
+            "repository",
+            "cannot check requirements.txt line 5 (-c gone.txt): the included file is not in the repository",
+            "cannot check requirements.txt line 6 (-rsub): the included file is not in the repository",
+            "cannot check requirements.txt line 7 (./vendored/pkg): only registry packages can be checked",
+            "cannot check requirements.txt line 8 (local.whl): only registry packages can be checked",
+            "cannot check requirements.txt line 9 (--trusted-host example.com): only registry packages can be checked",
+            "cannot check requirements.txt line 10 (-i https://example.com/simple): only registry packages can be "
+            "checked",
+            "cannot check requirements.txt line 11 (-f ./wheels): only registry packages can be checked"])
+
+    def test_continued_lines_are_joined_and_comments_stripped_as_pip_does(self) -> None:
+        head = self.commit({"requirements.txt": "requests==2.32.0\nflask \\\n  >=2.0 \\\n  ,<4\nrich\t# a tab comment\n"
+                                                "# a comment line \\\nnot#a-comment-zz9\n"})
+        rows, problems = self.check(head, {"https://pypi.org/pypi/flask/json": 200,
+                                           "https://pypi.org/pypi/rich/json": 200})
+        self.assertEqual(sorted(row["name"] for row in rows), ["flask", "rich"])
+        self.assertEqual(problems, ["cannot check requirements.txt line 7 (not#a-comment-zz9): it is not a valid "
+                                    "requirement"])
+
+    def test_an_invalid_environment_marker_or_specifier_is_unverified(self) -> None:
+        head = self.commit({"requirements.txt": (
+            "requests==2.32.0\n"
+            "flask; this is not a marker\n"
+            "rich ; python_version >= \"3.9\" and (sys_platform == 'linux' or extra == \"x\")\n"
+            "attrs ; os_name not in 'nt'\n"
+            "pytest ; \n"
+            "click ; python_version >= \"3.9\" or\n"
+            "black >= 23 garbage\n"
+            "ruff[a b]\n"
+            "mypy (>=1.0, <2)\n")})
+        rows, problems = self.check(head, {f"https://pypi.org/pypi/{name}/json": 200
+                                           for name in ("attrs", "mypy", "rich")})
+        self.assertEqual(sorted((row["name"], row["status"]) for row in rows),
+                         [("attrs", "exists"), ("mypy", "exists"), ("rich", "exists")])
+        self.assertEqual(problems, [
+            "cannot check requirements.txt line 2 (flask; this is not a marker): its environment marker is not valid",
+            "cannot check requirements.txt line 5 (pytest ;): its environment marker is not valid",
+            "cannot check requirements.txt line 6 (click ; python_version >= \"3.9\" or): its environment marker is "
+            "not valid",
+            "cannot check requirements.txt line 7 (black >= 23 garbage): it is not a valid requirement",
+            "cannot check requirements.txt line 8 (ruff[a b]): it is not a valid requirement"])
+
+    # --- pyproject.toml and Pipfile: table dependencies and sources -------------------------------
+
+    def test_a_poetry_or_pipfile_dependency_from_outside_the_registry_is_unverified(self) -> None:
+        head = self.commit({
+            "pyproject.toml": '[project]\nname = "x"\ndependencies = ["attrs>=23"]\n'
+                              '[tool.poetry.dependencies]\npython = "^3.12"\n'
+                              'fromgit = {git = "https://example.com/evil.git"}\n'
+                              'frompath = {path = "../evil", develop = true}\n'
+                              'fromindex = {version = "^1", source = "private"}\n'
+                              'fine = {version = "^2", extras = ["socks"], markers = "python_version >= \'3.9\'"}\n'
+                              'several = [{version = "<2", python = "<3.10"}, {url = "https://example.com/a.whl"}]\n'
+                              '[tool.poetry.group.dev.dependencies]\nplain = "^1"\n',
+            "Pipfile": '[[source]]\nurl = "https://pypi.org/simple"\nverify_ssl = true\nname = "pypi"\n'
+                       '[packages]\npipgit = {git = "https://example.com/evil.git", editable = true}\n'
+                       'pipok = {version = "*", extras = ["x"]}\nstar = "*"\n'
+                       '[dev-packages]\npipfile = {file = "https://example.com/a.whl"}\n'})
+        rows, problems = self.check(head, {"https://pypi.org/pypi/fine/json": 200,
+                                           "https://pypi.org/pypi/plain/json": 200,
+                                           "https://pypi.org/pypi/pipok/json": 200,
+                                           "https://pypi.org/pypi/star/json": 200})
+        self.assertEqual(sorted((row["manifest"], row["name"], row["status"]) for row in rows), [
+            ("Pipfile", "pipok", "exists"), ("Pipfile", "star", "exists"),
+            ("pyproject.toml", "fine", "exists"), ("pyproject.toml", "plain", "exists")])
+        self.assertEqual(sorted(problems), sorted([
+            "cannot check Pipfile pipfile: only registry packages can be checked",
+            "cannot check Pipfile pipgit: only registry packages can be checked",
+            "cannot check pyproject.toml fromgit: only registry packages can be checked",
+            "cannot check pyproject.toml fromindex: only registry packages can be checked",
+            "cannot check pyproject.toml frompath: only registry packages can be checked",
+            "cannot check pyproject.toml several: only registry packages can be checked"]))
+
+    def test_another_python_index_or_source_table_is_unverified(self) -> None:
+        head = self.commit({
+            "pyproject.toml": '[project]\nname = "x"\ndependencies = ["attrs>=23", "requests @ https://e.com/r.whl"]\n'
+                              '[tool.uv.sources]\nattrs = {git = "https://example.com/attrs.git"}\n'
+                              '[[tool.uv.index]]\nurl = "https://example.com/simple"\n'
+                              '[[tool.poetry.source]]\nname = "private"\nurl = "https://example.com/simple"\n',
+            "Pipfile": '[[source]]\nurl = "https://example.com/simple"\nname = "private"\n[packages]\n'})
+        _, problems = self.check(head, {})
+        self.assertEqual(sorted(problems), sorted([
+            "cannot check Pipfile [[source]] https://example.com/simple: it names another index",
+            "cannot check pyproject.toml [tool.poetry.source]: it names another index",
+            "cannot check pyproject.toml [tool.uv.index]: it names another index",
+            "cannot check pyproject.toml attrs (tool.uv.sources): only registry packages can be checked",
+            "cannot check pyproject.toml requests @ https://e.com/r.whl: only registry packages can be checked"]))
+
+    def test_a_manifest_of_the_wrong_shape_is_a_controlled_refusal(self) -> None:
+        for path, text in [("pyproject.toml", 'project = "oops"\n'),
+                           ("pyproject.toml", '[project]\nname = "x"\ndependencies = "requests"\n'),
+                           ("pyproject.toml", '[project.optional-dependencies]\ndev = "pytest"\n'),
+                           ("pyproject.toml", 'tool = 1\n'),
+                           ("pyproject.toml", '[tool.poetry]\ndependencies = ["requests"]\n'),
+                           ("pyproject.toml", '[tool.poetry.dependencies]\nrequests = 5\n'),
+                           ("pyproject.toml", '[build-system]\nrequires = [1]\n'),
+                           ("pyproject.toml", '[dependency-groups]\ndev = [{other = "x"}]\n'),
+                           ("Pipfile", 'packages = ["requests"]\n'),
+                           ("Pipfile", 'source = "https://pypi.org/simple"\n'),
+                           ("package.json", json.dumps(["chalk"])),
+                           ("package.json", json.dumps({"dependencies": ["chalk"]})),
+                           ("package.json", json.dumps({"dependencies": None})),
+                           ("package.json", json.dumps({"dependencies": {"chalk": 5}}))]:
+            with self.subTest(path=path, text=text):
+                head = self.commit({path: text})
+                rows, problems = self.check(head, {})
+                self.base = head  # the next case changes only its own file
+                self.assertEqual(rows, [])
+                self.assertEqual(len(problems), 1, problems)
+                self.assertRegex(problems[0], rf"^cannot read {re.escape(path)} to check its new packages \(.+\); "
+                                              "the landing stays refused until it parses$")
+
+    # --- package.json: sources, aliases --------------------------------------------------------
+
+    def test_an_existing_npm_package_that_moves_to_another_source_is_checked(self) -> None:
+        self.base = self.commit({"package.json": json.dumps({"dependencies": {
+            "a": "4", "b": "4", "c": "4", "d": "4", "e": "4", "f": "4", "g": "4", "h": "4", "i": "4", "k": "4",
+            "m": "npm:chalk@4", "same-git": "git+https://example.com/s.git"}})})
+        head = self.commit({"package.json": json.dumps({"dependencies": {
+            "a": "https://example.com/a.tgz", "b": "git+ssh://git@example.com/b.git", "c": "github:user/c",
+            "d": "user/d#v1", "e": "gitlab:user/e", "f": "bitbucket:user/f", "g": "git://example.com/g.git",
+            "h": "http://example.com/h.tgz", "i": "~4.1.0", "k": "file:../k", "m": "npm:other-pkg@1",
+            "same-git": "git+https://example.com/s.git"}})})
+        rows, problems = self.check(head, {"https://registry.npmjs.org/other-pkg": 200})
+        self.assertEqual(sorted((row["name"], row["status"]) for row in rows), [
+            ("a", "unverified"), ("b", "unverified"), ("c", "unverified"), ("d", "unverified"),
+            ("e", "unverified"), ("f", "unverified"), ("g", "unverified"), ("h", "unverified"),
+            ("k", "local"), ("m", "exists")])
+        self.assertEqual(sorted(problems), sorted(
+            f"cannot check npm package {name} from package.json: it does not come from registry.npmjs.org"
+            for name in "abcdefgh"))
+
+    def test_an_npm_alias_never_hides_another_entry_for_the_same_package(self) -> None:
+        head = self.commit({"package.json": json.dumps({
+            "dependencies": {"left-pad": "1.3.0", "a": "npm:chalk@5", "chalk": "git+https://example.com/evil.git"},
+            "devDependencies": {"b": "npm:@scope/chalk"}})})
+        rows, problems = self.check(head, {"https://registry.npmjs.org/chalk": 200,
+                                           "https://registry.npmjs.org/@scope%2Fchalk": 200})
+        self.assertEqual(sorted((row["name"], row.get("lookup"), row["status"]) for row in rows), [
+            ("a", "chalk", "exists"), ("b", "@scope/chalk", "exists"), ("chalk", None, "unverified")])
+        self.assertEqual(problems, ["cannot check npm package chalk from package.json: it does not come from "
+                                    "registry.npmjs.org"])
 
     def test_a_name_that_cannot_be_a_package_is_never_sent(self) -> None:
         head = self.commit({"package.json": json.dumps({"dependencies": {"../../etc": "1", "a b": "1"}})})

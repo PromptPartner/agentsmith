@@ -585,11 +585,21 @@ It refuses, and names every reason, unless all of these hold:
   `pyproject.toml` and `Pipfile` (PyPI, `pypi.org`), and looks up each new package once, as a
   read-only request with no credentials. A package the registry does not have (404) refuses: a
   model can name a package that does not exist, and whoever registers that name later decides
-  what an install runs. A lookup that gets no clear answer, a source outside the registry (a Git
-  or URL dependency, an editable install, another index) and a changed `go.mod`, `Cargo.toml` or
-  `Gemfile`, which `deliver` cannot check, are *unverified* and refuse too: a check that could not
-  run never counts as a pass. Local `file:`, `link:` and `workspace:` npm dependencies are listed
-  but not looked up. The new packages and their lookup appear in the body under Dependencies;
+  what an install runs. A requirements file is read as pip reads it: continued lines are joined,
+  comments are stripped, and the files it includes with `-r` or `-c` are read too, relative to
+  it; a change to an included file counts as a change to the requirements file. An existing npm
+  package whose spec moves to another source (a version that becomes a Git or URL source) is
+  checked like a new one. An npm alias (`npm:<target>@<range>`) is looked up as its target, and
+  each entry in the manifest gets its own verdict. These are *unverified* and refuse too, because
+  a check that could not run never counts as a pass: a lookup that gets no clear answer; a source
+  outside the registry (a Git, URL or path dependency, a Poetry or Pipfile table with any key
+  other than `version`, `extras`, `markers`, `python`, `optional`, `platform` or
+  `allow-prereleases`, a `[tool.uv.sources]` entry, an editable install, another index, or any
+  other requirements option); an include outside the repository or missing from it; a
+  requirement or environment marker that `deliver` cannot read; a manifest that does not parse or
+  does not have the shape its tool reads; and a changed `go.mod`, `Cargo.toml` or `Gemfile`, which
+  `deliver` cannot check. Local `file:`, `link:` and `workspace:` npm dependencies are listed but
+  not looked up. The new packages and their lookup appear in the body under Dependencies;
 - when the accepted commit is behind the fresh base, the merge of the two passes verification.
   A clean `merge-tree` only proves that the diff applies; the merged code can still fail a test.
   So `deliver` runs the manifest's verify command on the merge result, in the same verifier

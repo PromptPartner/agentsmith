@@ -3868,13 +3868,42 @@ REGISTRIES = {"npm": ("registry.npmjs.org", "https://registry.npmjs.org/{}"),
               "pypi": ("pypi.org", "https://pypi.org/pypi/{}/json")}
 ECOSYSTEM_NAMES = {"npm": "npm", "pypi": "PyPI"}
 NPM_NAME = re.compile(r"(?:@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._~-]*")
-PYPI_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")
-PEP508_NAME = re.compile(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*(\[[^\]]*\])?\s*(.*)")
+_PYPI_NAME = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
+PYPI_NAME = re.compile(_PYPI_NAME)
+PEP508_REQUIREMENT = re.compile(rf"\s*({_PYPI_NAME})\s*(\[[^\]]*\])?\s*(.*?)\s*", re.S)
+PEP508_EXTRAS = re.compile(rf"\[\s*(?:{_PYPI_NAME}(?:\s*,\s*{_PYPI_NAME})*)?\s*\]")
+PEP508_CLAUSE = re.compile(r"\s*(?:===\s*[^\s,;]+|(?:~=|==|!=|<=|>=|<|>)\s*[A-Za-z0-9.*+!_-]+)\s*")
+# A conservative PEP 508 marker grammar: these variables and quoted strings, compared with these
+# operators, joined by and/or, grouped by parentheses. Anything else is not a marker deliver can read.
+MARKER_VARIABLES = frozenset({"python_version", "python_full_version", "os_name", "sys_platform",
+                              "platform_release", "platform_system", "platform_version", "platform_machine",
+                              "platform_python_implementation", "implementation_name", "implementation_version",
+                              "extra"})
+MARKER_TOKEN = re.compile(r"\s*(?:([()])|('[^']*'|\"[^\"]*\")|(===|==|!=|<=|>=|~=|<|>)|([A-Za-z_][A-Za-z0-9_.]*))")
+# pip's reading of a requirements file: a `#` at the start or after whitespace starts a comment, an
+# include names another file, and --hash only pins what the line already names.
+REQUIREMENT_COMMENT = re.compile(r"(^|\s+)#.*$")
+REQUIREMENT_INCLUDE = re.compile(r"(?:-r|-c|--requirement|--constraint)(?:\s*=\s*|\s+|(?<=-r)|(?<=-c))(\S.*)")
+REQUIREMENT_HASH = re.compile(r"\s--hash(?:=|\s+)\S+")
+URL_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:")
+ARCHIVE_SUFFIXES = (".whl", ".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz", ".tar.xz", ".txz")
+MAX_INCLUDED_FILES = 100
 NPM_DEPENDENCY_KEYS = ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies")
+NPM_LOCAL = ("file:", "link:", "workspace:")
+# A Poetry or Pipfile table dependency comes from the registry only when it says nothing but these.
+# git, path, url, file, develop, editable, source or index point the install somewhere else.
+REGISTRY_TABLE_KEYS = frozenset({"version", "extras", "markers", "python", "optional", "platform",
+                                 "allow-prereleases"})
+PIPFILE_SETTINGS = frozenset({"source", "requires", "pipenv", "scripts"})  # every other table is packages
+PYPI_INDEXES = frozenset({"https://pypi.org/simple", "https://pypi.org/simple/"})
 # Manifests with no registry check here: a change is unverified. Lockfiles list what a manifest
 # already names, so the manifests are what is checked.
 UNCHECKED_MANIFESTS = {"go.mod": "go", "cargo.toml": "cargo", "gemfile": "ruby"}
 MAX_PACKAGE_LOOKUPS = 100
+
+
+class ManifestShapeError(ValueError):
+    """A manifest that parses, but not into the shape its tool reads."""
 
 
 def registry_status(url: str) -> int:
@@ -3894,153 +3923,383 @@ def pypi_name(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()  # PEP 503 normalisation
 
 
+def valid_marker(text: str) -> bool:
+    """Whether text is an environment marker in the conservative grammar above."""
+    tokens: list[tuple[int, str]] = []
+    position, text = 0, text.rstrip()
+    while position < len(text):
+        match = MARKER_TOKEN.match(text, position)
+        if not match:
+            return False
+        tokens.append((match.lastindex or 0, match.group(match.lastindex or 0)))
+        position = match.end()
+    paren, string, operator, word = 1, 2, 3, 4
+
+    def is_word(index: int, value: str) -> bool:
+        return 0 <= index < len(tokens) and tokens[index] == (word, value)
+
+    def operand(index: int) -> int:
+        if 0 <= index < len(tokens) and (tokens[index][0] == string or
+                                         (tokens[index][0] == word and tokens[index][1] in MARKER_VARIABLES)):
+            return index + 1
+        return -1
+
+    def comparison(index: int) -> int:
+        if 0 <= index < len(tokens) and tokens[index][0] == operator or is_word(index, "in"):
+            return index + 1
+        return index + 2 if is_word(index, "not") and is_word(index + 1, "in") else -1
+
+    def expression(index: int) -> int:
+        if 0 <= index < len(tokens) and tokens[index] == (paren, "("):
+            index = disjunction(index + 1)
+            return index + 1 if 0 <= index < len(tokens) and tokens[index] == (paren, ")") else -1
+        for step in (operand, comparison, operand):
+            index = step(index) if index >= 0 else -1
+        return index
+
+    def chain(index: int, step: Callable[[int], int], joiner: str) -> int:
+        index = step(index)
+        while index >= 0 and is_word(index, joiner):
+            index = step(index + 1)
+        return index
+
+    def disjunction(index: int) -> int:
+        return chain(index, lambda start: chain(start, expression, "and"), "or")
+
+    return disjunction(0) == len(tokens)
+
+
 def pep508_entry(text: str) -> tuple[str | None, str | None]:
     """(normalised name, None) for a registry requirement, or (None, why it cannot be checked)."""
-    match = PEP508_NAME.fullmatch(text)
-    if not match or re.match(r"[a-z+]+://", text.strip()) or match.group(3).lstrip().startswith("@"):
-        return None, "only registry packages can be checked"
-    return pypi_name(match.group(1)), None
+    requirement, has_marker, marker = text.partition(";")
+    bare = requirement.strip()
+    if URL_SCHEME.match(bare) or "/" in bare or "\\" in bare or bare.casefold().endswith(ARCHIVE_SUFFIXES):
+        return None, "only registry packages can be checked"  # a URL, a VCS link, `name @ url` or a path
+    match = PEP508_REQUIREMENT.fullmatch(requirement)
+    if not match:
+        return None, "it is not a valid requirement"
+    name, extras, specifier = match.groups()
+    if specifier.startswith("(") and specifier.endswith(")"):
+        specifier = specifier[1:-1]
+    if ((extras and not PEP508_EXTRAS.fullmatch(extras))
+            or (specifier and not all(PEP508_CLAUSE.fullmatch(clause) for clause in specifier.split(",")))):
+        return None, "it is not a valid requirement"
+    if has_marker and not valid_marker(marker):
+        return None, "its environment marker is not valid"
+    return pypi_name(name), None
 
 
-def manifest_packages(name: str, text: str) -> tuple[str, dict[str, str], list[str]]:
-    """(ecosystem, {package: source}, entries that cannot be checked) for one manifest. The source
-    is "registry" or "local". Raises ValueError when the manifest does not parse."""
-    if name == "package.json":
-        data = json.loads(text)
-        if not isinstance(data, dict):
-            raise ValueError("not an object")
-        packages: dict[str, str] = {}
-        for key in NPM_DEPENDENCY_KEYS:
-            section = data.get(key) or {}
-            if not isinstance(section, dict):
-                raise ValueError(f"{key} is not an object")
-            for package, spec in section.items():
-                spec = str(spec)
-                if spec.startswith(("file:", "link:", "workspace:")):
-                    packages[package] = "local"
-                elif spec.startswith("npm:"):  # an alias installs the package it names
-                    target = spec[4:]
-                    packages[target.rsplit("@", 1)[0] if "@" in target[1:] else target] = "registry"
-                elif re.match(r"[a-z+]+:|[./~]|[^@/\s]+/[^@/\s]+$", spec):
-                    packages[package] = "unverified"  # git, http, path or GitHub shorthand
-                else:
-                    packages[package] = "registry"
-        return "npm", packages, []
-    if name.startswith("requirements") and name.endswith(".txt"):
-        packages, unchecked = {}, []
-        for number, line in enumerate(text.splitlines(), 1):
-            entry = line.split(" #", 1)[0].strip()
-            # Another requirements or constraints file is read where it is; any other option
-            # (an editable install, another index or a find-links folder) leaves the registry.
-            if not entry or entry.startswith("#") or re.match(r"(-r|-c|--requirement|--constraint)\b", entry):
+def requirement_lines(text: str) -> list[tuple[int, str]]:
+    """(line number, entry) for each requirement line, read as pip reads it: a line that ends in a
+    backslash continues on the next, and a `#` at the start or after whitespace starts a comment."""
+    lines: list[tuple[int, str]] = []
+    pending: list[str] = []
+    first = 0
+    for number, line in enumerate(text.splitlines(), 1):
+        if line.endswith("\\") and not REQUIREMENT_COMMENT.match(line):
+            first = first if pending else number
+            pending.append(line.strip("\\"))
+            continue
+        if pending:
+            line, number, pending = "".join(pending) + (" " + line if REQUIREMENT_COMMENT.match(line) else line), \
+                first, []
+        entry = REQUIREMENT_COMMENT.sub("", line).strip()
+        if entry:
+            lines.append((number, entry))
+    entry = REQUIREMENT_COMMENT.sub("", "".join(pending)).strip()
+    if entry:  # the file ends inside a continuation
+        lines.append((first, entry))
+    return lines
+
+
+def included_path(including: str, target: str) -> str | None:
+    """The repository path that a requirements include names, relative to the including file, or
+    None when it leaves the repository: an absolute or home path, a URL, or a path above the top."""
+    if target.startswith(("/", "\\", "~")) or URL_SCHEME.match(target):
+        return None
+    path = posixpath.normpath(posixpath.join(posixpath.dirname(including), target))
+    return None if path == ".." or path.startswith("../") else path
+
+
+def requirements_entries(read: Callable[[str], str | None], root: str
+                         ) -> tuple[dict[Any, dict[str, Any]], list[str], set[str]]:
+    """The registry packages that a requirements file names, with the files it includes
+    (-r/--requirement and -c/--constraint, relative to the including file, each read once); the
+    entries that cannot be checked; and every file read. Any other option, a URL or a local path
+    changes where packages come from, so it cannot be checked."""
+    entries: dict[Any, dict[str, Any]] = {}
+    unchecked: list[str] = []
+    seen: list[str] = []
+
+    def visit(path: str, text: str) -> None:
+        seen.append(path)
+        for number, entry in requirement_lines(text):
+            where = f"{path} line {number} ({entry[:80]})"
+            include = REQUIREMENT_INCLUDE.fullmatch(entry)
+            if include:
+                target = included_path(path, include.group(1).strip())
+                if target is None:
+                    unchecked.append(f"{where}: it includes a file outside the repository")
+                elif target not in seen:
+                    included = read(target)
+                    if included is None:
+                        unchecked.append(f"{where}: the included file is not in the repository")
+                    elif len(seen) >= MAX_INCLUDED_FILES:
+                        unchecked.append(f"{where}: it includes more than {MAX_INCLUDED_FILES} files")
+                    else:
+                        visit(target, included)
                 continue
             if entry.startswith("-"):
-                unchecked.append(f"line {number} ({entry[:80]}): only registry packages can be checked")
+                unchecked.append(f"{where}: only registry packages can be checked")
                 continue
-            package, why = pep508_entry(entry.split(";", 1)[0])
+            package, why = pep508_entry(REQUIREMENT_HASH.sub("", entry))
             if package:
-                packages[package] = "registry"
+                entries.setdefault(package, {"name": package, "lookup": package, "source": "registry",
+                                             "spec": "", "file": path})
             else:
-                unchecked.append(f"line {number} ({entry[:80]}): {why}")
-        return "pypi", packages, unchecked
+                unchecked.append(f"{where}: {why}")
+
+    text = read(root)
+    if text is not None:
+        visit(root, text)
+    return entries, unchecked, set(seen)
+
+
+def shaped(value: Any, kind: type, where: str) -> Any:
+    if not isinstance(value, kind):
+        raise ManifestShapeError(f"{where} has the wrong type")
+    return value
+
+
+def strings(value: Any, where: str) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ManifestShapeError(f"{where} is not a list of strings")
+    return value
+
+
+def npm_source(package: str, spec: str) -> tuple[str, str | None]:
+    """("registry", the name to look up), ("local", None) or ("unverified", None) for one spec."""
+    if spec.startswith(NPM_LOCAL):
+        return "local", None
+    if spec.startswith("npm:"):  # an alias installs the package it names
+        target = spec[4:]
+        at = target.find("@", 1)
+        return "registry", target[:at] if at > 0 else target
+    # A URL, Git or hosted-Git source (git+, git:, http:, github:, gitlab:, bitbucket:...), GitHub
+    # user/repo shorthand, or a path. A range such as ~1.2 or a dist-tag has no colon and no slash.
+    if URL_SCHEME.match(spec) or "/" in spec or "\\" in spec or spec in {".", ".."}:
+        return "unverified", None
+    return "registry", package
+
+
+def npm_entries(path: str, text: str) -> dict[Any, dict[str, Any]]:
+    """Each dependency keyed by its section and its name in the manifest: an alias never merges with
+    another entry for the package it installs, so each gets its own verdict."""
+    data = shaped(json.loads(text), dict, "the top level")
+    entries: dict[Any, dict[str, Any]] = {}
+    for section in NPM_DEPENDENCY_KEYS:
+        if section not in data:
+            continue
+        for package, spec in shaped(data[section], dict, section).items():
+            source, lookup = npm_source(package, shaped(spec, str, f"a {section} version"))
+            entries[(section, package)] = {"name": package, "lookup": lookup, "source": source, "spec": spec,
+                                           "file": path}
+    return entries
+
+
+def python_manifest_entries(path: str, name: str, text: str) -> tuple[dict[Any, dict[str, Any]], list[str]]:
+    """The registry packages of a pyproject.toml or Pipfile, and the entries that cannot be checked."""
     import tomllib
     data = tomllib.loads(text)
-    requirements: list[Any] = []
+    requirements: list[str] = []
+    tables: list[dict[str, Any]] = []  # Poetry and Pipfile: {name: version, table or list of them}
+    unchecked: list[str] = []
     if name == "pyproject.toml":
-        project = data.get("project") or {}
-        requirements += list(project.get("dependencies") or [])
-        for group in (project.get("optional-dependencies") or {}).values():
-            requirements += list(group)
-        for group in (data.get("dependency-groups") or {}).values():
-            requirements += [item for item in group if isinstance(item, str)]
-        requirements += list((data.get("build-system") or {}).get("requires") or [])
-        poetry = (data.get("tool") or {}).get("poetry") or {}
-        sections = [poetry.get("dependencies") or {}, poetry.get("dev-dependencies") or {},
-                    *((group.get("dependencies") or {}) for group in (poetry.get("group") or {}).values())]
-        requirements += [key for section in sections for key in section if key.casefold() != "python"]
+        project = shaped(data.get("project", {}), dict, "[project]")
+        requirements += strings(project.get("dependencies", []), "[project] dependencies")
+        for group in shaped(project.get("optional-dependencies", {}), dict, "[project.optional-dependencies]").values():
+            requirements += strings(group, "a [project.optional-dependencies] group")
+        for group in shaped(data.get("dependency-groups", {}), dict, "[dependency-groups]").values():
+            for item in shaped(group, list, "a [dependency-groups] group"):
+                if isinstance(item, str):
+                    requirements.append(item)
+                elif not (isinstance(item, dict) and set(item) == {"include-group"}
+                          and isinstance(item["include-group"], str)):
+                    raise ManifestShapeError("a [dependency-groups] entry has the wrong type")
+        requirements += strings(shaped(data.get("build-system", {}), dict, "[build-system]").get("requires", []),
+                                "[build-system] requires")
+        tool = shaped(data.get("tool", {}), dict, "[tool]")
+        poetry = shaped(tool.get("poetry", {}), dict, "[tool.poetry]")
+        uv = shaped(tool.get("uv", {}), dict, "[tool.uv]")
+        pdm = shaped(tool.get("pdm", {}), dict, "[tool.pdm]")
+        tables += [shaped(poetry.get(key, {}), dict, f"[tool.poetry.{key}]")
+                   for key in ("dependencies", "dev-dependencies")]
+        for group in shaped(poetry.get("group", {}), dict, "[tool.poetry.group]").values():
+            tables.append(shaped(shaped(group, dict, "a [tool.poetry.group] group").get("dependencies", {}), dict,
+                                 "a [tool.poetry.group] dependencies table"))
+        for configured, label in ((poetry.get("source"), "[tool.poetry.source]"), (uv.get("index"), "[tool.uv.index]"),
+                                  (pdm.get("source"), "[tool.pdm.source]")):
+            if configured:
+                unchecked.append(f"{path} {label}: it names another index")
+        for package in shaped(uv.get("sources", {}), dict, "[tool.uv.sources]"):
+            unchecked.append(f"{path} {package[:80]} (tool.uv.sources): only registry packages can be checked")
     else:  # Pipfile
-        requirements += [key for section in ("packages", "dev-packages") for key in (data.get(section) or {})]
-    packages, unchecked = {}, []
+        for source in shaped(data.get("source", []), list, "[[source]]"):
+            url = shaped(source, dict, "a [[source]] entry").get("url")
+            if url not in PYPI_INDEXES:
+                unchecked.append(f"{path} [[source]] {str(url)[:80]}: it names another index")
+        tables += [shaped(section, dict, "a Pipfile package section")
+                   for key, section in data.items() if key not in PIPFILE_SETTINGS]
+    entries: dict[Any, dict[str, Any]] = {}
+    for table in tables:
+        for package, value in table.items():
+            if package.casefold() == "python":  # Poetry: the Python version, not a package
+                continue
+            options = value if isinstance(value, list) else [value]
+            if not options or not all(isinstance(option, (str, dict)) for option in options):
+                raise ManifestShapeError("a dependency has the wrong type")
+            if any(isinstance(option, dict) and not set(option) <= REGISTRY_TABLE_KEYS for option in options):
+                unchecked.append(f"{path} {package[:80]}: only registry packages can be checked")
+                continue
+            normalised = pypi_name(package)
+            entries.setdefault(normalised, {"name": normalised, "lookup": normalised, "source": "registry",
+                                            "spec": "", "file": path})
     for item in requirements:
-        package, why = pep508_entry(str(item).split(";", 1)[0])
+        package, why = pep508_entry(item)
         if package:
-            packages[package] = "registry"
+            entries.setdefault(package, {"name": package, "lookup": package, "source": "registry", "spec": "",
+                                         "file": path})
         else:
-            unchecked.append(f"{str(item)[:80]}: {why}")
-    return "pypi", packages, unchecked
+            unchecked.append(f"{path} {item[:80]}: {why}")
+    return entries, unchecked
+
+
+def manifest_entries(path: str, text: str) -> tuple[str, dict[Any, dict[str, Any]], list[str]]:
+    """(ecosystem, {key: entry}, entries that cannot be checked) for a package.json, pyproject.toml or
+    Pipfile. An entry names its package, the name to look up, its source ("registry", "local" or
+    "unverified"), its spec and its file. Raises ValueError when the manifest does not parse or does
+    not have the shape its tool reads."""
+    name = path.rsplit("/", 1)[-1].casefold()
+    if name == "package.json":
+        return "npm", npm_entries(path, text), []
+    return ("pypi", *python_manifest_entries(path, name, text))
+
+
+def is_requirements_file(path: str) -> bool:
+    name = path.rsplit("/", 1)[-1].casefold()
+    return name.startswith("requirements") and name.endswith(".txt")
 
 
 def package_checks(repo: Path, base: str, head: str,
                    fetch: Callable[[str], int] | None = None) -> tuple[list[dict[str, str]], list[str]]:
-    """Every package that a manifest in base..head adds, with its registry verdict, and the
-    problems that refuse the landing. Packages a manifest already had at base are not looked up."""
+    """Every package that a manifest in base..head adds, or moves to another source, with its
+    registry verdict, and the problems that refuse the landing. A package a manifest already had at
+    base, from the same source, is not looked up. A requirements file counts as changed when a file
+    it includes changed."""
     fetch = fetch or registry_status
     rows: list[dict[str, str]] = []
     problems: list[str] = []
+    answers: dict[str, int | Exception] = {}
+    seen_rows: set[tuple[str, ...]] = set()
     lookups = 0
-    for path in changed_paths(repo, base, head):
+
+    def reader(revision: str) -> Callable[[str], str | None]:
+        cache: dict[str, str | None] = {}
+
+        def read(path: str) -> str | None:
+            if path not in cache:
+                shown = run(["git", "cat-file", "blob", f"{revision}:{path}"], repo)
+                cache[path] = None if shown.returncode else shown.stdout
+            return cache[path]
+        return read
+
+    read_head, read_base = reader(head), reader(base)
+    changed = changed_paths(repo, base, head)
+    requirements = {path: requirements_entries(read_head, path)
+                    for path in git_paths(repo, "ls-tree", "-r", "--name-only", head) if is_requirements_file(path)}
+    candidates = set(changed) | {path for path, (_, _, files) in requirements.items() if files & set(changed)}
+    for path in sorted(candidates):
         name = path.rsplit("/", 1)[-1].casefold()
         if name in UNCHECKED_MANIFESTS:
-            if run(["git", "cat-file", "-e", f"{head}:{path}"], repo).returncode == 0:  # not a removal
+            if read_head(path) is not None:  # not a removal
                 problems.append(f"{path} changed, and deliver cannot check {UNCHECKED_MANIFESTS[name]} packages "
                                 "against a registry; review the new requirements by hand")
             continue
-        if not (name in {"package.json", "pyproject.toml", "pipfile"}
-                or (name.startswith("requirements") and name.endswith(".txt"))):
+        if path in requirements:
+            ecosystem, (entries, unchecked, _) = "pypi", requirements[path]
+            known = requirements_entries(read_base, path)[0]
+        elif name in {"package.json", "pyproject.toml", "pipfile"}:
+            text = read_head(path)
+            if text is None:
+                continue  # removed: nothing new to install
+            try:
+                ecosystem, entries, unchecked = manifest_entries(path, text)
+            except (ValueError, RecursionError) as exc:  # json, tomllib and shape errors are ValueErrors
+                problems.append(f"cannot read {path} to check its new packages ({str(exc)[:80]}); the landing "
+                                "stays refused until it parses")
+                continue
+            before = read_base(path)
+            try:
+                known = manifest_entries(path, before)[1] if before is not None else {}
+            except (ValueError, RecursionError):
+                known = {}  # an unreadable base manifest: every package counts as new
+        else:
             continue
-        shown = run(["git", "show", f"{head}:{path}"], repo)
-        if shown.returncode:
-            continue  # removed: nothing new to install
-        try:
-            ecosystem, packages, unchecked = manifest_packages(name, shown.stdout)
-        except (ValueError, UnicodeError):  # json and tomllib errors are ValueErrors
-            problems.append(f"cannot read {path} to check its new packages; the landing stays refused until it parses")
-            continue
-        before = run(["git", "show", f"{base}:{path}"], repo)
-        try:
-            known = manifest_packages(name, before.stdout)[1] if before.returncode == 0 else {}
-        except (ValueError, UnicodeError):
-            known = {}  # an unreadable base manifest: every package counts as new
-        problems += [f"cannot check {path} {item}" for item in unchecked]
+        problems += [f"cannot check {item}" for item in unchecked]
         host, template = REGISTRIES[ecosystem]
         label = ECOSYSTEM_NAMES[ecosystem]
-        for package in sorted(set(packages) - set(known)):
-            source = packages[package]
-            row = {"manifest": path, "ecosystem": ecosystem, "name": package, "status": source}
-            rows.append(row)
-            if source == "local":
+        for key, entry in sorted(entries.items(), key=lambda item: (item[1]["name"], str(item[0]))):
+            old = known.get(key)
+            if old is not None and (old["spec"] == entry["spec"] or (
+                    entry["source"] == old["source"] == "registry" and entry["lookup"] == old["lookup"])):
+                continue  # the same package from the same source; only its version may have changed
+            row = {"manifest": entry["file"], "ecosystem": ecosystem, "name": entry["name"], "status": entry["source"]}
+            lookup = entry["lookup"]
+            if lookup and lookup != entry["name"]:
+                row["lookup"] = lookup
+            identity = (row["manifest"], ecosystem, row["name"], row.get("lookup", ""))
+            if identity in seen_rows:  # a file that two requirements files include
                 continue
-            if source == "unverified":
-                problems.append(f"cannot check {label} package {package} from {path}: it does not come from "
+            seen_rows.add(identity)
+            rows.append(row)
+            shown = entry["name"] + (f" -> {lookup}" if "lookup" in row else "")
+            if entry["source"] == "local":
+                continue
+            if entry["source"] == "unverified":
+                problems.append(f"cannot check {label} package {shown} from {entry['file']}: it does not come from "
                                 f"{host}")
                 continue
-            if not (NPM_NAME if ecosystem == "npm" else PYPI_NAME).fullmatch(package):
+            if not (NPM_NAME if ecosystem == "npm" else PYPI_NAME).fullmatch(lookup):
                 row["status"] = "invalid"
-                problems.append(f"{path} adds {package!r}, which is not a valid {label} package name")
+                problems.append(f"{entry['file']} adds {shown!r}, which is not a valid {label} package name")
                 continue
-            lookups += 1
-            if lookups > MAX_PACKAGE_LOOKUPS:
+            url = template.format(urllib_quote(lookup))
+            if url not in answers:
+                lookups += 1
+                if lookups > MAX_PACKAGE_LOOKUPS:
+                    row["status"] = "unverified"
+                    problems.append(f"cannot check {label} package {shown} from {entry['file']}: more than "
+                                    f"{MAX_PACKAGE_LOOKUPS} new packages")
+                    continue
+                try:
+                    answers[url] = fetch(url)
+                except (OSError, ValueError) as exc:
+                    answers[url] = exc
+            answer = answers[url]
+            if isinstance(answer, Exception):
                 row["status"] = "unverified"
-                problems.append(f"cannot check {label} package {package} from {path}: more than "
-                                f"{MAX_PACKAGE_LOOKUPS} new packages")
-                continue
-            try:
-                status = fetch(template.format(urllib_quote(package)))
-            except (OSError, ValueError) as exc:
-                row["status"] = "unverified"
-                problems.append(f"cannot check {label} package {package} from {path}: {host} did not answer "
-                                f"({str(exc)[:80]}); retry when it answers")
-                continue
-            if status == 200:
+                problems.append(f"cannot check {label} package {shown} from {entry['file']}: {host} did not answer "
+                                f"({str(answer)[:80]}); retry when it answers")
+            elif answer == 200:
                 row["status"] = "exists"
-            elif status == 404:
+            elif answer == 404:
                 row["status"] = "missing"
-                problems.append(f"{path} adds {label} package {package}, which {host} does not have")
+                problems.append(f"{entry['file']} adds {label} package {shown}, which {host} does not have")
             else:
                 row["status"] = "unverified"
-                problems.append(f"cannot check {label} package {package} from {path}: {host} answered "
-                                f"HTTP {status}; retry when it answers")
-    return rows, problems
+                problems.append(f"cannot check {label} package {shown} from {entry['file']}: {host} answered "
+                                f"HTTP {answer}; retry when it answers")
+    return rows, list(dict.fromkeys(problems))
 
 
 def urllib_quote(package: str) -> str:
@@ -4318,7 +4577,8 @@ def delivery_body(checks: dict[str, Any], verdict: dict[str, Any]) -> str:
         "",
         # A maker chose these names, so they sit in a code block like the checker evidence.
         *(["### Dependencies", "New packages and their registry lookup (local ones are not looked up):",
-           fenced("\n".join(f"- {row['name']} ({row['ecosystem']}, {row['status']})" for row in checks["packages"])),
+           fenced("\n".join(f"- {row['name']}{' -> ' + row['lookup'] if 'lookup' in row else ''} "
+                             f"({row['ecosystem']}, {row['status']})" for row in checks["packages"])),
            ""] if checks["packages"] else []),
         "### Base",
         f"{staleness['behind']} commit{'s' if staleness['behind'] != 1 else ''} behind {staleness['base']}; "
