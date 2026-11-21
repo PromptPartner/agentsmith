@@ -57,7 +57,7 @@ counts in the window when it started there.
 
 | Number | From |
 |---|---|
-| Accepted without human rework | Share of finished runs (accepted, escalated or interrupted) that were accepted with no operator touch. |
+| Accepted without human rework | Share of finished runs (accepted, awaiting-human, escalated or interrupted) that were accepted with no operator touch. |
 | Defects found after merge, per tier | The operator's defect log against the landed changes of each tier (the tier each run recorded). |
 | Operator touches per landed change | `run_escalated`, `run_interrupted` and `run_resumed` events of the runs that reached acceptance, per accepted run. Delivery consents will count too once they are recorded. |
 | Human minutes per landed change | The operator's minutes log, over the landed changes that have minutes logged. |

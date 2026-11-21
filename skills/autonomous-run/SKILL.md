@@ -112,6 +112,9 @@ At acceptance the run records the risk tier from the policy committed at the bas
 shows `risk_tier`); a declared `risk_tier` only raises it, and the tier decides nothing yet.
 Before relying on a checker client and model, run `calibrate <manifest>`: it judges a clean and a
 defective built-in candidate and records the result, which later runs show as `checker_calibration`.
+Until that record reads `passed` for this model version, the checker is advisory: a run it accepts
+ends `awaiting-human` (exit 3), and `deliver` refuses it. A human reviews the held commit and
+re-runs with an explicit approval: calibrate until it passes, then prepare a rework.
 
 Before `start` creates local Git or state artifacts, and before `resume` restarts work, the
 controller serializes a repository-local collision scan. Ancestor/descendant fixed prefixes from

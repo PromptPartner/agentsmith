@@ -20,10 +20,10 @@ import sys
 from typing import Any, Callable
 
 SCHEMA_VERSION = 1
-KIND_ORDER = ("damaged", "escalated", "dead", "interrupted", "accepted", "integration", "manifest", "spec",
-              "untriaged")
-RUN_KINDS = ("damaged", "escalated", "dead", "interrupted", "accepted")  # one row per run, at most
-TERMINAL_RUN = {"accepted", "escalated", "interrupted"}
+KIND_ORDER = ("damaged", "escalated", "dead", "interrupted", "awaiting-human", "accepted", "integration",
+              "manifest", "spec", "untriaged")
+RUN_KINDS = ("damaged", "escalated", "dead", "interrupted", "awaiting-human", "accepted")  # one row per run, at most
+TERMINAL_RUN = {"accepted", "awaiting-human", "escalated", "interrupted"}
 UNFINISHED_RUN = {"prepared", "making", "checking", "retrying", "resuming"}
 CLOSED_SPEC = {"accepted", "superseded", "rejected", "withdrawn", "done", "archived"}
 RUN_ROOT_ENTRIES = {"coordination.lock", "git-phases", "graph-stop"}
@@ -307,20 +307,29 @@ class _Collector:
         since = _seconds(state.get("updated_at")) or _seconds(state.get("started_at"))
         tip = _branch(self.repo, branch)
         base = state.get("base_head")
-        if status == "accepted":
-            commit = state.get("accepted_commit")
+        if status in {"accepted", "awaiting-human"}:
+            # awaiting-human: the checker accepted, but it is advisory until its calibration passes.
+            held = status == "awaiting-human"
+            label = "held" if held else "accepted"
+            commit = state.get("held_commit" if held else "accepted_commit")
             if not _commit(self.repo, commit):
-                self.warnings.append(f"run {name}: dropped, accepted commit {str(commit)[:12]} is not in this repository")
+                self.warnings.append(f"run {name}: dropped, {label} commit {str(commit)[:12]} is not in this repository")
             elif tip is None:
                 self.warnings.append(f"run {name}: dropped, branch {branch} is gone")
             elif not _contains(self.repo, commit, tip):
-                self.warnings.append(f"run {name}: dropped, branch {branch} no longer contains accepted commit {commit[:12]}")
+                self.warnings.append(f"run {name}: dropped, branch {branch} no longer contains {label} commit {commit[:12]}")
             elif not (self.origin_base and _contains(self.repo, commit, self.origin_base)):
                 # Not landed. An open pull request with it as head still waits on the operator: merging is theirs.
-                step = (f"review accepted commit {commit[:12]} on {branch}: an open pull request has it as its "
-                        "head; review and merge that pull request" if commit in self.pr_heads
-                        else self._landing_step(commit, branch))
-                self.add("accepted", name, since, step, self._tier(base, commit))
+                if held:
+                    reason = state.get("reason") or "checker advisory"
+                    self.add("awaiting-human", name, since, f"{reason}; review {commit[:12]} on {branch}; a human "
+                             "reviews and re-runs with an explicit approval: calibrate the checker until it passes, "
+                             f"then prepare a rework of {name}", self._tier(base, commit))
+                else:
+                    step = (f"review accepted commit {commit[:12]} on {branch}: an open pull request has it as its "
+                            "head; review and merge that pull request" if commit in self.pr_heads
+                            else self._landing_step(commit, branch))
+                    self.add("accepted", name, since, step, self._tier(base, commit))
             return
         if status not in TERMINAL_RUN and status not in UNFINISHED_RUN:
             raise ValueError(f"unknown status {status!r}")
@@ -556,8 +565,8 @@ def render_text(report: dict[str, Any]) -> str:
         lines = ["Nothing waits on you."]
     else:
         width = max(len(row["id"]) for row in report["rows"])
-        lines = [f"{'KIND':<12} {'ID':<{width}} {'AGE':>4} {'TIER':<5} NEXT"]
-        lines += [f"{row['kind']:<12} {row['id']:<{width}} {row['age']:>4} {row['tier'] or '-':<5} {row['next_step']}"
+        lines = [f"{'KIND':<14} {'ID':<{width}} {'AGE':>4} {'TIER':<5} NEXT"]
+        lines += [f"{row['kind']:<14} {row['id']:<{width}} {row['age']:>4} {row['tier'] or '-':<5} {row['next_step']}"
                   for row in report["rows"]]
     lines += [f"warning: {warning}" for warning in report["warnings"]]
     return "\n".join(lines) + "\n"

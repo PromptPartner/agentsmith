@@ -22,6 +22,7 @@ import secrets
 import shlex
 import signal
 import shlex
+import stat
 import shutil
 import subprocess
 import sys
@@ -1504,7 +1505,7 @@ def prepare(args: argparse.Namespace) -> int:
             step = ("" if live or previous.get("status") in TERMINAL_RUN_STATUSES else
                     f"; it has no live controller: resume it (`resume {args.rework_of}`) so it finishes, then rework it")
             raise RunError(f"run {args.rework_of} is {previous.get('status')}; only a finished run "
-                           f"(accepted, escalated or interrupted) can be reworked{step}")
+                           f"(accepted, awaiting-human, escalated or interrupted) can be reworked{step}")
         note = (Path.cwd() / args.note).resolve()
         if not note.is_relative_to(repo) or not note.is_file():
             raise RunError(f"rework note {args.note} must be a file inside the repository")
@@ -1685,6 +1686,20 @@ def validate_verification_changes(worktree: Path, base: str, head: str,
                        + "; ".join(detail))
 
 
+# `awaiting-human`: the checker accepted, but no passed calibration lets it gate (SF-09). The run is
+# finished for the controller and holds its candidate for a person; nothing resumes or delivers it.
+TERMINAL_RUN_STATUSES = {"accepted", "awaiting-human", "escalated", "interrupted"}
+AWAITING_HUMAN_NEXT = ("a human reviews and re-runs with an explicit approval: review the held commit, "
+                       "calibrate the checker until it passes, then prepare a rework run "
+                       "(prepare ... --rework-of <run-id> --note <file>) and start it")
+
+
+def checker_calibration(state: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
+    """The latest calibration of this run's checker client, model and prompt, read now."""
+    return calibration_status(Path(state.get("repo") or state["worktree"]),
+                              (manifest.get("roles") or {}).get("checker") or {})
+
+
 def verification_binding(state: dict[str, Any], manifest: dict[str, Any], head: str) -> dict[str, Any]:
     """Controller-authored evidence identifies the exact policy and candidate checked."""
     worktree = Path(state["worktree"])
@@ -1702,9 +1717,10 @@ def verification_binding(state: dict[str, Any], manifest: dict[str, Any], head: 
             "controller": file_digest(Path(__file__)),
             "launcher": file_digest(Path(build_native_command.__code__.co_filename)),
         },
-        # Record-only: the latest calibration of this checker client, model and prompt.
-        "checker_calibration": calibration_status(Path(state.get("repo") or worktree),
-                                                  (manifest.get("roles") or {}).get("checker") or {}),
+        # The latest calibration of this checker client, model and prompt: unless it is `passed`,
+        # the checker is advisory and an acceptance waits for a human. The acceptance reads it
+        # again and records the value that gated in its place.
+        "checker_calibration": checker_calibration(state, manifest),
     }
 
 
@@ -1878,7 +1894,7 @@ def terminal_peer_git_artifacts(common: Path, active_ref: str, protected_refs: s
             run_id = state_file.parent.name
             if (state.get("run_id") != run_id or
                     state.get("branch") != f"agentsmith/{run_id}" or
-                    state.get("status") not in {"accepted", "escalated", "interrupted"}):
+                    state.get("status") not in TERMINAL_RUN_STATUSES):
                 continue
             repo_value = state.get("repo")
             manifest_value = state.get("manifest_path")
@@ -3283,6 +3299,28 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             moved = candidate_moved(worktree, state["branch"], checker_head)
             if moved:
                 raise RunError(moved)
+            # Last: the checker gates only while a calibration of it passes (SF-09). Otherwise its
+            # acceptance is advice, and the candidate waits for a person instead of being accepted.
+            # The calibration is read again here: the receipt's copy predates the checker, and the
+            # record may have changed while the checker ran.
+            proof["checker_calibration"] = checker_calibration(state, manifest)
+            calibration = str(proof["checker_calibration"].get("status") or "none")
+            proof["checker_advisory"] = calibration != "passed"
+            write_json(proof_path, proof)
+            # A stop that arrived up to the last receipt write still interrupts the run.
+            raise_if_stopped(Path(state["state_path"]).parent)
+            if proof["checker_advisory"]:
+                state["status"] = "awaiting-human"
+                state["stage"] = "awaiting-human"
+                state["held_commit"] = checker_head
+                state["last_checker_receipt"] = checker
+                state["reason"] = (f"checker advisory: calibration {calibration}; the checker accepted "
+                                   f"{checker_head[:12]}, but only a passed calibration lets it gate")
+                save_state(state, "run_awaiting_human", commit=checker_head, calibration=calibration)
+                print(f"awaiting a human: {state['branch']} at {checker_head}; {state['reason']}")
+                print(f"next: {AWAITING_HUMAN_NEXT}")
+                print("nothing was pushed, merged, or written to an external system")
+                return 3
             state["status"] = "accepted"
             state['stage'] = 'accepted'
             state["accepted_commit"] = checker_head
@@ -3327,7 +3365,7 @@ def run_controller(state: dict[str, Any], manifest: dict[str, Any]) -> int:
         # next safe point. Never raise here (see `_stop_signal_received`). A run that has
         # already recorded its result keeps it; a late stop changes nothing.
         global _stop_signal_received
-        if state.get("status") in {"accepted", "escalated", "interrupted"}:
+        if state.get("status") in TERMINAL_RUN_STATUSES:
             return
         _stop_signal_received = True
         active_pid = state.get("active_pid")
@@ -3351,7 +3389,7 @@ def run_controller(state: dict[str, Any], manifest: dict[str, Any]) -> int:
         print(f"escalated: {exc}", file=sys.stderr)
         return 2
     finally:
-        if state.get("status") in {"accepted", "escalated", "interrupted"}:
+        if state.get("status") in TERMINAL_RUN_STATUSES:
             terminal_head = git(Path(state["worktree"]), "rev-parse", "HEAD", check=False)
             if re.fullmatch(r"[0-9a-f]{40,64}", terminal_head):
                 state["terminal_head"] = terminal_head
@@ -3455,7 +3493,6 @@ def start(args: argparse.Namespace) -> int:
                     pass
 
 
-TERMINAL_RUN_STATUSES = {"accepted", "escalated", "interrupted"}
 UNFINISHED_RUN_STATUSES = {"prepared", "making", "checking", "retrying", "resuming"}
 TERMINAL_GRAPH_STATUSES = {"completed", "failed", "stopped", "blocked"}
 UNFINISHED_GRAPH_STATUSES = {"prepared", "running"}
@@ -3592,7 +3629,7 @@ def status_cmd(args: argparse.Namespace) -> int:
         raise RunError("status needs a run id, or --all-terminal for the live-run guard")
     state = load_run(repo, args.run_id)
     keys = ["run_id", "status", "stage", "attempt", "active_pid", "branch", "worktree", "base_head",
-            "accepted_commit", "deadline_epoch", "claude_cost_usd", "codex_tokens_used",
+            "accepted_commit", "held_commit", "deadline_epoch", "claude_cost_usd", "codex_tokens_used",
             "budget_rationale", "usage_accounting_incomplete", "reason", "updated_at"]
     view = {key: state.get(key) for key in keys if state.get(key) is not None}
     if isinstance(state.get("risk"), dict):
@@ -3631,7 +3668,7 @@ def stop(args: argparse.Namespace) -> int:
     current = load_run(repo, args.run_id)
     if current.get("status") == "interrupted":
         print(f"stopped {args.run_id}; local worktree retained")
-    elif current.get("status") in {"accepted", "escalated"}:
+    elif current.get("status") in {"accepted", "awaiting-human", "escalated"}:
         print(f"{args.run_id} already finished as {current['status']}; the stop changed nothing")
     elif not controller_pid or not process_is_live(controller_pid):
         print(f"stop requested for {args.run_id}; controller is gone and resume will reconcile it")
@@ -3692,6 +3729,9 @@ def resume(args: argparse.Namespace) -> int:
     state = load_run(repo, args.run_id)
     if state["status"] == "accepted":
         raise RunError("accepted runs do not resume")
+    if state["status"] == "awaiting-human":
+        # A new attempt would replace the held candidate that a person is to review.
+        raise RunError(f"awaiting-human runs do not resume: {AWAITING_HUMAN_NEXT}")
     run_dir = Path(state["state_path"]).parent
     token: str | None = None
     try:
@@ -3887,6 +3927,10 @@ def base_staleness(repo: Path, remote: str, base: str, accepted: str) -> tuple[d
 def delivery_checks(repo: Path, state: dict[str, Any], remote: str, base: str | None) -> dict[str, Any]:
     """Every check `deliver` makes. Any mismatch refuses, with all reasons at once."""
     run_id = state.get("run_id")
+    if state.get("status") == "awaiting-human":
+        # No approve verb exists, so a held run is never delivered as it stands.
+        raise RunError(f"deliver refused: run {run_id} is awaiting-human, not accepted: "
+                       f"{state.get('reason')}; {AWAITING_HUMAN_NEXT}")
     if state.get("status") != "accepted":
         raise RunError(f"deliver refused: run {run_id} is {state.get('status')}, not accepted")
     # The names reach git arguments and the printed push command: check them before anything else.
@@ -4072,7 +4116,10 @@ def delivery_body(checks: dict[str, Any], verdict: dict[str, Any]) -> str:
         "",
         "### Calibration",
         f"Checker calibration: {calibration.get('status')}"
-        + (f" ({calibration.get('calibrated_at')})" if calibration.get("calibrated_at") else "") + ".",
+        + (f" ({calibration.get('calibrated_at')})" if calibration.get("calibrated_at") else "") + "."
+        + ("" if calibration.get("status") == "passed" else
+           " This makes it checker advisory: its acceptance is advice, not a gate, so a human reviews the "
+           "change before it lands."),
         "",
         "### Budgets used",
         f"Attempts: {state.get('attempt')} of {limits.get('max_attempts')}. Claude: "
@@ -4191,25 +4238,131 @@ def checker_prompt_sha256() -> str:
     return hashlib.sha256(role_prompt(state, manifest, "checker").encode("utf-8")).hexdigest()
 
 
+# Wrong verdicts the held-out set may hold before the calibration fails.
+CALIBRATION_ERROR_BUDGET = 0
+CALIBRATION_SCHEMA = 2
+CALIBRATION_FIELDS = ("model_family", "model_version", "held_out_sha256", "n", "pass_rate", "error_budget")
+# A calibration record is a few kilobytes; a larger file is not read.
+CALIBRATION_MAX_BYTES = 1 << 20
+
+
+def model_identity(model: str) -> tuple[str, str]:
+    """A model name as family and version: `claude-opus-5-5` is `claude-opus` and `5-5`, `gpt-5.4` is
+    `gpt` and `5.4`. The version starts at the first part that begins with a digit; a name with no
+    such part (an alias such as `opus`, or `o3`) has an empty version."""
+    match = re.fullmatch(r"(.+?)[-_.@:](\d.*)", model)
+    return (match.group(1), match.group(2)) if match else (model, "")
+
+
+def calibration_set_sha256() -> str:
+    """The held-out set: the labelled candidates, their spec, test and verify command."""
+    return hashlib.sha256(json.dumps([CALIBRATION_SPEC, CALIBRATION_TEST, CALIBRATION_VERIFY,
+                                      CALIBRATION_CANDIDATES]).encode("utf-8")).hexdigest()
+
+
 def calibration_path(repo: Path, runtime: str, model: str, effort: str) -> Path:
-    key = hashlib.sha256(json.dumps([runtime, model, effort, checker_prompt_sha256()]).encode()).hexdigest()
+    """Keyed by the model family, not its version, so a new version finds the old record and
+    reads it as stale instead of as missing."""
+    key = hashlib.sha256(json.dumps([runtime, model_identity(model)[0], effort,
+                                     checker_prompt_sha256()]).encode()).hexdigest()
     return state_root(repo).parent / "agentsmith-calibrations" / f"{key[:32]}.json"
 
 
+def calibration_record(checker: dict[str, Any], cases: list[dict[str, Any]], *, client_version: str,
+                       usage: dict[str, Any]) -> dict[str, Any]:
+    """What `calibrate` writes: the verdicts scored as a pass rate over N against the error budget."""
+    family, version = model_identity(str(checker.get("model")))
+    wrong = sum(1 for case in cases if not case.get("correct"))
+    errors = any(case.get("verdict") == "error" for case in cases)
+    status = ("error" if errors or not cases else "passed" if wrong <= CALIBRATION_ERROR_BUDGET
+              else "failed")
+    return {"schema_version": CALIBRATION_SCHEMA, "status": status, "calibrated_at": now(),
+            "client": checker.get("runtime"), "model": checker.get("model"), "effort": checker.get("effort"),
+            "model_family": family, "model_version": version, "client_version": client_version,
+            "checker_prompt_sha256": checker_prompt_sha256(), "held_out_sha256": calibration_set_sha256(),
+            "n": len(cases), "pass_rate": round((len(cases) - wrong) / len(cases), 3) if cases else 0.0,
+            "error_budget": CALIBRATION_ERROR_BUDGET, "cases": cases, **usage}
+
+
+def read_calibration_file(path: Path) -> bytes | None:
+    """The record's bytes, or None when there is no file. A symbolic link, anything that is not a
+    regular file, and a file over the size cap raise instead of being read."""
+    try:
+        mode = os.lstat(path).st_mode
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(mode):
+        raise OSError(f"not a regular file: {path}")
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+                         | getattr(os, "O_BINARY", 0))
+    with os.fdopen(descriptor, "rb") as handle:
+        # A file swapped in after the check: O_NOFOLLOW refuses a link, and this anything else.
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise OSError(f"not a regular file: {path}")
+        data = handle.read(CALIBRATION_MAX_BYTES + 1)
+    if len(data) > CALIBRATION_MAX_BYTES:
+        raise OSError(f"over {CALIBRATION_MAX_BYTES} bytes: {path}")
+    return data
+
+
+def calibration_score_problem(record: dict[str, Any]) -> str | None:
+    """Why a `passed` record's score does not bear out its status, if it does not: N of at least
+    one, one case per N, wrong verdicts within the controller's error budget, and the pass rate
+    `calibration_record` gives them. A record cannot raise its own budget."""
+    n, cases = record.get("n"), record.get("cases")
+    if type(n) is not int or n < 1:
+        return f"n is {n!r}, not a count of at least 1"
+    if not isinstance(cases, list) or len(cases) != n or not all(isinstance(case, dict) for case in cases):
+        return f"the record does not hold {n} case records"
+    if type(record.get("error_budget")) is not int or record["error_budget"] != CALIBRATION_ERROR_BUDGET:
+        return f"error budget {record.get('error_budget')!r}, the controller's is {CALIBRATION_ERROR_BUDGET}"
+    wrong = sum(1 for case in cases if not case.get("correct"))
+    if wrong > CALIBRATION_ERROR_BUDGET:
+        return f"{wrong} wrong verdicts, over the error budget of {CALIBRATION_ERROR_BUDGET}"
+    if record.get("pass_rate") != round((n - wrong) / n, 3):
+        return f"pass rate {record.get('pass_rate')!r} for {n - wrong} of {n} right"
+    return None
+
+
 def calibration_status(repo: Path, checker: dict[str, Any]) -> dict[str, Any]:
-    """The latest calibration for this checker client, model, effort and prompt. Record-only, so
-    no content of the file, and no error reading it, may affect the run: it reads "unreadable"."""
+    """The latest calibration for this checker client, model family, effort and prompt. Only
+    `passed` lets a checker acceptance count; every other value leaves the checker advisory:
+    "stale" (a record for another checker, model version or held-out set, or one that does not
+    name them), "invalid" (a `passed` whose score does not bear it out) and "unreadable" (not a
+    small regular JSON file). No content of the file, and no error reading it, may stop a run."""
     try:
         path = calibration_path(repo, str(checker.get("runtime")), str(checker.get("model")),
                                 str(checker.get("effort")))
-        if not path.is_file():
+        data = read_calibration_file(path)
+        if data is None:
             return {"status": "none"}
-        record = json.loads(path.read_bytes().decode("utf-8"))
+        record = json.loads(data.decode("utf-8"))
         if not isinstance(record, dict) or record.get("status") not in {"passed", "failed", "error"}:
             return {"status": "unreadable"}
-        return {"status": record["status"], "calibrated_at": str(record.get("calibrated_at")),
-                "client_version": str(record.get("client_version")), "receipt": str(path)}
-    except Exception:  # record-only: never let a calibration file stop a run
+        status = {"status": record["status"], "calibrated_at": str(record.get("calibrated_at")),
+                  "client_version": str(record.get("client_version")),
+                  **{key: record.get(key) for key in CALIBRATION_FIELDS}, "receipt": str(path)}
+        family, version = model_identity(str(checker.get("model")))
+        identity = {"client": checker.get("runtime"), "effort": checker.get("effort"),
+                    "checker_prompt_sha256": checker_prompt_sha256(), "model_family": family}
+        missing = [key for key in CALIBRATION_FIELDS if key not in record]
+        other = [key for key, value in identity.items() if key not in record or record[key] != value]
+        if record.get("schema_version") != CALIBRATION_SCHEMA or missing:
+            stale = ("the record does not name the model version and held-out set it calibrated"
+                     + (f" (missing {', '.join(missing)})" if missing else ""))
+        elif other:
+            stale = f"the record calibrated another checker: {', '.join(other)} differ"
+        elif record["model_version"] != version:
+            stale = (f"calibrated model version {record['model_version'] or 'none'}, "
+                     f"configured {version or 'none'}")
+        elif record["held_out_sha256"] != calibration_set_sha256():
+            stale = "the held-out set changed since this calibration"
+        elif record["status"] == "passed" and (problem := calibration_score_problem(record)):
+            return {**status, "status": "invalid", "invalid_reason": problem}
+        else:
+            return status
+        return {**status, "status": "stale", "stale_reason": stale}
+    except Exception:  # never let a calibration file stop a run: it reads "unreadable"
         return {"status": "unreadable"}
 
 
@@ -4301,8 +4454,9 @@ def calibrate_case(repo: Path, base: str, head: str, label: str, attempt: int, m
 
 
 def calibrate(args: argparse.Namespace) -> int:
-    """Run the configured checker against the labelled candidates and record the result.
-    Record-only: no run depends on it yet. 0 passed, 1 failed, 2 could not run."""
+    """Run the configured checker against the labelled candidates and record the result. Until a
+    record for this checker reads `passed`, its acceptances are advisory and a run that would be
+    accepted waits for a human. 0 passed, 1 failed, 2 could not run."""
     repo = repo_root(Path.cwd())
     assert_autonomy_not_paused(repo, action="calibrate")
     manifest = load_json(Path(args.manifest).resolve())
@@ -4326,13 +4480,9 @@ def calibrate(args: argparse.Namespace) -> int:
             outcome = calibrate_case(fixture, base, heads[label], label, attempt, cal_manifest, usage)
             outcome.update(expected=expected, correct=outcome["verdict"] == expected)
             cases.append(outcome)
-    errors = [case for case in cases if case["verdict"] == "error"]
-    status = "error" if errors else "passed" if all(case["correct"] for case in cases) else "failed"
-    command = native_command_prefix(checker["runtime"])
-    record = {"schema_version": 1, "status": status, "calibrated_at": now(),
-              "client": checker["runtime"], "model": checker["model"], "effort": checker["effort"],
-              "client_version": client_version(command),
-              "checker_prompt_sha256": checker_prompt_sha256(), "cases": cases, **usage}
+    record = calibration_record(checker, cases, client_version=client_version(native_command_prefix(checker["runtime"])),
+                                usage=usage)
+    status = record["status"]
     path = calibration_path(repo, checker["runtime"], checker["model"], checker["effort"])
     write_json(path, record)
     for case in cases:

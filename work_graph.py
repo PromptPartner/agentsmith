@@ -413,6 +413,9 @@ def status(contract: dict[str, Any]) -> dict[str, Any]:
                 result["risk_tier"] = risk.get("tier") if isinstance(risk, dict) else None
             elif child_status == "escalated":
                 result.update(status="failed", reason=str(state.get("reason") or "child run escalated"))
+            elif child_status == "awaiting-human":
+                # The child's checker is advisory until calibrated: its candidate waits for a person.
+                result.update(status="blocked", reason=str(state.get("reason") or "child run awaits a human"))
             elif child_status == "interrupted":
                 result.update(status="interrupted", reason=str(state.get("reason") or "child run interrupted"))
             elif child_status in {"prepared", "making", "checking", "retrying", "resuming"}:
@@ -759,7 +762,7 @@ def child_failure_reason(child: dict[str, Any] | None, returncode: int, stderr: 
     if isinstance(known, str) and known.strip():
         return known[:500]
     status = child.get("status") if child else None
-    if status not in {"making", "checking", "retrying", "accepted", "escalated", "interrupted"}:
+    if status not in {"making", "checking", "retrying", "accepted", "awaiting-human", "escalated", "interrupted"}:
         status = "unknown"
     exception = "unknown"
     for line in reversed(stderr.splitlines()):
@@ -976,7 +979,7 @@ def resume_graph(contract: dict[str, Any]) -> dict[str, Any]:
             if child is None:
                 raise GraphError(f"dispatched node {run_id} has no child state; manual reconciliation required")
             child_status = child.get("status")
-            if child_status in {"accepted", "escalated"}:
+            if child_status in {"accepted", "awaiting-human", "escalated"}:
                 continue
             if controller.process_is_live(child.get("controller_pid")):
                 raise GraphError(f"child controller {run_id} is still live; refusing duplicate resume")
