@@ -19,6 +19,11 @@ been authorized, so the entries are kept here.
   it, so an operator could not see why a check counted as a regression without reading
   `state.json`. Fixed: `status` prints `verification_baseline` (commit, verification, exit code,
   reason, passing and failing checks) once the run has one.
+- [x] 2026-11-21 — Gap left open by SF-12b: `factory intake` with a verdict appends its record to
+  `agentsmith-factory/intake.jsonl` in the Git folder, but `factory export` wrote only the events,
+  defects and minutes logs, so the intake history stayed behind when the record was kept outside
+  the repository. Fixed: `factory.json` now has an `intake` list, redacted with the same home-folder
+  and secret rules as the rest of the export.
 - [ ] 2026-11-21 — Gap found while adding the attention budget (SF-18a): there is no command to
   dismiss a waiting run. A run leaves the inbox, and the budget count, only when it lands or when
   its branch is deleted; a deleted branch then shows as a warning for as long as the run folder

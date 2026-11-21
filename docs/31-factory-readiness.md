@@ -138,9 +138,10 @@ they are read: a row without a valid time, a defect without a full commit SHA or
 minutes that are not a number from above 0 to 1,440 is skipped, and `numbers` reports how many
 rows it skipped.
 
-`factory export <folder>` writes one JSON file per run (its state, events and receipts) and one for
-the factory logs, to a folder outside the Git folder that is empty or does not exist yet. Use it to
-keep the record beyond the repository's Git folder.
+`factory export <folder>` writes one JSON file per run (its state, events and receipts) and one,
+`factory.json`, for the factory logs: `events`, `defects`, `minutes` and `intake` (the
+[intake](#intake) verdict records). It writes to a folder outside the Git folder that is empty or
+does not exist yet. Use it to keep the record beyond the repository's Git folder.
 Export redacts rather than refuses: your home folder becomes `~`, and text that looks like a
 secret (the secret scanner's patterns, GitHub tokens, and `secret`, `token`, `password` or
 `api_key` assignments) becomes `[redacted: <kind>]`. It prints how many values it redacted.
@@ -193,7 +194,8 @@ The record is appended to `agentsmith-factory/intake.jsonl` in the Git folder, o
 tree. It holds the time, the repository, the issue number, URL, cleaned title and author's login,
 the SHA-256 of the cleaned body, the cleaning report, `"untrusted": true`, the verdict and the path
 of any draft spec. Intake an issue again after it changes: each verdict is a new row, and the
-history stays.
+history stays. `factory export` includes these records under `intake` in `factory.json`, redacted
+like the rest of the export.
 
 `--draft-spec <path>` goes with `ACCEPT` or `ACCEPT-RESCOPED`. It writes a new spec from the
 repository's `.harness/templates/wayfinder-spec.md` (or the harness's own template), with

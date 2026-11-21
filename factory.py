@@ -681,7 +681,8 @@ def collect_export(repo: Path) -> dict[str, Any]:
         exported.append({"run_id": run["id"], "state": run["state"], "events": run["events"], "receipts": receipts})
     root = factory_dir(repo)
     return {"schema_version": SCHEMA_VERSION, "runs": exported,
-            "factory": {name: read_jsonl(root / f"{name}.jsonl") for name in ("events", "defects", "minutes")}}
+            "factory": {name: read_jsonl(root / f"{name}.jsonl")
+                        for name in ("events", "defects", "minutes", "intake")}}
 
 
 # Export redacts rather than refuses: the record is still useful with a secret-like value removed.
