@@ -3,6 +3,19 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [x] 2026-11-21 — Found by an independent test of SF-12b: `factory intake --draft-spec` checked
+  the path before reading the issue, then wrote it with a plain exclusive create. A folder on the
+  path replaced by a link during the read carried the draft out of the repository or into `.git`,
+  and a success record was appended. Fixed: on POSIX the write opens the repository root and
+  walks each folder with `O_NOFOLLOW` relative to its parent, refuses `.git` as any part, and
+  creates the file with `O_EXCL | O_NOFOLLOW`; the record is appended only after the draft is
+  written.
+- [ ] 2026-11-21 — Limit of `factory intake --draft-spec` on Windows, where Python cannot open a
+  file relative to a folder handle: the write resolves the parent folder again just before the
+  exclusive create, and refuses if it moved. A folder swapped for a link in the short window
+  between that check and the create is still followed, and a missing folder is created before the
+  check, so a swap can leave an empty folder outside the repository. No draft or record is written
+  in that case.
 - [ ] 2026-11-21 — Intermittent failure of `test_a_slow_git_still_finds_the_handoff` on a macOS CI
   runner (run 44933786525, PR #92; the same commit passed in its other run). The test makes every
   `git` call start 0.5 s late. The hook's whole recall still runs under its 2-second watchdog, so a

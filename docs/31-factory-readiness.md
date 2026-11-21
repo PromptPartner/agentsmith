@@ -1,9 +1,12 @@
-# Factory readiness and numbers
+# Factory readiness, numbers and intake
 
 `agentsmith factory` answers two questions about autonomous work in a repository:
 
 - Is the repository ready for wider autonomy?
 - What do the numbers say so far?
+
+It also takes in one GitHub issue at a time as untrusted input, with your verdict on it
+([intake](#intake)).
 
 Both answers are derived each time from what is already recorded: run state and `events.jsonl`,
 two operator logs, and read-only GitHub reads through `gh`. Nothing is kept as a board.
@@ -17,6 +20,7 @@ agentsmith factory numbers [--since 2026-10-01] [--json]
 agentsmith factory export <folder>
 agentsmith factory defect add <merged-commit-sha> --tier B [--note "what broke"]
 agentsmith factory minutes add <run-id> <minutes>
+agentsmith factory intake <issue> [--verdict ACCEPT|ACCEPT-RESCOPED|NEEDS-INFO|REJECT] [--draft-spec <path>] [--json]
 ```
 
 `--target <repository>` points any of them at another checkout. CI is read for the GitHub
@@ -87,3 +91,63 @@ Windows forms `\\?\C:\Users\you` and Git Bash's `/c/Users/you`. The separator af
 written, so `C:\Users\you\repo` becomes `~\repo` and `C:/Users/you/repo` becomes `~/repo`.
 A folder whose name only starts with yours (`you2` next to `you`) is left alone. Redaction is
 pattern-based, so read an export before you share it.
+
+## Intake
+
+`factory intake <issue>` reads one issue of the GitHub repository of the `origin` remote. Name it by
+number (`7` or `#7`) or by its URL; a URL of another repository is refused. The read is one
+`gh issue view` call. Intake never writes to GitHub: no comments, no labels, no assignment, no state
+change.
+
+The title and body are someone else's text, so intake cleans them before you see them and labels
+them untrusted. It removes:
+
+- zero-width characters (U+200B to U+200D, U+2060 to U+2064, U+FEFF);
+- bidirectional controls, overrides and isolates (U+200E, U+200F, U+061C, U+202A to U+202E,
+  U+2066 to U+2069);
+- the whole tag block (U+E0000 to U+E007F), which can spell text no reader sees;
+- variation selectors (U+FE00 to U+FE0F, U+E0100 to U+E01EF), which can encode hidden bytes. An
+  emoji only loses its presentation hint;
+- every other invisible format character (Unicode category Cf), such as the soft hyphen;
+- control characters other than newline and tab, so the text cannot drive your terminal;
+- HTML comments. An unclosed `<!--` hides everything after it when GitHub renders it, so intake
+  removes everything after it too.
+
+The report names each kind and how many were removed. It never repeats the hidden text, so a
+prompt hidden in a comment is not copied anywhere.
+
+Without `--verdict`, intake only prints the cleaned issue and the report, and writes nothing.
+
+The verdict is yours. Intake is deterministic tooling: it does not decide or suggest one. Pass
+exactly one verdict with its own fields:
+
+| Verdict | Required | Means |
+|---|---|---|
+| `ACCEPT` | nothing | The issue is ready to become a spec as written. |
+| `ACCEPT-RESCOPED` | `--left-out <item>`, one or more | Accepted with a smaller scope. A rescope that does not name what it leaves out is refused. |
+| `NEEDS-INFO` | `--question <text>`, one or more | The author must answer first. Intake does not post the questions; you ask them. |
+| `REJECT` | `--reason <text>` | Not taken. |
+
+A flag that belongs to another verdict is refused. Your flags and the draft path are checked before
+the issue is read.
+
+The record is appended to `agentsmith-factory/intake.jsonl` in the Git folder, outside the tracked
+tree. It holds the time, the repository, the issue number, URL, cleaned title and author's login,
+the SHA-256 of the cleaned body, the cleaning report, `"untrusted": true`, the verdict and the path
+of any draft spec. Intake an issue again after it changes: each verdict is a new row, and the
+history stays.
+
+`--draft-spec <path>` goes with `ACCEPT` or `ACCEPT-RESCOPED`. It writes a new spec from the
+repository's `.harness/templates/wayfinder-spec.md` (or the harness's own template), with
+`status: draft`. Intake fills in only the title and a "Source issue (untrusted)" section that quotes
+the cleaned body line by line. Quoting keeps the issue's own headings and list items from counting
+as acceptance criteria, edge cases or non-goals. For a rescope, each left-out item becomes a non-goal.
+Every other section stays for you. The path must be inside the repository and outside the Git
+folder, and an existing file, or a link, is never overwritten. The path is checked before the issue
+is read and again as the file is written: a folder that became a link in between is refused, and
+then no record is written. On Windows a short window remains (see `KNOWN-ISSUES.md`).
+
+A draft spec cannot start a run. `autonomous-run.py prepare` refuses it until its acceptance
+criteria, edge case, non-goal, research note, review receipt, route and assumptions are complete,
+and `start` refuses any spec that is not `status: accepted` with `accepted_by` and `accepted_at`.
+Only a person accepts a spec.
