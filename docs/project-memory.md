@@ -26,7 +26,7 @@ list is marked; narrow the query to inspect further matches.
 
 Search and startup discovery inspect at most 500 documents, read at most
 128 KiB per document and check a two-second time budget between local filesystem
-operations. The native hook runs selection and discovery in a subprocess with a two-second wall-clock watchdog; timeout produces a diagnostic and continues the session. Manual CLI filesystem calls cannot be preempted. Incomplete
+operations. The native hook runs selection and discovery in a subprocess with a two-second wall-clock watchdog; timeout produces a diagnostic and continues the session. Reading the current branch from Git is part of that budget; when Git does not answer in time, the hook says so instead of returning an empty reference list. Manual CLI filesystem calls cannot be preempted. Incomplete
 inspection, unreadable files, invalid metadata and symlinks produce diagnostics;
 an incomplete search never means there are no matching documents elsewhere.
 Reports retain at most 20 detailed diagnostics, with an omitted count when more

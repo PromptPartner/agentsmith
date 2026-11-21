@@ -96,7 +96,9 @@ A spec can be offered for acceptance only when:
 - the destination and non-goals are concrete;
 - no unresolved in-scope decision or blocking fog remains;
 - each resolved decision has a rationale and context pointer;
-- evidence/acceptance requirements cover the destination end to end;
+- evidence/acceptance requirements cover the destination end to end, and "Acceptance and
+  evidence", "Edge cases" and "Non-goals" each hold at least one real list item;
+- each `path` or `path::symbol` under "Assumptions" exists in the committed code;
 - implementation-ticket drafts are separate, independently executable scopes; and
 - `research:`, `route:` and `reviewer_receipt:` are filled and both cited files are committed
   (a run's worktree has only what Git has), the reviewer did not draft the spec,

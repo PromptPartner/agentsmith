@@ -1,3 +1,10 @@
+<!-- Routing preface: hand-written, kept outside the managed block. Every line is read on every turn. -->
+**Read this first.** The agreement below is for people who develop AgentSmith itself. It applies
+only when the `origin` remote is `PromptPartner/agentsmith` or the user says they are developing
+AgentSmith. Otherwise, do not apply it: follow [AGENT-INSTALL.md](AGENT-INSTALL.md) and ask its
+setup questions (starting point, main kind of work, which picks the profile, and the user's
+background) before any other work.
+
 <!-- BEGIN AGENTSMITH — universal agent harness (managed by agentsmith — edit core/profiles, not here) -->
 <!-- Generated. Profiles: software-dev. core=true. Edit core/ or profiles/, then re-run setup. -->
 

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Selection and disclosure contracts; configuration writes use temporary homes."""
+import _fixture_git  # first: keeps every Git fixture out of an inherited repository
+_fixture_git.isolate()
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))

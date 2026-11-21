@@ -86,6 +86,15 @@ def run(arguments: list[str], *, environment: dict[str, str]) -> subprocess.Comp
     )
 
 
+def failure_tail(completed: subprocess.CompletedProcess[bytes], lines: int = 40) -> str:
+    """The last lines of a failed phase's output, for the CI log only. The report keeps hashes, so
+    without this a failure said only which phase failed. Control characters are escaped."""
+    text = (completed.stdout + b"\n" + completed.stderr).decode("utf-8", errors="replace")
+    tail = text.rstrip().splitlines()[-lines:]
+    return "\n".join("".join(f"\\x{ord(char):02x}" if ord(char) < 32 and char != "\t" or 127 <= ord(char) <= 159
+                              else char for char in line) for line in tail)
+
+
 def git(arguments: list[str], *, environment: dict[str, str]) -> str:
     # actions/checkout may populate a Windows worktree with CRLF under a global
     # core.autocrlf setting. The evidence environment intentionally ignores
@@ -196,6 +205,8 @@ def record(output: Path, output_root: Path, expected_commit: str | None) -> int:
         )
         if completed.returncode != 0:
             status = "failed"
+            print(f"phase {label} failed with exit {completed.returncode}; last output lines:\n"
+                  f"{failure_tail(completed)}", file=sys.stderr)
             break
 
     status_after = git(["status", "--porcelain=v1", "--untracked-files=all"], environment=environment)

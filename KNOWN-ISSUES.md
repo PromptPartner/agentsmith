@@ -3,6 +3,217 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [x] 2026-11-16 — `scripts/verify.sh` ended with exit 128 and no message when its project was
+  not a Git repository: the gate-lock lookup `git rev-parse --absolute-git-dir` failed inside a
+  command substitution under `set -e`, before the `.harness/verify.lock` fallback ran. Found when
+  fix/gate-worktree-lock and fix/verify-git-env-isolation met on the integration branch:
+  `test_repository_runner_clears_inherited_git_environment` runs the gate in a plain folder and
+  failed there, and passes after the lookup tolerates the failure.
+- [x] 2026-11-14 — Design gap found while adding the hidden-test tripwire: a maker that showed
+  the canary only in its output failed its attempt, but the run reworked on top of its commits,
+  so code written after reading the held-out tests could pass them later. Fixed: the canary token
+  anywhere in a role's output, receipt, changes or commits now stops the run for a person; only a
+  hit on the tripwire's name alone (a denied read) fails the attempt and keeps its commits.
+- [x] 2026-11-18 — Found by an independent test of the integration branch: a role could keep the
+  canary out of sight of the tripwire by committing it and reverting it in a later commit, or by
+  writing it to a file the worktree's `.gitignore` hides, and the run ended `accepted`. Fixed: the
+  tripwire also reads every commit the role made, with its patch, and every ignored file in the
+  worktree to its end.
+- [ ] 2026-11-14 — Limit of the hidden-test tripwire: it catches a role that shows the canary, not
+  one that reads the held-out tests and never shows it, or changes the text first. The role
+  sandbox's read denial stays the boundary.
+- [ ] 2026-11-06 — Found while fixing the export redaction on Windows: `evaluate.py`'s
+  `redact()` replaces only the home folder exactly as `Path.home()` spells it, followed by the
+  native separator. On Windows the same folder written with `/`, in another letter case, with the
+  `\\?\` prefix, as Git Bash's `/c/Users/...` or with doubled backslashes stays in the normalized
+  evaluation summary. `factory export` now matches all of these; the evaluator does not reuse it.
+- [ ] 2026-11-06 — Coverage gap: `scripts/test-factory.py` skips two tests on Windows. The fake
+  `gh` is a POSIX script, so the test that `factory numbers --target` reads CI for the target's
+  repository and not the current folder's never runs there; the real readiness preflight test
+  needs the macOS or Linux sandbox, so the Windows sandbox preflight is never run by it. Windows
+  CI passing says nothing about either path on Windows.
+- [ ] 2026-11-06 — Measured with `agentsmith factory readiness` on this repository: the latest
+  `compatibility (windows-latest)` job took 38 of its 45 timeout minutes (84%), over the 70%
+  headroom. A slower runner can time it out. Over 2026-10-01 to 2026-11-06 the default branch was
+  red about 205 hours (23% of the window) by the derived measure, which keeps a failing workflow
+  red until its next run, so sparse pushes inflate it. Both are inputs for the CI work, not fixed here.
+- [ ] 2026-11-06 — Measured: a small model does not follow the checker's receipt format. A real
+  `autonomous-run calibrate` of Claude Code 2.1.319 with `haiku` at low effort failed both labelled
+  candidates (three runs, about $0.04 in total): its receipts named `HEAD`, an empty value or free
+  text instead of the candidate commit, and listed no changed paths, so neither verdict counted.
+  The calibration receipt records this as `invalid-receipt`. Calibrate a stronger checker model
+  before relying on it, or simplify what the receipt asks for; nothing enforces calibration yet.
+- [x] 2026-11-06 — The Windows compatibility job ran close to its cap: over the 24 latest verify
+  runs (push and pull request, 2026-10-26 to 2026-11-06) it took p50 35.3, p90 38.0 and at most
+  40.8 minutes against a 45-minute cap, and a factory multiplies CI load. Slowest Windows steps
+  (median / p90 minutes): work-graph local lifecycle 12.8 / 13.9; record native First Verified
+  Loop evidence 8.2 / 9.2; stable release updater 5.6 / 6.2; work-graph lifecycle under the native
+  report environment 1.4 / 1.6; doctor fixtures 1.3 / 1.4; every other step under 1. The two
+  work-graph lifecycle steps now run in their own parallel Windows job,
+  `work-graph lifecycle (windows-latest)`, with the same commands, so no check is dropped. The
+  required `aggregate native First Verified Loop evidence` job needs it and fails, rather than
+  skips, when it fails, so it still gates the merge without a ruleset change. Steps that can hang
+  have their own `timeout-minutes`, about 1.6 to 5 times their slowest observed run. Expected
+  Windows compatibility time: about 21 minutes at p50 (35.3 minus 14.2), with the new job about
+  15; to be confirmed by the first hosted runs. `test_windows_work_graph_runs_beside_compatibility_and_still_gates_the_merge`
+  failed before and passes after.
+- [x] 2026-11-06 — macOS push run `42276115183` (`feat/sf03-deliver`, `c2f615b`) failed
+  `test_global_handler_defers_to_project_choice_and_uninstall` in `test-memory-lifecycle.py` with
+  `'handoff.md' not found in ''`; it was the first sighting in 80 runs, and the same code passed
+  elsewhere. Cause: the startup recall read the current branch with `git symbolic-ref` under a
+  0.25-second limit. On a cold or loaded runner, starting git can take longer (on macOS
+  `/usr/bin/git` is an xcrun shim); the branch was then unknown, no handoff matched, and the hook
+  printed nothing, which reads as "nothing to recall". The limit is now 0.8 seconds per Git call,
+  inside the hook's unchanged 2-second watchdog, and a Git timeout produces an explicit "did not
+  answer in time" note instead of an empty result. `test_a_slow_git_still_finds_the_handoff` (a git
+  that takes 0.5 s to start) failed with the exact CI assertion before and passes after;
+  `test_a_git_timeout_is_reported_not_silent` covers the note.
+- [x] 2026-11-06 — Two verification gates could run in one worktree at once (two agents, or a hook
+  and a manual run) and interleave fixtures and receipts, and a recorded receipt named the commit
+  and dirty flag but not the tested tree. `agentsmith verify` and `scripts/verify.sh` now share a
+  per-worktree lock in the worktree's Git directory: a second gate fails fast naming the holder's
+  pid and start time, `--wait` waits, a dead holder's lock is reclaimed, and a gate started by the
+  holder shares its lock. Receipts record `git write-tree`, and `verification_receipt_problem()`
+  refuses a receipt from another or a dirty tree. `VerifyLockTests` in `test-verify-receipts.py`
+  failed before and pass after.
+
+- [ ] 2026-11-06 — `git_metadata()` excludes the active worktree's Git directory from the protected
+  files. Called from the main checkout, that directory is the whole common directory, so nothing
+  outside objects, refs, config and hooks would be compared. Every current caller passes a run's
+  or checker's linked worktree, so this is not reachable today; found while writing the
+  `packed-refs.lock` test, which had to snapshot from a linked worktree to see the lock at all.
+- [x] 2026-11-06 — Test scripts run directly from a hook, `git rebase --exec` or a wrapper passed the
+  inherited `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and related variables to their Git
+  fixtures, which then worked on that repository instead of their temporary ones. Every
+  `scripts/test-*` file now clears them first: Python tests call `_fixture_git.isolate()`, shell
+  tests source `scripts/_fixture_git.sh`, with one list of variables that a test keeps equal.
+  `scripts/test-fixture-git-env.py` runs a Python and a shell fixture test with `GIT_DIR` pointing
+  at a sentinel repository: both changed the sentinel before and leave it unchanged after, and a
+  coverage check names any test script that lacks the call.
+
+- [x] 2026-11-06 — Verification phases inherited Git's repository variables (`GIT_DIR`,
+  `GIT_WORK_TREE`, `GIT_INDEX_FILE` and the rest of `git rev-parse --local-env-vars`). Hooks,
+  `git rebase --exec` and wrappers export them, so a test fixture's `git -C <temporary> init`
+  re-initialized the enclosing repository instead: one run under `rebase --exec` set
+  `core.bare = true` on a shared repository and committed fixtures onto the branch being rebased.
+  `scripts/verify.sh` and `agentsmith verify` (with and without `--record`) now clear these
+  variables before any phase runs. The three `GitEnvironmentIsolationTests` in
+  `scripts/test-verify-receipts.py` failed before the change and pass after.
+- [x] 2026-11-06 — Test scripts run directly, outside the gate, still pass these variables to their
+  Git fixtures: `test-agent-conformance.py`, `test-autonomous-graph-base.py`,
+  `test-autonomous-run.sh`, `test-autonomous-state.py`, `test-doctor.py`,
+  `test-durable-checkpoints.py`, `test-first-verified-loop-contracts.py`,
+  `test-installer-safety.py`, `test-leak-gate.sh`, `test-secret-scan.py`, `test-update.py`,
+  `test-wayfinder-spec.sh`, `test-windows-verifier-sandbox.py`, `test-work-graph-contracts.py`,
+  `test-work-graph-dispatch.py`, `test-work-graph-release-evidence.py`,
+  `test-work-graph-status.py`. Run them through `scripts/verify.sh --only <label>` from a hook or
+  `rebase --exec`, not directly. Fixed by the `_fixture_git` entry above: every test script now clears
+  the variables itself.
+
+- [x] 2026-11-06 — The maker scope check and the protected-input check (policy files, baseline
+  tests, agent instructions and the symbolic links that reach them) read only the end-to-end diff
+  from the base to the candidate. A maker could add an out-of-scope file, or edit `AGENTS.md`, in one
+  commit and undo it in the next; the run was accepted, and the history that would be pushed still
+  carried the file, for example a secret. Found by an independent review lane. Both checks now read
+  every commit from the base to the candidate (moves by both paths, merges against each parent,
+  links in every commit) and name the path and the first commit that touched it. Three fake-client
+  cases in `test-autonomous-run.sh` (an out-of-scope file added then deleted, `src/CLAUDE.md` added
+  then removed, the target of a linked `AGENTS.md` edited then restored) were accepted before and
+  are refused now.
+
+- [x] 2026-11-06 — Found by independent review of the 2026-11-05 cache fix: the checker still
+  shared `TEMP`, `TMP`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `HOME` with the maker, and `npm config
+  get cache` resolved to the shared `HOME/.npm`. The checker now gets fresh folders for all of
+  these except `HOME`, which its client needs to sign in; the tool caches it would find under `HOME`
+  (npm, pnpm, Yarn, Bun, pip, uv, Python user folder, Cargo, Go, Gradle, Maven) and the global Git
+  config point at the fresh folder. Red first: the extended checker-environment test (shared
+  `TEMP`, no cache pins) and the reviewer's probe; real `npm` now resolves its cache inside the
+  fresh folder. A real `claude -p` and `codex exec` signed in with the new environment. Still
+  open: a tool not on that list reads its files under the real `HOME`; the maker's sandbox cannot
+  write there.
+- [x] 2026-11-06 — Found by independent review of the 2026-11-05 head-binding fix: the controller
+  read the branch and `HEAD` before its final clean check, so an amend with the same tree made
+  while that check ran was accepted under the stale commit ID. The IDs are now read again after
+  the clean check, as the last step before the acceptance record. Red first:
+  `test_a_commit_during_the_final_clean_check_is_still_caught` and the reviewer's end-to-end race
+  (accepted before, escalated now).
+- [x] 2026-11-06 — Found by independent review of the 2026-11-05 instruction-file fix: a
+  symbolic link carried instructions past it. With `AGENTS.md -> src/rules.txt` in the base, a
+  maker edited only `src/rules.txt` inside its scope, and the checker read the edit through
+  `AGENTS.md`. Link targets of instruction files are now protected too, in the base and the
+  candidate, through chains and linked folders and ignoring case; adding, retargeting or removing
+  a link to a protected file is refused. `test_symbolic_links_cannot_carry_instructions_past_the_protection`
+  (8 cases) and the `linked-rules` fake-client case failed before and pass after. A link that
+  points outside the repository is not followed.
+- [x] 2026-11-05 — Autonomous runs had no circuit breaker for infrastructure failures. A role
+  client that lost its network or sign-in ended the whole run at once, and nothing told a work
+  graph to stop starting children on the same failing host. Now a known failure (a fixed list
+  matched against the client's own error output) relaunches the role without spending an attempt,
+  the same failure twice in a row stops the run with `infrastructure_stop`, `resume` reruns that
+  attempt, and a graph then starts no new child. Red first: the `infra-once` and `infra-always` fake-client cases and
+  `test_repeated_infrastructure_failure_stops_new_child_launches` (child `b` started after the
+  breaker stopped `a`) failed before and pass after; `crash-unknown` shows unknown failures are
+  unchanged.
+- [ ] 2026-11-05 — Permission denials do not stop a role while it runs. Claude Code lists single
+  `permission_denied` messages only with `--output-format stream-json --verbose`, a launch change
+  that needs native qualification, and Codex `exec --json` documents no denial event (checked
+  2026-11-05), so Codex roles are not covered at all. Partly fixed 2026-11-06 after independent
+  review: the final `permission_denials` of a Claude role are counted and recorded, and a Claude
+  checker that accepts after any denial is relaunched as the infrastructure failure
+  `permission-denials`; twice in a row stops the run
+  (`test_an_accepting_checker_with_permission_denials_is_not_trusted` and the `checker-denials`
+  fake-client case failed before and pass after). The attempt cap and wall clock still bound a
+  role that keeps being denied.
+- [x] 2026-11-05 — Autonomous-run roles shared writable temporary and cache folders. Every
+  verifier used the fixed home `/tmp/agentsmith-verifier-home` and the controller's `TMPDIR`, and
+  every checker inherited the maker's `TMPDIR`, `XDG_CACHE_HOME` and Claude Code's per-user
+  sandbox folder `/tmp/claude-<uid>`. A maker could plant a cache entry, `.gitconfig` or Python
+  `.pth` file that a later verifier or checker ran (the cross-talk Simon Willison reported on
+  2026-10-01). With the v0.5.0 controller, a fake maker's planted files were visible to the
+  verifier (exit 1) and to the checker. Each verifier now gets a private `HOME`, `TMPDIR` and XDG
+  folders, and each checker a private `TMPDIR`, `XDG_CACHE_HOME` and `CLAUDE_CODE_TMPDIR`, all
+  removed afterwards. `test_each_verifier_gets_a_private_home_temp_and_cache`,
+  `test_checker_gets_fresh_temp_and_cache_folders_and_the_maker_keeps_its_own`, the Linux bind
+  test and the `plant-cache` fake-client case failed before and pass after. A native Codex 0.165.0
+  `codex sandbox` probe with the checker profile read the fresh `TMPDIR` and could not write it.
+  Still open: Claude Code signs in with the checker setting (checked 2026-11-06), but its sandboxed
+  shell has not run a native checker with it; the macOS verifier can still write `/tmp`; a detached process from a role can still find a fresh folder.
+- [x] 2026-11-05 — An autonomous run could record `accepted` for a commit that the run branch no
+  longer pointed at. Nothing compared the branch with the checked commit at acceptance, and a
+  commit made during verification was invisible to the checker's Git snapshot, which is taken
+  after the verifier. With the v0.5.0 controller, a fake maker's detached process committed while
+  the verifier ran and the run was accepted at the old commit. The controller now refuses
+  acceptance unless the branch, the worktree `HEAD` and a clean worktree all match the checked
+  commit. `test_a_commit_after_verification_refuses_acceptance` and the `late-commit` fake-client
+  case failed before the change and pass after.
+- [x] 2026-11-05 — Autonomous-run budgets failed open: `codex_goal_tokens` or `claude_max_usd` set
+  to 0 or left out meant "no cap", and validation checked only attempts and wall time. With the
+  v0.5.0 controller, a fake-client run with `codex_goal_tokens: 0` ran to acceptance. Now each
+  runtime a role uses needs a positive cap, or the string `"unbounded"` with a written
+  `budget_rationale`; anything else refuses at `prepare`, `start` and `resume`, and a cap that
+  reaches a launch unvalidated fails closed. Red first: 22 refusal cases in
+  `test_missing_or_zero_budget_refuses_instead_of_meaning_no_cap` and the zero-budget and
+  unbounded-budget fake-client cases.
+- [ ] 2026-11-05 — The Codex token cap is not enforced while a Codex role runs. `codex exec`
+  documents no hard token switch (checked against learn.chatgpt.com non-interactive mode on
+  2026-11-05), and it reports usage in `turn.completed` only when the turn ends. The controller
+  refuses a Codex role when the cap is used up and escalates after a role that crossed it, so one
+  role can overshoot once; `wall_minutes` bounds that role. Revisit when Codex documents an
+  enforced budget.
+- [ ] 2026-11-05 — Unverified: Codex token accounting may count cached input twice.
+  `usage_metrics` adds `input_tokens` and `cached_input_tokens`; if Codex reports cached input as
+  part of `input_tokens`, as the OpenAI API does, the total is too high and a cap stops early
+  (fails closed). It also reads `reasoning_tokens`, while the Codex docs name the field
+  `reasoning_output_tokens`. Confirm against a native Codex usage record before changing it.
+- [x] 2026-11-05 — An autonomous-run maker could add or edit agent instruction files (`AGENTS.md`,
+  `CLAUDE.md`, `.claude/` settings, skills and hooks, `.codex/`, `.agents/`, `GEMINI.md`,
+  `.cursor/`) at any depth, and the checker's client then loaded them from the candidate
+  worktree. That is instruction injection into the judge. With the v0.5.0 controller, a fake maker
+  that wrote `src/CLAUDE.md` inside its `src/**` scope reached an accepted run. These paths are now
+  controller policy at any depth and ignoring case; scope cannot allow them.
+  `test_agent_instruction_files_are_protected_at_any_depth` (22 paths) and the
+  `nested-instructions` fake-client case in `scripts/test-autonomous-run.sh` failed before the
+  change and pass after.
 - [ ] 2026-10-20 — Native Windows `test_deleted_git_lock_does_not_fail_acl_cleanup` failed once
   with `verifier did not start` in verify run `39429936983`, attempt 1, job
   `compatibility (windows-latest)`, on master `d56a0d5`. Attempt 2 on the same commit passed, and
@@ -72,11 +283,26 @@ been authorized, so the entries are kept here.
   subcommand help should expose only each operation's valid flags. Fixed 2026-10-26: `discover`
   and `apply` are subcommands with their own flags. `VerifyHelpTests` in `test-verify-receipts.py`
   failed before and pass after; wrong-operation flags still exit 2.
-- [ ] 2026-09-22 — A local macOS `agentsmith verify` run failed at the parallel work-graph
+- [x] 2026-09-22 — A local macOS `agentsmith verify` run failed at the parallel work-graph
   lifecycle fixture when a child snapshot classified transient `packed-refs.lock` as protected
   Git metadata. Both child worktrees were clean afterward. The focused fixture and the full
   31-phase gate passed on rerun. The exact writer and safe snapshot exclusion need diagnosis.
-- [ ] 2026-09-21 — Hosted macOS native lifecycle intermittently failed its cleanup-preview test
+  Root cause, 2026-11-06: Git's files ref backend holds `packed-refs.lock` in the shared common
+  directory during ordinary ref transactions, even when `packed-refs` does not change. A probe
+  with Apple Git 2.54 saw the lock during every `git commit`, `git worktree add -b` and
+  `git worktree add --detach`. A sibling child's commit could therefore put the lock into one of
+  this child's two snapshots only. It recurred in push run `42240813808` (`884ab3c`, macOS
+  compatibility, `test_cleanup_preview_retains_foreign_and_source_artifacts`, child reason
+  "runtime changed protected Git metadata: protected_files: packed-refs.lock"). Fixed: a
+  snapshot is now taken only when none of Git's own transient locks (`packed-refs.lock`,
+  `HEAD.lock`, `config.lock`, `index.lock`, reflog locks and the like) is held; it retries for
+  up to `GIT_METADATA_SETTLE_SECONDS` (10 seconds, room for a loaded hosted runner) and then fails
+  closed, naming the lock. `packed-refs`, `config` and `HEAD`
+  themselves are still compared. `test_git_metadata_waits_for_a_transient_ref_lock_without_ignoring_packed_refs`
+  failed before (three locks reported as changed metadata; a stale lock not refused) and passes
+  after, and it checks that a real `packed-refs` change is still caught. Racing a real sibling
+  `git commit` loop against 150 snapshot pairs gave 11 false changes before and 0 after.
+- [x] 2026-09-21 — Hosted macOS native lifecycle intermittently failed its cleanup-preview test
   in run `35607452415`, although the same suite passed in that run's compatibility job and in
   five local targeted attempts. Run `35605909782` had passed both paths. The exact failing
   assertion is not yet known. A later docs-only push run `35610061317` failed in the macOS
@@ -100,23 +326,35 @@ been authorized, so the entries are kept here.
   traceback paths or output. Manual workflow run `35697924409` passed the macOS native and
   compatibility lifecycle on commit `13bfb84`; its hosted aggregate accepted all three native
   reports from tree `a9e84ec`. The original failure did not recur, so keep this issue open
-  until its failing assertion is captured.
-- [ ] 2026-09-21 — PR run `35641860248` exposed a macOS false negative in the new Git
+  until its failing assertion is captured. 2026-11-06: the same test failed in push run
+  `42240813808` with the child reason "runtime changed protected Git metadata: protected_files:
+  packed-refs.lock": graph `start` failed because one child escalated on a sibling's transient
+  ref lock, the cause fixed in the 2026-09-22 entry above. The 2026-09-21 artifact itself cannot
+  be re-read, so that run's assertion stays unconfirmed; the stop/resume object repacking has its
+  own mitigation above. Marked fixed on that evidence; reopen if the cleanup-preview test fails
+  for another reason.
+- [x] 2026-09-21 — PR run `35641860248` exposed a macOS false negative in the new Git
   text-conversion regression: `git status` sometimes trusted cached index metadata immediately
   after the test changed `core.autocrlf`, so it reported a clean worktree even though the
   controller would hash different bytes. The regression now compares the filtered worktree
   blob with the committed blob directly; native confirmation remains pending.
-- [ ] 2026-09-21 — The same PR run failed a Windows graph stop fixture because it waited for
+  Closed 2026-11-06: not reproduced in the 60 verify runs from 2026-10-26 to 2026-11-06. Method: the
+  failed logs of every failed final attempt, and of earlier attempts of rerun runs (`gh run view
+  --log-failed`, `--attempt N`), searched for this entry's test names and messages; no match.
+- [x] 2026-09-21 — The same PR run failed a Windows graph stop fixture because it waited for
   any of two parallel makers to log a start but then required `repo-a` to exist. Maker `b` can
   start first, so a stop before `a` creates its worktree is valid. The fixture now checks
   retention for every maker that actually logged a start; native confirmation remains pending.
+  Closed 2026-11-06: not reproduced in the 60 verify runs from 2026-10-26 to 2026-11-06. Method: the
+  failed logs of every failed final attempt, and of earlier attempts of rerun runs (`gh run view
+  --log-failed`, `--attempt N`), searched for this entry's test names and messages; no match.
 - [x] 2026-10-19 — Pull-request run `39275474565` (PR #56, attempt 2) failed native Windows
   `test_parallel_roots_and_dependent_checkpoint` with `1411.665 not less than 1411.569`: the
   two root children never overlapped. The fake maker slept a default 1 s, shorter than the gap
   between dispatching the two roots on a loaded Windows runner. A 0.01 s maker reproduced the
   same assertion on macOS. Fixed: the test gives each maker 4 s, as its sibling tests do. The
   product dispatch was not at fault.
-- [ ] 2026-09-21 — Final-tree manual run `35623269366` passed Linux and macOS native work-graph
+- [x] 2026-09-21 — Final-tree manual run `35623269366` passed Linux and macOS native work-graph
   lifecycle but failed eight of ten Windows dispatch tests. The Windows report binds commit
   `00461bf`, tree `8d0c00f`, and records a clean checkout; its lifecycle phase exited 1.
   Compatibility previously tested the Windows boundary but did not expose dispatch test errors.
@@ -181,6 +419,9 @@ been authorized, so the entries are kept here.
   and compatibility lifecycle paths on commit `13bfb84`, and its hosted aggregate bound all
   three native reports to tree `a9e84ec`. No post-fix Windows child interruption recurred;
   the controller cause remains open pending a captured failure and red regression.
+  Closed 2026-11-06: not reproduced in the 60 verify runs from 2026-10-26 to 2026-11-06. Method: the
+  failed logs of every failed final attempt, and of earlier attempts of rerun runs (`gh run view
+  --log-failed`, `--attempt N`), searched for this entry's test names and messages; no match.
 - [ ] 2026-09-21 — A stop request arriving after a fake maker has committed but before its receipt
   is reconciled can leave an interrupted run whose resume replays the maker, producing a clean
   worktree with nothing new to commit. A local graph stop/resume test exposed this under heavy
@@ -467,6 +708,13 @@ been authorized, so the entries are kept here.
   Process-group stopping does not contain detached daemons or hostile same-user processes.
   The [qualification contract](docs/26-native-qualification-contract.md) defines required cases;
   the earlier project-config override probe is inconclusive, and inference remains unqualified.
+  2026-11-06: checker budget reservation fixed. When the maker and the checker spend one cap, a
+  share of it (`limits.checker_reserve`, default 0.25, bounds 0.05 to 0.5) is held for checking; a
+  maker with nothing above it is not launched and the run escalates with "budget reserved for
+  checking". With one $0.60 Claude cap and $0.25 per role, the fake-client run in
+  `test-autonomous-run.sh` launched a second maker and spent $0.75 before; it now stops at $0.50,
+  and the first maker's `--max-budget-usd` is 0.45. Linux/native containment and crash/timeout
+  pilots and unreported crash spend remain open.
 - [x] 2026-10-04 — Stopping the primary during peer inspection could swallow SIGTERM as an
   ordinary run error and falsely report the legitimate `disjoint` peer branch as tampering.
   Cancellation now bypasses invalid-peer handlers. Retained before/after fixtures and deterministic
@@ -866,6 +1114,20 @@ global selections needs its own design because update replays the record.
   in `test-work-graph-status.py` the child-exit test's 10 s window starts after the probe. With
   `AGENTSMITH_TEST_SLOW_PROBE=16`, one dispatch test and one status test failed before and both
   modules pass after.
+  2026-11-06: recurred in push run `42258417688` (PR #72) on Windows with the probe printed: it
+  took 24.8 s, 8.8 s beyond its planted 16 s, so the runner was slow at that moment. After the
+  probe a graph child runs no machine-wide lock: children skip the verifier probe, role probes are
+  no-ops on Windows, and AgentSmith's own locks are not in the snapshot. The same path takes
+  0.9-1.0 s on macOS (three measured runs). The fixed 15 s window was a budget for an idle host. It
+  now adds four times the probe's unplanted time (about 35 s on that runner), and a failure prints
+  a timeline: probe timing, host slowness, graph events, each child's status, stage and last
+  events, and maker starts. `test_start_window_grows_with_a_slow_host` (probe and child start both
+  slowed, as on a loaded host) reproduced the exact assertion on macOS before and passes after.
+  Cleanup now waits up to 60 s for every recorded child controller and role process to exit
+  before the fixture folder is removed, because `stop` waits only 5 s and Windows keeps a folder in
+  use while a process still holds it (`WinError 32`); on macOS this cannot fail, so
+  `test_reaping_a_running_graph_waits_for_its_child_processes` is a guard there. Keep this entry
+  open until a Windows run passes, or a new failure prints its timeline.
 
 ## Doctor signals, hook log, evaluation cost and CLI surface (2026-10-26)
 
@@ -1043,3 +1305,17 @@ open, which plain shell lacks.
   with the Windows locale (CP-1252), so `ü` became `Ã¼` and the hook went into a mis-spelled
   folder. The call now decodes UTF-8 (`surrogateescape`); a test that forces the CP-1252 decoder
   failed before and passes after. Native Windows confirmation of the fix is CI's.
+
+## Copied repository intake (2026-11-14)
+
+### SF-17: a copy of the repository silently applied the contributor agreement (fixed)
+
+2026-11-14 — The tracked root `AGENTS.md` is AgentSmith's own contributor agreement. Codex reads
+it directly, and Claude Code reads it when no `CLAUDE.md` exists. Someone who cloned or copied the
+repository without the installer got that agreement and was never asked what work they do, and
+`status` called the copy `legacy`. Fixed: a hand-written routing note above the managed block sends
+anyone who is not developing AgentSmith to `AGENT-INSTALL.md`; `status` reports topology `copied`
+for an AgentSmith source tree whose origin is not `PromptPartner/agentsmith` (or that has no
+origin); the guide carries the wizard's question list, generated from `WIZARD_QUESTIONS` and
+checked by `test-guided-install.py`, and a path for agents without the CLI.
+

@@ -118,6 +118,16 @@ finishes as `passed`, `failed`, or `error`. It records the config hash, Git/plat
 selected filter, phase timing and exit codes, plus SHA-256 hashes of deterministic UTF-8 stdout and
 stderr sidecars. Secret-shaped text is replaced before it reaches either the terminal or disk.
 The destination must not already exist, so a later run cannot silently rewrite earlier evidence.
+The receipt's `git` section names the tested tree (`tree`, from `git write-tree` of the tracked
+state) and whether the worktree was `dirty`. A receipt stands only for that exact tree: one from
+another tree, or from a dirty worktree, never counts as evidence for this one.
+
+Only one gate runs in a worktree at a time. `agentsmith verify` and `scripts/verify.sh` share a
+lock in the worktree's own Git directory, because two gates at once (two agents, or a hook and a
+manual run) interleave fixtures and receipts. A second gate fails at once with exit status 2 and
+names the holder's process ID and start time; `--wait` waits instead. A lock left by a process that
+no longer runs is reclaimed. A gate that the holder itself starts, such as a phase that runs a
+gate, shares the holder's lock.
 
 A command receipt proves only the deterministic phases it captured. Browser screenshots, videos,
 manual assertions, deployed-service checks, and other runtime or visual evidence stay separate;

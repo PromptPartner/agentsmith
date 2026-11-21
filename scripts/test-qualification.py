@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Offline qualification evidence acceptance regressions."""
 from __future__ import annotations
+import _fixture_git  # first: keeps every Git fixture out of an inherited repository
+_fixture_git.isolate()
 import copy
 import json
 from pathlib import Path

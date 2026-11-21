@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "$(dirname "$0")/_fixture_git.sh"  # first: keeps every Git fixture out of an inherited repository
 # test-assemble.sh — every profile must assemble into rules a human can actually follow.
 #
 # The harness's whole output is an assembled AGENTS.md (a project CLAUDE.md imports it). If
@@ -157,7 +158,9 @@ if [ -f "$ROOT_DIR/profiles/software-dev.md" ] && [ -f "$ROOT_DIR/profiles/auton
 fi
 
 # The repository's own AGENTS.md is a committed assembly (core + software-dev, default operator).
-# Codex and anyone who clones the repo read it, so it must not drift from core/ and profiles/.
+# Codex and anyone who clones the repo read it, so its managed block must not drift from core/ and
+# profiles/. Above the block sits a hand-written routing preface: someone who only copied the repo
+# must be sent to AGENT-INSTALL.md instead of silently following the contributor agreement.
 if [ -f "$ROOT_DIR/AGENTS.md" ]; then
   if ROOT_DIR="$ROOT_DIR" python3 - <<'PY'
 import argparse, os, sys
@@ -167,13 +170,26 @@ sys.path.insert(0, str(root))
 import agentsmith
 ns = argparse.Namespace(operator_name=None, operator_role=None, operator_bio=None, tracker=None, tracker_writes=None)
 expected = agentsmith.build_instructions(ns, ["software-dev"], True, {}).rstrip("\n")
-actual = (root / "AGENTS.md").read_text(encoding="utf-8").rstrip("\n")
-sys.exit(0 if actual == expected else 1)
+text = (root / "AGENTS.md").read_text(encoding="utf-8")
+sys.exit(0 if agentsmith.managed_block(text) == expected else 1)
 PY
   then
-    ok "root AGENTS.md matches core/ + profiles/software-dev.md"
+    ok "root AGENTS.md managed block matches core/ + profiles/software-dev.md"
   else
-    bad "root AGENTS.md drifted from core/ + profiles/software-dev.md (regenerate it)"
+    bad "root AGENTS.md managed block drifted from core/ + profiles/software-dev.md (regenerate it)"
+  fi
+  if ROOT_DIR="$ROOT_DIR" python3 - <<'PY'
+import os, sys
+from pathlib import Path
+text = (Path(os.environ["ROOT_DIR"]) / "AGENTS.md").read_text(encoding="utf-8")
+preface = text.split("<!-- BEGIN AGENTSMITH", 1)[0]
+required = ("PromptPartner/agentsmith", "AGENT-INSTALL.md", "before any other work")
+sys.exit(0 if preface.strip() and all(phrase in preface for phrase in required) else 1)
+PY
+  then
+    ok "root AGENTS.md routes copies to AGENT-INSTALL.md above the managed block"
+  else
+    bad "root AGENTS.md lacks the routing preface above the managed block"
   fi
 fi
 

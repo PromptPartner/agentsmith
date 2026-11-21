@@ -12,6 +12,7 @@
 #   ./scripts/verify.sh                # run every phase in .harness/verify.conf
 #   ./scripts/verify.sh --only <tag>   # run only phases whose label contains <tag>; none = failure
 #   ./scripts/verify.sh --list         # list configured phases, don't run
+#   ./scripts/verify.sh --wait         # wait for another gate in this worktree instead of failing
 #   ./scripts/verify.sh --help
 #
 # .harness/verify.conf format — one phase per line, "Label :: shell command":
@@ -36,6 +37,7 @@ fi
 
 ONLY=""
 LIST_ONLY=false
+WAIT=false
 
 usage() { sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; }
 
@@ -43,6 +45,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --only) shift; ONLY="${1:-}"; [ -z "$ONLY" ] && { echo "${RED}--only needs a tag${RESET}"; exit 2; } ;;
     --list) LIST_ONLY=true ;;
+    --wait) WAIT=true ;;
     --help|-h) usage; exit 0 ;;
     *) echo "${RED}Unknown option: $1${RESET}"; usage; exit 2 ;;
   esac
@@ -80,6 +83,48 @@ if $LIST_ONLY; then
   echo "${BOLD}Configured phases:${RESET}"
   for i in "${!LABELS[@]}"; do printf '  %d. %s :: %s\n' "$((i+1))" "${LABELS[$i]}" "${CMDS[$i]}"; done
   exit 0
+fi
+
+# Hooks, `git rebase --exec` and wrappers export Git's repository variables (`git rev-parse
+# --local-env-vars`, the ref namespace, `git -c` overrides). A phase that inherits them runs its
+# test fixtures against that repository: one such run re-initialized a shared repository as bare.
+unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT \
+  GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE \
+  GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR GIT_NAMESPACE
+while IFS= read -r name; do
+  case "$name" in GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*) unset "$name" ;; esac
+done < <(compgen -e)
+
+# One gate per worktree: two at once (two agents, a hook and a manual run) interleave fixtures and
+# receipts. The lock lives in the worktree's own Git directory and is shared with `agentsmith
+# verify`; a gate started by the holder itself (a phase that runs a gate) shares the holder's lock.
+# Outside a Git repository the lookup fails; `|| true` keeps `set -e` from ending the gate there.
+LOCK="$(git -C "$ROOT_DIR" rev-parse --absolute-git-dir 2>/dev/null || true)/agentsmith-verify.lock"
+[ "$LOCK" = "/agentsmith-verify.lock" ] && LOCK="$ROOT_DIR/.harness/verify.lock"
+if [ "${AGENTSMITH_VERIFY_LOCK:-}" != "$LOCK" ]; then
+  while ! ( set -o noclobber
+            printf '{"pid": %s, "started_at": "%s", "runner": "verify.sh", "target": "%s"}\n' \
+              "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ROOT_DIR" > "$LOCK" ) 2>/dev/null; do
+    holder="$(cat "$LOCK" 2>/dev/null || true)"
+    pid="$(printf '%s' "$holder" | sed -n 's/.*"pid": *\([0-9][0-9]*\).*/\1/p')"
+    started="$(printf '%s' "$holder" | sed -n 's/.*"started_at": *"\([^"]*\)".*/\1/p')"
+    if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+      rm -f "$LOCK"; continue   # the holder is gone; reclaim its lock
+    fi
+    if [ -z "$holder" ] && [ -f "$LOCK" ]; then
+      # Being written right now; still empty after 10 s, its writer died between create and write.
+      empty_waits=$(( ${empty_waits:-0} + 1 ))
+      if [ "$empty_waits" -gt 10 ]; then rm -f "$LOCK"; fi
+      sleep 1; continue
+    fi
+    if ! $WAIT; then
+      echo "${RED}verify.sh: another verification gate is running in this worktree: pid ${pid:-unknown}, started ${started:-at an unknown time} ($LOCK); wait for it to finish, or pass --wait${RESET}"
+      exit 2
+    fi
+    sleep 1
+  done
+  trap 'rm -f "$LOCK"' EXIT
+  export AGENTSMITH_VERIFY_LOCK="$LOCK"
 fi
 
 cd "$ROOT_DIR"

@@ -49,12 +49,12 @@ emulate hooks or MCP to make matrix cells green.
 | Command | Purpose |
 |---|---|
 | `agentsmith demo first-loop --target <new-path>` | Copy the deterministic dependency-free launch-readiness exercise into a new or empty explicit target; refuse broad, non-empty, or symbolic targets. |
-| `agentsmith status [--target <path>] [--json]` | Explain effective topology, profiles, instruction sources, managed capabilities, verification coverage, and one reasoned next action without changing state. |
+| `agentsmith status [--target <path>] [--json]` | Explain effective topology, profiles, instruction sources, managed capabilities, verification coverage, and one reasoned next action without changing state. A copy of the AgentSmith source whose origin is not `PromptPartner/agentsmith` reports topology `copied` and points at `AGENT-INSTALL.md`. |
 | `agentsmith install --answers <file> [--dry-run]` | Apply wizard answers from a JSON file without a terminal, checked with the wizard's own rules; every problem is reported at once. |
 | `agentsmith profiles list [--json]` | List the shipped work profiles from their source files and name each verification preset. |
 | `agentsmith profiles recommend [--target <path>] [--json]` | Rank deterministic profile choices from repository evidence without calling a model or changing files. |
 | `agentsmith profiles switch --target <path> --profile <name[,name...]> [--dry-run]` | Preview or update only managed instructions and the existing profile selection; preserve foreign instruction bytes and custom verification. |
-| `agentsmith verify [--record <directory> --tree-class <class>]` | Run `.harness/verify.conf`; optionally retain a redacted receipt naming the tested tree class. |
+| `agentsmith verify [--wait] [--record <directory> --tree-class <class>]` | Run `.harness/verify.conf`, one gate per worktree at a time; optionally retain a redacted receipt naming the tested tree and tree class. |
 | `agentsmith verify discover [--target <path>] [--json] [--save <plan>]` | Build a read-only, schema-v1 coverage plan from allow-listed detectors; repository commands and hint bodies are never run. |
 | `agentsmith verify apply --plan <plan> [--target <path>] [--dry-run]` | Preview or apply a current target-bound plan, preserving foreign config and backing up changed bytes. |
 | `agentsmith handoff` | Scaffold durable session memory with branch/HEAD/dirty facts. |
@@ -62,6 +62,7 @@ emulate hooks or MCP to make matrix cells green.
 | `agentsmith new-research` | Create a durable research note that is archived, never silently deleted. |
 | `agentsmith new-feedback` | Create the five-stage post-incident record. |
 | `agentsmith doctor` | Inspect effective instruction sources and actual installed safety, skills, MCP, hooks, scanner, and runtime state. |
+| `agentsmith inbox [--issues] [--json]` | List what waits on you (escalated, dead and interrupted runs, unlanded accepted work, integration candidates, specs and manifests, open issues), derived and re-checked against Git on every call ([inbox](31-inbox.md)). |
 
 ### For programs and CI
 
@@ -81,6 +82,10 @@ surface stays small.
 | `agentsmith agents list [--json]` | Print the supported agent registry. |
 | `agentsmith validate-integration --checkpoint <file>` | Validate a structured integration checkpoint without installing or launching packages. |
 | `agentsmith audit-config` | Advisory static audit of selected native configuration ([config audit](27-config-audit.md)). |
+| `agentsmith risk classify --base <ref> --head <ref> [--json]` | Tier (A, B, C or human) and triggered lenses for a commit range, from the policy committed at the base ([risk map](29-risk-map.md)). |
+| `agentsmith lens plan\|brief\|record\|report` | Report-only review lenses: which lenses a change triggers and how deep, the attended brief, and the trial record ([review lenses](32-review-lenses.md)). |
+| `agentsmith ci watch --pr <n>\|--sha <sha> [--json]` | Report-only watch of a commit's GitHub runs, ending in one named state with an exit code ([CI watch](30-ci-watch.md)). |
+| `agentsmith factory readiness\|numbers\|export\|defect add\|minutes add` | Derived readiness checks and the six numbers for autonomous work; read-only except export and the operator logs ([factory readiness](31-factory-readiness.md)). |
 
 The [First Verified Loop public proof](demos/first-verified-loop/README.md) exercises the portable
 status, verification, receipt, handoff, and resume commands together. Its lifecycle artifacts also

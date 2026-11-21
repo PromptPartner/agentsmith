@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import _fixture_git  # first: keeps every Git fixture out of an inherited repository
+_fixture_git.isolate()
 import argparse
 import contextlib
 import datetime as dt
@@ -16,9 +18,11 @@ import platform
 import re
 import shlex
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -610,6 +614,225 @@ class EmptyVerificationTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("no-such-phase", result.stdout + result.stderr)
 
+
+
+FIXTURE_PHASE = """import os, pathlib, subprocess, sys, tempfile
+# What a test fixture does: make a throwaway repository and commit to it.
+leaked = sorted(name for name in os.environ if name in {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"})
+if leaked:
+    print("inherited Git variables: " + ", ".join(leaked), file=sys.stderr)
+work = pathlib.Path(tempfile.mkdtemp(prefix="fixture "))
+git = ["git", "-c", "user.name=Fixture", "-c", "user.email=user@example.com", "-c", "commit.gpgsign=false", "-C", str(work)]
+subprocess.run([*git, "init", "-q"], check=True)
+subprocess.run([*git, "config", "core.autocrlf", "false"], check=True)
+(work / "file.txt").write_text("fixture\\n", encoding="utf-8")
+subprocess.run([*git, "add", "file.txt"], check=True)
+subprocess.run([*git, "commit", "-q", "-m", "fixture"], check=True)
+sys.exit(3 if leaked else 0)
+"""
+
+
+class GitEnvironmentIsolationTests(unittest.TestCase):
+    """Hooks, `git rebase --exec` and wrappers export GIT_DIR and friends. A verification phase
+    that inherits them writes its fixtures into that repository: one run re-initialized a shared
+    repository as bare. The gate entry points must start every phase without them."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory(prefix="agentsmith verify git env ")
+        base = Path(self.temporary.name)
+        self.clean = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        self.sentinel = base / "sentinel"
+        subprocess.run(["git", "init", "-q", str(self.sentinel)], env=self.clean, check=True)
+        subprocess.run(["git", "-C", str(self.sentinel), "-c", "user.name=Sentinel", "-c", "user.email=user@example.com",
+                        "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "sentinel"],
+                       env=self.clean, check=True)
+        self.project = base / "project"
+        (self.project / ".harness").mkdir(parents=True)
+        (self.project / "fixture_phase.py").write_text(FIXTURE_PHASE, encoding="utf-8")
+        command = shell_command(sys.executable, str(self.project / "fixture_phase.py"))
+        (self.project / ".harness" / "verify.conf").write_text(f"fixture :: {command}\n", encoding="utf-8")
+        self.inherited = {**os.environ, "GIT_DIR": str(self.sentinel / ".git"),
+                          "GIT_WORK_TREE": str(self.sentinel), "GIT_INDEX_FILE": str(self.sentinel / ".git" / "index")}
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def snapshot(self) -> tuple[bytes, bytes, bytes]:
+        git = ["git", "-C", str(self.sentinel)]
+        refs = subprocess.run([*git, "for-each-ref", "--format=%(refname) %(objectname)"], env=self.clean,
+                              capture_output=True, check=True).stdout
+        objects = subprocess.run([*git, "count-objects", "-v"], env=self.clean, capture_output=True, check=True).stdout
+        return (self.sentinel / ".git" / "config").read_bytes(), refs, objects
+
+    def assert_sentinel_untouched(self, command: list[str]) -> None:
+        before = self.snapshot()
+        result = subprocess.run(command, cwd=self.project, env=self.inherited, text=True, encoding="utf-8",
+                                errors="replace", capture_output=True, check=False)
+        self.assertEqual(self.snapshot(), before, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_python_runner_clears_inherited_git_environment(self) -> None:
+        self.assert_sentinel_untouched([sys.executable, str(CORE), "verify", "--target", str(self.project)])
+
+    def test_recording_runner_clears_inherited_git_environment(self) -> None:
+        self.assert_sentinel_untouched([sys.executable, str(CORE), "verify", "--target", str(self.project),
+                                        "--record", str(self.project / "receipt"), "--tree-class", "disposable-fixture"])
+
+    @unittest.skipIf(os.name == "nt", "verify.sh is the POSIX repository runner")
+    def test_repository_runner_clears_inherited_git_environment(self) -> None:
+        (self.project / "scripts").mkdir()
+        runner = self.project / "scripts" / "verify.sh"
+        runner.write_bytes((ROOT / "scripts" / "verify.sh").read_bytes())
+        self.assert_sentinel_untouched(["bash", str(runner)])
+
+
+class VerifyLockTests(unittest.TestCase):
+    """Two gates in one worktree (two agents, a hook and a manual run) interleave fixtures and receipts.
+    One per-worktree lock under the worktree's Git directory lets only one run at a time."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory(prefix="agentsmith verify lock ")
+        self.root = Path(self.temporary.name) / "project"
+        (self.root / ".harness").mkdir(parents=True)
+        self.env = {key: value for key, value in os.environ.items() if not key.startswith(("GIT_", "AGENTSMITH_VERIFY"))}
+        self.env.update(GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="user@example.com",
+                        GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="user@example.com")
+        # Git for Windows' system configuration turns on core.autocrlf, while the evidence recorder
+        # runs this test with system configuration off. Played here on every system: the fixture's
+        # own Git calls see autocrlf=true, the in-process checks do not.
+        windows_like = Path(self.temporary.name) / "windows-system.gitconfig"
+        windows_like.write_text("[core]\n\tautocrlf = true\n", encoding="utf-8")
+        self.env["GIT_CONFIG_SYSTEM"] = str(windows_like)
+        self.git("init", "-q")
+        # Clean by construction: line endings are pinned in the repository itself, which outranks
+        # system and global configuration, so every process reads the same bytes as committed.
+        self.git("config", "core.autocrlf", "false")
+        self.git("config", "core.safecrlf", "false")
+        self.marker = self.root.parent / "phase-ran"
+        # A checkout made with autocrlf=true holds CRLF text, as the Windows runner's copy of verify.sh does.
+        (self.root / "notes.txt").write_bytes(b"one\r\ntwo\r\n")
+        command = shell_command(sys.executable, "-c", f"open({str(self.marker)!r}, 'a').write('x')")
+        (self.root / ".harness" / "verify.conf").write_text(f"mark :: {command}\n", encoding="utf-8")
+        # verify.sh finds its project from its own location, so the fixture carries a committed copy.
+        (self.root / "scripts").mkdir()
+        (self.root / "scripts" / "verify.sh").write_bytes((ROOT / "scripts" / "verify.sh").read_bytes())
+        self.git("add", ".")
+        self.git("-c", "commit.gpgsign=false", "commit", "-qm", "fixture")
+        self.lock = Path(self.git("rev-parse", "--absolute-git-dir")) / "agentsmith-verify.lock"
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def git(self, *arguments: str) -> str:
+        return subprocess.run(["git", "-C", str(self.root), *arguments], env=self.env, capture_output=True,
+                              text=True, check=True).stdout.strip()
+
+    def hold(self, pid: int) -> None:
+        self.lock.write_text(json.dumps({"pid": pid, "started_at": "2026-11-06T10:00:00Z", "runner": "test"}),
+                             encoding="utf-8")
+
+    def runners(self) -> list[list[str]]:
+        found = [[sys.executable, str(CORE), "verify", "--target", str(self.root)]]
+        if os.name != "nt" and shutil.which("bash"):
+            found.append(["bash", str(self.root / "scripts" / "verify.sh")])
+        return found
+
+    def run_gate(self, command: list[str], *extra: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([*command, *extra], cwd=self.root, env=self.env, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=60)
+
+    def test_a_second_gate_in_the_same_worktree_fails_fast_and_names_the_holder(self) -> None:
+        for command in self.runners():
+            with self.subTest(runner=command[1]):
+                self.hold(os.getpid())  # this test process is alive
+                result = self.run_gate(command)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn(f"pid {os.getpid()}", result.stdout + result.stderr)
+                self.assertIn("2026-11-06T10:00:00Z", result.stdout + result.stderr)
+                self.assertFalse(self.marker.exists())
+                self.assertTrue(self.lock.exists())  # the holder's lock is left alone
+                self.lock.unlink()
+
+    def test_wait_runs_after_the_holder_releases(self) -> None:
+        for command in self.runners():
+            with self.subTest(runner=command[1]):
+                self.hold(os.getpid())
+                # The holder releases as a real gate does, retrying a Windows sharing denial.
+                release = threading.Timer(1.0, AGENTSMITH.remove_verify_lock_file, (self.lock,))
+                release.start()
+                started = time.monotonic()
+                try:
+                    result = self.run_gate(command, "--wait")
+                finally:
+                    release.join()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertGreaterEqual(time.monotonic() - started, 0.9)
+                self.assertTrue(self.marker.exists())
+                self.assertFalse(self.lock.exists())
+                self.marker.unlink()
+
+    def test_a_lock_left_by_a_dead_process_is_reclaimed(self) -> None:
+        for command in self.runners():
+            with self.subTest(runner=command[1]):
+                gone = subprocess.Popen([sys.executable, "-c", "pass"])
+                gone.wait()
+                self.hold(gone.pid)
+                result = self.run_gate(command)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertTrue(self.marker.exists())
+                self.assertFalse(self.lock.exists())
+                self.marker.unlink()
+
+    def test_a_gate_started_by_the_holder_does_not_wait_for_itself(self) -> None:
+        # A phase that runs the gate on the same worktree (for example a runner's own tests).
+        inner = shell_command(sys.executable, str(CORE), "verify", "--target", str(self.root), "--only", "mark")
+        conf = (self.root / ".harness" / "verify.conf").read_text(encoding="utf-8")
+        (self.root / ".harness" / "verify.conf").write_text(conf + f"nested :: {inner}\n", encoding="utf-8")
+        result = self.run_gate(self.runners()[0])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.marker.read_text(encoding="utf-8"), "xx")
+
+    def test_a_sharing_denial_on_delete_is_retried(self) -> None:
+        # Windows refuses to delete a file another process has open: a waiting gate reading the lock
+        # while the holder releases it, or while a stale lock is reclaimed.
+        real_unlink = Path.unlink
+        denials = {"left": 2}
+
+        def busy_unlink(path: Path, missing_ok: bool = False) -> None:
+            if path.name == "agentsmith-verify.lock" and denials["left"]:
+                denials["left"] -= 1
+                raise PermissionError(13, "The process cannot access the file because it is being used by another process")
+            real_unlink(path, missing_ok=missing_ok)
+
+        self.hold(os.getpid())
+        with mock.patch.object(Path, "unlink", busy_unlink):
+            AGENTSMITH.release_verify_lock(self.lock)
+        self.assertFalse(self.lock.exists())
+        gone = subprocess.Popen([sys.executable, "-c", "pass"])
+        gone.wait()
+        self.hold(gone.pid)
+        denials["left"] = 2
+        with mock.patch.object(Path, "unlink", busy_unlink), mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AGENTSMITH_VERIFY_LOCK", None)
+            taken = AGENTSMITH.acquire_verify_lock(self.root)
+        try:
+            self.assertEqual(json.loads(self.lock.read_text(encoding="utf-8"))["pid"], os.getpid())
+        finally:
+            AGENTSMITH.release_verify_lock(taken)
+
+    def test_a_receipt_names_its_tree_and_a_different_tree_is_refused(self) -> None:
+        record = self.root.parent / "receipt"
+        result = self.run_gate(self.runners()[0], "--record", str(record), "--tree-class", "disposable-fixture")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        receipt = json.loads((record / "receipt.json").read_text(encoding="utf-8"))
+        self.assertEqual(receipt["git"]["tree"], self.git("rev-parse", "HEAD^{tree}"))
+        self.assertIsNone(AGENTSMITH.verification_receipt_problem(receipt, self.root))
+        (self.root / "added.txt").write_text("changed\n", encoding="utf-8")
+        self.git("add", "added.txt")
+        self.assertIn("tree", AGENTSMITH.verification_receipt_problem(receipt, self.root))
+        self.git("-c", "commit.gpgsign=false", "commit", "-qm", "another tree")
+        self.assertIn("tree", AGENTSMITH.verification_receipt_problem(receipt, self.root))
+        self.assertIn("tree", AGENTSMITH.verification_receipt_problem({**receipt, "git": {}}, self.root))
 
 if __name__ == "__main__":
     unittest.main()

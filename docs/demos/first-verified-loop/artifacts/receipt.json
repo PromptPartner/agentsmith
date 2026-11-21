@@ -8,7 +8,8 @@
     "available": true,
     "branch": "proof/first-loop",
     "dirty": true,
-    "head": "<git-commit>"
+    "head": "<git-commit>",
+    "tree": "<git-commit>"
   },
   "only": null,
   "phases": [

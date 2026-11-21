@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "rules": [
+    {"paths": ["docs/**", "**/*.md"], "tier": "A"},
+    {"paths": ["tests/**", "**/test_*.py", "**/*_test.go", "**/*.test.*"], "tier": "A"},
+    {"paths": ["src/**"], "tier": "B"},
+    {"paths": ["**/locales/**", "**/i18n/**"], "tier": "B", "lenses": ["locales"]},
+    {"paths": ["src/auth/**", "src/**/permissions/**"], "tier": "C", "lenses": ["security"]},
+    {"paths": ["package.json", "package-lock.json", "pyproject.toml", "requirements*.txt",
+               "go.mod", "go.sum", "Cargo.toml", "Cargo.lock"], "tier": "C", "lenses": ["dependencies"]}
+  ]
+}

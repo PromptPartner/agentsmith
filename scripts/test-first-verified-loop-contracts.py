@@ -8,11 +8,14 @@ FVL-05 implement the frozen interfaces.
 
 from __future__ import annotations
 
+import _fixture_git  # first: keeps every Git fixture out of an inherited repository
+_fixture_git.isolate()
 import datetime as dt
 import difflib
 import hashlib
 import html
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -504,6 +507,59 @@ class FirstVerifiedLoopCommandContracts(unittest.TestCase):
             self.run_cli("status", "--target", str(self.project), "--json"), "status.schema.json"
         )
         self.assertEqual(unmanaged["topology"]["kind"], "unmanaged")
+
+    def test_status_reports_a_copied_agentsmith_checkout_and_points_at_the_agent_install_guide(self) -> None:
+        # Someone who clones or copies AgentSmith gets its contributor agreement in AGENTS.md and is
+        # never asked what work they do. Status must name that state instead of calling it legacy.
+        clone = self.root / "copied clone ü"
+        (clone / "core").mkdir(parents=True)
+        (clone / "core" / "00-identity.md").write_text("# core\n", encoding="utf-8")
+        (clone / "agentsmith.py").write_text("# runtime\n", encoding="utf-8")
+        (clone / "AGENT-INSTALL.md").write_text("# guide\n", encoding="utf-8")
+        shutil.copyfile(ROOT / "AGENTS.md", clone / "AGENTS.md")
+
+        def git(*arguments: str) -> None:
+            subprocess.run(["git", "-C", str(clone), *arguments], capture_output=True, check=True)
+
+        git("init", "-q")
+        git("remote", "add", "origin", "https://github.com/example/someone-else.git")
+        copied = self.assert_json_output(
+            self.run_cli("status", "--target", str(clone), "--json"), "status.schema.json"
+        )
+        self.assertEqual(copied["topology"]["kind"], "copied")
+        self.assertIn("AGENT-INSTALL.md", copied["next_action"]["reason"])
+        self.assertIn(str((clone / "AGENT-INSTALL.md").resolve()), copied["next_action"]["reason"])
+
+        # A user-wide AgentSmith install does not change what this folder's AGENTS.md is.
+        home_state = Path(self.env["HOME"]) / ".agentsmith" / "state.json"
+        home_state.parent.mkdir(parents=True)
+        home_state.write_text(json.dumps({"installation": {
+            "scope": "global", "profiles": [], "include_core": True,
+        }}) + "\n", encoding="utf-8")
+        with_global = self.assert_json_output(
+            self.run_cli("status", "--target", str(clone), "--json"), "status.schema.json"
+        )
+        self.assertEqual(with_global["topology"]["kind"], "copied")
+        home_state.unlink()
+
+        # A folder with no Git remote at all (a downloaded archive) is a copy too.
+        shutil.rmtree(clone / ".git")
+        archive = self.assert_json_output(
+            self.run_cli("status", "--target", str(clone), "--json"), "status.schema.json"
+        )
+        self.assertEqual(archive["topology"]["kind"], "copied")
+
+        # The contributor's own checkout keeps its agreement: the origin is AgentSmith itself. The SSH
+        # form is assembled because the leak gate reads a literal user@host remote as an email address.
+        ssh_user = "git"
+        for url in ("https://github.com/PromptPartner/agentsmith.git", f"{ssh_user}@github.com:PromptPartner/agentsmith"):
+            git("init", "-q")
+            git("remote", "add", "origin", url)
+            contributor = self.assert_json_output(
+                self.run_cli("status", "--target", str(clone), "--json"), "status.schema.json"
+            )
+            self.assertEqual(contributor["topology"]["kind"], "legacy", url)
+            shutil.rmtree(clone / ".git")
 
     def test_status_reports_manifest_drift_and_duplicate_core(self) -> None:
         state_path = self.project / ".agentsmith" / "state.json"
@@ -2119,6 +2175,28 @@ class FVL08ReleaseEvidenceContracts(unittest.TestCase):
         self.assertIn("outside the repository", result.stderr)
         self.assertFalse(output.exists())
 
+    def test_a_failed_native_phase_prints_its_output_tail(self) -> None:
+        # The report keeps only output hashes; without the tail a CI failure said only "phase X failed".
+        script = ROOT / "scripts" / "first-loop-release-evidence.py"
+        spec = importlib.util.spec_from_file_location("first_loop_release_evidence_tail", script)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        failing = (("verify-receipts", ("python", "-c", "import sys; print('early line'); "
+                                        "print('\\n'.join(f'line {n}' for n in range(80))); "
+                                        "print('FAIL: test_x\\x1b[2J', file=sys.stderr); sys.exit(1)")),)
+        observed = iter(["a" * 40, "b" * 40, "", ""])
+        with tempfile.TemporaryDirectory(prefix="agentsmith fvl08 tail ") as temporary, \
+                mock.patch.object(module, "PHASES", failing), \
+                mock.patch.object(module, "git", side_effect=lambda *a, **k: next(observed)), \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as printed:
+            with self.assertRaisesRegex(module.EvidenceError, "phase verify-receipts failed"):
+                module.record(Path(temporary) / "report.json", Path(temporary), None)
+        tail = printed.getvalue()
+        self.assertIn("FAIL: test_x", tail)
+        self.assertIn("line 79", tail)
+        self.assertNotIn("early line", tail)  # a tail, not the whole output
+        self.assertNotIn("\x1b", tail)
+
     def test_native_git_observation_matches_a_windows_autocrlf_checkout(self) -> None:
         script = ROOT / "scripts" / "first-loop-release-evidence.py"
         spec = importlib.util.spec_from_file_location("first_loop_release_evidence", script)
@@ -2198,7 +2276,7 @@ class FVL08ReleaseEvidenceContracts(unittest.TestCase):
         self.assertIn("actions/download-artifact@", workflow)
         self.assertIn("native-${{ runner.os }}.json", workflow)
         self.assertIn("--fvl08", workflow)
-        self.assertRegex(workflow, r"needs:\s*\[compatibility, posix-guardrails\]")
+        self.assertRegex(workflow, r"needs:\s*\[compatibility, posix-guardrails, windows-work-graph\]")
         for fixture in (
             "secret scanner",
             "verification receipt",

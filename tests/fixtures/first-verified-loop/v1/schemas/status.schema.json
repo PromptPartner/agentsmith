@@ -11,7 +11,7 @@
       "type": "object",
       "required": ["kind", "source", "summary"],
       "properties": {
-        "kind": {"enum": ["self-contained-project", "layered", "global-only", "incomplete", "legacy", "unmanaged"]},
+        "kind": {"enum": ["self-contained-project", "layered", "global-only", "incomplete", "copied", "legacy", "unmanaged"]},
         "source": {"type": "string", "minLength": 1},
         "summary": {"type": "string", "minLength": 1}
       },

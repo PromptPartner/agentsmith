@@ -39,7 +39,8 @@ agentsmith graph status --graph .harness/work-graph.json --json
 
 Both accept `--target <repository>` and make no branch, worktree, state, or external write. An
 unknown schema, changed committed byte, unsafe path, scope collision, cycle, or unverified child
-lineage stops closed. `status` reports each node's reason and one safe next action. Run IDs must be
+lineage stops closed. `status` reports each node's reason and one safe next action. A completed node also shows the risk tier
+that its run recorded, as a report only. Run IDs must be
 unique; `integration_order` must name each exactly once. A graph change requires a new graph ID,
 not an in-place migration of a running graph.
 
@@ -62,6 +63,12 @@ If a child exits unexpectedly before writing a terminal reason, its graph failur
 the exit code, last child phase, exception class, a fixed code for a known controller refusal
 (such as `refusal=previous-role-live`, or `refusal=unknown`), and controller source line. It does
 not copy raw child output into graph audit state.
+
+A child whose circuit breaker stopped it (the same infrastructure failure twice in a row, see
+[autonomous runs](21-autonomous-runs.md)) halts the graph: children already running finish, but
+no new child starts, because it would meet the same host, network or sign-in failure. The graph
+records `graph_halted` with the child and the failure, and ends as `blocked`. Fix the cause,
+`resume` that child with `autonomous-run.py resume <id>`, then `graph resume`.
 
 To interrupt, use `agentsmith graph stop --graph .harness/work-graph.json`; repeated requests are
 safe. It asks active child controllers to stop and retains state, logs, receipts, branches, and

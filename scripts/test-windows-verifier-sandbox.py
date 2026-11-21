@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import _fixture_git  # first: keeps every Git fixture out of an inherited repository
+_fixture_git.isolate()
 from collections.abc import Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 import contextlib

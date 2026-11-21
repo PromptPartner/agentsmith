@@ -108,6 +108,11 @@ RUNTIME_FILES = (
     ".agentsmith/work_graph.py",
     ".agentsmith/project_memory.py",
     ".agentsmith/config_audit.py",
+    ".agentsmith/inbox.py",
+    ".agentsmith/risk_map.py",
+    ".agentsmith/lenses.py",
+    ".agentsmith/ci_watch.py",
+    ".agentsmith/factory.py",
     ".agentsmith/agentsmith",
     ".agentsmith/agentsmith.cmd",
     ".agentsmith/config/agents.json",
@@ -144,6 +149,10 @@ CONTEXT_SESSION_ID = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 class CliError(RuntimeError):
     pass
+
+
+class VerifyLockHeld(CliError):
+    """Another verification gate holds this worktree's lock (exit 2)."""
 
 
 def say(message: str) -> None:
@@ -1769,7 +1778,8 @@ def cmd_graph(args: argparse.Namespace) -> int:
     else:
         say(f"work graph {report['graph_id']}: {report['status']}")
         for node in report["nodes"]:
-            say(f"  {node['run_id']}: {node['status']} — {node['reason']}")
+            tier = f" (risk tier {node['risk_tier']})" if node.get("risk_tier") else ""
+            say(f"  {node['run_id']}: {node['status']}{tier} — {node['reason']}")
         say(f"next: {report['next_action']['command']}")
     return 2 if args.graph_command in {"start", "resume"} and report["status"] != "completed" else 0
 
@@ -2000,7 +2010,8 @@ def copy_runtime(target: Path, *, dry_run: bool) -> Path:
         for source in (REGISTRY_PATH, PROFILE_CATALOG_PATH, WIZARD_LOCALES_PATH):
             contained_copy(source, config_destination / source.name)
         for helper_name in ("native_launcher.py", "evaluate.py", "work_graph.py",
-                            "windows_verifier_sandbox.py", "project_memory.py", "config_audit.py"):
+                            "windows_verifier_sandbox.py", "project_memory.py", "config_audit.py",
+                            "ci_watch.py", "factory.py", "risk_map.py", "lenses.py", "inbox.py"):
             helper_source = ROOT / helper_name
             if helper_source.exists():
                 contained_copy(helper_source, destination.parent / helper_name)
@@ -6485,6 +6496,35 @@ def status_verification(target: Path) -> tuple[dict[str, Any], list[dict[str, st
     }, warnings
 
 
+AGENTSMITH_ORIGIN = re.compile(r"(?i)^(?:https?://|ssh://git@|git@)github\.com[:/]PromptPartner/agentsmith(?:\.git)?/?$")
+
+
+def origin_remote_url(target: Path) -> str | None:
+    """The origin remote as Git records it locally; never contacts the remote."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(target), "config", "--get", "remote.origin.url"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", check=False, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def is_copied_agentsmith_source(target: Path) -> bool:
+    """A clone or copy of the AgentSmith source whose origin is not AgentSmith itself.
+
+    Its AGENTS.md is AgentSmith's own contributor agreement. A user who copied the folder needs the
+    setup questions first, not that agreement. A legacy install in a user's own project has no
+    AgentSmith source tree, so it stays `legacy`."""
+    if not ((target / "agentsmith.py").is_file() and (target / "core").is_dir() and (target / "AGENT-INSTALL.md").is_file()):
+        return False
+    url = origin_remote_url(target)
+    return url is None or not AGENTSMITH_ORIGIN.match(url)
+
+
 def build_status(target: Path) -> dict[str, Any]:
     target = target.expanduser().resolve()
     if not target.is_dir():
@@ -6509,6 +6549,12 @@ def build_status(target: Path) -> dict[str, Any]:
         topology_kind = "incomplete"
         topology_summary = "The project expects a global layer, but no global installation record is available."
         topology_source = str(state_path(target).resolve())
+    elif any(source["scope"] == "project" and source["state"] in {"managed", "drifted", "duplicated", "malformed"}
+             for source in chain) and is_copied_agentsmith_source(target):
+        topology_kind = "copied"
+        topology_summary = ("This folder is a copy of the AgentSmith source. Its AGENTS.md is AgentSmith's "
+                            "contributor agreement, not rules for your work.")
+        topology_source = str((target / "AGENTS.md").resolve())
     elif global_installation:
         topology_kind = "global-only"
         topology_summary = "Only the global AgentSmith installation record applies to this target."
@@ -6589,6 +6635,12 @@ def build_status(target: Path) -> dict[str, Any]:
         next_action = {
             "command": native_command("agentsmith", "profiles", "recommend", "--target", str(target)),
             "reason": "Choose an evidence-backed work profile before installing managed instructions.",
+        }
+    elif topology_kind == "copied":
+        next_action = {
+            "command": native_command("agentsmith", "install", "--wizard", "--target", "<your-project>"),
+            "reason": ("Follow AGENT-INSTALL.md and ask its setup questions before any other work: "
+                       f"{(target / 'AGENT-INSTALL.md').resolve()}. Without the CLI, use its no-CLI path."),
         }
     elif any(source["state"] in {"drifted", "malformed"} for source in chain):
         next_action = {
@@ -7980,7 +8032,27 @@ def verification_git_metadata(root: Path) -> dict[str, Any]:
         check=False,
     )
     result["dirty"] = bool(status.stdout) if status.returncode == 0 else None
+    # The tree of the tracked state (the index), so a receipt can be tied to exactly one tree.
+    result["tree"] = git_value("write-tree")
     return result
+
+
+def verification_receipt_problem(receipt: dict[str, Any], root: Path) -> str | None:
+    """Why a recorded receipt does not prove the tree at `root` now, or None.
+
+    A receipt binds the tree of the tracked state and the dirty flag it ran on. A receipt from
+    another tree, or from a dirty tree, never stands for this one."""
+    recorded = receipt.get("git") if isinstance(receipt.get("git"), dict) else {}
+    if not recorded.get("tree"):
+        return "the receipt names no tree, so it cannot be tied to this one"
+    if recorded.get("dirty") is not False:
+        return "the receipt ran on a tree with uncommitted changes"
+    current = verification_git_metadata(root)
+    if current.get("dirty") is not False:
+        return "this worktree has uncommitted changes"
+    if current.get("tree") != recorded["tree"]:
+        return f"the receipt is for tree {recorded['tree'][:12]}, not this tree {str(current.get('tree'))[:12]}"
+    return None
 
 
 def write_verification_receipt(path: Path, receipt: dict[str, Any]) -> None:
@@ -8041,6 +8113,24 @@ def stream_redacted_output(source: Any, destination: Any, display: Any,
         source.close()
 
 
+# `git rev-parse --local-env-vars`, plus the ref namespace and `git -c` overrides. Hooks,
+# `git rebase --exec` and wrappers export them; a phase that inherits them runs its test fixtures
+# against that repository instead of their own temporary ones.
+INHERITED_GIT_ENV = frozenset({
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX",
+    "GIT_SHALLOW_FILE", "GIT_COMMON_DIR", "GIT_NAMESPACE",
+})
+
+
+def verify_phase_env() -> dict[str, str]:
+    """The environment every verification phase starts from: this one, minus inherited Git repository state."""
+    return {key: value for key, value in os.environ.items()
+            if key.upper() not in INHERITED_GIT_ENV
+            and not key.upper().startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))}
+
+
 def recorded_verify_phase(command: str, root: Path, stdout_path: Path,
                           stderr_path: Path) -> tuple[int, set[str]]:
     categories: set[str] = set()
@@ -8054,6 +8144,7 @@ def recorded_verify_phase(command: str, root: Path, stdout_path: Path,
             command,
             cwd=root,
             shell=True,
+            env=verify_phase_env(),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -8093,6 +8184,114 @@ def recorded_verify_phase(command: str, root: Path, stdout_path: Path,
         os.fsync(stdout_file.fileno())
         os.fsync(stderr_file.fileno())
     return return_code, categories
+
+
+VERIFY_LOCK_NAME = "agentsmith-verify.lock"
+# A lock file that stays empty this long is a writer that died between creating and filling it.
+VERIFY_LOCK_EMPTY_SECONDS = 10
+
+
+def verify_process_is_live(pid: Any) -> bool:
+    try:
+        number = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if number <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        handle = kernel32.OpenProcess(0x1000, False, number)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ctypes.get_last_error() != 87  # only "no such process" proves it gone
+        try:
+            code = wintypes.DWORD()
+            return not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(number, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def verify_lock_path(root: Path) -> Path:
+    """One lock per worktree, in its own Git directory; outside Git, in the project's .harness folder."""
+    found = subprocess.run(["git", "-C", str(root), "rev-parse", "--absolute-git-dir"], capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", check=False)
+    if found.returncode == 0 and found.stdout.strip():
+        return Path(found.stdout.strip()) / VERIFY_LOCK_NAME
+    return root / ".harness" / "verify.lock"
+
+
+def acquire_verify_lock(root: Path, *, wait: bool = False, poll_seconds: float = 0.5) -> Path | None:
+    """Hold the worktree's verification lock, or fail fast naming its holder (wait with --wait).
+    Two gates in one worktree interleave fixtures and receipts. A gate that the holder itself
+    started (a phase that runs the gate again) shares the holder's lock instead of waiting for it."""
+    path = verify_lock_path(root)
+    if os.environ.get("AGENTSMITH_VERIFY_LOCK") == str(path):
+        return None
+    while True:
+        try:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            try:
+                text = path.read_text(encoding="utf-8")
+                holder = json.loads(text) if text.strip() else {}
+                age = time.time() - path.stat().st_mtime
+            except FileNotFoundError:
+                continue  # released between the two calls
+            except (OSError, ValueError):
+                holder, age = {}, 0.0
+            pid = holder.get("pid") if isinstance(holder, dict) else None
+            if (pid is not None and not verify_process_is_live(pid)) or (pid is None and age > VERIFY_LOCK_EMPTY_SECONDS):
+                remove_verify_lock_file(path)  # the holder is gone; reclaim its lock
+                continue
+            if not wait:
+                raise VerifyLockHeld(
+                    f"another verification gate is running in this worktree: pid {pid}, started "
+                    f"{holder.get('started_at', 'at an unknown time') if isinstance(holder, dict) else 'at an unknown time'}"
+                    f" ({path}); wait for it to finish, or pass --wait")
+            time.sleep(poll_seconds)
+            continue
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps({"pid": os.getpid(), "started_at": verify_timestamp(),
+                                     "runner": "agentsmith verify", "target": str(root)}) + "\n")
+        os.environ["AGENTSMITH_VERIFY_LOCK"] = str(path)  # phases started by this gate share it
+        return path
+
+
+def remove_verify_lock_file(path: Path, *, timeout: float = 5.0) -> None:
+    """Delete a lock file, retrying a sharing denial: Windows refuses to delete a file that another
+    process has open, such as a waiting gate that is reading who holds it."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            path.unlink()
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
+
+
+def release_verify_lock(path: Path | None) -> None:
+    if path is None:
+        return
+    os.environ.pop("AGENTSMITH_VERIFY_LOCK", None)
+    try:
+        holder = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if isinstance(holder, dict) and holder.get("pid") == os.getpid():
+        remove_verify_lock_file(path)
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
@@ -8142,6 +8341,15 @@ def cmd_verify(args: argparse.Namespace) -> int:
         return 0
     if not phases:
         raise CliError(f"{empty}; a run that executes no phase proves nothing, so it cannot pass")
+    lock = acquire_verify_lock(root, wait=getattr(args, "wait", False))
+    try:
+        return execute_verification(args, root, conf, phases, tree_class)
+    finally:
+        release_verify_lock(lock)
+
+
+def execute_verification(args: argparse.Namespace, root: Path, conf: Path, phases: list[tuple[str, str]],
+                         tree_class: str | None) -> int:
     if args.record:
         record_dir = Path(args.record).expanduser()
         if not record_dir.is_absolute():
@@ -8259,7 +8467,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
         return 0
     for index, (label, command) in enumerate(phases, 1):
         print(f"[{index}/{len(phases)}] {label}\n  {command}")
-        result = subprocess.run(command, cwd=root, shell=True)
+        result = subprocess.run(command, cwd=root, shell=True, env=verify_phase_env())
         if result.returncode:
             warn(f"verification phase '{label}' failed with exit {result.returncode}")
             return result.returncode
@@ -9093,15 +9301,205 @@ def cmd_audit_config(args: argparse.Namespace) -> int:
     return config_audit.exit_code(report, args.fail_on)
 
 
-def memory_git_identity(target: Path) -> tuple[str | None, str | None]:
-    values = []
+def cmd_risk(args: argparse.Namespace) -> int:
+    sys.dont_write_bytecode = True
+    import risk_map
+    try:
+        report = risk_map.classify_range(Path(args.target or os.getcwd()).expanduser(), args.base, args.head)
+    except (risk_map.PolicyError, risk_map.RiskError) as exc:
+        print(f"[error] risk classify: {exc}", file=sys.stderr)
+        return 2
+    text = risk_map.to_json(report) if args.json else risk_map.render_text(report)
+    # Bytes, not text mode: Windows would turn each newline into CRLF. JSON is written as ASCII
+    # whatever the console encoding (UTF-16 would add a byte-order mark and double every byte);
+    # the text report follows the console so a person can read it.
+    stream = getattr(sys.stdout, "buffer", None)
+    if stream is None:
+        sys.stdout.write(text)
+    else:
+        sys.stdout.flush()
+        stream.write(text.encode("ascii") if args.json
+                     else text.encode(sys.stdout.encoding or "utf-8", "backslashreplace"))
+        stream.flush()
+    return 0
+
+
+def cmd_inbox(args: argparse.Namespace) -> int:
+    sys.dont_write_bytecode = True  # listing writes nothing, not even compiled files
+    import inbox
+    target = Path(args.target or os.getcwd()).expanduser()
+    try:
+        if args.inbox_command == "claim":
+            gh = inbox.Gh()
+            try:
+                gh.check(target)
+            except inbox.GhError as exc:
+                gh, reason = None, str(exc)
+            path = inbox.claim(target, args.issue, gh=gh, repo_name=args.repo)
+            note = "verified open on GitHub" if gh is not None else f"unverified, because {reason}"
+            print(f"claimed #{inbox._issue_number(args.issue)} locally ({path}), {note}; nothing was written to GitHub")
+            return 0
+        if args.inbox_command == "release":
+            inbox.release(target, args.issue)
+            print(f"released #{inbox._issue_number(args.issue)}")
+            return 0
+        report = inbox.collect(target, gh=inbox.Gh() if args.issues else None, repo_name=args.repo, base=args.base)
+    except (inbox.InboxError, inbox.GhError, inbox.ClaimError) as exc:
+        print(f"[error] inbox: {exc}", file=sys.stderr)
+        return 2
+    text = inbox.to_json(report) if args.json else inbox.render_text(report)
+    stream = getattr(sys.stdout, "buffer", None)
+    if stream is None:
+        sys.stdout.write(text)
+    else:
+        sys.stdout.flush()
+        stream.write(text.encode("ascii") if args.json
+                     else text.encode(sys.stdout.encoding or "utf-8", "backslashreplace"))
+        stream.flush()
+    return 0
+
+
+def cmd_lens(args: argparse.Namespace) -> int:
+    sys.dont_write_bytecode = True
+    import lenses
+    import risk_map
+    target = Path(args.target or os.getcwd()).expanduser()
+    try:
+        if args.lens_command == "plan":
+            report = lenses.plan(target, args.base, args.head, args.checker_class)
+            text = lenses.to_json(report) if args.json else lenses.render_plan(report)
+        elif args.lens_command == "brief":
+            text = lenses.brief(target, args.lens, args.base, args.head, args.checker_class)
+        elif args.lens_command == "record":
+            row = lenses.record(target, args.base, args.head, source=args.source, evidence=args.evidence,
+                                decision=args.decision, rationale=args.rationale, checker=args.checker,
+                                fix=args.fix, reproduction=args.reproduction)
+            text = lenses.to_json(row) if args.json else (
+                f"recorded {row['source']} at {row['location']} ({row['decision']}, confidence {row['confidence']})\n")
+        else:
+            report = lenses.report(*lenses.read_rows(target))
+            text = lenses.to_json(report) if args.json else lenses.render_report(report)
+    except (lenses.LensError, risk_map.PolicyError, risk_map.RiskError) as exc:
+        print(f"[error] lens {args.lens_command}: {exc}", file=sys.stderr)
+        return 2
+    stream = getattr(sys.stdout, "buffer", None)
+    if stream is None:
+        sys.stdout.write(text)
+    else:
+        sys.stdout.flush()
+        stream.write(text.encode(sys.stdout.encoding or "utf-8", "backslashreplace"))
+        stream.flush()
+    return 0
+
+
+def cmd_factory(args: argparse.Namespace) -> int:
+    """Readiness and numbers derived from runs, events, operator logs and read-only CI reads."""
+    sys.dont_write_bytecode = True
+    import factory
+    import ci_watch
+    repo = Path(args.target or os.getcwd()).expanduser().resolve()
+    try:
+        if args.factory_command == "defect":
+            print(f"recorded in {factory.add_defect(repo, args.sha, args.tier, args.note or '')}")
+            return 0
+        if args.factory_command == "minutes":
+            print(f"recorded in {factory.add_minutes(repo, args.run_id, args.minutes)}")
+            return 0
+        if args.factory_command == "export":
+            summary = factory.export(repo, Path(args.directory), secret_patterns=SECRET_PATTERNS)
+            print(f"exported {summary['runs']} run(s) to {summary['target']}; "
+                  f"{summary['redactions']} home path(s) or secret-like value(s) redacted")
+            return 0
+        gh, gh_error = ci_watch.Gh(), None
+        # CI is read for the target's own GitHub repository, never for the current folder's.
+        slug = factory.github_slug(repo)
+        try:
+            gh.check()
+            if slug is None:
+                raise ci_watch.GhError(f"the origin remote of {repo} is not a GitHub repository")
+        except ci_watch.GhError as exc:
+            gh, gh_error = None, str(exc)
+        if args.factory_command == "numbers":
+            start, _ = factory.window(args.since, factory.datetime.now(factory.timezone.utc))
+            runs, seeds = None, []
+            if gh is not None:
+                try:
+                    base = args.base or gh.default_branch(slug)
+                    runs = factory.ci_runs(gh, slug, base, start)
+                    seeds = factory.ci_seed_runs(gh, slug, base, start)
+                except (ci_watch.GhError, factory.FactoryError) as exc:
+                    gh_error, runs = str(exc), None
+            report = factory.numbers(repo, since=args.since, ci_runs=runs, ci_error=gh_error,
+                                     ci_seeds=seeds if runs is not None else [])
+        else:
+            manifest = None
+            if args.manifest:
+                manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
+            base = args.base
+            if base is None:
+                head = factory.git(repo, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD", check=False)
+                base = head or "HEAD"
+            report = factory.readiness(repo, controller=factory.load_controller(repo), gh=gh, manifest=manifest,
+                                       base=base, green_days=args.green_days, headroom=args.headroom,
+                                       gh_error=gh_error, repo_slug=slug)
+    except (factory.FactoryError, OSError, ValueError) as exc:
+        print(f"[error] factory: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(report, indent=2, sort_keys=True) if args.json else factory.render(report), end="\n" if args.json else "")
+    if args.factory_command == "readiness":
+        return 0 if report["ready"] else 1
+    return 0
+
+
+def cmd_ci_watch(args: argparse.Namespace) -> int:
+    sys.dont_write_bytecode = True
+    import ci_watch
+    if args.sha is not None and not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", args.sha):
+        print("[error] ci watch: --sha needs the full 40- or 64-character commit SHA in lowercase hex", file=sys.stderr)
+        return 2
+    if args.cap_minutes <= 0 or args.stall_minutes <= 0:
+        print("[error] ci watch: --cap-minutes and --stall-minutes must be positive", file=sys.stderr)
+        return 2
+    try:
+        report = ci_watch.watch(ci_watch.Gh(), args.repo, pr=args.pr, sha=args.sha, base=args.base,
+                                cap_seconds=args.cap_minutes * 60, stall_seconds=args.stall_minutes * 60)
+    except ci_watch.GhError as exc:
+        print(f"[error] ci watch: {exc}", file=sys.stderr)
+        return 2
+    text = ci_watch.to_json(report) if args.json else ci_watch.render_text(report)
+    # JSON as ASCII bytes whatever the console encoding; the text report follows the console.
+    stream = getattr(sys.stdout, "buffer", None)
+    if stream is None:
+        sys.stdout.write(text)
+    else:
+        sys.stdout.flush()
+        stream.write(text.encode("ascii") if args.json
+                     else text.encode(sys.stdout.encoding or "utf-8", "backslashreplace"))
+        stream.flush()
+    return report["exit_code"]
+
+
+# Starting git can take hundreds of milliseconds on a cold or loaded host (on macOS /usr/bin/git
+# is an xcrun shim). The startup hook's own 2 s watchdog still bounds the whole recall.
+MEMORY_GIT_TIMEOUT_SECONDS = 0.8
+
+
+def memory_git_identity(target: Path) -> tuple[str | None, str | None, bool]:
+    """(branch, commit, timed_out). A branch that could not be read in time is reported, not
+    mistaken for a detached HEAD, because without it no handoff matches."""
+    values: list[str | None] = []
+    timed_out = False
     for arguments in (("symbolic-ref", "--short", "HEAD"), ("rev-parse", "--verify", "HEAD")):
         try:
-            result = subprocess.run(["git", "-C", str(target), *arguments], text=True, capture_output=True, timeout=0.25)
+            result = subprocess.run(["git", "-C", str(target), *arguments], text=True, capture_output=True,
+                                    timeout=MEMORY_GIT_TIMEOUT_SECONDS)
             values.append(result.stdout.strip() if result.returncode == 0 else None)
-        except (OSError, subprocess.TimeoutExpired):
+        except subprocess.TimeoutExpired:
             values.append(None)
-    return values[0], values[1]
+            timed_out = True
+        except OSError:
+            values.append(None)
+    return values[0], values[1], timed_out
 
 
 def cmd_memory(args: argparse.Namespace) -> int:
@@ -9117,8 +9515,12 @@ def cmd_memory(args: argparse.Namespace) -> int:
             if args.selected_only and not memory_startup_selected(target, args.selection_scope):
                 print(json.dumps({"schema_version": 1, "complete": True, "output": "", "references": [], "diagnostics": []}))
                 return 0
-            branch, commit = memory_git_identity(target)
+            branch, commit, timed_out = memory_git_identity(target)
             report = project_memory.startup(target, branch, commit)
+            if timed_out and not report.get("output"):
+                # Silence would read as "nothing to recall"; say why recall is empty instead.
+                report.update(complete=False, output="Local memory: Git did not answer in time, so the branch's "
+                              "handoff could not be matched; use manual recall (agentsmith memory search).")
         print(json.dumps(report, indent=2, ensure_ascii=False) if args.json else (
             report["output"] if args.memory_command == "startup" else project_memory.format_report(report)))
         return 0 if report["complete"] else 2
@@ -9354,7 +9756,7 @@ def add_common_install_flags(parser: argparse.ArgumentParser) -> None:
 
 PUBLIC_COMMANDS = (
     "install", "update", "doctor", "status", "profiles", "verify", "demo", "resume",
-    "handoff", "new-feedback", "new-research", "memory",
+    "handoff", "new-feedback", "new-research", "memory", "inbox",
 )
 
 
@@ -9370,7 +9772,7 @@ def parser() -> argparse.ArgumentParser:
     )
     root.add_argument("--version", action="version", version=f"agentsmith {VERSION}")
     # Internal commands (hook, secret-scan, graph, wizard, evaluate, compatibility, agents,
-    # validate-integration, audit-config) serve programs and CI: they keep working but stay out of
+    # validate-integration, audit-config, risk, lens, ci, factory) serve programs and CI: they keep working but stay out of
     # the root help, so the public surface stays small. docs/12-whats-built-in.md lists them.
     sub = root.add_subparsers(dest="command", metavar="{" + ",".join(PUBLIC_COMMANDS) + "}")
     install = sub.add_parser("install", help="install or update managed rules and adapters")
@@ -9437,6 +9839,8 @@ def parser() -> argparse.ArgumentParser:
     verify.add_argument("--only")
     verify.add_argument("--list", action="store_true")
     verify.add_argument("--record", metavar="DIRECTORY")
+    verify.add_argument("--wait", action="store_true",
+                        help="if another gate is running in this worktree, wait for it instead of failing")
     verify.add_argument(
         "--tree-class",
         choices=("clean-clone", "disposable-fixture", "linked-worktree", "operator-worktree"),
@@ -9498,6 +9902,125 @@ def parser() -> argparse.ArgumentParser:
     audit.add_argument("--include-user", action="store_true", help="also read native user configuration")
     audit.add_argument("--json", action="store_true", help="schema-versioned report")
     audit.add_argument("--fail-on", choices=("low", "medium", "high", "critical"), help="explicit CI severity gate; incomplete inspection always errors")
+    risk = sub.add_parser("risk", description="classify changes by the committed risk policy")
+    risk_sub = risk.add_subparsers(dest="risk_command", required=True)
+    classify = risk_sub.add_parser(
+        "classify",
+        description="Print the tier (A, B, C or human) and the triggered lenses for the changes from "
+                    "--base to --head. The policy is .harness/risk-policy.json as committed at --base; "
+                    "paths outside it, and a fixed floor of governance, CI, harness, credential and "
+                    "migration paths, are human.",
+    )
+    classify.add_argument("--base", required=True, help="commit the change starts from; its policy applies")
+    classify.add_argument("--head", required=True, help="commit to classify")
+    classify.add_argument("--target", help="Git repository (default: current directory)")
+    classify.add_argument("--json", action="store_true", help="schema-versioned, byte-stable report")
+    inbox_parser = sub.add_parser(
+        "inbox", help="list everything that waits on you, derived from runs, graphs, specs and Git",
+        description="List escalated, interrupted and dead runs, accepted work not yet landed, integration "
+                    "candidates, and specs and run manifests that need you. Every row is derived on each call "
+                    "and re-checked against Git; listing writes no file. --issues also reads open GitHub "
+                    "issues through gh, read-only. `claim` and `release` keep local claims under the Git "
+                    "common directory.",
+    )
+    inbox_parser.add_argument("--target", help="Git repository (default: current directory)")
+    inbox_parser.add_argument("--json", action="store_true", help="schema-versioned report")
+    inbox_parser.add_argument("--issues", action="store_true",
+                              help="also read open issues and pull requests with gh (read-only)")
+    inbox_parser.add_argument("--repo", help="OWNER/NAME for --issues (default: the repository gh finds here)")
+    inbox_parser.add_argument("--base", help="branch on origin that counts as landed (default: origin/HEAD)")
+    inbox_sub = inbox_parser.add_subparsers(dest="inbox_command", metavar="{claim,release}")
+    for name, summary in (("claim", "claim an issue locally; a second claim is refused"),
+                          ("release", "release a local claim")):
+        claim_parser = inbox_sub.add_parser(name, help=summary)
+        claim_parser.add_argument("issue", help="issue number")
+        claim_parser.add_argument("--target", default=argparse.SUPPRESS, help="Git repository (default: current directory)")
+        if name == "claim":
+            claim_parser.add_argument("--repo", default=argparse.SUPPRESS, help="OWNER/NAME to check the issue on")
+    lens = sub.add_parser("lens", description="report-only review lenses: plan, brief, record, report")
+    lens_sub = lens.add_subparsers(dest="lens_command", required=True)
+    lens_plan = lens_sub.add_parser("plan", description="List the lenses a change triggers, from .harness/lenses.json "
+                                    "at --base, and the review depth from the tier and the checker class.")
+    lens_brief = lens_sub.add_parser("brief", description="Print the prompt for an attended checker session that "
+                                     "reviews the change through one triggered lens.")
+    lens_brief.add_argument("lens", help="lens id")
+    lens_record = lens_sub.add_parser("record", description="Append one triage row for one finding to the local "
+                                      "trial record under the Git common directory. The evidence must cite the head "
+                                      "commit as 'criterion :: file[:line] :: excerpt'.")
+    for command in (lens_plan, lens_brief, lens_record):
+        command.add_argument("--base", required=True, help="commit the change starts from; its lens file applies")
+        command.add_argument("--head", required=True, help="the candidate commit")
+    for command in (lens_plan, lens_brief):
+        command.add_argument("--checker-class", choices=("small", "standard", "frontier"), default="standard",
+                             help="class of the checker model; it sets the review depth with the tier")
+    lens_record.add_argument("--source", required=True, help="lens:<id>, checker, human or bot:<name>")
+    lens_record.add_argument("--evidence", required=True, help="criterion :: file[:line] :: excerpt")
+    lens_record.add_argument("--decision", required=True, choices=("act", "skip", "skip-silently"))
+    lens_record.add_argument("--rationale", required=True, help="one line")
+    lens_record.add_argument("--checker", choices=("found", "missed"),
+                             help="for a lens finding: did the single checker report it")
+    lens_record.add_argument("--fix", help="the fix or check, if any")
+    lens_record.add_argument("--reproduction", help="a command that reproduces the defect")
+    lens_report = lens_sub.add_parser("report", description="Noise rate and defects missed by the single checker, "
+                                      "counted from the trial record.")
+    for command in (lens_plan, lens_brief, lens_record, lens_report):
+        command.add_argument("--target", help="Git repository (default: current directory)")
+    for command in (lens_plan, lens_record, lens_report):
+        command.add_argument("--json", action="store_true", help="schema-versioned output")
+    factory_parser = sub.add_parser("factory", description="readiness and numbers for autonomous work, derived "
+                                                         "from runs, events and read-only CI reads; no stored board")
+    factory_sub = factory_parser.add_subparsers(dest="factory_command", required=True)
+    ready = factory_sub.add_parser("readiness", description="Check whether this repository is ready for wider "
+                                   "autonomy. Writes nothing in the repository or its Git folder (the sandbox probe uses a "
+                                   "throwaway temporary folder) and switches nothing on. Exit 0 ready, 1 not ready.")
+    ready.add_argument("--manifest", help="a run manifest naming the checker (client, model, effort)")
+    ready.add_argument("--base", help="the base branch or ref (default: origin/HEAD, else HEAD)")
+    ready.add_argument("--green-days", type=int, default=7, help="days the default branch must have been green")
+    ready.add_argument("--headroom", type=float, default=0.7, help="largest share of a job's timeout it may use")
+    numbers = factory_sub.add_parser("numbers", description="The six numbers, each with its window and sample size.")
+    numbers.add_argument("--since", help="start of the data window, such as 2026-10-01 (default: 28 days ago)")
+    numbers.add_argument("--base", help="the default branch for CI (default: the repository's)")
+    for item in (ready, numbers):
+        item.add_argument("--json", action="store_true")
+        item.add_argument("--target", help="Git repository (default: current directory)")
+    exporting = factory_sub.add_parser("export", description="Write every run's state, events and receipts as "
+                                       "JSON to a folder outside the Git folder.")
+    exporting.add_argument("directory")
+    defect = factory_sub.add_parser("defect", description="operator log of defects found after merge")
+    defect_sub = defect.add_subparsers(dest="defect_command", required=True)
+    defect_add = defect_sub.add_parser("add")
+    defect_add.add_argument("sha", help="full commit SHA of the merged change")
+    defect_add.add_argument("--tier", required=True, choices=["A", "B", "C", "human"])
+    defect_add.add_argument("--note")
+    minutes = factory_sub.add_parser("minutes", description="operator log of human minutes spent on a run")
+    minutes_sub = minutes.add_subparsers(dest="minutes_command", required=True)
+    minutes_add = minutes_sub.add_parser("add")
+    minutes_add.add_argument("run_id")
+    minutes_add.add_argument("minutes", type=float)
+    for item in (exporting, defect_add, minutes_add):
+        item.add_argument("--target", help="Git repository (default: current directory)")
+    ci = sub.add_parser("ci", description="report-only continuous-integration tools (GitHub, through gh)")
+    ci_sub = ci.add_subparsers(dest="ci_command", required=True)
+    # Kept as text so building the parser imports nothing; scripts/test-ci-watch.py checks it
+    # against ci_watch.STATES.
+    exit_codes = ("green=0, red-at-diff=10, red-on-base=11, flaky=12, environment=13, runner-stalled=14, "
+                  "no-run-registered=15, conflict=16, cap-reached=17, head-moved=18")
+    ci_watch_parser = ci_sub.add_parser(
+        "watch",
+        description="Follow the workflow runs registered for one commit until one end state. Checks merge "
+                    "conflicts first, never reads the aggregate check view, and never fixes, pushes, comments, "
+                    f"labels or reruns. Exit codes: {exit_codes}; 2 when gh is missing, not logged in, or a "
+                    "read fails.",
+    )
+    ci_target = ci_watch_parser.add_mutually_exclusive_group(required=True)
+    ci_target.add_argument("--pr", type=int, help="pull request number; its head commit is watched")
+    ci_target.add_argument("--sha", help="full commit SHA to watch")
+    ci_watch_parser.add_argument("--repo", help="OWNER/NAME (default: the repository gh finds here)")
+    ci_watch_parser.add_argument("--base", help="base branch for red-on-base (default: the PR's base, else the default branch)")
+    ci_watch_parser.add_argument("--cap-minutes", type=float, default=60, help="wall-clock cap for the whole watch (default 60)")
+    ci_watch_parser.add_argument("--stall-minutes", type=float, default=30,
+                                 help="no progress for this long is runner-stalled (default 30)")
+    ci_watch_parser.add_argument("--json", action="store_true", help="schema-versioned report")
     memory = sub.add_parser("memory", help="search and read bounded local Markdown memory")
     # `memory startup` is the hook's internal entry point, so it stays out of the listed choices.
     memory_commands = memory.add_subparsers(dest="memory_command", required=True, metavar="{search,read}")
@@ -9535,7 +10058,7 @@ def parser() -> argparse.ArgumentParser:
 def normalize_legacy_argv(argv: list[str]) -> list[str]:
     if not argv:
         return ["install", "--wizard"]
-    commands = {"install", "update", "agents", "doctor", "status", "profiles", "wizard", "compatibility", "verify", "validate-integration", "graph", "demo", "resume", "handoff", "new-feedback", "new-research", "secret-scan", "hook", "memory", "audit-config", "evaluate"}
+    commands = {"install", "update", "agents", "doctor", "status", "profiles", "wizard", "compatibility", "verify", "validate-integration", "graph", "demo", "resume", "handoff", "new-feedback", "new-research", "secret-scan", "hook", "memory", "audit-config", "ci", "factory", "risk", "lens", "inbox", "evaluate"}
     if argv[0] in commands or argv[0] in {"-h", "--help", "--version"}:
         return argv
     if "--doctor" in argv:
@@ -9633,6 +10156,42 @@ def wizard_questions() -> list[dict[str, Any]]:
 
 def wizard_question(key: str) -> dict[str, Any]:
     return next(question for question in wizard_questions() if question["key"] == key)
+
+
+AGENT_INSTALL_QUESTIONS_BEGIN = "<!-- BEGIN GENERATED: wizard questions (from WIZARD_QUESTIONS in agentsmith.py; do not edit by hand) -->"
+AGENT_INSTALL_QUESTIONS_END = "<!-- END GENERATED: wizard questions -->"
+
+
+def wizard_questions_markdown() -> str:
+    """The wizard's questions as the Markdown table in AGENT-INSTALL.md.
+
+    It is built from the machine-independent table and the English prompts, so the same text
+    results on every computer; scripts/test-guided-install.py fails when the guide drifts."""
+    prompts = load_wizard_locales()["en"]
+    answers_by_kind = {
+        "path": "a folder path",
+        "agent_list": "agent ids or groups, comma separated",
+        "profile": "`recommended` or one profile name",
+        "profile_list": "profile names, comma separated",
+    }
+    rows = ["| Key | Question | Answers | Default | Asked when |", "| --- | --- | --- | --- | --- |"]
+    for question in WIZARD_QUESTIONS:
+        text = re.sub(r"(\s*\[[^\]]*\])*:\s*$", "", prompts[question["prompt_key"]]).strip()
+        if question["key"] == "goal":
+            answers = ", ".join(f"`{key}` {profile}" for key, profile in WIZARD_GOAL_PROFILES.items())
+        elif question.get("choices"):
+            answers = " / ".join(f"`{choice}`" for choice in question["choices"])
+        else:
+            answers = answers_by_kind[question["kind"]]
+        default = question["default"]
+        value = default.get("value")
+        shown = "none" if value == [] else f"`{value}`" if value is not None else ""
+        if "computed" in default:
+            computed = f"computed: {default['computed']}"
+            shown = f"{shown} ({computed})" if shown else computed
+        when = ", ".join(f"{key} = `{value}`" for key, value in question.get("when", {}).items()) or "always"
+        rows.append(f"| `{question['key']}` | {text} | {answers} | {shown} | {when} |")
+    return "\n".join(rows)
 
 
 def wizard_default_agents() -> str:
@@ -10023,6 +10582,16 @@ def run(argv: list[str] | None = None) -> int:
         return cmd_secret_scan(args)
     if args.command == "audit-config":
         return cmd_audit_config(args)
+    if args.command == "risk":
+        return cmd_risk(args)
+    if args.command == "inbox":
+        return cmd_inbox(args)
+    if args.command == "lens":
+        return cmd_lens(args)
+    if args.command == "ci":
+        return cmd_ci_watch(args)
+    if args.command == "factory":
+        return cmd_factory(args)
     if args.command == "memory":
         return cmd_memory(args)
     if args.command == "hook":

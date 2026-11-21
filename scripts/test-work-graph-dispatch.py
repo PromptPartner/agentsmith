@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+import _fixture_git  # first: keeps every Git fixture out of an inherited repository
+_fixture_git.isolate()
 import builtins
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -19,6 +22,10 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parent.parent
+_SPEC = importlib.util.spec_from_file_location("agentsmith_dispatch_controller", ROOT / "scripts" / "autonomous-run.py")
+assert _SPEC and _SPEC.loader
+CONTROLLER = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(CONTROLLER)  # for process_is_live, which also works on Windows
 CHILD_EXIT = re.compile(
     r"\Achild process exit=(-?[0-9]{1,5}) in (prepared|making|checking|retrying|resuming|accepted|escalated|interrupted|unknown); "
     r"exception=([A-Za-z_][A-Za-z0-9_.]{0,63}); location=(autonomous-run\.py:[1-9][0-9]{0,5}|unknown)\Z"
@@ -147,13 +154,25 @@ class GraphDispatchTests(unittest.TestCase):
                     try:
                         if slow:
                             time.sleep(delay)
-                        return real_verify(command, cwd, timeout, env, **kwargs)
+                        result = real_verify(command, cwd, timeout, env, **kwargs)
+                        if (here / "slow-host").is_file():  # a loaded host: the real work is slow too
+                            time.sleep(float((here / "slow-host").read_text(encoding="utf-8")))
+                        return result
                     finally:
                         if slow:
                             (here / "probe.lock").unlink()
                         with (here / "preflight.log").open("a", encoding="utf-8") as log:
                             log.write(f"pid={{os.getpid()}} start={{began}} end={{time.monotonic()}}\\n")
                 controller.sandboxed_verify = timed_verify
+                real_preflight = controller.preflight_sandboxes
+                def slow_preflight(*args, **kwargs):
+                    # On a loaded host a child's start (process, Git phases, worktree) is slow as well.
+                    slow_host = Path(__file__).parent / "slow-host"
+                    if slow_host.is_file():
+                        import time
+                        time.sleep(3 * float(slow_host.read_text(encoding="utf-8")))
+                    return real_preflight(*args, **kwargs)
+                controller.preflight_sandboxes = slow_preflight
                 return controller
             if __name__ == "__main__":
                 early_exit = Path(__file__).parent / "early-exit-a"
@@ -206,6 +225,11 @@ class GraphDispatchTests(unittest.TestCase):
             receipt_path = Path(argv[argv.index("-o") + 1]) if "-o" in argv else None
             changed = "src/shared.txt" if (Path(__file__).parent / "shared-mode").is_file() else f"src/{run_id}/change.txt"
             if not checker:
+                infra_run = Path(__file__).parent / "infra-run.txt"
+                if infra_run.is_file() and infra_run.read_text(encoding="utf-8").strip() == run_id:
+                    # A client network failure before any receipt, every time: the breaker trips.
+                    print(json.dumps({"type": "error", "message": "stream disconnected before completion"}))
+                    raise SystemExit(1)
                 failed_run = Path(__file__).parent / "fail-run.txt"
                 if failed_run.is_file() and failed_run.read_text(encoding="utf-8").strip() == run_id:
                     raise SystemExit("configured fake maker failure")
@@ -226,7 +250,10 @@ class GraphDispatchTests(unittest.TestCase):
             commit = subprocess.run(["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
             status = "accepted" if checker else "completed"
             receipt = {"status": status, "summary": "fake role", "commit": commit,
-                       "changed_paths": [changed], "evidence": ["fake test evidence"],
+                       "changed_paths": [changed],
+                       "evidence": ["fake test evidence"] if not checker else [
+                           "verification passed :: " + re.search(r"attempt-[0-9]+-verify[.]txt", prompt).group(0)
+                           + " :: fixture verification passed"],
                        "unresolved": [], "next_state": status}
             if receipt_path is not None:
                 receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
@@ -248,7 +275,8 @@ class GraphDispatchTests(unittest.TestCase):
             manifest.update(run_id=run_id, spec_path="docs/specs/accepted.md", implementation_ticket=f"IMP-{run_id}")
             manifest["scope"]["allowed_paths"] = [f"src/{run_id}/**"]
             manifest["verify"]["command"] = (
-                f'"{sys.executable}" -c "from pathlib import Path; assert Path(\'src/{run_id}/change.txt\').is_file()"'
+                f'"{sys.executable}" -c "from pathlib import Path; assert Path(\'src/{run_id}/change.txt\').is_file(); '
+                f'print(\'fixture verification passed\')"'
             )
             manifest["limits"].update(wall_minutes=2, codex_goal_tokens=1000, claude_max_usd=1)
             path = self.repo / ".harness/runs" / f"{run_id}.json"
@@ -294,33 +322,94 @@ class GraphDispatchTests(unittest.TestCase):
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
 
-        def reap_graph() -> None:
-            if running.poll() is None:
-                # Stop the children first: a killed graph leaves child controllers holding the
-                # repository open, and Windows then cannot remove the fixture folder.
-                self.invoke("stop", diagnose_unexpected=False)
-                running.kill()
-            running.communicate()
-        self.addCleanup(reap_graph)
+        self.addCleanup(self.reap_graph, running)
         return running
+
+    def reap_graph(self, running: subprocess.Popen[str]) -> None:
+        if running.poll() is None:
+            # Stop the children first: a killed graph leaves child controllers holding the
+            # repository open, and Windows then cannot remove the fixture folder.
+            self.invoke("stop", diagnose_unexpected=False)
+            running.kill()
+        running.communicate()
+        self.wait_for_child_processes()
+
+    def child_pids(self) -> set[int]:
+        """Controller and role processes the graph's children recorded."""
+        pids: set[int] = set()
+        for run_dir in (self.repo / ".git/agentsmith-runs").glob("*"):
+            for name, key in (("controller.lock", "pid"), ("state.json", "active_pid"), ("state.json", "controller_pid")):
+                try:
+                    value = json.loads((run_dir / name).read_text(encoding="utf-8")).get(key)
+                except (OSError, ValueError, AttributeError):
+                    continue
+                if isinstance(value, int) and value > 0:
+                    pids.add(value)
+        return pids
+
+    def wait_for_child_processes(self, timeout: float = 60) -> None:
+        """Windows keeps a folder in use while any process still has a file or its working
+        directory there (WinError 32), and `stop` waits only 5 s for a controller. Wait until
+        every recorded child process has exited before the fixture folder is removed."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and any(CONTROLLER.process_is_live(pid) for pid in self.child_pids()):
+            time.sleep(0.1)
 
     def probe_timing(self) -> str:
         log = self.fake_client.parent / "preflight.log"
         return log.read_text(encoding="utf-8").strip() if log.is_file() else "none"
 
+    def host_slowness(self) -> float:
+        """Seconds the graph's verifier probe took beyond any planted delay: how slow this host is
+        right now. About 0.1 s on an idle macOS or Linux runner; 8.8 s on the Windows runner of
+        run 42258417688."""
+        log = self.fake_client.parent / "preflight.log"
+        planted_file = self.fake_client.parent / "slow-verifier-probe"
+        planted = float(planted_file.read_text(encoding="utf-8") or 5) if planted_file.is_file() else 0.0
+        try:
+            last = log.read_text(encoding="utf-8").strip().splitlines()[-1]
+            fields = dict(item.split("=", 1) for item in last.split())
+            return max(0.0, float(fields["end"]) - float(fields["start"]) - planted)
+        except (OSError, IndexError, KeyError, ValueError):
+            return 0.0
+
+    def timeline(self) -> str:
+        """Graph events, child states and events, and maker starts, for a failure message."""
+        lines = [f"probes: {self.probe_timing()}", f"host slowness: {self.host_slowness():.1f} s"]
+        events = self.repo / ".git/agentsmith-graphs/dispatch-fixture/events.jsonl"
+        if events.is_file():
+            lines += ["graph events:", *events.read_text(encoding="utf-8").splitlines()]
+        for state_path in sorted((self.repo / ".git/agentsmith-runs").glob("*/state.json")):
+            try:
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            lines.append(f"{state_path.parent.name}: {state.get('status')} {state.get('stage')} "
+                         f"updated {state.get('updated_at')}: {state.get('reason')}")
+            child_events = state_path.parent / "events.jsonl"
+            if child_events.is_file():
+                lines += [f"  {line}" for line in child_events.read_text(encoding="utf-8").splitlines()[-12:]]
+        starts = self.fake_client.parent / "starts.log"
+        lines.append("maker starts: " + (starts.read_text(encoding="utf-8").strip() if starts.is_file() else "none"))
+        return "\n".join(lines)
+
     def wait_after_graph_probe(self, running: subprocess.Popen[str], done: Any, window: float,
                                failure: str) -> None:
         """A window measured from `graph start` begins after the graph's one verifier probe,
-        which can take longer than dispatch itself on Windows."""
+        which can take longer than dispatch itself on Windows. It also grows with how slow the
+        host is right now: from the probe to a maker start, a child runs about four steps of the
+        probe's own kind (its controller process, Git phases, the worktree, the maker process), so
+        the window adds four times the probe's unplanted time."""
         preflight = self.fake_client.parent / "preflight.log"
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline and not preflight.is_file() and running.poll() is None:
             time.sleep(0.05)
+        window += 4 * self.host_slowness()
         deadline = time.monotonic() + window
         while time.monotonic() < deadline and not done():
             time.sleep(0.05)
-        self.assertTrue(done(), f"{failure} within {window} s of the graph's verifier probe; "
-                                f"probes: {self.probe_timing()}")
+        self.assertTrue(done(), f"{failure} within {window:.1f} s of the graph's verifier probe\n"
+                                f"{self.timeline()}")
 
     def invoke(self, action: str, *, diagnose_unexpected: bool = True) -> subprocess.CompletedProcess[str]:
         result = subprocess.run(
@@ -393,6 +482,9 @@ class GraphDispatchTests(unittest.TestCase):
         self.assertEqual(report["status"], "completed", started.stdout + started.stderr + json.dumps(report))
         self.assertEqual({node["run_id"]: node["status"] for node in report["nodes"]},
                          {"a": "completed", "b": "completed", "c": "completed"})
+        # The fixture commits no risk policy, so every accepted child records the tier human.
+        self.assertEqual({node["run_id"]: node.get("risk_tier") for node in report["nodes"]},
+                         {"a": "human", "b": "human", "c": "human"})
         child = self.repo.parent / "repo-c"
         self.assertEqual((child / "src/a/change.txt").read_text(encoding="utf-8"), "a\n")
         self.assertEqual((child / "src/b/change.txt").read_text(encoding="utf-8"), "b\n")
@@ -443,6 +535,33 @@ class GraphDispatchTests(unittest.TestCase):
         self.assertEqual({node["run_id"]: node["status"] for node in report["nodes"]},
                          {"a": "completed", "b": "failed", "c": "blocked"}, details)
         self.assertFalse((self.repo.parent / "repo-c").exists())
+
+    def test_repeated_infrastructure_failure_stops_new_child_launches(self) -> None:
+        # Three independent nodes, one at a time: once a child stops on its circuit breaker the
+        # host is suspect, so the graph must not start the next child on it.
+        graph_file = self.repo / self.graph_path
+        graph = json.loads(graph_file.read_text(encoding="utf-8"))
+        graph["max_parallel"] = 1
+        for node in graph["nodes"]:
+            node["depends_on"] = []
+        graph_file.write_bytes((json.dumps(graph, indent=2) + "\n").encode("utf-8"))
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-qm", "test: independent nodes, one at a time")
+        (self.fake_client.parent / "infra-run.txt").write_text("a", encoding="utf-8")
+        started = self.invoke("start", diagnose_unexpected=False)
+        self.assertNotEqual(started.returncode, 0, started.stdout + started.stderr)
+        child = json.loads((self.repo / ".git/agentsmith-runs/a/state.json").read_text(encoding="utf-8"))
+        self.assertEqual((child["status"], child.get("infrastructure_stop")), ("escalated", "network"))
+        for run_id in ("b", "c"):
+            self.assertFalse((self.repo / ".git/agentsmith-runs" / run_id / "state.json").exists(),
+                             f"{run_id} started after the breaker stopped a child")
+        directory = self.repo / ".git/agentsmith-graphs/dispatch-fixture"
+        graph_state = json.loads((directory / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(graph_state["status"], "blocked")
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+        halted = [event for event in events if event["event"] == "graph_halted"]
+        self.assertEqual(len(halted), 1, events)
+        self.assertIn("infrastructure failure (network)", halted[0]["reason"])
 
     def test_stop_then_resume_preserves_partial_work_and_limits(self) -> None:
         (self.fake_client.parent / "sleep-seconds.txt").write_text("20", encoding="utf-8")
@@ -509,6 +628,23 @@ class GraphDispatchTests(unittest.TestCase):
         self.assertEqual((foreign / "notes.md").read_text(encoding="utf-8"), "retain me\n")
         self.assertIn("repo-a", preview.stdout)
         self.assertNotIn("repo-user-research", preview.stdout)
+
+    def test_reaping_a_running_graph_waits_for_its_child_processes(self) -> None:
+        running = self.start_graph_in_background()
+        self.wait_after_graph_probe(running, (self.fake_client.parent / "starts.log").is_file, 15,
+                                    "no maker started")
+        self.assertTrue(self.child_pids())
+        self.reap_graph(running)
+        self.assertEqual([pid for pid in self.child_pids() if CONTROLLER.process_is_live(pid)], [])
+
+    def test_start_window_grows_with_a_slow_host(self) -> None:
+        # Windows run 42258417688: the graph's verifier probe took 8.8 s beyond its planted 16 s, and
+        # no maker started within a fixed 15 s after it. On a slow host every step from the probe to
+        # a maker start is slow too; the fixture makes the probe and each child's start slow alike.
+        (self.fake_client.parent / "slow-host").write_text("5", encoding="utf-8")
+        running = self.start_graph_in_background()
+        self.wait_after_graph_probe(running, (self.fake_client.parent / "starts.log").is_file, 15,
+                                    "no maker started")
 
     def test_changed_graph_contract_cannot_resume_stopped_run(self) -> None:
         (self.fake_client.parent / "sleep-seconds.txt").write_text("4", encoding="utf-8")
@@ -602,7 +738,8 @@ class GraphDispatchTests(unittest.TestCase):
             manifest_path = self.repo / node["manifest_path"]
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["scope"]["allowed_paths"] = ["src/shared.txt"]
-            manifest["verify"]["command"] = f'"{sys.executable}" -c "from pathlib import Path; assert Path(\'src/shared.txt\').is_file()"'
+            manifest["verify"]["command"] = (f'"{sys.executable}" -c "from pathlib import Path; '
+                                             f'assert Path(\'src/shared.txt\').is_file(); print(\'fixture verification passed\')"')
             payload = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
             manifest_path.write_bytes(payload)
             node["manifest_sha256"] = hashlib.sha256(payload).hexdigest()

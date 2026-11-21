@@ -8,6 +8,8 @@ migration the default mode reports unmet production checks as GAPs but exits cle
 
 from __future__ import annotations
 
+import _fixture_git  # first: keeps every Git fixture out of an inherited repository
+_fixture_git.isolate()
 import argparse
 import json
 import os
@@ -321,7 +323,7 @@ def validate_runtime(results: Results, contract: dict[str, Any], agents: list[di
     listed = set(usage_list.group(1).split(",")) if usage_list else set()
     rows = set(re.findall(r"^    ([a-z][a-z-]*)", help_run.stdout, re.MULTILINE))
     internal = {"hook", "secret-scan", "graph", "wizard", "evaluate", "compatibility", "agents",
-                "validate-integration", "audit-config"}
+                "validate-integration", "audit-config", "ci", "factory", "risk", "lens"}
     results.check(
         bool(listed) and not (listed | rows) & internal,
         "root help lists only public commands",
