@@ -47,6 +47,41 @@ SHA-256 in `rework`, and `start` and `resume` refuse when the note changed after
 The maker receives the note through its prompt, marked as a rework of the earlier run. A note
 may be at most 16 KB.
 
+**Attention budget.** `prepare` refuses a new run while as many runs wait on you as the risk policy
+allows, and `start` checks the same limit again before it launches anything, so runs prepared while
+little waited cannot all start later and bypass it. The limit is `attention_limit` in
+`.harness/risk-policy.json`, default 5 (see [risk map](29-risk-map.md)). It is a work-in-progress
+limit: past the number of runs you can follow, more parallel work only adds to the queue you cannot
+review. A run waits on you when [`agentsmith inbox`](31-inbox.md) lists it as `damaged`,
+`escalated`, `dead`, `interrupted`, `awaiting-human` (held because the checker is not calibrated)
+or `accepted` (accepted but not landed, including one whose pull request is open). A run whose state cannot be read counts: damage needs a person, so the count
+fails closed. The count uses the inbox's own derivation, so the two never disagree; a running run
+and a landed one do not count. The refusal names the count, the limit and the next step:
+
+```text
+error: attention budget reached: 5 runs wait on you and the limit is 5 (attention_limit in
+.harness/risk-policy.json); land a waiting run (`deliver`), rework it (`prepare --rework-of
+<run-id>`), or delete its run branch to drop it from the inbox; `agentsmith inbox` lists them
+```
+
+- **Land** an accepted run with `deliver` (see below): once its commit is on the base branch, it
+  no longer waits.
+- **Rework** a waiting run with `prepare --rework-of <run-id>`. Both `prepare` and `start` allow
+  it at the limit, because it turns that run into work instead of adding one. A `dead` run must
+  finish first: resume it, then rework it.
+- **Delete its run branch** for a run you will neither land nor rework: remove its worktree, then
+  delete its `agentsmith/<run-id>` branch. The inbox then drops it, with a warning that names it,
+  and it no longer counts. There is no separate command for this.
+
+The limit is read from the policy committed at the manifest's `base_ref` (default `HEAD`), as
+that ref resolves in the main checkout of the repository, not in a linked worktree. Run branches
+live in linked worktrees, so a commit on a run branch cannot raise the limit that gates new runs.
+Commit a change to the limit on the base in the main checkout before it applies. An invalid value
+(zero, negative, text or a fraction) is refused by name. There is no override flag: to start more
+work, raise the committed limit. `resume` of a run that already started is not checked, and a
+graph's child runs are not checked one by one as the graph dispatches them. The limit is soft:
+two `prepare` or `start` calls at the same moment can both pass one below it.
+
 ## What runs overnight
 
 `python3 .agentsmith/autonomous-run.py start <manifest>` creates a sibling git worktree on an

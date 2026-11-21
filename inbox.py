@@ -20,8 +20,9 @@ import sys
 from typing import Any, Callable
 
 SCHEMA_VERSION = 1
-KIND_ORDER = ("escalated", "dead", "interrupted", "awaiting-human", "accepted", "integration", "manifest", "spec",
-              "untriaged")
+KIND_ORDER = ("damaged", "escalated", "dead", "interrupted", "awaiting-human", "accepted", "integration",
+              "manifest", "spec", "untriaged")
+RUN_KINDS = ("damaged", "escalated", "dead", "interrupted", "awaiting-human", "accepted")  # one row per run, at most
 TERMINAL_RUN = {"accepted", "awaiting-human", "escalated", "interrupted"}
 UNFINISHED_RUN = {"prepared", "making", "checking", "retrying", "resuming"}
 CLOSED_SPEC = {"accepted", "superseded", "rejected", "withdrawn", "done", "archived"}
@@ -259,11 +260,10 @@ class _Collector:
                           "age": age_text(age) if age is not None else "?", "tier": tier,
                           "next_step": _one_line(next_step)})
 
-    def runs(self) -> None:
+    def runs(self, controller: Any | None = None) -> None:
         root = self.common / "agentsmith-runs"
         if not root.is_dir():
             return
-        controller = None
         for entry in sorted(root.iterdir()):
             if entry.name in RUN_ROOT_ENTRIES or not entry.is_dir() or entry.is_symlink():
                 continue
@@ -279,17 +279,28 @@ class _Collector:
                     raise ValueError("the autonomous-run controller is not installed, so liveness is unknown")
                 owner = controller.read_lock(entry)
             except Exception as exc:
-                self.warnings.append(f"run {entry.name}: dropped, its state cannot be read: {_one_line(exc)}")
+                self._damaged(entry, f"its state cannot be read: {_one_line(exc)}")
                 continue
             try:
                 self._run_row(entry.name, state, owner, controller)
             except Exception as exc:  # one malformed run must not hide every other row
-                self.warnings.append(f"run {entry.name}: dropped, its state holds unexpected values: {_one_line(exc)}")
+                self._damaged(entry, f"its state holds unexpected values: {_one_line(exc)}")
+
+    def _damaged(self, entry: Path, problem: str) -> None:
+        """A run whose record cannot be trusted waits on the operator: damage fails closed, so it is
+        listed (and counted by the attention budget), never silently dropped."""
+        try:
+            since: float | None = (entry / "state.json").stat().st_mtime
+        except OSError:
+            since = None
+        self.add("damaged", entry.name, since, f"{problem}; inspect {entry.name} under agentsmith-runs in the Git "
+                 "folder, then repair its state or move the run folder out of agentsmith-runs")
 
     def _run_row(self, name: str, state: dict[str, Any], owner: dict[str, Any] | None, controller: Any) -> None:
         status, branch = state.get("status"), state.get("branch")
-        if not isinstance(status, str):
-            raise ValueError(f"status is {type(status).__name__}, not text")
+        for key in ("status", "branch", "base_head") + (("accepted_commit",) if status == "accepted" else ()):
+            if not isinstance(state.get(key), str):
+                raise ValueError(f"{key} is {type(state.get(key)).__name__}, not text")
         if (owner and controller.process_is_live(owner.get("pid"))) or \
                 (state.get("active_pid") and controller.process_is_live(state.get("active_pid"))):
             return  # running: it waits on nobody yet
@@ -307,17 +318,21 @@ class _Collector:
                 self.warnings.append(f"run {name}: dropped, branch {branch} is gone")
             elif not _contains(self.repo, commit, tip):
                 self.warnings.append(f"run {name}: dropped, branch {branch} no longer contains {label} commit {commit[:12]}")
-            elif held and not self._landed(commit):
-                reason = state.get("reason") or "checker advisory"
-                self.add("awaiting-human", name, since, f"{reason}; review {commit[:12]} on {branch}; a human "
-                         "reviews and re-runs with an explicit approval: calibrate the checker until it passes, "
-                         f"then prepare a rework of {name}", self._tier(base, commit))
-            elif not held and not self._landed(commit):
-                self.add("accepted", name, since, self._landing_step(commit, branch), self._tier(base, commit))
+            elif not (self.origin_base and _contains(self.repo, commit, self.origin_base)):
+                # Not landed. An open pull request with it as head still waits on the operator: merging is theirs.
+                if held:
+                    reason = state.get("reason") or "checker advisory"
+                    self.add("awaiting-human", name, since, f"{reason}; review {commit[:12]} on {branch}; a human "
+                             "reviews and re-runs with an explicit approval: calibrate the checker until it passes, "
+                             f"then prepare a rework of {name}", self._tier(base, commit))
+                else:
+                    step = (f"review accepted commit {commit[:12]} on {branch}: an open pull request has it as its "
+                            "head; review and merge that pull request" if commit in self.pr_heads
+                            else self._landing_step(commit, branch))
+                    self.add("accepted", name, since, step, self._tier(base, commit))
             return
         if status not in TERMINAL_RUN and status not in UNFINISHED_RUN:
-            self.warnings.append(f"run {name}: dropped, unknown status {status!r}")
-            return
+            raise ValueError(f"unknown status {status!r}")
         if tip is None:
             self.warnings.append(f"run {name}: dropped, {status} but branch {branch} is gone")
             return
@@ -333,7 +348,7 @@ class _Collector:
                      self._tier(base, tip))
         else:
             self.add("dead", name, since, f"{status} with no live controller or role process; inspect it, "
-                     f"then resume {name}", self._tier(base, tip))
+                     f"then resume {name}; it must finish before it can be reworked", self._tier(base, tip))
 
     def integrations(self) -> None:
         root = self.common / "agentsmith-graphs"
@@ -449,6 +464,17 @@ def collect(repo: Path, *, now: Callable[[], float] = lambda: dt.datetime.now(dt
     collector.runs()
     collector.integrations()
     collector.specs_and_manifests()
+    rows = sorted(collector.rows, key=lambda row: (KIND_ORDER.index(row["kind"]), -(row["age_seconds"] or 0), row["id"]))
+    return {"schema_version": SCHEMA_VERSION, "rows": rows, "warnings": collector.warnings}
+
+
+def waiting_runs(repo: Path, *, now: Callable[[], float] = lambda: dt.datetime.now(dt.timezone.utc).timestamp(),
+                 base: str | None = None, controller: Any | None = None) -> dict[str, Any]:
+    """The runs that wait on the operator: the run rows of `collect`, by the same derivation, so the
+    attention budget and the sweep never disagree with the inbox. A run gives one row at most.
+    `controller` supplies read_lock and process_is_live; by default the installed controller."""
+    collector = _Collector(Path(repo), now, None, None, base)
+    collector.runs(controller)
     rows = sorted(collector.rows, key=lambda row: (KIND_ORDER.index(row["kind"]), -(row["age_seconds"] or 0), row["id"]))
     return {"schema_version": SCHEMA_VERSION, "rows": rows, "warnings": collector.warnings}
 

@@ -21,6 +21,7 @@ make_fake() {
   cp "$ROOT/native_launcher.py" "$path/native_launcher.py"
   cp "$ROOT/windows_verifier_sandbox.py" "$path/windows_verifier_sandbox.py"
   cp "$ROOT/risk_map.py" "$path/risk_map.py" 2>/dev/null || true
+  cp "$ROOT/inbox.py" "$path/inbox.py"  # the attention budget counts waiting runs with it, as installed
   chmod +x "$path/controller.py"
   cp "$ROOT/templates/autonomous-run.json" "$path/template.json"
   printf '%s\n' \
@@ -521,6 +522,10 @@ assert 'attempt cap is persisted and reported' grep -q 'attempt cap reached (3)'
 
 echo 'autonomous-run — concurrent scope and resource collision protection'
 repo="$(new_repo collisions)"; make_fake "$repo/../fake"
+# These checks start many runs in one repository to test scope collisions, not the attention
+# budget; a committed policy lifts the budget so the runs they leave behind do not trip it.
+printf '%s\n' '{"schema_version": 1, "rules": [], "attention_limit": 100}' > "$repo/.harness/risk-policy.json"
+git -C "$repo" add .harness/risk-policy.json && git -C "$repo" commit -qm 'test: lift the attention budget'
 manifest "$repo" live-primary; set_manifest_scope "$repo" live-primary 'src/**' '["port:3000"]'
 manifest "$repo" overlap-path; set_manifest_scope "$repo" overlap-path 'src/widgets/**' '["service:widgets"]'
 manifest "$repo" shared-resource; set_manifest_scope "$repo" shared-resource 'docs/**' '["port:3000"]'

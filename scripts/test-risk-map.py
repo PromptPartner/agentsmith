@@ -249,6 +249,18 @@ class PureClassifyTests(unittest.TestCase):
                 with self.assertRaises(risk_map.PolicyError):
                     risk_map.load_policy(data)
 
+    def test_attention_limit_is_optional_and_a_positive_integer(self) -> None:
+        self.assertEqual(risk_map.load_policy(None)["attention_limit"], 5)
+        self.assertEqual(risk_map.load_policy(json.dumps({"schema_version": 1, "rules": []}).encode())
+                         ["attention_limit"], 5)
+        self.assertEqual(risk_map.load_policy(json.dumps({"schema_version": 1, "rules": [], "attention_limit": 2})
+                                              .encode())["attention_limit"], 2)
+        for value in (0, -3, "5", True, 1.5, None, [5]):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(risk_map.PolicyError, "attention_limit must be a positive integer"):
+                    risk_map.load_policy(json.dumps({"schema_version": 1, "rules": [], "attention_limit": value})
+                                         .encode())
+
     def test_sample_policy_is_valid(self) -> None:
         sample = (ROOT / "templates" / "risk-policy.json").read_bytes()
         rules = risk_map.load_policy(sample)

@@ -2,11 +2,12 @@
 """Readiness and numbers for autonomous runs, derived from what is already recorded.
 
 Nothing here is a stored board: every report is computed from run state, `events.jsonl`, the
-operator's own logs and read-only GitHub reads. `readiness` and `numbers` write nothing in the
-repository or its Git folder (the checker preflight uses a throwaway system temporary folder) and switch
-nothing on. The only writers are `export` (to a folder the operator names), the two operator
-logs (`defect add`, `minutes add`) under the Git folder, and `intake` with a verdict: its record under
-the Git folder and, when asked, one new `status: draft` spec. Intake reads GitHub and never writes to it.
+operator's own logs and read-only GitHub reads. `readiness`, `numbers` and `sweep` write nothing
+in the repository or its Git folder (the checker preflight uses a throwaway system temporary folder)
+and switch nothing on. The only writers are `export` (to a folder the operator names), the two
+operator logs (`defect add`, `minutes add`) under the Git folder, and `intake` with a verdict: its
+record under the Git folder and, when asked, one new `status: draft` spec. Intake reads GitHub and
+never writes to it.
 """
 
 from __future__ import annotations
@@ -32,6 +33,11 @@ TERMINAL = ("accepted", "awaiting-human", "escalated", "interrupted")
 TIERS = ("A", "B", "C", "human")
 PASSING = {"success", "skipped", "neutral"}
 GITHUB_DEFAULT_TIMEOUT_MINUTES = 360
+# A run with no event for this long is reported as stalled. Each role step writes role_started and
+# role_completed, so the gap is one maker or checker turn plus its verify; 30 minutes flags a silent
+# run well inside the template's 480-minute wall budget. Raise it with --stall-minutes for long turns.
+DEFAULT_STALL_MINUTES = 30
+MAX_STALL_MINUTES = 7 * 24 * 60  # one week: a longer silence is no longer a stall worth a threshold
 OPERATING_SYSTEMS = (("windows", ("windows",)), ("macos", ("macos", "mac-os", "osx")),
                      ("linux", ("ubuntu", "linux")))
 REPOSITORY_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
@@ -113,8 +119,12 @@ def load_runs(repo: Path) -> tuple[list[dict[str, Any]], list[str]]:
         if not isinstance(state, dict):
             unreadable.append(f"{folder.name}: state is not a JSON object")
             continue
-        runs.append({"id": folder.name, "folder": folder, "state": state,
-                     "events": read_jsonl(folder / "events.jsonl")})
+        try:
+            events = read_jsonl(folder / "events.jsonl")
+        except OSError as exc:
+            unreadable.append(f"{folder.name}: events.jsonl: {exc.strerror or exc}")
+            continue
+        runs.append({"id": folder.name, "folder": folder, "state": state, "events": events})
     return runs, unreadable
 
 
@@ -766,6 +776,132 @@ def add_minutes(repo: Path, run_id: str, minutes: float, now: datetime | None = 
         raise FactoryError("minutes must be more than 0 and at most one day")
     stamp = (now or datetime.now(timezone.utc)).isoformat(timespec="seconds")
     return append_log(repo, "minutes", {"at": stamp, "run_id": run_id, "minutes": minutes})
+
+
+def last_event(run: dict[str, Any]) -> datetime | None:
+    """The time of a run's latest event; the state's own times when it has none."""
+    times = [moment for moment in (parse_time(item.get("at")) for item in run["events"]) if moment is not None]
+    if times:
+        return max(times)
+    return parse_time(run["state"].get("updated_at")) or parse_time(run["state"].get("started_at"))
+
+
+def round_cap(state: dict[str, Any]) -> tuple[int | None, str | None]:
+    """limits.max_attempts of the manifest the run started from, or why it is unknown. A manifest
+    changed since the start is not the run's contract, so its cap is not used."""
+    path, pinned = state.get("manifest_path"), state.get("manifest_sha256")
+    if not isinstance(path, str) or not isinstance(pinned, str):
+        return None, "the run records no manifest"
+    try:
+        data = Path(path).read_bytes()
+    except OSError as exc:
+        return None, f"its manifest cannot be read: {exc.strerror or exc}"
+    # A path Python refuses to open (a NUL in it) raises ValueError: damage, reported by the caller.
+    if hashlib.sha256(data).hexdigest() != pinned:
+        return None, "its manifest changed since the run started"
+    try:
+        cap = json.loads(data.decode("utf-8"))["limits"]["max_attempts"]
+    except (ValueError, KeyError, TypeError):
+        return None, "its manifest has no limits.max_attempts"
+    if type(cap) is not int:
+        return None, "its manifest's limits.max_attempts is not a whole number"
+    return cap, None
+
+
+def sweep(repo: Path, *, stall_minutes: int = DEFAULT_STALL_MINUTES, now: datetime | None = None,
+          base: str | None = None) -> dict[str, Any]:
+    """One read-only pass over every run: stalled, waiting on the operator, past the round cap.
+    It writes nothing anywhere (no lock, no state, no log), so cron or launchd can run it as often
+    as wanted. Waiting runs come from the inbox's own derivation, so the two never disagree."""
+    if type(stall_minutes) is not int or not 1 <= stall_minutes <= MAX_STALL_MINUTES:
+        raise FactoryError(f"--stall-minutes must be a whole number from 1 to {MAX_STALL_MINUTES} (one week)")
+    import inbox
+    now = now or datetime.now(timezone.utc)
+    runs, unreadable = load_runs(repo)
+    stalled, over_cap, damaged, warnings = [], [], [], []
+
+    def damage(run_id: str, problem: str) -> None:
+        # Damage fails closed: the run is skipped, named, and counts as needing a person.
+        damaged.append({"id": run_id, "problem": problem,
+                        "next_step": f"inspect {run_id} under agentsmith-runs in the Git folder and repair it"})
+        warnings.append(f"run {run_id}: skipped, {problem}")
+
+    for item in unreadable:
+        run_id, _, problem = item.partition(": ")
+        damage(run_id, f"cannot be read: {problem}")
+    for run in runs:
+        try:
+            sweep_run(run, now, stall_minutes, stalled, over_cap, warnings)
+        except Exception as exc:  # one damaged record must not hide every other finding
+            damage(run["id"], f"its record holds unexpected values: {' '.join(str(exc).split())}")
+    try:
+        waiting = inbox.waiting_runs(repo, now=lambda: now.timestamp(), base=base)
+    except inbox.InboxError as exc:
+        raise FactoryError(str(exc)) from None
+    report = {"schema_version": SCHEMA_VERSION, "at": now.isoformat(timespec="seconds"),
+              "stall_minutes": stall_minutes, "stalled": stalled, "waiting": waiting["rows"], "over_cap": over_cap,
+              "damaged": damaged, "warnings": warnings + waiting["warnings"]}
+    report["needs_attention"] = bool(stalled or waiting["rows"] or over_cap or damaged)
+    return report
+
+
+def sweep_run(run: dict[str, Any], now: datetime, stall_minutes: int, stalled: list[dict[str, Any]],
+              over_cap: list[dict[str, Any]], warnings: list[str]) -> None:
+    """Check one run for a stall and for its round cap. Nothing is appended until the whole run
+    has been read, so a run that turns out damaged is reported once, as damaged."""
+    state = run["state"]
+    status = state.get("status")
+    found_stall, found_cap, notes = None, None, []
+    if status not in TERMINAL:
+        last = last_event(run)
+        if last is None:
+            notes.append(f"run {run['id']}: no event or state time, so a stall cannot be told")
+        elif now - last > timedelta(minutes=stall_minutes):
+            quiet = int((now - last).total_seconds() // 60)
+            found_stall = {"id": run["id"], "status": str(status), "last_event_at": last.isoformat(timespec="seconds"),
+                           "quiet_minutes": quiet,
+                           "next_step": f"no event for {quiet} minutes; check that its role process still works, "
+                                        f"then `stop {run['id']}` and `resume {run['id']}`, or leave it stopped"}
+    attempt = state.get("attempt")
+    cap, unknown = round_cap(state)
+    if unknown is not None:
+        if status not in TERMINAL:  # a finished run's cap is history; an unknown one is not worth a warning
+            notes.append(f"run {run['id']}: round cap unknown, {unknown}")
+    elif type(attempt) is int and attempt > cap:
+        found_cap = {"id": run["id"], "status": str(status), "attempt": attempt, "cap": cap,
+                     "next_step": f"attempt {attempt} is past the cap of {cap}; read its evidence and "
+                                  "stop it, or escalate it by hand"}
+    stalled.extend([found_stall] if found_stall else [])
+    over_cap.extend([found_cap] if found_cap else [])
+    warnings.extend(notes)
+
+
+def render_sweep(report: dict[str, Any]) -> str:
+    import inbox
+    text = inbox._printable  # state and reasons are data: no control character reaches the terminal
+    lines = [f"sweep at {report['at']} (stalled = no event for more than {report['stall_minutes']} minutes)"]
+    if not report["needs_attention"]:
+        lines.append("Nothing needs attention: no stalled run, no run waiting on you, no run past its round cap, "
+                     "no damaged run.")
+    for title, key in (("damaged", "damaged"), ("stalled", "stalled"), ("waiting on you", "waiting"),
+                       ("past the round cap", "over_cap")):
+        rows = report[key]
+        if not rows:
+            continue
+        lines.append(f"{title} ({len(rows)}):")
+        for row in rows:
+            if key == "stalled":
+                detail = f"{row['status']}, last event {inbox.age_text(row['quiet_minutes'] * 60)} ago"
+            elif key == "waiting":
+                detail = f"{row['kind']}, {row['age']}"
+            elif key == "damaged":
+                detail = row["problem"]
+            else:
+                detail = f"{row['status']}, attempt {row['attempt']} of {row['cap']}"
+            lines.append(f"  {text(row['id'])}  {text(detail)}")
+            lines.append(f"    next: {text(row['next_step'])}")
+    lines += [f"warning: {text(warning)}" for warning in report["warnings"]]
+    return "\n".join(lines) + "\n"
 
 
 def render(report: dict[str, Any]) -> str:

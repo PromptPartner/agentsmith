@@ -16,11 +16,12 @@ agentsmith inbox release 12
 
 | Kind | Waits on you because | Re-checked against Git |
 |---|---|---|
+| `damaged` | A run's state cannot be read, holds values of the wrong type, or has an unknown status. Damage fails closed: the run is listed, and counts for the attention budget, until you repair its state or move its folder out of `agentsmith-runs`. | Nothing to check: the record itself is the problem. |
 | `escalated` | An autonomous run stopped at a boundary it may not cross. The next step quotes its reason. | Its branch and base commit exist. |
 | `dead` | A run is unfinished (`prepared`, `making`, `checking`, `retrying`, `resuming`) but neither its controller nor its role process is alive. | Its branch and base commit exist. |
 | `interrupted` | A run was stopped and can be resumed or discarded. | Its branch and base commit exist. |
 | `awaiting-human` | A run's checker accepted, but its calibration has not passed, so the checker is advisory and the run is held. The next step quotes the reason ("checker advisory: calibration …"), names the held commit, and says that a human reviews and re-runs with an explicit approval. A held commit that has landed is not listed. | The held commit exists and its branch still contains it. |
-| `accepted` | A run's accepted commit has not landed: it is not reachable from the origin base branch, and (with `--issues`) no open pull request has it as its head. Without `--issues` the next step says that no pull request was checked; a commit already on a remote branch is named, with no advice to push it again. | The commit exists and its branch still contains it. |
+| `accepted` | A run's accepted commit has not landed: it is not reachable from the origin base branch. With `--issues`, a commit that is the head of an open pull request is still listed, with the next step to review and merge that pull request: merging is your work. Without `--issues` the next step says that no pull request was checked; a commit already on a remote branch is named, with no advice to push it again. | The commit exists and its branch still contains it. |
 | `integration` | A work graph's verified integration candidate waits for your approval. | The candidate commit exists and its branch still contains it. |
 | `spec` | A spec under `docs/specs/` is not accepted (for example `status: draft`). Only you accept a spec. | Read from `HEAD` and the working tree; an uncommitted one says so. |
 | `manifest` | A run manifest under `.harness/runs/` has no run yet: it is uncommitted, its spec is not accepted, or it is ready for you to start. | Read from `HEAD` and the working tree. |
@@ -29,9 +30,15 @@ agentsmith inbox release 12
 A running run (live controller or role process) is not listed: it waits on nobody yet. Accepted
 work that has landed is not listed either.
 
+The run rows (`damaged`, `escalated`, `dead`, `interrupted`, `accepted`; one row per run at most)
+are also what the [attention budget](21-autonomous-runs.md) counts before `prepare` writes a new
+run and before `start` launches one, with or without `--issues`, and
+what `agentsmith factory sweep` reports as waiting on you
+([factory readiness](31-factory-readiness.md)). Both use the same derivation as this list.
+
 **A row whose claim Git contradicts is dropped, with a warning.** For example: an escalated run
-whose branch was deleted, an accepted commit that its branch no longer contains, or a state file
-that cannot be read. The warning names the item, so you can inspect or clean it up, but the
+whose branch was deleted, or an accepted commit that its branch no longer contains. A state file
+that cannot be read is not a contradiction but damage, and is listed as `damaged`. The warning names the item, so you can inspect or clean it up, but the
 inbox never shows a row that Git does not support.
 
 Each row has a `kind`, an `id`, an `age` (since the item last changed), a one-line next step,

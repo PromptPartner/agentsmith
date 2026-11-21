@@ -3,6 +3,15 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [ ] 2026-11-21 — Gap found while adding the attention budget (SF-18a): there is no command to
+  dismiss a waiting run. A run leaves the inbox, and the budget count, only when it lands or when
+  its branch is deleted; a deleted branch then shows as a warning for as long as the run folder
+  exists. A run that was reworked also stays listed, because the inbox does not read which runs a
+  rework replaced. `prepare --rework-of` is allowed at the limit for that reason, but the reworked
+  run still counts until its branch is deleted.
+- [ ] 2026-11-21 — Known limit of the attention budget (SF-18a), found by an independent Codex
+  test: it is a soft limit. Two `prepare` or `start` calls made at the same moment, one run below
+  the limit, can both pass, because nothing reserves a place between counting and writing.
 - [x] 2026-11-21 — Found by an independent test of SF-12b: `factory intake --draft-spec` checked
   the path before reading the issue, then wrote it with a plain exclusive create. A folder on the
   path replaced by a link during the read carried the draft out of the repository or into `.git`,
@@ -29,6 +38,7 @@ been authorized, so the entries are kept here.
   client maps the alias to a newer model the record still reads `passed`. The client version is
   recorded but not compared, because every client update would then force a recalibration. Pin a
   versioned model name for the checker to get the check.
+
 - [x] 2026-11-16 — `scripts/verify.sh` ended with exit 128 and no message when its project was
   not a Git repository: the gate-lock lookup `git rev-parse --absolute-git-dir` failed inside a
   command substitution under `set -e`, before the `.harness/verify.lock` fallback ran. Found when

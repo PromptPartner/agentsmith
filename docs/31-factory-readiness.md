@@ -1,22 +1,25 @@
 # Factory readiness, numbers and intake
 
-`agentsmith factory` answers two questions about autonomous work in a repository:
+`agentsmith factory` answers three questions about autonomous work in a repository:
 
 - Is the repository ready for wider autonomy?
 - What do the numbers say so far?
+- Which runs need a person now? (`sweep`)
 
 It also takes in one GitHub issue at a time as untrusted input, with your verdict on it
 ([intake](#intake)).
 
-Both answers are derived each time from what is already recorded: run state and `events.jsonl`,
+The answers are derived each time from what is already recorded: run state and `events.jsonl`,
 two operator logs, and read-only GitHub reads through `gh`. Nothing is kept as a board.
-`readiness` and `numbers` write nothing in the repository or its Git folder and switch nothing on.
+`readiness`, `numbers` and `sweep` write nothing in the repository or its Git folder and switch
+nothing on.
 One exception, isolated: the checker preflight in `readiness` runs one command through the verifier
 sandbox in a throwaway folder that it creates in the system temporary folder and removes again.
 
 ```sh
 agentsmith factory readiness --manifest .harness/runs/<run-id>.json [--base origin/main] [--json]
 agentsmith factory numbers [--since 2026-10-01] [--json]
+agentsmith factory sweep [--stall-minutes 30] [--base main] [--json]
 agentsmith factory export <folder>
 agentsmith factory defect add <merged-commit-sha> --tier B [--note "what broke"]
 agentsmith factory minutes add <run-id> <minutes>
@@ -70,6 +73,61 @@ counts in the window when it started there.
 | Spend per landed change | All Claude USD and Codex tokens of every run in the window, divided by the landed changes. A run whose spend is missing or marked incomplete is left out of both sides and counted in the detail; unknown spend is never counted as zero. |
 
 A landed change is an accepted run here: what happens after the pull request is up to a person.
+
+## Sweep
+
+`agentsmith factory sweep` is one read-only pass over every run in the repository. It reads each
+run's state and `events.jsonl` and reports four lists:
+
+| List | A run is on it when |
+|---|---|
+| Damaged | Its state or `events.jsonl` cannot be read, or its record holds values the sweep cannot use (for example a NUL in its manifest path). It is skipped with a warning that names it; every other run is still swept. |
+| Stalled | It is not finished (not `accepted`, `escalated` or `interrupted`) and has had no event for more than `--stall-minutes` (default 30; a whole number from 1 to 10080, one week). A running run counts too: the point is to catch one that hangs. |
+| Waiting on you | The [inbox](31-inbox.md) lists it as `damaged`, `escalated`, `dead`, `interrupted` or `accepted` (not landed). The sweep uses the inbox's own derivation, the same count the [attention budget](21-autonomous-runs.md) uses, so the three never disagree. `--base` names the origin branch that counts as landed, as in the inbox. |
+| Past the round cap | Its attempt number is higher than `limits.max_attempts` in the manifest it started from. A manifest that changed since the start, or cannot be read, is not used; for a run that is not finished, the sweep warns that the cap is unknown. |
+
+A run can be on more than one list. Each row names its next step. Text is the default, `--json`
+gives the same report with `schema_version`.
+
+**Why 30 minutes.** Each maker and checker turn writes `role_started` when it begins and
+`role_completed` when it ends, so the longest normal gap between events is one role turn with its
+verify. Thirty minutes flags a silent run early in the template's 480-minute wall budget, before it
+has spent most of it unseen. A turn that is longer but healthy shows as stalled too; the sweep only
+reports, so the cost is a look. If your turns are routinely longer, raise `--stall-minutes`.
+
+**Exit status:** `0` nothing needs attention, `1` at least one run is on a list (a damaged run
+counts), `2` the repository cannot be read or `--stall-minutes` is outside 1 to 10080. Warnings (an unreadable run, a missing origin base)
+are printed but do not change the status.
+
+**It writes nothing.** No lock, no state, no log, in the repository, in its Git folder or anywhere
+else. You can run it as often as you like. It does not read GitHub.
+
+**No daemon is shipped.** Schedule it yourself if you want it to run on its own. In an installed
+project the command is `./.agentsmith/agentsmith`. A crontab line that checks every 15 minutes;
+cron mails you whatever a job prints, so the report reaches you only when something needs
+attention:
+
+```sh
+*/15 * * * * cd /path/to/repo && ./.agentsmith/agentsmith factory sweep > /tmp/agentsmith-sweep.txt 2>&1 || cat /tmp/agentsmith-sweep.txt
+```
+
+On macOS with launchd, save this as `~/Library/LaunchAgents/com.example.agentsmith-sweep.plist`
+and load it with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.agentsmith-sweep.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.example.agentsmith-sweep</string>
+  <key>ProgramArguments</key><array>
+    <string>/bin/sh</string><string>-c</string>
+    <string>cd /path/to/repo &amp;&amp; ./.agentsmith/agentsmith factory sweep &gt; /tmp/agentsmith-sweep.txt 2&gt;&amp;1</string>
+  </array>
+  <key>StartInterval</key><integer>900</integer>
+</dict></plist>
+```
+
+A non-zero exit from the scheduled job means a run needs you; what you do with it (a notification,
+a mail) is up to your scheduler.
 
 ## Operator logs and export
 
