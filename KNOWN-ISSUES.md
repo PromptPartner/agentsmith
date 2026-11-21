@@ -3,6 +3,13 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [ ] 2026-11-21 — Intermittent failure of `test_a_slow_git_still_finds_the_handoff` on a macOS CI
+  runner (run 44933786525, PR #92; the same commit passed in its other run). The test makes every
+  `git` call start 0.5 s late. The hook's whole recall still runs under its 2-second watchdog, so a
+  loaded runner that is also slow to start Python passes 2 s, and the hook prints "Local memory
+  unavailable or timed out" instead of the handoff. The 0.8 s per-call limit from the 2026-11-06
+  fix holds; the margin is in the total. Not fixed: the options are fewer Git calls in the hook, or
+  a test delay sized to the watchdog. Rerun the failed job meanwhile.
 - [ ] 2026-11-18 — Limit of the calibration staleness check (SF-09): a record goes stale when the
   configured model version differs from the calibrated one, but the version is read from the model
   name. A name with no version part, such as the alias `opus`, has an empty version, so when the
