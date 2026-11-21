@@ -9503,26 +9503,36 @@ def cmd_ci_watch(args: argparse.Namespace) -> int:
 
 
 # Starting git can take hundreds of milliseconds on a cold or loaded host (on macOS /usr/bin/git
-# is an xcrun shim). The startup hook's own 2 s watchdog still bounds the whole recall.
+# is an xcrun shim). The startup hook's own 2 s watchdog bounds the whole recall, so the two reads
+# below start together: one git start on the path, not two in a row.
 MEMORY_GIT_TIMEOUT_SECONDS = 0.8
 
 
 def memory_git_identity(target: Path) -> tuple[str | None, str | None, bool]:
     """(branch, commit, timed_out). A branch that could not be read in time is reported, not
-    mistaken for a detached HEAD, because without it no handoff matches."""
-    values: list[str | None] = []
-    timed_out = False
-    for arguments in (("symbolic-ref", "--short", "HEAD"), ("rev-parse", "--verify", "HEAD")):
+    mistaken for a detached HEAD, because without it no handoff matches. The branch and the
+    commit are separate reads, because `rev-parse HEAD` fails on an unborn branch that
+    `symbolic-ref` still names; they run at the same time."""
+    values: list[str | None] = [None, None]
+    timed_out = [False, False]
+
+    def read(index: int, arguments: tuple[str, ...]) -> None:
         try:
             result = subprocess.run(["git", "-C", str(target), *arguments], text=True, capture_output=True,
                                     timeout=MEMORY_GIT_TIMEOUT_SECONDS)
-            values.append(result.stdout.strip() if result.returncode == 0 else None)
+            values[index] = result.stdout.strip() if result.returncode == 0 else None
         except subprocess.TimeoutExpired:
-            values.append(None)
-            timed_out = True
+            timed_out[index] = True
         except OSError:
-            values.append(None)
-    return values[0], values[1], timed_out
+            pass
+
+    readers = [threading.Thread(target=read, args=(index, arguments), daemon=True) for index, arguments
+               in enumerate((("symbolic-ref", "--short", "HEAD"), ("rev-parse", "--verify", "HEAD")))]
+    for reader in readers:
+        reader.start()
+    for reader in readers:
+        reader.join()
+    return values[0], values[1], any(timed_out)
 
 
 def cmd_memory(args: argparse.Namespace) -> int:

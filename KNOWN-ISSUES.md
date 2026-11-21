@@ -46,13 +46,17 @@ been authorized, so the entries are kept here.
   between that check and the create is still followed, and a missing folder is created before the
   check, so a swap can leave an empty folder outside the repository. No draft or record is written
   in that case.
-- [ ] 2026-11-21 — Intermittent failure of `test_a_slow_git_still_finds_the_handoff` on a macOS CI
+- [x] 2026-11-21 — Intermittent failure of `test_a_slow_git_still_finds_the_handoff` on a macOS CI
   runner (run 44933786525, PR #92; the same commit passed in its other run). The test makes every
   `git` call start 0.5 s late. The hook's whole recall still runs under its 2-second watchdog, so a
   loaded runner that is also slow to start Python passes 2 s, and the hook prints "Local memory
   unavailable or timed out" instead of the handoff. The 0.8 s per-call limit from the 2026-11-06
-  fix holds; the margin is in the total. Not fixed: the options are fewer Git calls in the hook, or
-  a test delay sized to the watchdog. Rerun the failed job meanwhile.
+  fix holds; the margin is in the total. Fixed in the hook, not the test: it read the branch and
+  then the commit, two git starts in a row. They now start at the same time, so the path holds one
+  git start. One `rev-parse` call cannot replace both, because it fails on an unborn branch, which
+  `symbolic-ref` still names (the test's repository has no commit). With the 0.5 s delay a hook run
+  took 1.42 s before and 0.88 s after on a local Mac, so the margin to the watchdog roughly doubled
+  while the test still proves a git slower than the old 0.25 s limit.
 - [ ] 2026-11-18 — Limit of the calibration staleness check (SF-09): a record goes stale when the
   configured model version differs from the calibrated one, but the version is read from the model
   name. A name with no version part, such as the alias `opus`, has an empty version, so when the

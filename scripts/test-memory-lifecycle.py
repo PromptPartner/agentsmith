@@ -119,6 +119,33 @@ class Watchdog(unittest.TestCase):
             self.assertEqual(a.cmd_memory_startup_hook(args),0)
         self.assertIn('timed out',json.loads(output.getvalue())['hookSpecificOutput']['additionalContext'])
 
+    def test_the_startup_path_starts_both_git_reads_at_once(self):
+        # Each git start can take hundreds of milliseconds on a loaded host, and the whole recall
+        # has a 2 s watchdog. The branch and the commit are two reads (one `rev-parse` cannot name
+        # an unborn branch), so they start together: one git start on the path, not two in a row.
+        import threading
+        from unittest.mock import patch
+        sys.path.insert(0,str(ROOT))
+        import agentsmith as a
+        real_run = subprocess.run
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary) / 'repo'
+            real_run(['git','init','-q','-b','feature/x',str(repo)], check=True)
+            def identity():
+                both_started = threading.Barrier(2, timeout=5)  # serial reads break it
+                def together(command, *args, **kwargs):
+                    both_started.wait()
+                    return real_run(command, *args, **kwargs)
+                with patch.object(a.subprocess,'run',side_effect=together):
+                    return a.memory_git_identity(repo)
+            self.assertEqual(identity(), ('feature/x', None, False))  # unborn
+            real_run(['git','-C',str(repo),'-c','user.name=T','-c','user.email=t@example.com',
+                      'commit','-q','--allow-empty','-m','first'], check=True)
+            sha = real_run(['git','-C',str(repo),'rev-parse','HEAD'], text=True, capture_output=True).stdout.strip()
+            self.assertEqual(identity(), ('feature/x', sha, False))
+            real_run(['git','-C',str(repo),'checkout','-q','--detach'], check=True)
+            self.assertEqual(identity(), (None, sha, False))
+
     def test_a_git_timeout_is_reported_not_silent(self):
         import io
         from unittest.mock import patch
