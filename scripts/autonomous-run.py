@@ -1616,6 +1616,12 @@ AWAITING_HUMAN_NEXT = ("a human reviews and re-runs with an explicit approval: r
                        "(prepare ... --rework-of <run-id> --note <file>) and start it")
 
 
+def checker_calibration(state: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
+    """The latest calibration of this run's checker client, model and prompt, read now."""
+    return calibration_status(Path(state.get("repo") or state["worktree"]),
+                              (manifest.get("roles") or {}).get("checker") or {})
+
+
 def verification_binding(state: dict[str, Any], manifest: dict[str, Any], head: str) -> dict[str, Any]:
     """Controller-authored evidence identifies the exact policy and candidate checked."""
     worktree = Path(state["worktree"])
@@ -1634,9 +1640,9 @@ def verification_binding(state: dict[str, Any], manifest: dict[str, Any], head: 
             "launcher": file_digest(Path(build_native_command.__code__.co_filename)),
         },
         # The latest calibration of this checker client, model and prompt: unless it is `passed`,
-        # the checker is advisory and an acceptance waits for a human.
-        "checker_calibration": calibration_status(Path(state.get("repo") or worktree),
-                                                  (manifest.get("roles") or {}).get("checker") or {}),
+        # the checker is advisory and an acceptance waits for a human. The acceptance reads it
+        # again and records the value that gated in its place.
+        "checker_calibration": checker_calibration(state, manifest),
     }
 
 
@@ -3217,9 +3223,14 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
                 raise RunError(moved)
             # Last: the checker gates only while a calibration of it passes (SF-09). Otherwise its
             # acceptance is advice, and the candidate waits for a person instead of being accepted.
-            calibration = str((proof.get("checker_calibration") or {}).get("status") or "none")
+            # The calibration is read again here: the receipt's copy predates the checker, and the
+            # record may have changed while the checker ran.
+            proof["checker_calibration"] = checker_calibration(state, manifest)
+            calibration = str(proof["checker_calibration"].get("status") or "none")
             proof["checker_advisory"] = calibration != "passed"
             write_json(proof_path, proof)
+            # A stop that arrived up to the last receipt write still interrupts the run.
+            raise_if_stopped(Path(state["state_path"]).parent)
             if proof["checker_advisory"]:
                 state["status"] = "awaiting-human"
                 state["stage"] = "awaiting-human"

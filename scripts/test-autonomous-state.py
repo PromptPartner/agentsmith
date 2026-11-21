@@ -2290,12 +2290,16 @@ class AutonomousStateTests(unittest.TestCase):
                             checker_evidence: list[str] | None = None,
                             verify_results: list[subprocess.CompletedProcess[str]] | None = None,
                             calls: list[str] | None = None,
-                            calibration: str = "passed") -> tuple[int, dict[str, Any], list[str]]:
+                            calibration: str = "passed",
+                            calibration_at_gate: str | None = None,
+                            stop_after_final_proof: bool = False) -> tuple[int, dict[str, Any], list[str]]:
         """Drive the real attempt loop with Git and the roles replaced by fakes, so a stop can be
         delivered at an exact point of it. `verify_results` are returned in order by the
         verifier, the first one for the base commit; `calls` records each verifier and role
         launch with the folder the verifier ran in; `calibration` is the checker calibration
-        status the verification receipt records."""
+        status the verification receipt records, and `calibration_at_gate` the status the
+        calibration file holds when the acceptance is decided (by default the same).
+        `stop_after_final_proof` delivers a stop just after the receipt records `checker_advisory`."""
         directory = common / "controller"
         directory.mkdir()
         worktree = common / "worktree"
@@ -2354,6 +2358,13 @@ class AutonomousStateTests(unittest.TestCase):
         def fake_checker_worktree(*args: Any, **_kwargs: Any):
             yield args[-1]
 
+        real_write_json = CONTROLLER.write_json
+
+        def fake_write_json(path: Path, value: Any) -> None:
+            real_write_json(path, value)
+            if stop_after_final_proof and isinstance(value, dict) and "checker_advisory" in value:
+                CONTROLLER.signal.raise_signal(CONTROLLER.signal.SIGTERM)
+
         # Citable for the checker's evidence (line 3 of the attempt log), and a suite that ran tests,
         # so the baseline comparison sees a pass rather than an empty suite.
         verified = subprocess.CompletedProcess(
@@ -2370,6 +2381,8 @@ class AutonomousStateTests(unittest.TestCase):
                 "validate_git_unchanged": lambda *_args: None,
                 "validate_verification_changes": lambda *_args, **_kwargs: None,
                 "verification_binding": lambda *_args: {"checker_calibration": {"status": calibration}},
+                "calibration_status": lambda *_args: {"status": calibration_at_gate or calibration},
+                "write_json": fake_write_json,
                 "ignored_paths": lambda *_args: set(), "clean": lambda *_args: True,
                 "changed_paths": lambda *_args: ["a.txt"], "path_allowed": lambda *_args: True,
                 "sandboxed_verify": fake_verify,
@@ -2726,6 +2739,41 @@ class AutonomousStateTests(unittest.TestCase):
                 verify_results=[green, broken])
             self.assertEqual((outcome, durable["status"]), (2, "escalated"))
             self.assertNotIn("run_awaiting_human", events)
+
+    def test_the_acceptance_gates_on_the_calibration_read_at_the_decision(self) -> None:
+        # The receipt snapshot is taken before the checker runs. A calibration that fails while the
+        # checker works must hold the run; the receipt records the value that gated.
+        with tempfile.TemporaryDirectory(prefix="agentsmith calibration changed ") as temporary:
+            common = Path(temporary)
+            outcome, durable, events = self.run_with_fake_roles(
+                common, max_attempts=1, checker_status="accepted", calibration="passed",
+                calibration_at_gate="failed")
+            self.assertEqual((outcome, durable["status"]), (3, "awaiting-human"))
+            self.assertNotIn("run_accepted", events)
+            self.assertIn("calibration failed", durable["reason"])
+            proof = json.loads((common / "controller" / "attempt-1-verify.json").read_text())
+            self.assertEqual(proof["checker_calibration"], {"status": "failed"})
+            self.assertIs(proof["checker_advisory"], True)
+        # And the other way: a calibration that passes by the decision lets the checker gate.
+        with tempfile.TemporaryDirectory(prefix="agentsmith calibration passed late ") as temporary:
+            common = Path(temporary)
+            outcome, durable, _events = self.run_with_fake_roles(
+                common, max_attempts=1, checker_status="accepted", calibration="none",
+                calibration_at_gate="passed")
+            self.assertEqual((outcome, durable["status"]), (0, "accepted"))
+
+    def test_a_stop_after_the_last_receipt_write_still_interrupts_the_run(self) -> None:
+        # The stop lands after the receipt records `checker_advisory`, while the run is still
+        # `checking`: neither terminal record may be written over it.
+        for calibration in ("passed", "none"):
+            with self.subTest(calibration=calibration), \
+                    tempfile.TemporaryDirectory(prefix="agentsmith late stop ") as temporary:
+                outcome, durable, events = self.run_with_fake_roles(
+                    Path(temporary), max_attempts=1, checker_status="accepted", calibration=calibration,
+                    stop_after_final_proof=True)
+                self.assertEqual((outcome, durable["status"]), (130, "interrupted"))
+                self.assertNotIn("run_accepted", events)
+                self.assertNotIn("run_awaiting_human", events)
 
     def test_a_citation_is_checked_against_the_bytes_that_were_hashed(self) -> None:
         # A writer that lands after the hash and before the quote is read must not supply the quote.

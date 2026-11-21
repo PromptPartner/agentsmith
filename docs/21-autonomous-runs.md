@@ -208,10 +208,12 @@ Roles cannot write the calibration folder. In a measured run on 2026-11-06, a sm
 (`haiku` at low effort) failed calibration because its receipts did not name the candidate commit.
 
 **The checker is advisory until its calibration passes.** Only a `passed` calibration lets a
-checker acceptance count. When every other gate passes (the verifier, the baseline comparison,
-the citations, the stop check and the branch check) but the calibration is `none`, `failed`,
-`error`, `stale`, `invalid` or `unreadable`, the run does not become `accepted`. It ends in the
-held state
+checker acceptance count. The controller reads the calibration again at the acceptance decision,
+because the receipt's copy was taken before the checker ran, and the record may change while it
+runs. It gates on that fresh value and writes it to the receipt's `checker_calibration`. When
+every other gate passes (the verifier, the baseline comparison, the citations, the stop check and
+the branch check) but the calibration is `none`, `failed`, `error`, `stale`, `invalid` or
+`unreadable`, the run does not become `accepted`. It ends in the held state
 `awaiting-human` and exits 3:
 
 - `held_commit` names the candidate the checker accepted, and `reason` begins with
@@ -490,7 +492,8 @@ inside library code. The controller acts on the stop at its next safe point:
 - while a role or verifier runs, checked every half second; a process that ignores the signal
   is then killed;
 - a saved stage checkpoint;
-- the moment before the acceptance or attempt-cap record;
+- the moment before the acceptance or attempt-cap record, and again after the last write of the
+  verification receipt, just before the run becomes `accepted` or `awaiting-human`;
 - a wait for a Git phase or the coordination lock.
 
 It never acts inside a Git call or a lock release.
