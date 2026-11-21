@@ -9405,6 +9405,12 @@ def cmd_factory(args: argparse.Namespace) -> int:
         if args.factory_command == "minutes":
             print(f"recorded in {factory.add_minutes(repo, args.run_id, args.minutes)}")
             return 0
+        if args.factory_command == "sweep":
+            # Read-only and offline: no gh, so cron or launchd can run it as often as wanted.
+            report = factory.sweep(repo, stall_minutes=args.stall_minutes, base=args.base)
+            print(json.dumps(report, indent=2, sort_keys=True) if args.json else factory.render_sweep(report),
+                  end="\n" if args.json else "")
+            return 1 if report["needs_attention"] else 0
         if args.factory_command == "export":
             summary = factory.export(repo, Path(args.directory), secret_patterns=SECRET_PATTERNS)
             print(f"exported {summary['runs']} run(s) to {summary['target']}; "
@@ -9980,7 +9986,14 @@ def parser() -> argparse.ArgumentParser:
     numbers = factory_sub.add_parser("numbers", description="The six numbers, each with its window and sample size.")
     numbers.add_argument("--since", help="start of the data window, such as 2026-10-01 (default: 28 days ago)")
     numbers.add_argument("--base", help="the default branch for CI (default: the repository's)")
-    for item in (ready, numbers):
+    sweeping = factory_sub.add_parser("sweep", description="One read-only pass over every run: stalled runs, runs "
+                                      "waiting on you and runs past their round cap. Writes nothing; no daemon. Exit 0 "
+                                      "nothing needs attention, 1 something does, 2 the repository cannot be read.")
+    sweeping.add_argument("--stall-minutes", type=int, default=30,
+                          help="report a run that is not finished and has had no event for longer; 1 to 10080 (default 30)")
+    sweeping.add_argument("--base", help="the origin branch that counts as landed (default: origin/HEAD, "
+                                         "else origin/main, else origin/master)")
+    for item in (ready, numbers, sweeping):
         item.add_argument("--json", action="store_true")
         item.add_argument("--target", help="Git repository (default: current directory)")
     exporting = factory_sub.add_parser("export", description="Write every run's state, events and receipts as "

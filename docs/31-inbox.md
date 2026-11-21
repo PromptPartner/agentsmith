@@ -31,8 +31,9 @@ work that has landed is not listed either.
 
 The run rows (`damaged`, `escalated`, `dead`, `interrupted`, `accepted`; one row per run at most)
 are also what the [attention budget](21-autonomous-runs.md) counts before `prepare` writes a new
-run and before `start` launches one, with or without `--issues`. It uses the same derivation as
-this list.
+run and before `start` launches one, with or without `--issues`, and
+what `agentsmith factory sweep` reports as waiting on you
+([factory readiness](31-factory-readiness.md)). Both use the same derivation as this list.
 
 **A row whose claim Git contradicts is dropped, with a warning.** For example: an escalated run
 whose branch was deleted, or an accepted commit that its branch no longer contains. A state file

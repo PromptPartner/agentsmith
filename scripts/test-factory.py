@@ -6,6 +6,7 @@ from __future__ import annotations
 import _fixture_git  # first: keeps every Git fixture out of an inherited repository
 _fixture_git.isolate()
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import os
 from pathlib import Path, PureWindowsPath
@@ -535,6 +536,169 @@ else:
         report = json.loads(result.stdout)
         red = next(row for row in report["numbers"] if row["name"] == "time the default branch spends red")
         self.assertEqual(red["status"], "unavailable")
+
+
+class SweepTests(FactoryTests):
+    """`factory sweep`: one read-only pass that reports stalled runs, runs waiting on the operator
+    and runs past their round cap, for cron or launchd to act on."""
+
+    def sweep_run(self, run_id: str, status: str, *, quiet_minutes: float, attempt: int = 1, live: bool = False,
+                  max_attempts: int | None = None) -> Path:
+        base = self.git("rev-parse", "HEAD")
+        self.git("branch", f"agentsmith/{run_id}", base)
+        folder = self.runs / run_id
+        folder.mkdir(parents=True)
+        last = (NOW - timedelta(minutes=quiet_minutes)).isoformat(timespec="seconds")
+        state = {"schema_version": 1, "run_id": run_id, "status": status, "attempt": attempt,
+                 "branch": f"agentsmith/{run_id}", "base_head": base, "reason": "attempt cap reached (3)",
+                 "started_at": stamp(5), "updated_at": last, "active_pid": os.getpid() if live else None,
+                 "state_path": str(folder / "state.json")}
+        if max_attempts is not None:
+            manifest = self.repo / f".harness/runs/{run_id}.json"
+            manifest.parent.mkdir(parents=True, exist_ok=True)
+            manifest.write_text(json.dumps({"run_id": run_id, "limits": {"max_attempts": max_attempts}}),
+                                encoding="utf-8")
+            state.update(manifest_path=str(manifest),
+                         manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest())
+        (folder / "state.json").write_text(json.dumps(state), encoding="utf-8")
+        events = [{"at": stamp(5), "event": "run_started"}, {"at": last, "event": "role_started", "role": "maker"}]
+        (folder / "events.jsonl").write_text("".join(json.dumps(item) + "\n" for item in events), encoding="utf-8")
+        return folder
+
+    def ids(self, report: dict, section: str) -> list[str]:
+        return [row["id"] for row in report[section]]
+
+    def test_sweep_lists_a_run_with_no_event_for_k_minutes(self) -> None:
+        self.sweep_run("quiet", "making", quiet_minutes=45, live=True)
+        self.sweep_run("busy", "checking", quiet_minutes=5, live=True)
+        self.sweep_run("done", "escalated", quiet_minutes=600)  # terminal: never stalled
+        report = factory.sweep(self.repo, stall_minutes=30, now=NOW)
+        self.assertEqual(self.ids(report, "stalled"), ["quiet"])
+        self.assertEqual(report["stalled"][0]["quiet_minutes"], 45)
+        self.assertEqual(report["stall_minutes"], 30)
+        self.assertTrue(report["needs_attention"])
+        self.assertEqual(self.ids(factory.sweep(self.repo, stall_minutes=60, now=NOW), "stalled"), [])
+        self.assertEqual(factory.DEFAULT_STALL_MINUTES, 30)
+
+    def test_sweep_lists_a_run_waiting_on_the_operator(self) -> None:
+        self.sweep_run("esc", "escalated", quiet_minutes=90)
+        self.sweep_run("running", "making", quiet_minutes=1, live=True)
+        report = factory.sweep(self.repo, now=NOW)
+        self.assertEqual(self.ids(report, "waiting"), ["esc"])
+        self.assertEqual(report["waiting"][0]["kind"], "escalated")
+        self.assertIn("attempt cap reached (3)", report["waiting"][0]["next_step"])
+        self.assertEqual(report["stalled"], [])
+        self.assertTrue(report["needs_attention"])
+
+    def test_sweep_lists_a_run_past_its_round_cap(self) -> None:
+        self.sweep_run("over", "making", quiet_minutes=1, live=True, attempt=4, max_attempts=3)
+        self.sweep_run("last", "making", quiet_minutes=1, live=True, attempt=3, max_attempts=3)
+        changed = self.sweep_run("edited", "making", quiet_minutes=1, live=True, attempt=9, max_attempts=3)
+        manifest = Path(json.loads((changed / "state.json").read_text(encoding="utf-8"))["manifest_path"])
+        manifest.write_text(json.dumps({"limits": {"max_attempts": 99}}), encoding="utf-8")
+        report = factory.sweep(self.repo, now=NOW)
+        self.assertEqual(self.ids(report, "over_cap"), ["over"])
+        self.assertEqual((report["over_cap"][0]["attempt"], report["over_cap"][0]["cap"]), (4, 3))
+        self.assertTrue(any("edited" in warning and "round cap unknown" in warning for warning in report["warnings"]),
+                        report["warnings"])
+
+    @unittest.skipIf(os.name == "nt" or os.geteuid() == 0, "needs POSIX permissions that bind the user")
+    def test_an_unreadable_event_log_is_damage_and_other_findings_stay(self) -> None:
+        self.sweep_run("quiet", "making", quiet_minutes=45, live=True)
+        broken = self.sweep_run("broken", "making", quiet_minutes=1, live=True)
+        events = broken / "events.jsonl"
+        events.chmod(0)
+        self.addCleanup(events.chmod, 0o644)
+        report = factory.sweep(self.repo, now=NOW)
+        self.assertEqual(self.ids(report, "stalled"), ["quiet"])
+        self.assertEqual(self.ids(report, "damaged"), ["broken"])
+        self.assertTrue(report["needs_attention"])
+
+    def test_a_nul_in_the_manifest_path_is_damage_and_other_findings_stay(self) -> None:
+        self.sweep_run("quiet", "making", quiet_minutes=45, live=True)
+        broken = self.sweep_run("broken", "making", quiet_minutes=1, live=True)
+        state = json.loads((broken / "state.json").read_text(encoding="utf-8"))
+        state.update(manifest_path="\x00", manifest_sha256="0" * 64)
+        (broken / "state.json").write_text(json.dumps(state), encoding="utf-8")
+        report = factory.sweep(self.repo, now=NOW)
+        self.assertEqual(self.ids(report, "stalled"), ["quiet"])
+        self.assertEqual(self.ids(report, "damaged"), ["broken"])
+        self.assertIn("broken", factory.render_sweep(report))
+        result = subprocess.run([sys.executable, str(ROOT / "agentsmith.py"), "factory", "sweep", "--json",
+                                 "--target", str(self.repo)], env=CLEAN_ENV, capture_output=True, text=True,
+                                check=False)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual([row["id"] for row in json.loads(result.stdout)["damaged"]], ["broken"])
+
+    def test_stall_minutes_is_bounded_to_one_week(self) -> None:
+        self.assertEqual(factory.sweep(self.repo, stall_minutes=10080, now=NOW)["stall_minutes"], 10080)
+        for value in (0, 10081, 10 ** 100):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(factory.FactoryError, "--stall-minutes must be a whole number from 1 to 10080"):
+                    factory.sweep(self.repo, stall_minutes=value, now=NOW)
+        result = subprocess.run([sys.executable, str(ROOT / "agentsmith.py"), "factory", "sweep", "--stall-minutes",
+                                 str(10 ** 100), "--target", str(self.repo)], env=CLEAN_ENV, capture_output=True,
+                                text=True, check=False)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_nothing_to_report_is_said_plainly(self) -> None:
+        self.sweep_run("running", "making", quiet_minutes=1, live=True, attempt=1, max_attempts=3)
+        report = factory.sweep(self.repo, now=NOW)
+        self.assertEqual((report["stalled"], report["waiting"], report["over_cap"], report["damaged"]), ([], [], [], []))
+        self.assertFalse(report["needs_attention"])
+        self.assertIn("Nothing needs attention", factory.render_sweep(report))
+
+    def test_sweep_writes_nothing(self) -> None:
+        self.sweep_run("quiet", "making", quiet_minutes=45, live=True, attempt=4, max_attempts=3)
+        self.sweep_run("esc", "escalated", quiet_minutes=90)
+
+        def snapshot() -> dict[str, tuple]:
+            # Every file and folder, with its content and modification time: a lock or log that is
+            # created and removed again still changes its folder's modification time.
+            entries = {}
+            for path in [self.repo, *self.repo.rglob("*")]:
+                info = path.lstat()
+                entries[str(path)] = (path.is_dir(), info.st_mtime_ns, None if path.is_dir() else path.read_bytes())
+            return entries
+
+        before = snapshot()
+        report = factory.sweep(self.repo, now=NOW)
+        factory.render_sweep(report)
+        result = subprocess.run([sys.executable, str(ROOT / "agentsmith.py"), "factory", "sweep", "--json",
+                                 "--target", str(self.repo)], env=CLEAN_ENV, capture_output=True, text=True,
+                                check=False)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(snapshot(), before)
+
+    def test_the_cli_exit_status_says_whether_anything_needs_attention(self) -> None:
+        def cli(*args: str) -> subprocess.CompletedProcess:
+            return subprocess.run([sys.executable, str(ROOT / "agentsmith.py"), "factory", "sweep", *args,
+                                   "--target", str(self.repo)], env=CLEAN_ENV, capture_output=True, text=True,
+                                  check=False)
+
+        result = cli()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Nothing needs attention", result.stdout)
+        self.sweep_run("esc", "escalated", quiet_minutes=90)
+        result = cli("--json")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual([row["id"] for row in report["waiting"]], ["esc"])
+        self.assertEqual(report["schema_version"], 1)
+        text = cli("--stall-minutes", "45")
+        self.assertEqual(text.returncode, 1, text.stderr)
+        self.assertIn("esc", text.stdout)
+        refused = cli("--stall-minutes", "0")
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("--stall-minutes", refused.stderr)
+
+    def test_the_docs_ship_a_schedule_and_say_no_daemon_is_shipped(self) -> None:
+        docs = (ROOT / "docs/31-factory-readiness.md").read_text(encoding="utf-8")
+        self.assertIn("agentsmith factory sweep", docs)
+        self.assertIn("crontab", docs)
+        self.assertIn("launchd", docs)
+        self.assertIn("No daemon is shipped", docs)
 
 
 if __name__ == "__main__":
