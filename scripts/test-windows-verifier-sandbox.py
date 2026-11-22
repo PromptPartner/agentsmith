@@ -209,11 +209,13 @@ class WindowsVerifierSandboxTests(unittest.TestCase):
             repo = Path(temporary) / "repo"
             repo.mkdir()
             subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-            command = f'"{sys.executable}" -c "raise SystemExit(3)" | sort'
-            result = controller.sandboxed_verify(command, repo, 20, controller.verifier_env())
-        self.assertEqual(result.returncode, 126)
-        self.assertIn("pipeline", result.stderr)
-        self.assertNotEqual(controller.verification_outcome(result)["verification"], "passed")
+            for command in (f'"{sys.executable}" -c "raise SystemExit(3)" | sort',
+                            'cmd /c "exit /b 3 | sort"'):
+                with self.subTest(command=command):
+                    result = controller.sandboxed_verify(command, repo, 20, controller.verifier_env())
+                    self.assertEqual(result.returncode, 126)
+                    self.assertIn("pipeline", result.stderr)
+                    self.assertNotEqual(controller.verification_outcome(result)["verification"], "passed")
 
     @unittest.skipUnless(os.name == "nt", "requires native Windows AppContainer")
     def test_a_slow_verify_command_ends_incomplete_not_passed(self) -> None:

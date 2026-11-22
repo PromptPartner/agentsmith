@@ -185,10 +185,11 @@ attempt. On macOS and Linux the verify command runs as `bash -o pipefail -c <com
 `pytest | tee log` fails when `pytest` fails. The Windows verifier runs the command through
 `cmd.exe`, which has no pipefail: `pytest | more` exits with the code of `more`, so a failing suite
 would pass. On Windows, `prepare`, `start` and `resume` therefore refuse a verify command that
-contains a pipeline, and the verifier refuses it again (exit 126, never a pass) if one reaches it.
-Use a single command, or a script that exits non-zero when its tests fail. A `|` inside double
-quotes, a `^|` escape and `||` (run the next command only on failure) are not pipelines and are
-allowed. The baseline and incomplete rules are ported from
+contains `|`, and the verifier refuses it again (exit 126, never a pass) if one reaches it. A `|`
+inside quotes or escaped as `^|` is refused too: a nested shell such as `cmd /c "a | b"` or
+`powershell -c "a | b"` still runs it as a pipeline. Only `||` (run the next command only on
+failure) is allowed. Use a single command, or a script that exits non-zero when its tests fail.
+The baseline and incomplete rules are ported from
 [CodeAF](https://github.com/Agent-Field/CodeAF) (Apache-2.0): `internal/verify/baseline.go` and
 `internal/seniordev/app/full_verification.go`.
 

@@ -2554,11 +2554,12 @@ class AutonomousStateTests(unittest.TestCase):
 
     def test_windows_refuses_a_verify_pipeline_it_cannot_fail_closed(self) -> None:
         # cmd.exe has no pipefail: `pytest | more` exits with `more`'s code, so a failing suite
-        # could pass. Windows refuses a pipeline; `||`, `&&` and a quoted or escaped `|` are not one.
+        # could pass. Windows refuses every single `|`: a quoted or escaped one can still become a
+        # pipeline in a nested shell (`cmd /c "a | b"`, `powershell -c "a | b"`). Only `||` passes.
         pipelines = ["pytest | more", "pytest|more", 'python -m pytest "tests" | findstr x',
-                     "a || b | c", "a ^^| b"]
-        not_pipelines = ["pytest", "pytest || exit /b 1", "pytest && echo ok", "a & b",
-                         'python -c "print(\'a|b\')"', "echo a ^| b", 'python -c "x | y']
+                     "a || b | c", "a ^^| b", 'cmd /c "exit /b 3 | more"', 'powershell -c "a | b"',
+                     'python -c "print(\'a|b\')"', "echo a ^| b", 'python -c "x | y', "a |||b"]
+        not_pipelines = ["pytest", "pytest || exit /b 1", "pytest && echo ok", "a & b", "a||b||c"]
         for command in pipelines:
             with self.subTest(command=command):
                 self.assertTrue(CONTROLLER.windows_pipeline(command))

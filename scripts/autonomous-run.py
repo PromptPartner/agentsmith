@@ -1786,28 +1786,18 @@ NAMED_CHECKS = (
 
 
 WINDOWS_PIPELINE_REFUSAL = (
-    "the verify command contains a pipeline (`|`), and the Windows verifier runs it through cmd.exe, "
-    "which has no pipefail: `tests | more` would pass when the tests fail. Use a single command, or a "
-    "script that exits non-zero when its tests fail, as verify.command")
+    "the verify command contains `|`, and the Windows verifier runs it through cmd.exe, which has no "
+    "pipefail: `tests | more` would pass when the tests fail. A quoted or escaped `|` is refused too, "
+    "because a nested shell (`cmd /c \"a | b\"`, `powershell -c \"a | b\"`) still runs it as a pipeline; "
+    "only `||` is allowed. Use a single command, or a script that exits non-zero when its tests fail, "
+    "as verify.command")
 
 
 def windows_pipeline(command: str) -> bool:
-    """Whether cmd.exe would run `command` as a pipeline. A `|` inside double quotes or escaped
-    with `^` is text, and `||` runs the next command only on failure, which is not a pipeline."""
-    quoted = False
-    index = 0
-    while index < len(command):
-        char = command[index]
-        if char == '"':
-            quoted = not quoted
-        elif not quoted and char == "^":
-            index += 1
-        elif not quoted and char == "|":
-            if command[index + 1:index + 2] != "|":
-                return True
-            index += 1
-        index += 1
-    return False
+    """Whether `command` holds a `|` that is not exactly `||`. Quoting and `^` escapes are not
+    trusted: a nested `cmd /c` or `powershell -c` re-parses its quoted string as a pipeline. A
+    run of `|` other than two (`|`, `|||`) is refused; `||` runs the next command on failure."""
+    return any(len(run) != 2 for run in re.findall(r"\|+", command))
 
 
 def verify_command_problem(command: str) -> str | None:

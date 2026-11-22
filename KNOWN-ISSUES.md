@@ -7,8 +7,11 @@ been authorized, so the entries are kept here.
   `bash -o pipefail`, but the Windows verifier runs it through `cmd.exe`, which has no pipefail, so
   a verify command such as `pytest | more` passed on Windows when its tests failed. Fixed: on
   Windows, `prepare`, `start` and `resume` refuse a verify command that contains a pipeline, and the
-  verifier refuses it again (exit 126, never a pass). A quoted or `^`-escaped `|` and `||` are
-  allowed.
+  verifier refuses it again (exit 126, never a pass). Only `||` is allowed.
+- [x] 2026-11-22 — Found by an independent Codex test of the entry above: the first version allowed
+  a `|` inside quotes or escaped with `^`, but a nested shell re-parses it, so `cmd /c "exit /b 3 |
+  more"` and `powershell -c "a | b"` still ran as pipelines that hide a failure. Fixed: on Windows
+  every `|` that is not exactly `||` is refused, quoted or escaped.
 - [x] 2026-11-21 — Test gap left open by SF-11: the Windows verifier's timeout was mapped to an
   `incomplete` attempt, but only mocks proved it. Fixed: `scripts/test-windows-verifier-sandbox.py`
   (Windows CI step "Windows verifier file and network boundary") now runs a slow command through
