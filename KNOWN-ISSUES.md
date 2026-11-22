@@ -24,6 +24,17 @@ been authorized, so the entries are kept here.
   defects and minutes logs, so the intake history stayed behind when the record was kept outside
   the repository. Fixed: `factory.json` now has an `intake` list, redacted with the same home-folder
   and secret rules as the rest of the export.
+- [x] 2026-11-22 — Found by an independent Codex test of the intake export: export redaction cut a
+  quoted secret at its first space, so `password="abcdefgh ijklmnop"` exported as
+  `[redacted: assigned secret] ijklmnop"`, and `password="correct horse battery staple"` (first
+  word under 8 characters) exported unchanged. The secret scanner's pattern, which export also
+  applies, did the same for `pwd=`. Fixed: a quoted value is redacted to its closing quote, single
+  or double; an unquoted value still ends with its token; the export keywords include `pwd`.
+- [ ] 2026-11-22 — Known limit of the secret scanner, found with the entry above: its `assigned
+  secret literal` rule needs 8 characters without a space after the opening quote, so it does not
+  flag a passphrase whose first word is shorter, such as `"correct horse battery staple"`. Kept on
+  purpose: the same rule keeps labels such as `password = "Enter your password"` from blocking a
+  commit. Export redaction does not have this limit.
 - [ ] 2026-11-21 — Gap found while adding the attention budget (SF-18a): there is no command to
   dismiss a waiting run. A run leaves the inbox, and the budget count, only when it lands or when
   its branch is deleted; a deleted branch then shows as a warning for as long as the run folder

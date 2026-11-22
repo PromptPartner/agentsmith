@@ -144,7 +144,9 @@ rows it skipped.
 does not exist yet. Use it to keep the record beyond the repository's Git folder.
 Export redacts rather than refuses: your home folder becomes `~`, and text that looks like a
 secret (the secret scanner's patterns, GitHub tokens, and `secret`, `token`, `password` or
-`api_key` assignments) becomes `[redacted: <kind>]`. It prints how many values it redacted.
+`api_key` assignments) becomes `[redacted: <kind>]`. A quoted value is redacted up to its closing
+quote, spaces included; an unquoted one up to the end of its token. It prints how many values it
+redacted.
 The home folder is found in any letter case, with `/` or `\` (also doubled), and in the
 Windows forms `\\?\C:\Users\you` and Git Bash's `/c/Users/you`. The separator after it stays as
 written, so `C:\Users\you\repo` becomes `~\repo` and `C:/Users/you/repo` becomes `~/repo`.
