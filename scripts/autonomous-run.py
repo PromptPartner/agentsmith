@@ -1565,10 +1565,21 @@ def graph_effective_base(repo: Path, graph_path: str, manifest_path: Path,
             "contract_commit": contract["contract_commit"],
             "effective_base_oid": effective_base,
             # Fixed at start and kept in the run state; resume does not recompute it.
-            "sequence_numbers": graph_module.sequence_numbers(contract, run_id, effective_base),
+            "sequence_numbers": graph_sequence_numbers(graph_module, contract, run_id, effective_base),
         }
     except graph_module.GraphError as exc:
         raise RunError(f"graph contract or checkpoint invalid: {exc}") from exc
+
+
+def graph_sequence_numbers(graph_module: Any, contract: dict[str, Any], run_id: str, base: str) -> list[dict[str, str]]:
+    """The child's reserved numbers. A full numbered folder refuses the start in its own words,
+    not as a changed graph contract."""
+    try:
+        return graph_module.sequence_numbers(contract, run_id, base)
+    except graph_module.GraphError as exc:
+        if "has no free number" in str(exc):
+            raise RunError(str(exc)) from exc
+        raise
 
 
 def attention_limit_at_base(repo: Path, risk_map: Any, base_ref: str) -> int:

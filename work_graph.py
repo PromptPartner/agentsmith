@@ -322,13 +322,22 @@ def expected_sources(contract: dict[str, Any], run_id: str) -> list[dict[str, st
 NUMBERED_NAME = re.compile(r"\A[A-Za-z]?([0-9]{1,6})(?=[_.-])")
 
 
-def next_sequence_number(names: list[str]) -> str | None:
-    """The next free number among numbered file names, padded like the widest one, or None."""
+MAX_SEQUENCE_NUMBER = 999_999  # NUMBERED_NAME reads up to six digits
+
+
+def next_sequence_number(names: list[str], *, folder: str = "the folder") -> str | None:
+    """The next free number among numbered file names, padded like the widest one, or None.
+    Refused past six digits: a seven-digit name does not read as numbered, so a later run would
+    not see it and would reserve the same number again."""
     found = [match.group(1) for match in map(NUMBERED_NAME.match, names) if match]
     if not found:
         return None
     width = max(len(item) for item in found)
-    return str(max(int(item) for item in found) + 1).zfill(width)
+    highest = max(int(item) for item in found)
+    if highest >= MAX_SEQUENCE_NUMBER:
+        raise GraphError(f"numbered folder {folder} has no free number of up to six digits after "
+                         f"{highest}; renumber or archive its files before a graph run adds one")
+    return str(highest + 1).zfill(width)
 
 
 def sequence_directory(pattern: str, controller: Any) -> str | None:
@@ -357,7 +366,7 @@ def sequence_numbers(contract: dict[str, Any], run_id: str, base: str) -> list[d
     for folder in folders:
         names = {line.rpartition("/")[2] for commit in commits
                  for line in git(contract["repo"], "ls-tree", "--name-only", commit, "--", f"{folder}/").splitlines()}
-        number = next_sequence_number(sorted(names))
+        number = next_sequence_number(sorted(names), folder=folder)
         if number is not None:
             reserved.append({"directory": folder, "number": number})
     return reserved
@@ -778,6 +787,7 @@ CHILD_REFUSALS = tuple((code, re.compile(pattern)) for code, pattern in (
     ("no-candidate", r"checking stage has no candidate checkpoint"),
     ("scope-conflict", r"run [A-Za-z0-9_-]{1,64} conflicts with live run "),
     ("scope-unverified", r"cannot verify scope for live run "),
+    ("sequence-exhausted", r"numbered folder .{1,300} has no free number of up to six digits"),
     ("git-phase-held", r"git phase [a-z]+ is still held by live "),
     ("checker-recovery", r"(unrecognized checker recovery path|checker recovery |"
                          r"cannot clean up interrupted checker worktree)"),

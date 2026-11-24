@@ -444,6 +444,12 @@ class SequencedResourceTests(unittest.TestCase):
         self.assertEqual(number(["0001_init.sql", "0002_users.sql", "README.md"]), "0003")
         self.assertEqual(number(["V1__init.sql", "V12__x.sql"]), "13")
         self.assertEqual(number(["0009-a.md", "0010-b.md"]), "0011")
+        # Past six digits the next number would not read as numbered, so the next run would hand it
+        # out again: the reservation is refused instead of ever giving a duplicate.
+        self.assertEqual(number(["999998_x.sql"]), "999999")
+        with self.assertRaisesRegex(work_graph.GraphError,
+                                    "db/migrations has no free number of up to six digits after 999999"):
+            number(["000001_a.sql", "999999_init.sql"], folder="db/migrations")
         # Timestamps and unnumbered files are not a sequence: nothing is reserved.
         self.assertIsNone(number(["20261124093000_init.rb", "schema.sql"]))
         self.assertIsNone(number([]))
@@ -520,6 +526,18 @@ class SequencedGraphTests(unittest.TestCase):
         self.assertEqual(work_graph.sequence_numbers(contract, "a", commit),
                          [{"directory": "db/migrations", "number": "0002"}])
         self.assertEqual(work_graph.sequence_numbers(contract, "b", commit), [])
+
+    def test_a_full_numbered_folder_refuses_the_child_start_by_name(self) -> None:
+        (self.repo / "db/migrations/999999_last.sql").write_text("-- full\n", encoding="utf-8")
+        self.graph({"a": ["db/migrations/*"]})
+        sys.path.insert(0, str(ROOT))
+        import work_graph
+        contract = work_graph.load_contract(self.repo, ".harness/work-graph.json")
+        with self.assertRaisesRegex(work_graph.GraphError, "no free number of up to six digits"):
+            work_graph.sequence_numbers(contract, "a", contract["contract_commit"])
+        reason = work_graph.child_failure_reason(
+            None, 2, "error: numbered folder db/migrations has no free number of up to six digits after 999999")
+        self.assertIn("refusal=sequence-exhausted", reason)
 
 
 if __name__ == "__main__":

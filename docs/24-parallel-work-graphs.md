@@ -74,7 +74,9 @@ files at the child's base and in every accepted sibling, and pads like the wides
 number is kept in the child state as `sequence_numbers` and given to the maker and the checker.
 Serialisation guarantees the earlier run is accepted before the later one starts, so two
 migration-adding runs get distinct numbers (`0002`, then `0003`). Longer digit runs are
-timestamps (Rails), which do not collide by sequence, so nothing is reserved for them. A run
+timestamps (Rails), which do not collide by sequence, so nothing is reserved for them. A folder
+whose highest number is already `999999` has no free six-digit number: the child refuses to start
+(`refusal=sequence-exhausted`) rather than hand out a seven-digit number a later run would not see. A run
 outside a graph gets no reservation: a second live run on the same class is refused instead.
 
 A dependent run starts only after every transitive predecessor is accepted. The graph verifies
