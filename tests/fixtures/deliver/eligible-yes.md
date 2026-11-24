@@ -10,6 +10,9 @@ Implementation ticket: IMP-7. Accepted commit `<commit>` on base `<commit>`.
 ### Risk
 Tier **A** (recorded A, recomputed now A, declared none). Lenses: code. Policy blob at the base: `<commit>`.
 
+### Reviewer focus
+Every path is tier A under the policy at the base; no path needs more than the usual review. Lenses: code.
+
 ### Verification
 Verifier exit 0; output `<sha256>`; 1 evidence file(s) recorded by hash.
 
@@ -19,8 +22,17 @@ Status accepted; every citation was checked at acceptance, and the ones that quo
 - fixture verification passed :: attempt-1-verify.txt :: fixture verification passed
 ```
 
+### Assumptions made without authority
+The maker's report lists none.
+
 ### Calibration
 Checker calibration: passed (<time>).
+
+### Models used
+```text
+- maker: codex, model fixture-model, effort high (attempt 1)
+- checker: claude, model fixture-model, effort high (attempt 1)
+```
 
 ### Budgets used
 Attempts: 1 of 3. Claude: 0.25 USD of 20. Codex: 10 tokens of 2500000.

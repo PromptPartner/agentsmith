@@ -754,17 +754,24 @@ implementation ticket and the run branch. The body holds:
 
 - the paths that Git reports as changed;
 - the tier and its lenses;
+- the reviewer focus: every path above tier A, highest tier first, with the policy rules, floor
+  reasons and lenses that raised it, or a line saying that every path is tier A;
 - the verifier and checker evidence;
+- the assumptions made without authority: the bullets under `## Assumptions without authority` in
+  the accepted attempt's maker report, or "The maker's report lists none.";
 - the checker calibration status. When it is not `passed` (for example, the record went stale
   after the acceptance), the body says the checker is advisory ("checker advisory");
+- the models used: each role's client, model and effort as its launches recorded them in
+  `attempt-N-<role>-exit.json`, with the attempts that used them;
 - the budgets used;
 - the new packages and their registry lookup, when a manifest gained any;
 - the base staleness, and the merge verification when the accepted commit is behind the base;
 - the eligibility line.
 
-The maker's free-text summary is left out. The only text that a model wrote is the checker
-evidence, and it sits in a code block with the changed paths, so no link, Markdown or `@`-mention
-in it takes effect. Paths inside the repository become repo-relative, and home and temporary
+The rest of the maker's report is left out. The only text that a model wrote is the checker
+evidence and the maker's assumptions, and each sits in a code block, as do the changed paths, the
+reviewer-focus paths and the model names, so no link, Markdown or `@`-mention in them takes
+effect. Paths inside the repository become repo-relative, and home and temporary
 folders become `~` and `$TMPDIR`, so neither the text nor the `--json` report names a local path.
 The secret scanner's patterns then run over the final title and body (honouring
 `.harness/secret-scan.allow`), and a likely secret refuses delivery and names the field.

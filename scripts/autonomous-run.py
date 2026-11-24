@@ -4722,11 +4722,13 @@ def delivery_checks(repo: Path, state: dict[str, Any], remote: str, base: str | 
         merge, problem = merge_verification(repo, state, manifest, remote, str(base), accepted)
         if problem:
             raise RunError("deliver refused: " + problem)
-    return {"state": state, "merge_verification": merge, "proof": proof, "checker": checker, "manifest": manifest, "accepted": accepted,
+    return {"state": state, "merge_verification": merge, "proof": proof, "checker": checker, "manifest": manifest,
+            "accepted": accepted, "models": models_used(run_dir, manifest),
             "branch": branch, "staleness": staleness, "packages": packages,
             "paths": changed_paths(repo, str(state["base_head"]), accepted),
             "tier": {"tier": tier, "recorded": recorded, "recomputed": report["tier"], "declared": declared,
-                     "lenses": report["lenses"], "policy_blob": report["policy"]["blob"], "floor_paths": floor},
+                     "lenses": report["lenses"], "policy_blob": report["policy"]["blob"], "floor_paths": floor,
+                     "paths": report["paths"]},
             "calibration": calibration_status(repo, (manifest.get("roles") or {}).get("checker") or {})}
 
 
@@ -4806,6 +4808,73 @@ def eligibility(checks: dict[str, Any], sha: str, ci: dict[str, Any] | None,
     return {"eligible": eligible, "sha": sha, "facts": rows, "line": line}
 
 
+def models_used(run_dir: Path, manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    """Each role's client, model and effort as its launches recorded them (`attempt-N-<role>-exit.json`),
+    with the attempts that used them. A role that never launched shows the manifest's setting."""
+    used: dict[tuple[str, str, str, str], set[int]] = {}
+    for path in sorted(run_dir.glob("attempt-*-exit.json")):
+        match = re.fullmatch(r"attempt-([0-9]+)-(maker|checker)-exit[.]json", path.name)
+        try:
+            record = json.loads(path.read_text(encoding="utf-8")) if match else None
+        except (OSError, ValueError):
+            record = None
+        if not isinstance(record, dict) or record.get("role") != match.group(2):
+            continue
+        key = (match.group(2), *(str(record.get(name) or "unknown") for name in ("runtime", "model", "effort")))
+        used.setdefault(key, set()).add(int(match.group(1)))
+    roles = manifest.get("roles") if isinstance(manifest.get("roles"), dict) else {}
+    rows = [{"role": role, "client": client, "model": model, "effort": effort, "attempts": sorted(attempts)}
+            for (role, client, model, effort), attempts in used.items()]
+    for role in ("maker", "checker"):
+        if not any(row["role"] == role for row in rows):
+            config = roles.get(role) if isinstance(roles.get(role), dict) else {}
+            rows.append({"role": role, "client": str(config.get("runtime") or "unknown"),
+                         "model": str(config.get("model") or "unknown"),
+                         "effort": str(config.get("effort") or "unknown"), "attempts": []})
+    return sorted(rows, key=lambda row: (("maker", "checker").index(row["role"]), row["attempts"]))
+
+
+def models_used_lines(checks: dict[str, Any]) -> list[str]:
+    def attempts(row: dict[str, Any]) -> str:
+        numbers = row["attempts"]
+        if not numbers:
+            return "not launched"
+        return ("attempt " if len(numbers) == 1 else "attempts ") + ", ".join(map(str, numbers))
+    # Model names come from the manifest and the run folder, so they sit in a code block too.
+    return ["### Models used",
+            fenced("\n".join(f"- {row['role']}: {row['client']}, model {row['model']}, effort {row['effort']} "
+                              f"({attempts(row)})" for row in checks["models"])), ""]
+
+
+def assumption_lines(checks: dict[str, Any]) -> list[str]:
+    """The maker's assumptions made without authority, from its report (SF-16)."""
+    maker = checks["state"].get("maker_receipt")
+    items = report_assumptions(str(maker.get("summary") or "")) if isinstance(maker, dict) else []
+    if not items:
+        return ["### Assumptions made without authority", "The maker's report lists none.", ""]
+    return ["### Assumptions made without authority",
+            "The maker made these choices; the spec and ticket did not settle them.",
+            fenced("\n".join(f"- {item}" for item in items)), ""]
+
+
+def reviewer_focus_lines(checks: dict[str, Any]) -> list[str]:
+    """The paths above tier A, highest tier first, with the rules and lenses that put them there."""
+    import risk_map
+    tier = checks["tier"]
+    lenses = f" Lenses: {', '.join(tier['lenses'])}." if tier["lenses"] else ""
+    risky = sorted((row for row in tier.get("paths", []) if row["tier"] != "A"),
+                   key=lambda row: (-risk_map.TIERS.index(row["tier"]), row["path"]))
+    if not risky:
+        return ["### Reviewer focus",
+                f"Every path is tier A under the policy at the base; no path needs more than the usual review.{lenses}",
+                ""]
+    def reasons(row: dict[str, Any]) -> str:
+        parts = list(row["matched"]) + ([f"lenses: {', '.join(row['lenses'])}"] if row["lenses"] else [])
+        return f" ({'; '.join(parts)})" if parts else ""
+    return ["### Reviewer focus", f"Read these paths first, highest tier first.{lenses}",
+            fenced("\n".join(f"- {row['tier']} {row['path']}{reasons(row)}" for row in risky)), ""]
+
+
 def delivery_body(checks: dict[str, Any], verdict: dict[str, Any]) -> str:
     state, proof, checker, manifest = checks["state"], checks["proof"], checks["checker"], checks["manifest"]
     tier, limits, staleness = checks["tier"], manifest.get("limits") or {}, checks["staleness"]
@@ -4824,6 +4893,7 @@ def delivery_body(checks: dict[str, Any], verdict: dict[str, Any]) -> str:
         f"declared {tier['declared'] or 'none'}). Lenses: {', '.join(tier['lenses']) or 'none'}. "
         f"Policy blob at the base: `{tier['policy_blob'] or 'none'}`.",
         "",
+        *reviewer_focus_lines(checks),
         "### Verification",
         f"Verifier exit {proof.get('exit_code')}; output `{proof.get('output_sha256')}`; "
         f"{len(proof.get('evidence_files') or {})} evidence file(s) recorded by hash.",
@@ -4833,6 +4903,7 @@ def delivery_body(checks: dict[str, Any], verdict: dict[str, Any]) -> str:
         "the verifier log were checked again now.",
         fenced("\n".join(f"- {item}" for item in checker.get("evidence", []))),
         "",
+        *assumption_lines(checks),
         "### Calibration",
         f"Checker calibration: {calibration.get('status')}"
         + (f" ({calibration.get('calibrated_at')})" if calibration.get("calibrated_at") else "") + "."
@@ -4840,6 +4911,7 @@ def delivery_body(checks: dict[str, Any], verdict: dict[str, Any]) -> str:
            " This makes it checker advisory: its acceptance is advice, not a gate, so a human reviews the "
            "change before it lands."),
         "",
+        *models_used_lines(checks),
         "### Budgets used",
         f"Attempts: {state.get('attempt')} of {limits.get('max_attempts')}. Claude: "
         f"{float(state.get('claude_cost_usd', 0.0)):.2f} USD of {limits.get('claude_max_usd')}. Codex: "
@@ -4892,7 +4964,7 @@ def deliver(args: argparse.Namespace) -> int:
             except ci_watch.GhError as exc:
                 raise RunError(f"ci watch could not run: {exc}") from None
     verdict = eligibility(checks, sha, ci, pushed)
-    # Only structured receipt fields, with no local path; the maker's free-text summary stays out.
+    # Only structured receipt fields, with no local path; of the maker's report only its assumptions, fenced.
     title = without_local_paths(f"{checks['manifest'].get('implementation_ticket')}: {checks['branch']}", repo)[:72]
     body = without_local_paths(delivery_body(checks, verdict), repo)
     leaks = leak_problems({"title": title, "body": body}, secret_allow_rules(repo))
