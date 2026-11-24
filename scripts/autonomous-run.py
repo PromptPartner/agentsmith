@@ -861,8 +861,9 @@ def scope_paths(scope: dict[str, Any], key: str) -> list[str]:
 
 # Coordination-sensitive files (SF-16): two runs whose allowed paths both reach one of these classes
 # run one after the other, even when they share no path. Patterns are fnmatch globs (`*` also
-# matches `/`), tested against each allowed_paths pattern as written: `db/migrations/*` is a
-# migration path, a broad `db/**` is not (it collides by path with a narrower db pattern instead).
+# matches `/`). An allowed_paths pattern reaches a class when one path could match both, ignoring
+# case (`globs_intersect`): `a/[m]igrations/*` is a migration path; a broad `db/**` is not (it
+# collides by path with a narrower db pattern instead).
 # A manifest adds classes or patterns in `scope.sequenced`; it cannot remove these.
 SEQUENCED_CLASSES: dict[str, tuple[str, ...]] = {
     "spec": ("docs/specs/*",),
@@ -883,6 +884,100 @@ def scope_sequenced(scope: dict[str, Any]) -> dict[str, list[str]]:
     return {name: scope_paths({"sequenced": patterns}, "sequenced") for name, patterns in sorted(declared.items())}
 
 
+OPAQUE_SEGMENT = "\0"  # a whole-wildcard segment (`*`, `**`): one name that spells no class
+
+
+def glob_tokens(pattern: str, *, scope_pattern: bool) -> list[tuple[Any, ...]]:
+    """fnmatch tokens, lowercased: ('char', c), ('any',) for `?`, ('star', spans_slash), and
+    ('set', negated, chars, ranges). In a scope pattern a `*` inside a segment stays in that
+    segment, and a segment that is only wildcards becomes one opaque name."""
+    if scope_pattern:
+        pattern = "/".join(OPAQUE_SEGMENT if segment and set(segment) <= {"*"} else segment
+                           for segment in pattern.split("/"))
+    pattern = pattern.lower()
+    tokens: list[tuple[Any, ...]] = []
+    index = 0
+    while index < len(pattern):
+        char = pattern[index]
+        index += 1
+        if char == "*":
+            tokens.append(("star", not scope_pattern))
+        elif char == "?":
+            tokens.append(("any",))
+        elif char == "[":
+            end = index + 1 if index < len(pattern) and pattern[index] in "!]" else index
+            if end < len(pattern) and pattern[end - 1] == "!" and pattern[end] == "]":
+                end += 1
+            end = pattern.find("]", end)
+            if end < 0:
+                tokens.append(("char", "["))  # unclosed: fnmatch reads a literal bracket
+                continue
+            body, index = pattern[index:end], end + 1
+            negated = body.startswith("!")
+            body = body[1:] if negated else body
+            chars, ranges, position = set(), [], 0
+            while position < len(body):
+                if position + 2 < len(body) and body[position + 1] == "-":
+                    ranges.append((body[position], body[position + 2]))
+                    position += 3
+                else:
+                    chars.add(body[position])
+                    position += 1
+            tokens.append(("set", negated, frozenset(chars), tuple(ranges)))
+        else:
+            tokens.append(("char", char))
+    return tokens
+
+
+def _token_admits(token: tuple[Any, ...], char: str) -> bool:
+    kind = token[0]
+    if kind in {"any", "star"}:
+        return kind == "any" or token[1] or char != "/"
+    if kind == "char":
+        return token[1] == char
+    inside = char in token[2] or any(low <= char <= high for low, high in token[3])
+    return (not inside if token[1] else inside) and char != "/"
+
+
+def _tokens_share_a_char(left: tuple[Any, ...], right: tuple[Any, ...]) -> bool:
+    candidates = {"/", OPAQUE_SEGMENT, "a", "0", ".", "_", "-"}
+    for token in (left, right):
+        if token[0] == "char":
+            candidates.add(token[1])
+        elif token[0] == "set":
+            candidates |= set(token[2]) | {end for pair in token[3] for end in pair}
+            candidates |= {chr(ord(low) + 1) for low, high in token[3] if low < high}
+    return any(_token_admits(left, char) and _token_admits(right, char) for char in candidates)
+
+
+def globs_intersect(scope_pattern: str, class_glob: str) -> bool:
+    """Whether one path could match both, ignoring case: a scope glob that could name a class
+    folder or file counts as that class (fail closed), as `a/[m]igrations/*` or `a/Migrations/*`."""
+    left, right = glob_tokens(scope_pattern, scope_pattern=True), glob_tokens(class_glob, scope_pattern=False)
+    seen: set[tuple[int, int]] = set()
+    pending = [(0, 0)]
+    while pending:
+        i, j = pending.pop()
+        if (i, j) in seen:
+            continue
+        seen.add((i, j))
+        if i == len(left) and j == len(right):
+            return True
+        a = left[i] if i < len(left) else None
+        b = right[j] if j < len(right) else None
+        if a is not None and a[0] == "star":
+            pending.append((i + 1, j))  # the star matches nothing
+            if b is not None and (b[0] == "star" or _tokens_share_a_char(a, b)):
+                pending.append((i, j + 1))  # the star absorbs what b matches
+        if b is not None and b[0] == "star":
+            pending.append((i, j + 1))
+            if a is not None and (a[0] == "star" or _tokens_share_a_char(a, b)):
+                pending.append((i + 1, j))
+        if a is not None and b is not None and a[0] != "star" and b[0] != "star" and _tokens_share_a_char(a, b):
+            pending.append((i + 1, j + 1))
+    return False
+
+
 def sequenced_classes(scope: dict[str, Any], extra: dict[str, list[str]] | None = None) -> dict[str, list[str]]:
     """The coordination classes this scope's allowed paths reach, each with the patterns that reach it."""
     classes = {name: list(patterns) for name, patterns in SEQUENCED_CLASSES.items()}
@@ -892,7 +987,7 @@ def sequenced_classes(scope: dict[str, Any], extra: dict[str, list[str]] | None 
     found: dict[str, list[str]] = {}
     for pattern in scope["allowed_paths"]:
         for name, globs in classes.items():
-            if any(fnmatch.fnmatchcase(pattern, glob) for glob in globs):
+            if any(globs_intersect(pattern, glob) for glob in globs):
                 found.setdefault(name, []).append(pattern)
     return found
 

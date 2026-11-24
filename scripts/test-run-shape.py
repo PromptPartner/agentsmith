@@ -402,6 +402,22 @@ class SequencedResourceTests(unittest.TestCase):
             with self.subTest(left=left["allowed_paths"], right=right["allowed_paths"]):
                 self.assertIsNone(collision(left, right))
 
+    def test_a_glob_that_could_name_a_class_folder_counts_as_that_class(self) -> None:
+        collision = CONTROLLER.scope_collision
+        for left in ("a/[m]igrations/*", "a/Migrations/*", "a/MIGRATE/*", "a/mig*/0002.sql", "a/?igrations/*",
+                     "a/[!x]igrations/*", "a/*ations/*"):
+            with self.subTest(left=left):
+                self.assertEqual(collision(scope(left), scope("b/migrations/*")), ("sequenced", "migration"))
+        self.assertEqual(collision(scope("api/[a-c].PROTO"), scope("lib/x.proto")), ("sequenced", "contract"))
+        self.assertEqual(collision(scope("svc/a/Schema.SQL"), scope("svc/b/schema.sql")), ("sequenced", "schema"))
+        # A glob that cannot spell the class folder or name stays out of it.
+        for left in ("a/[!m]igrations/*", "a/mig[0-9]/*", "a/src/*.py"):
+            with self.subTest(left=left):
+                self.assertIsNone(collision(scope(left), scope("b/migrations/*")))
+        # A segment that is only a wildcard is a broad scope, not a class path (a known limit).
+        self.assertIsNone(collision(scope("src/a/**"), scope("src/b/**")))
+        self.assertIsNone(collision(scope("a/**/0002.sql"), scope("b/migrations/0003.sql")))
+
     def test_a_declared_class_is_checked_like_any_scope_path(self) -> None:
         for value, message in (({"ADR": ["docs/adr/*"]}, "class names"), ({"adr": "docs/adr/*"}, "array"),
                                ({"adr": ["/abs/*"]}, "repository-relative"), ([], "JSON object")):
@@ -516,6 +532,14 @@ class SequencedGraphTests(unittest.TestCase):
         nodes = {node["run_id"]: node for node in json.loads(result.stdout)["nodes"]}
         self.assertEqual((nodes["a"]["status"], nodes["b"]["status"]), ("ready", "conflicting"))
         self.assertEqual(nodes["b"]["reason"], "sequenced conflict with a: migration")
+
+    def test_a_bracket_glob_on_a_migration_folder_waits_for_its_sibling(self) -> None:
+        graph = self.graph({"a": ["services/a/[m]igrations/*"], "b": ["services/b/migrations/*"]})
+        result = subprocess.run([sys.executable, str(ROOT / "agentsmith.py"), "graph", "status", "--graph", graph,
+                                 "--target", str(self.repo), "--json"], capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        nodes = {node["run_id"]: node for node in json.loads(result.stdout)["nodes"]}
+        self.assertEqual((nodes["a"]["status"], nodes["b"]["status"]), ("ready", "conflicting"))
 
     def test_a_run_reserves_the_next_number_after_its_base(self) -> None:
         sys.path.insert(0, str(ROOT))

@@ -59,10 +59,12 @@ Two roots run together only when their scopes are apart. A shared or nested path
 until the earlier one finishes. The classes cover files that two runs cannot safely change at the
 same time even in different folders: `spec` (`docs/specs/*`), `migration` (`migrations/*`,
 `migrate/*`, at the root or in any folder), `schema` (`schema.*`, `schemas/*`, `*.schema.json`)
-and `contract` (`openapi.*`, `swagger.*`, `*.proto`, `*.graphql`, `contracts/*`). Each is an
-fnmatch glob tested against an `allowed_paths` pattern as written, so `db/migrations/*` is a
-migration path and a broad `db/**` is not; give a run that adds migrations a narrow pattern, or
-a `resources` key, so the graph can see it. A manifest adds a class, or more patterns for one, in
+and `contract` (`openapi.*`, `swagger.*`, `*.proto`, `*.graphql`, `contracts/*`). An
+`allowed_paths` pattern belongs to a class when some path could match both, ignoring case: it
+fails closed, so `db/migrations/*`, `a/Migrations/*`, `a/[m]igrations/*` and `a/mig*/0002.sql` are
+all migration paths. A `*` inside a segment stays in that segment, and a segment that is only `*`
+or `**` names nothing, so a broad `db/**` or `src/*.py` is not a migration path; give a run that
+adds migrations a narrow pattern, or a `resources` key, so the graph can see it. A manifest adds a class, or more patterns for one, in
 `scope.sequenced`, for example `{"adr": ["docs/adr/*"]}`; it cannot remove a built-in class.
 Reading the same accepted spec is not a conflict: the nodes of one graph usually share it.
 
