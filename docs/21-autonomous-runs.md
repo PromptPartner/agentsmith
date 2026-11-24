@@ -32,7 +32,10 @@ out-of-scope item (`## Acceptance and evidence`, `## Edge cases`, `## Non-goals`
 A missing section or a stale assumption is refused by name, so no role starts on a spec it cannot
 test. The format is in [`docs/specs/README.md`](specs/README.md). `scope.resources` optionally names local coordination keys such as
 `port:3000`, `db:local/test`, or `service:redis`; omit it in an older manifest or use an empty list
-when the run reserves none.
+when the run reserves none. Two live runs that both reach a coordination class (spec, migration,
+schema or contract files, plus any class in the optional `scope.sequenced`) also conflict, even in
+different folders; the classes and numbered-file reservations are in
+[parallel work graphs](24-parallel-work-graphs.md#run-and-recover).
 
 **Rework.** When a finished run needs another pass, prepare a new run with the operator's note:
 
@@ -413,7 +416,9 @@ folder that holds files but no state (for example a lock left by a start that cr
 undetermined: inspect it and remove it by hand before the guard can answer 0.
 
 Every budget is explicit. `limits.wall_minutes` must be a positive whole number of minutes, and
-`limits.max_attempts` a whole number from 1 to 3. Each runtime that a role uses needs its own
+`limits.max_attempts` a whole number from 1 to 3. The optional run-shape limits
+`limits.max_identical_rejections` (2 to 3, default 2) and `limits.max_silent_turns` (1 to 3,
+default 1) end the attempts early (see [run-shape guards](#run-shape-guards-identical-rejections-and-silent-turns)). Each runtime that a role uses needs its own
 cap: `limits.codex_goal_tokens` (a positive whole number of tokens) when a role runs Codex, and
 `limits.claude_max_usd` (a positive number of US dollars) when a role runs Claude. A zero, a
 negative number, text, or a missing cap refuses at `prepare`, `start` and `resume`; in v0.5.0 and
@@ -547,8 +552,10 @@ three infrastructure failures in a row. The message names the failure and says t
 was spent; the state records it as `infrastructure_stop`, and the events file has one
 `infrastructure_failure` event per failure. A maker is relaunched only from the same clean start:
 if the failed maker moved `HEAD` or left changes, the run escalates for review instead. Fix the
-cause, then `resume`; resuming starts the count again and reruns the same attempt, so the
-failure still costs no attempt. In a work graph, a child stopped this way
+cause (and, after a partial write, restore the clean start), then `resume`; resuming starts the
+count again and reruns the same attempt. Either way an infrastructure fault is never counted as
+an attempt: a run with `max_attempts: 1` still has its one attempt after the fault. In a work graph, a
+child stopped this way
 halts new child launches (see [parallel work graphs](24-parallel-work-graphs.md)).
 
 Permission denials are counted when a Claude role ends: Claude Code lists the tool calls it
@@ -562,6 +569,34 @@ verifier and the checker still judge its candidate. The verifier is a plain shel
 tool permissions, so it has no denials to report. Two gaps remain. Nothing stops a role while it
 runs, because Claude reports single denials only in streamed output (`stream-json`), which these
 roles do not use. And Codex documents no denial event, so Codex roles are not covered.
+
+### Run-shape guards: identical rejections and silent turns
+
+Two loops end before the attempt cap, because another attempt would only repeat them. Each stops
+the run as `escalated` with a reason that starts `run-shape guard:`, and a person decides what
+happens next.
+
+- **Identical rejections.** Before a new attempt, the controller reads this run's
+  `attempt_rejected` events in `events.jsonl`. When the last `limits.max_identical_rejections`
+  attempts (default 2, allowed 2 to 3) were rejected the same way, the run stops. Two rejections
+  are the same when both their `reason` field and their failing-test signature match. An event
+  without a `reason` counts as its own value, "(no reason)", which never matches a reason code. The
+  failing-test signature comes from that attempt's verify output: the failing checks it names
+  (verify.sh phases, unittest and pytest test names, as for regressions), or, when it names none,
+  a hash of its last 20 lines with what changes from run to run removed: clock times, durations,
+  hashes (hex with a letter and a digit; plain numbers are kept), attempt numbers, the per-run
+  folder inside a temporary folder (`/tmp`, macOS `/var/folders`, Windows `AppData\Local\Temp`),
+  process IDs and ports. An
+  attempt with no verify output (a maker that tripped the hidden-test wire) has the signature "no
+  verify output".
+- **Silent maker turns.** A maker turn is silent when its candidate has the same Git tree as the
+  candidate the controller last judged, or as the base on the first attempt: for example an empty
+  commit. Nothing new can pass or fail, so after `limits.max_silent_turns` silent turns in a row
+  (default 1, allowed 1 to 3) the run stops before the verifier and the checker spend anything.
+  Below the limit, a silent turn is verified and checked as usual.
+
+An infrastructure fault is never counted by either guard: it is not an attempt and not a rejection
+(see above). Both counts are rebuilt from durable state, so a resumed run stops at the same point.
 
 ## Operations and recovery
 

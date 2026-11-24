@@ -644,6 +644,8 @@ def assert_no_live_scope_conflicts(repo: Path, run_id: str, scope: Any) -> None:
             raise RunError(
                 f"run {run_id} conflicts with live run {other_id}: overlapping path scope '{value}'"
             )
+        if kind == "sequenced":
+            raise RunError(f"run {run_id} conflicts with live run {other_id}: both change {value} files")
         raise RunError(
             f"run {run_id} conflicts with live run {other_id}: shared resource '{value}'"
         )
@@ -878,17 +880,153 @@ def scope_paths(scope: dict[str, Any], key: str) -> list[str]:
     return list(paths)
 
 
-def normalized_scope(scope: Any) -> dict[str, list[str]]:
+# Coordination-sensitive files (SF-16): two runs whose allowed paths both reach one of these classes
+# run one after the other, even when they share no path. Patterns are fnmatch globs (`*` also
+# matches `/`). An allowed_paths pattern reaches a class when one path could match both, ignoring
+# case (`globs_intersect`): `a/[m]igrations/*` is a migration path; a broad `db/**` is not (it
+# collides by path with a narrower db pattern instead).
+# A manifest adds classes or patterns in `scope.sequenced`; it cannot remove these.
+SEQUENCED_CLASSES: dict[str, tuple[str, ...]] = {
+    "spec": ("docs/specs/*",),
+    "migration": ("migrations/*", "*/migrations/*", "migrate/*", "*/migrate/*"),
+    "schema": ("schema.*", "*/schema.*", "schemas/*", "*/schemas/*", "*.schema.json"),
+    "contract": ("openapi.*", "*/openapi.*", "swagger.*", "*/swagger.*", "*.proto", "*.graphql",
+                 "contracts/*", "*/contracts/*"),
+}
+SEQUENCED_CLASS_NAME = re.compile(r"[a-z][a-z0-9-]{0,31}\Z")
+
+
+def scope_sequenced(scope: dict[str, Any]) -> dict[str, list[str]]:
+    declared = scope.get("sequenced", {})
+    if not isinstance(declared, dict):
+        raise RunError("scope.sequenced must be a JSON object of class names to glob arrays")
+    if any(not isinstance(name, str) or not SEQUENCED_CLASS_NAME.fullmatch(name) for name in declared):
+        raise RunError("scope.sequenced class names must be lowercase letters, digits and '-'")
+    return {name: scope_paths({"sequenced": patterns}, "sequenced") for name, patterns in sorted(declared.items())}
+
+
+OPAQUE_SEGMENT = "\0"  # a whole-wildcard segment (`*`, `**`): one name that spells no class
+
+
+def glob_tokens(pattern: str, *, scope_pattern: bool) -> list[tuple[Any, ...]]:
+    """fnmatch tokens, lowercased: ('char', c), ('any',) for `?`, ('star', spans_slash), and
+    ('set', negated, chars, ranges). In a scope pattern a `*` inside a segment stays in that
+    segment, and a segment that is only wildcards becomes one opaque name."""
+    if scope_pattern:
+        pattern = "/".join(OPAQUE_SEGMENT if segment and set(segment) <= {"*"} else segment
+                           for segment in pattern.split("/"))
+    pattern = pattern.lower()
+    tokens: list[tuple[Any, ...]] = []
+    index = 0
+    while index < len(pattern):
+        char = pattern[index]
+        index += 1
+        if char == "*":
+            tokens.append(("star", not scope_pattern))
+        elif char == "?":
+            tokens.append(("any",))
+        elif char == "[":
+            end = index + 1 if index < len(pattern) and pattern[index] in "!]" else index
+            if end < len(pattern) and pattern[end - 1] == "!" and pattern[end] == "]":
+                end += 1
+            end = pattern.find("]", end)
+            if end < 0:
+                tokens.append(("char", "["))  # unclosed: fnmatch reads a literal bracket
+                continue
+            body, index = pattern[index:end], end + 1
+            negated = body.startswith("!")
+            body = body[1:] if negated else body
+            chars, ranges, position = set(), [], 0
+            while position < len(body):
+                if position + 2 < len(body) and body[position + 1] == "-":
+                    ranges.append((body[position], body[position + 2]))
+                    position += 3
+                else:
+                    chars.add(body[position])
+                    position += 1
+            tokens.append(("set", negated, frozenset(chars), tuple(ranges)))
+        else:
+            tokens.append(("char", char))
+    return tokens
+
+
+def _token_admits(token: tuple[Any, ...], char: str) -> bool:
+    kind = token[0]
+    if kind in {"any", "star"}:
+        return kind == "any" or token[1] or char != "/"
+    if kind == "char":
+        return token[1] == char
+    inside = char in token[2] or any(low <= char <= high for low, high in token[3])
+    return (not inside if token[1] else inside) and char != "/"
+
+
+def _tokens_share_a_char(left: tuple[Any, ...], right: tuple[Any, ...]) -> bool:
+    candidates = {"/", OPAQUE_SEGMENT, "a", "0", ".", "_", "-"}
+    for token in (left, right):
+        if token[0] == "char":
+            candidates.add(token[1])
+        elif token[0] == "set":
+            candidates |= set(token[2]) | {end for pair in token[3] for end in pair}
+            candidates |= {chr(ord(low) + 1) for low, high in token[3] if low < high}
+    return any(_token_admits(left, char) and _token_admits(right, char) for char in candidates)
+
+
+def globs_intersect(scope_pattern: str, class_glob: str) -> bool:
+    """Whether one path could match both, ignoring case: a scope glob that could name a class
+    folder or file counts as that class (fail closed), as `a/[m]igrations/*` or `a/Migrations/*`."""
+    left, right = glob_tokens(scope_pattern, scope_pattern=True), glob_tokens(class_glob, scope_pattern=False)
+    seen: set[tuple[int, int]] = set()
+    pending = [(0, 0)]
+    while pending:
+        i, j = pending.pop()
+        if (i, j) in seen:
+            continue
+        seen.add((i, j))
+        if i == len(left) and j == len(right):
+            return True
+        a = left[i] if i < len(left) else None
+        b = right[j] if j < len(right) else None
+        if a is not None and a[0] == "star":
+            pending.append((i + 1, j))  # the star matches nothing
+            if b is not None and (b[0] == "star" or _tokens_share_a_char(a, b)):
+                pending.append((i, j + 1))  # the star absorbs what b matches
+        if b is not None and b[0] == "star":
+            pending.append((i, j + 1))
+            if a is not None and (a[0] == "star" or _tokens_share_a_char(a, b)):
+                pending.append((i + 1, j))
+        if a is not None and b is not None and a[0] != "star" and b[0] != "star" and _tokens_share_a_char(a, b):
+            pending.append((i + 1, j + 1))
+    return False
+
+
+def sequenced_classes(scope: dict[str, Any], extra: dict[str, list[str]] | None = None) -> dict[str, list[str]]:
+    """The coordination classes this scope's allowed paths reach, each with the patterns that reach it."""
+    classes = {name: list(patterns) for name, patterns in SEQUENCED_CLASSES.items()}
+    for declared in (scope.get("sequenced", {}), extra or {}):
+        for name, patterns in declared.items():
+            classes[name] = [*classes.get(name, []), *patterns]
+    found: dict[str, list[str]] = {}
+    for pattern in scope["allowed_paths"]:
+        for name, globs in classes.items():
+            if any(globs_intersect(pattern, glob) for glob in globs):
+                found.setdefault(name, []).append(pattern)
+    return found
+
+
+def normalized_scope(scope: Any) -> dict[str, Any]:
     if not isinstance(scope, dict):
         raise RunError("scope must be a JSON object")
     allowed = scope_paths(scope, "allowed_paths")
     if not allowed:
         raise RunError("scope.allowed_paths must reserve at least one path")
-    return {
+    normalized: dict[str, Any] = {
         "allowed_paths": allowed,
         "denied_paths": scope_paths(scope, "denied_paths"),
         "resources": scope_resources(scope),
     }
+    if "sequenced" in scope:
+        normalized["sequenced"] = scope_sequenced(scope)
+    return normalized
 
 
 def fixed_prefix(pattern: str) -> str:
@@ -924,6 +1062,13 @@ def scope_collision(left_scope: Any, right_scope: Any) -> tuple[str, str] | None
     shared_resources = sorted(set(left["resources"]) & set(right["resources"]))
     if shared_resources:
         return "resource", shared_resources[0]
+    # Each side is classified with both sides' declared classes, so one declaration serves the pair.
+    declared = {**left.get("sequenced", {})}
+    for name, patterns in right.get("sequenced", {}).items():
+        declared[name] = [*declared.get(name, []), *patterns]
+    shared_classes = sorted(set(sequenced_classes(left, declared)) & set(sequenced_classes(right, declared)))
+    if shared_classes:
+        return "sequenced", shared_classes[0]
     return None
 
 
@@ -1236,7 +1381,13 @@ def positive_number(value: Any, *, whole: bool) -> bool:
         return False
     if whole and not isinstance(value, int):
         return False
+    if isinstance(value, int):
+        # Every limit is used as a float later; a larger JSON integer would raise OverflowError.
+        return 0 < value <= MAX_LIMIT_INTEGER
     return math.isfinite(value) and value > 0
+
+
+MAX_LIMIT_INTEGER = 2 ** 53  # the largest integer a float holds exactly
 
 
 def validate_budgets(manifest: dict[str, Any]) -> None:
@@ -1266,11 +1417,108 @@ def validate_budgets(manifest: dict[str, Any]) -> None:
         elif not positive_number(value, whole=field == "codex_goal_tokens"):
             raise RunError(f"limits.{field} must be {kind}, or \"{UNBOUNDED}\" with a written "
                            "limits.budget_rationale; zero or a missing value no longer means no cap")
+    for field, (low, high) in RUN_SHAPE_BOUNDS.items():
+        if field in limits and not (positive_number(limits[field], whole=True) and low <= limits[field] <= high):
+            raise RunError(f"limits.{field} must be a whole number from {low} to {high}")
     if "checker_reserve" in limits:
         reserve, (low, high) = limits["checker_reserve"], CHECKER_RESERVE_BOUNDS
         if not positive_number(reserve, whole=False) or not low <= reserve <= high:
             raise RunError(f"limits.checker_reserve must be a fraction from {low} to {high} of a cap that both the "
                            "maker and the checker spend: enough to check, and at least half left for making")
+
+
+# Run-shape guards (SF-16): a loop that repeats itself ends before the attempt cap. Rejections are
+# identical when their `reason` and their failing-test signature match; a silent maker turn is one
+# whose candidate tree equals the tree the controller last judged. max_attempts is at most 3, so
+# two identical rejections in a row already show the third attempt would only repeat them, and a
+# turn that changed nothing cannot change the verdict.
+DEFAULT_IDENTICAL_REJECTIONS = 2
+DEFAULT_SILENT_TURNS = 1
+RUN_SHAPE_BOUNDS = {"max_identical_rejections": (2, 3), "max_silent_turns": (1, 3)}
+MISSING_REASON = "(no reason)"  # an attempt_rejected event without `reason` is a value of its own
+SIGNATURE_TAIL_LINES = 20
+# What changes between two runs of the same failure: clock times, durations, hashes, attempt numbers.
+SIGNATURE_NOISE = (
+    (re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?"), "<time>"),
+    (re.compile(r"\b\d{1,2}:\d{2}:\d{2}(?:[.,]\d+)?\b"), "<time>"),
+    (re.compile(r"\b\d+(?:\.\d+)?\s?(?:ms|s|sec|secs|seconds|min)\b"), "<duration>"),
+    # A hash has a letter and a digit; an ordinary number (`expected rows 1000001`) is kept.
+    (re.compile(r"\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*[0-9])[0-9a-f]{7,64}\b"), "<hex>"),
+    (re.compile(r"(-check-)\d+"), r"\1<n>"),
+    (re.compile(r"\b(attempt)([-_ ]?#?)\d+", re.IGNORECASE), r"\1\2<n>"),
+    # Temporary folders: the root, then the per-run folder made inside it (a file directly in the
+    # root keeps its name, so two different missing files still differ).
+    (re.compile(r"(?<![\w.~-])(?:/private)?/var/folders/[^/\s]+/[^/\s]+/[A-Z](?=/)"
+                r"|(?<![\w.~-])(?:/private)?/(?:var/)?tmp(?=/)"
+                r"|[A-Za-z]:\\Users\\[^\\\s]+\\AppData\\Local\\Temp(?=\\)", re.IGNORECASE), "<tmp>"),
+    (re.compile(r"<tmp>([/\\])[^/\\\s]+(?=[/\\])"), r"<tmp>\1<dir>"),
+    (re.compile(r"\b(pid|port)(\s*[=:]\s*|\s+)\d+", re.IGNORECASE), r"\1\2<n>"),
+    (re.compile(r"\b((?:\d{1,3}\.){3}\d{1,3}|localhost|\[::1\]):\d{2,5}\b", re.IGNORECASE), r"\1:<port>"),
+)
+
+
+def run_shape_limits(limits: dict[str, Any]) -> tuple[int, int]:
+    """(N identical rejections, K silent maker turns) that end the attempts, from the manifest."""
+    return (int(limits.get("max_identical_rejections", DEFAULT_IDENTICAL_REJECTIONS)),
+            int(limits.get("max_silent_turns", DEFAULT_SILENT_TURNS)))
+
+
+def rejection_signature(event_fields: dict[str, Any], verify_output: str | None) -> str:
+    """The rejection's `reason` and its failing-test signature: the failing checks the verify
+    output names, or, when it names none, a hash of its last lines with the noise removed."""
+    reason = event_fields.get("reason")
+    reason = MISSING_REASON if reason is None else str(reason)
+    if verify_output is None:
+        return f"{reason} | no verify output"
+    _, failing = named_checks(verify_output)
+    if failing:
+        material, kind = "\n".join(sorted(failing)), "tests"
+    else:
+        lines = [line.strip() for line in verify_output.splitlines() if line.strip()][-SIGNATURE_TAIL_LINES:]
+        material, kind = "\n".join(lines), "output"
+        for pattern, replacement in SIGNATURE_NOISE:
+            material = pattern.sub(replacement, material)
+    return f"{reason} | {kind} {hashlib.sha256(material.encode('utf-8')).hexdigest()[:16]}"
+
+
+def identical_rejection_streak(state: dict[str, Any]) -> tuple[int, str | None]:
+    """How many attempts in a row, ending with the current one, were rejected the same way. Read
+    from events.jsonl, so it needs no stored copy and resume sees exactly what was recorded."""
+    run_dir = Path(state["state_path"]).parent
+    rejected: dict[int, dict[str, Any]] = {}
+    events = run_dir / "events.jsonl"
+    for line in (read_output(events).splitlines() if events.is_file() else []):
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(record, dict) and record.get("event") == "attempt_rejected" and type(record.get("attempt")) is int:
+            rejected[record["attempt"]] = record
+    streak, last = 0, None
+    attempt = int(state.get("attempt", 0))
+    while attempt in rejected:
+        log = run_dir / f"attempt-{attempt}-verify.txt"
+        signature = rejection_signature(rejected[attempt], read_output(log) if log.is_file() else None)
+        if last is not None and signature != last:
+            break
+        streak, last, attempt = streak + 1, signature, attempt - 1
+    return streak, last
+
+
+def silent_turn_streak(state: dict[str, Any], worktree: Path, before_head: str, after_head: str) -> int:
+    """Silent maker turns in a row, this one included: turns whose candidate tree is the tree the
+    controller last judged (the base for the first attempt). Counted once per attempt, so a
+    resumed candidate is not counted twice."""
+    record = state.get("silent_turns")
+    if isinstance(record, dict) and record.get("attempt") == state["attempt"]:
+        return int(record.get("count", 0))
+    silent = git(worktree, "rev-parse", f"{after_head}^{{tree}}") == git(worktree, "rev-parse", f"{before_head}^{{tree}}")
+    chained = isinstance(record, dict) and record.get("attempt") == state["attempt"] - 1
+    previous = int(record.get("count", 0)) if chained else 0
+    count = previous + 1 if silent else 0
+    state["silent_turns"] = {"attempt": state["attempt"], "count": count}
+    save_state(state)
+    return count
 
 
 # The share of a runtime's cap held back for checking when the maker and the checker spend the same
@@ -1456,9 +1704,21 @@ def graph_effective_base(repo: Path, graph_path: str, manifest_path: Path,
             "graph_sha256": contract["graph_sha256"],
             "contract_commit": contract["contract_commit"],
             "effective_base_oid": effective_base,
+            # Fixed at start and kept in the run state; resume does not recompute it.
+            "sequence_numbers": graph_sequence_numbers(graph_module, contract, run_id, effective_base),
         }
     except graph_module.GraphError as exc:
         raise RunError(f"graph contract or checkpoint invalid: {exc}") from exc
+
+
+def graph_sequence_numbers(graph_module: Any, contract: dict[str, Any], run_id: str, base: str) -> list[dict[str, str]]:
+    """The child's reserved numbers. A full numbered folder refuses the start in its own words,
+    not as a changed graph contract."""
+    try:
+        return graph_module.sequence_numbers(contract, run_id, base)
+    except graph_module.SequenceExhausted as exc:
+        raise RunError(f"numbered folder {exc.folder} has no free number of up to six digits after "
+                       f"{exc.highest}; renumber or archive its files before a graph run adds one") from exc
 
 
 def attention_limit_at_base(repo: Path, risk_map: Any, base_ref: str) -> int:
@@ -3045,7 +3305,9 @@ def launch_role_with_breaker(state: dict[str, Any], manifest: dict[str, Any], ro
             receipt = launch_role(state, manifest, role, prompt, **kwargs)
         except HiddenTestProbe as probe:
             # A probe is the role's own act, not a host fault: it ends any streak, never extends it.
-            if state.pop("infrastructure_streak", None) is not None:
+            streak = state.pop("infrastructure_streak", None)
+            if streak is not None:
+                state.pop("repeat_attempt", None)
                 save_state(state)
             if probe.content:
                 # The role saw held-out content. Discarding its attempt cannot undo that, and the
@@ -3057,13 +3319,14 @@ def launch_role_with_breaker(state: dict[str, Any], manifest: dict[str, Any], ro
         except InfrastructureFailure as failure:
             streak = [*state.get("infrastructure_streak", []), failure.signature]
             state["infrastructure_streak"] = streak
+            if role == "maker":
+                # An infrastructure fault is never an attempt (SF-16). No maker finished, so
+                # whichever way this ends, resume reruns this attempt instead of starting the next.
+                state["repeat_attempt"] = True
             save_state(state, "infrastructure_failure", role=role, signature=failure.signature,
                        attempt=state["attempt"])
             if (len(streak) > 1 and streak[-1] == streak[-2]) or len(streak) >= MAX_INFRASTRUCTURE_STREAK:
                 state["infrastructure_stop"] = failure.signature
-                if role == "maker":
-                    # No maker finished, so resume reruns this attempt instead of starting the next.
-                    state["repeat_attempt"] = True
                 repeated = ("the same infrastructure failure twice in a row" if streak[-1] == streak[-2]
                             else f"{len(streak)} infrastructure failures in a row")
                 advice = ("read why the checker tried denied actions in its log, then resume"
@@ -3076,6 +3339,8 @@ def launch_role_with_breaker(state: dict[str, Any], manifest: dict[str, Any], ro
                 raise RunError(f"{failure}; not relaunched because {problem}") from failure
             continue
         if state.pop("infrastructure_streak", None) is not None:
+            # A relaunch finished this attempt: the next one is a new attempt again.
+            state.pop("repeat_attempt", None)
             save_state(state)
         return receipt
 
@@ -3170,6 +3435,10 @@ In changed_paths list every path printed by
 `git -c core.quotepath=off diff --name-only --no-renames {base} HEAD`, as plain names without quotes.
 A moved file counts twice: list the old path and the new path.
 """
+    for reserved in state.get("sequence_numbers") or []:
+        # Serialised with the graph's other runs on this folder: the number is free after them.
+        common += (f"Numbered files: the next free number in {reserved['directory']}/ is {reserved['number']}. "
+                   "A file this run adds there takes that number (then the ones after it), never one in use.\n")
     if role == "maker":
         feedback = f"\nThe prior checker rejected the attempt:\n{json.dumps(prior, indent=2)}\n" if prior else ""
         codex_maker = manifest["roles"]["maker"]["runtime"] == "codex"
@@ -3299,11 +3568,18 @@ def controller_rejection(commit: str, paths: list[str], reason: str) -> dict[str
 def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
     worktree = Path(state["worktree"])
     max_attempts = int(manifest["limits"]["max_attempts"])
+    identical_limit, silent_limit = run_shape_limits(manifest["limits"])
     prior = state.get("last_checker_receipt")
     while state["attempt"] < max_attempts or pending_candidate(state) or state.get("repeat_attempt"):
         raise_if_stopped(Path(state["state_path"]).parent)
         if remaining_seconds(state, manifest) <= 0:
             raise RunError("wall-clock budget exhausted", reason="budget")
+        if not pending_candidate(state) and not state.get("repeat_attempt"):
+            streak, signature = identical_rejection_streak(state)
+            if streak >= identical_limit:
+                raise RunError(f"run-shape guard: {streak} identical rejections in a row ({signature}), "
+                               f"limits.max_identical_rejections is {identical_limit}; another attempt would "
+                               "repeat them, so a person should read the last rejection and the verify output")
         if not pending_candidate(state):
             if not state.pop("repeat_attempt", False):
                 state["attempt"] += 1
@@ -3412,6 +3688,12 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             save_state(state, "attempt_rejected", attempt=state["attempt"], reason="report contract")
             continue
         validate_verification_changes(worktree, state["base_head"], after_head, manifest)
+        silent = silent_turn_streak(state, worktree, before_head, after_head)
+        if silent >= silent_limit:
+            turns = "turn" if silent == 1 else "turns"
+            raise RunError(f"run-shape guard: {silent} silent maker {turns} in a row: the candidate tree is "
+                           f"the tree last judged, limits.max_silent_turns is {silent_limit}; nothing new "
+                           "to verify or check, so a person should read why the maker changed nothing")
         state["status"] = "checking"
         checkpoint_stage(state, 'verifying')
         # Read the candidate before the baseline: a commit that lands while the baseline runs was
@@ -4024,6 +4306,8 @@ def resume(args: argparse.Namespace) -> int:
                     raise RunError("graph context is incomplete in child run state")
                 context = graph_effective_base(repo, graph_path, manifest_path, manifest,
                                                spec_rel, spec_hash, effective_base)
+                # Later accepted siblings may have taken numbers since: the reservation stays as started.
+                context.pop("sequence_numbers", None)
                 if any(state.get(key) != value for key, value in context.items()):
                     raise RunError("graph contract or effective base changed since start")
                 if state["base_head"] != effective_base:
