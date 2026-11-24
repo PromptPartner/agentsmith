@@ -78,12 +78,29 @@ RECEIPT_SCHEMA = {
 }
 
 
+HIDDEN_PROBE = "hidden-test-probe"
+# Why an attempt was rejected: the `reason` of every `attempt_rejected` event (SF-15). The first five
+# reject an attempt the run then retries; `scope`, `protected`, `budget` and `stale` stop the run, and
+# their record says `escalated`. A probe can do either. `factory numbers` counts rework by these codes.
+REJECTION_REASONS = ("verify", "checker", "hidden-tests", "incomplete", HIDDEN_PROBE,
+                     "scope", "protected", "budget", "stale")
+
+
 class RunError(RuntimeError):
-    pass
+    """A run cannot go on. `reason`, when set, is the REJECTION_REASONS code of the attempt it ends."""
+
+    reason: str | None = None
+
+    def __init__(self, *args: Any, reason: str | None = None) -> None:
+        super().__init__(*args)
+        if reason is not None:
+            self.reason = reason
 
 
 class BudgetExceeded(RunError):
     """A role crossed a run-wide cap; a finished role's receipt is kept as evidence."""
+
+    reason = "budget"
 
     def __init__(self, message: str, receipt: dict[str, Any] | None) -> None:
         super().__init__(message)
@@ -106,7 +123,8 @@ class HiddenTestProbe(RunError):
 
     def __init__(self, role: str, surfaces: list[str], content: bool) -> None:
         seen = "saw held-out content" if content else "tried to read the held-out acceptance tests"
-        super().__init__(f"{HIDDEN_PROBE}: the {role} {seen} (shown in its {', '.join(surfaces)})")
+        super().__init__(f"{HIDDEN_PROBE}: the {role} {seen} (shown in its {', '.join(surfaces)})",
+                         reason=HIDDEN_PROBE)
         self.role = role
         self.surfaces = surfaces
         self.content = content
@@ -492,12 +510,14 @@ def coordination_lock(root: Path, *, interruptible: bool = True):
 
 
 @contextlib.contextmanager
-def git_phase(repo: Path, phase: str, *, timeout_seconds: float = 60):
+def git_phase(repo: Path, phase: str, *, timeout_seconds: float = 60, budget: bool = False):
     """Coordinate shared Git metadata without serializing independent makers.
 
     A checker must see a quiescent object store for its strict before/after check.
     Graph-owned Git merges use the exclusive writer phase. These leases are only
     coordination, never an exemption from the metadata tampering checks.
+    `budget` says the timeout is what is left of the run's wall clock: a wait that spends it all
+    is a budget stop.
     """
     if phase not in {"maker", "checker", "writer"}:
         raise RunError(f"unsupported git phase: {phase}")
@@ -532,7 +552,8 @@ def git_phase(repo: Path, phase: str, *, timeout_seconds: float = 60):
                 break
         if time.monotonic() >= deadline:
             raise RunError(f"git phase {phase} is still held by live {conflict['phase']} process "
-                           f"{conflict['pid']}")
+                           f"{conflict['pid']}" + ("; the wall-clock budget ran out while waiting" if budget else ""),
+                           reason="budget" if budget else None)
         if _stop_signal_received:
             raise RunInterrupted("stopped by operator")
         time.sleep(0.02)
@@ -1038,9 +1059,6 @@ def hidden_read_paths(manifest: dict[str, Any]) -> list[Path]:
     return [Path(str(hidden["repo"])).expanduser().resolve()] if isinstance(hidden, dict) else []
 
 
-HIDDEN_PROBE = "hidden-test-probe"
-
-
 def probe_hint(role: str) -> str:
     """Rework feedback after a probe: it names the behaviour, never a hidden file or the canary."""
     return (f"the {role} tried to read the held-out acceptance tests, which no role may read, so the attempt "
@@ -1241,6 +1259,8 @@ CHECKER_RESERVE_BOUNDS = (0.05, 0.5)  # at least a token share for checking; at 
 
 class BudgetReserved(RunError):
     """A maker would spend the share of a budget reserved for checking: a budget stop, not a model failure."""
+
+    reason = "budget"
 
 
 def checker_reserve(manifest: dict[str, Any], runtime: str) -> float:
@@ -1691,7 +1711,7 @@ def validate_verification_changes(worktree: Path, base: str, head: str,
         detail = ([shown_paths(protected)] if protected else []) + (
             ["agent instructions: " + shown_paths(instructions)] if instructions else [])
         raise RunError("maker changed protected verification inputs; separate operator review required: "
-                       + "; ".join(detail))
+                       + "; ".join(detail), reason="protected")
 
 
 # `awaiting-human`: the checker accepted, but no passed calibration lets it gate (SF-09). The run is
@@ -2675,7 +2695,7 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
     write_json(schema_path, RECEIPT_SCHEMA)
     timeout = remaining_seconds(state, manifest)
     if timeout <= 0:
-        raise RunError("wall-clock budget exhausted")
+        raise RunError("wall-clock budget exhausted", reason="budget")
     common_git = state_root(Path(state["repo"])).parent
     maker_write_dirs = [common_git, resolved_git_path(worktree, '--git-dir')] if role == 'maker' else []
     protected = trusted_paths(state)
@@ -2690,7 +2710,7 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
         # here, before each Codex role, and after it (`budget_overrun`); the goal budget in the
         # maker prompt is advisory.
         if cap is not None and int(state.get("codex_tokens_used", 0)) >= cap:
-            raise RunError("Codex run-wide token budget exhausted")
+            raise RunError("Codex run-wide token budget exhausted", reason="budget")
         cmd = build_native_command(
             "codex", prompt, worktree, schema_path, receipt_path,
             extra_write_dirs=maker_write_dirs, read_only=role == "checker",
@@ -2711,7 +2731,7 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
         if allowance is not None:
             remaining_budget = round(allowance, 6)  # a Claude maker stops at the checker's reserve
         if remaining_budget is not None and remaining_budget <= 0:
-            raise RunError("Claude run-wide USD budget exhausted")
+            raise RunError("Claude run-wide USD budget exhausted", reason="budget")
         cmd = build_native_command(
             "claude", prompt, worktree, schema_path, receipt_path, settings_path=settings_path,
             extra_write_dirs=maker_write_dirs, read_only=role == "checker",
@@ -2756,7 +2776,7 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
         raise HiddenTestProbe(role, probed, saw_content)
     if error is not None:
         if isinstance(error, subprocess.TimeoutExpired):
-            raise RunError(f'{role} exceeded wall-clock budget') from error
+            raise RunError(f'{role} exceeded wall-clock budget', reason="budget") from error
         raise error
     # Each cap is checked after a role that spends it; the launch checks above refuse a role
     # whose own runtime has nothing left.
@@ -2865,7 +2885,8 @@ def launch_role_with_breaker(state: dict[str, Any], manifest: dict[str, Any], ro
                 # The role saw held-out content. Discarding its attempt cannot undo that, and the
                 # hidden tests no longer measure this run: stop it for a person.
                 raise RunError(f"{probe}; the hidden tests no longer give an honest signal for this run, so it "
-                               "stops: review the run branch and replace the hidden tests before another run") from None
+                               "stops: review the run branch and replace the hidden tests before another run",
+                               reason=HIDDEN_PROBE) from None
             raise
         except InfrastructureFailure as failure:
             streak = [*state.get("infrastructure_streak", []), failure.signature]
@@ -3027,7 +3048,7 @@ def checker_worktree_session(state: dict[str, Any], manifest: dict[str, Any],
     together with the state entry that exempts it."""
     publish = (lambda: coordination_lock(state_root(worktree), interruptible=False)) if phase == "maker" \
         else contextlib.nullcontext
-    with git_phase(worktree, phase, timeout_seconds=remaining_seconds(state, manifest)):
+    with git_phase(worktree, phase, timeout_seconds=remaining_seconds(state, manifest), budget=True):
         with publish():
             if checker_worktree.exists():
                 raise RunError(f"refusing to overwrite checker worktree {checker_worktree}")
@@ -3106,7 +3127,7 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
     while state["attempt"] < max_attempts or pending_candidate(state) or state.get("repeat_attempt"):
         raise_if_stopped(Path(state["state_path"]).parent)
         if remaining_seconds(state, manifest) <= 0:
-            raise RunError("wall-clock budget exhausted")
+            raise RunError("wall-clock budget exhausted", reason="budget")
         if not pending_candidate(state):
             if not state.pop("repeat_attempt", False):
                 state["attempt"] += 1
@@ -3116,7 +3137,7 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             # leaves a run that resumes. Only this run's maker moves its branch.
             state['maker_before_head'] = git(worktree, "rev-parse", "HEAD")
             checkpoint_stage(state, "making")
-            with git_phase(worktree, "maker", timeout_seconds=remaining_seconds(state, manifest)):
+            with git_phase(worktree, "maker", timeout_seconds=remaining_seconds(state, manifest), budget=True):
                 before_head = git(worktree, "rev-parse", "HEAD")
                 # Start holds this same short lock while creating a branch/worktree
                 # and publishing its state, so a snapshot cannot see half a peer.
@@ -3173,8 +3194,8 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             before_ignored = set(state['maker_before_ignored'])
             after_head = git(worktree, 'rev-parse', 'HEAD')
             if after_head != state['candidate_commit']:
-                raise RunError('candidate changed since stage checkpoint; operator review required')
-            with git_phase(worktree, 'maker', timeout_seconds=remaining_seconds(state, manifest)):
+                raise RunError('candidate changed since stage checkpoint; operator review required', reason="stale")
+            with git_phase(worktree, 'maker', timeout_seconds=remaining_seconds(state, manifest), budget=True):
                 with coordination_lock(state_root(worktree)):
                     after_meta = git_metadata(worktree, known_peers=before_meta['registered_peers'])
                 before_meta = json.loads(json.dumps(before_meta))
@@ -3190,16 +3211,17 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
         paths = changed_paths(worktree, state["base_head"])
         bad = [path for path in paths if not path_allowed(path, manifest)]
         if bad:
-            raise RunError(f"maker changed paths outside scope: {shown_paths(bad)}")
+            raise RunError(f"maker changed paths outside scope: {shown_paths(bad)}", reason="scope")
         # Every commit counts: a file added in one commit and deleted in a later one is not in the
         # end-to-end diff, but the history that would be pushed still carries it.
         for path, commit in history_paths(worktree, state["base_head"], after_head).items():
             if not path_allowed(path, manifest):
-                raise RunError(f"maker changed paths outside scope in commit {commit[:12]}: {shown_paths([path])}")
+                raise RunError(f"maker changed paths outside scope in commit {commit[:12]}: {shown_paths([path])}",
+                               reason="scope")
         ignored_added = sorted(ignored_paths(worktree) - before_ignored)
         ignored_bad = [path for path in ignored_added if not path_allowed(path, manifest)]
         if ignored_bad:
-            raise RunError(f"maker created ignored paths outside scope: {shown_paths(ignored_bad)}")
+            raise RunError(f"maker created ignored paths outside scope: {shown_paths(ignored_bad)}", reason="scope")
         if maker["commit"] != after_head or sorted(maker["changed_paths"]) != sorted(paths):
             raise RunError("maker receipt does not match the committed Git state")
         validate_verification_changes(worktree, state["base_head"], after_head, manifest)
@@ -3246,8 +3268,8 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
                 state["last_checker_receipt"] = prior
                 state["status"] = "retrying"
                 state['stage'] = 'retrying'
-                save_state(state, "attempt_rejected", attempt=state["attempt"], verify_exit=verify.returncode,
-                           verification="incomplete", regressions=regressed)
+                save_state(state, "attempt_rejected", attempt=state["attempt"], reason="incomplete",
+                           verify_exit=verify.returncode, verification="incomplete", regressions=regressed)
                 continue
             checker_ignored = ignored_paths(checker_worktree)
             evidence = verifier_evidence(verify_path, checker_worktree, checker_ignored)
@@ -3331,7 +3353,7 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             # The last step before the record: the branch must still be the checked commit.
             moved = candidate_moved(worktree, state["branch"], checker_head)
             if moved:
-                raise RunError(moved)
+                raise RunError(moved, reason="stale")
             # Last: the checker gates only while a calibration of it passes (SF-09). Otherwise its
             # acceptance is advice, and the candidate waits for a person instead of being accepted.
             # The calibration is read again here: the receipt's copy predates the checker, and the
@@ -3367,9 +3389,14 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
         state["last_checker_receipt"] = checker
         state["status"] = "retrying"
         state['stage'] = 'retrying'
-        save_state(state, "attempt_rejected", attempt=state["attempt"], verify_exit=verify.returncode,
+        # The first cause that holds: a probe voids the checker, hidden tests ran only on a passing
+        # verify, and a failed or regressed verify outranks the checker's own verdict.
+        reason = (HIDDEN_PROBE if checker_probe else "hidden-tests" if hidden_failed
+                  else "verify" if verify.returncode or outcome["verification"] != "passed" or regressed
+                  else "checker")
+        save_state(state, "attempt_rejected", attempt=state["attempt"], reason=reason, verify_exit=verify.returncode,
                    verification=outcome["verification"], regressions=regressed,
-                   **({"reason": HIDDEN_PROBE, "role": "checker"} if checker_probe else {}))
+                   **({"role": "checker"} if checker_probe else {}))
     # As with acceptance, a stop that arrived before this record still interrupts the run.
     raise_if_stopped(Path(state["state_path"]).parent)
     state["status"] = "escalated"
@@ -3418,6 +3445,10 @@ def run_controller(state: dict[str, Any], manifest: dict[str, Any]) -> int:
     except (RunError, subprocess.TimeoutExpired) as exc:
         state["status"] = "escalated"
         state["reason"] = str(exc)
+        rejection = getattr(exc, "reason", None)
+        if rejection:
+            # A stop that rejects the attempt is a rejection too: its cause is counted with the rest.
+            event(state, "attempt_rejected", attempt=state.get("attempt"), reason=rejection, escalated=True)
         save_state(state, "run_escalated", reason=str(exc))
         print(f"escalated: {exc}", file=sys.stderr)
         return 2
@@ -3742,7 +3773,7 @@ def recover_checker_worktree(state: dict[str, Any], manifest: dict[str, Any]) ->
         return
     repo = Path(state['repo'])
     worktree = Path(state['worktree'])
-    with git_phase(repo, 'writer', timeout_seconds=remaining_seconds(state, manifest)):
+    with git_phase(repo, 'writer', timeout_seconds=remaining_seconds(state, manifest), budget=True):
         abandoned = state.get('checker_worktree')
         if abandoned:
             expected = worktree.with_name(f"{worktree.name}-check-{state['attempt']}")

@@ -207,6 +207,27 @@ example from a process a role left running, refuses acceptance: the run escalate
 checked commit and where the branch is now. `accepted_commit` in the run state, the
 `run_accepted` event and `candidate_commit` in the verification receipt all name that one commit.
 
+**Rejection reasons.** Every `attempt_rejected` event in `events.jsonl` carries a `reason` from
+this fixed set, and [`factory numbers`](31-factory-readiness.md) counts rework by it:
+
+| `reason` | The attempt was rejected because |
+|---|---|
+| `verify` | its verification `failed`, or it has a regression against the baseline. This outranks the checker's verdict. |
+| `checker` | the verification passed and the checker rejected it, or the checker's acceptance was a checker defect. |
+| `hidden-tests` | the opt-in hidden acceptance tests failed. No checker ran. |
+| `incomplete` | its verification was `incomplete`. No checker ran. |
+| `hidden-test-probe` | a role tried to read the held-out tests (see [hidden acceptance tests](#hidden-acceptance-tests-opt-in)). |
+| `scope` | the maker changed, committed or created ignored paths outside the allowed scope. |
+| `protected` | the maker changed a protected verification input or an agent-instruction file. |
+| `budget` | a role crossed or would cross a run-wide cap: USD, Codex tokens, the checker's reserve, or the wall clock, including a wait for another run's Git phase that used up the wall clock. |
+| `stale` | the commit the checks passed is no longer the run's candidate: it moved after its checks, or changed since its checkpoint. |
+
+The first five are rejected and retried while attempts remain. `scope`, `protected`, `budget` and
+`stale` stop the run: their `attempt_rejected` event says `"escalated": true` and comes just before
+`run_escalated`. A probe that saw held-out content stops the run the same way. A budget stop
+between two attempts names the attempt before it. A stop that rejects nothing, such as the attempt
+cap, a role that exits with an error, or an operator stop, writes no `attempt_rejected` event.
+
 **Checker calibration.** `python3 .agentsmith/autonomous-run.py calibrate <manifest>` tests the
 checker that the manifest names (`roles.checker`: client, model and effort) on two built-in
 candidates with known answers. The clean candidate implements a small spec correctly and must be
