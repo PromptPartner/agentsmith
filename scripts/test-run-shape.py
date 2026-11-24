@@ -228,6 +228,20 @@ class RejectionSignatureTests(unittest.TestCase):
         self.assertEqual(signature({}, tail), signature({}, retry))
         self.assertNotEqual(signature({}, tail), signature({}, tail.replace("build broke", "lint broke")))
 
+    def output(self, line: str) -> str:
+        return f"exit=1\nSTDOUT:\n{line}\nSTDERR:\n"
+
+    def test_ordinary_numbers_in_the_output_are_kept(self) -> None:
+        signature = CONTROLLER.rejection_signature
+        for first, second in (("E expected rows 1000001", "E expected rows 1000002"),
+                              ("E expected rows 1000000", "E expected rows 2000000"),
+                              ("E got 42 items", "E got 43 items")):
+            with self.subTest(first=first):
+                self.assertNotEqual(signature({}, self.output(first)), signature({}, self.output(second)))
+        # A hash is still volatile noise: it has a letter and a digit.
+        self.assertEqual(signature({}, self.output("E broke at commit 3f9a2c1d")),
+                         signature({}, self.output("E broke at commit 0be4d77a")))
+
     def test_the_guard_limits_are_bounded_whole_numbers(self) -> None:
         manifest = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
         CONTROLLER.validate_budgets(manifest)

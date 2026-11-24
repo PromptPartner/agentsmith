@@ -1307,7 +1307,8 @@ SIGNATURE_NOISE = (
     (re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?"), "<time>"),
     (re.compile(r"\b\d{1,2}:\d{2}:\d{2}(?:[.,]\d+)?\b"), "<time>"),
     (re.compile(r"\b\d+(?:\.\d+)?\s?(?:ms|s|sec|secs|seconds|min)\b"), "<duration>"),
-    (re.compile(r"\b[0-9a-f]{7,64}\b"), "<hex>"),
+    # A hash has a letter and a digit; an ordinary number (`expected rows 1000001`) is kept.
+    (re.compile(r"\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*[0-9])[0-9a-f]{7,64}\b"), "<hex>"),
     (re.compile(r"(-check-|attempt-)\d+"), r"\1<n>"),
 )
 
