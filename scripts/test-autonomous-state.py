@@ -2559,6 +2559,8 @@ class AutonomousStateTests(unittest.TestCase):
             "budget": dict(checker_status="accepted", role_errors={
                 "maker": CONTROLLER.BudgetExceeded("Claude run-wide USD budget exceeded", None)}),
             "stale": dict(checker_status="accepted", move_branch_after_verify=True),
+            # A maker report without the verdict line and summary fails the attempt before verify.
+            "report-contract": dict(checker_status="accepted", reports={"maker": "done"}),
         }
         self.assertEqual(set(cases), set(CONTROLLER.REJECTION_REASONS))
         stops = {"scope", "protected", "budget", "stale"}
