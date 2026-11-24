@@ -801,6 +801,8 @@ implementation ticket and the run branch. The body holds:
 - the budgets used;
 - the new packages and their registry lookup, when a manifest gained any;
 - the base staleness, and the merge verification when the accepted commit is behind the base;
+- the demo: the controller's transcript, its hash, and whether you opened it before this check,
+  or a line that says the landing carries no demo (see below);
 - the eligibility line.
 
 The rest of the maker's report is left out. The only text that a model wrote is the checker
@@ -811,6 +813,63 @@ folders become `~` and `$TMPDIR`, so neither the text nor the `--json` report na
 The secret scanner's patterns then run over the final title and body (honouring
 `.harness/secret-scan.allow`), and a likely secret refuses delivery and names the field. A body
 over 65,536 characters, which GitHub does not accept, refuses delivery and names its length.
+
+### Replayable demo evidence
+
+Green checks say that the tests passed. They do not show you the changed behaviour. So a spec can
+declare one demo command, and each landing then carries a transcript of it that the controller
+made, not a role. Put the command in the first fenced code block under a `## Demo` heading of the
+accepted spec:
+
+````markdown
+## Demo
+
+```sh
+mytool convert sample.csv --format json
+```
+````
+
+Several lines run as one script. A `## Demo` heading with no fenced command refuses at `prepare`
+and `start`. `start` reads the command from the spec at `base_ref`, so a maker cannot change it.
+
+**When it runs.** Once an attempt passes verification with no regression and a checker acceptance
+whose citations hold, the controller runs the demo on that commit, in the same disposable worktree
+and verifier sandbox as the verify command: no network, and no writes outside the worktree and a
+private home and temporary folder. It runs for both an `accepted` and an `awaiting-human` run, for
+at most 120 seconds or the remaining wall-clock budget. Its exit status is shown, not judged: the
+verifier and the checker already decided.
+
+**The transcript** is `attempt-<n>-demo.txt` in the run folder: the command, stdout, stderr and the
+exit status. The output is treated as untrusted. Each stream keeps its first 20,000 characters, and
+the cut is marked. Text that the secret scanner's patterns match becomes `[redacted: <pattern>]`.
+Repository paths become repo-relative, and home and temporary folders become `~` and `$TMPDIR`.
+Control characters become `\xNN`, so the transcript cannot move the cursor. The unredacted output is
+deleted. The state and the verification receipt record the transcript under `demo`: the command,
+exit status, file, SHA-256, commit, whether a stream was cut, and the number of redactions.
+
+**Watch it yourself** before you land the run:
+
+```text
+python3 .agentsmith/autonomous-run.py evidence <run-id>
+```
+
+It prints the transcript and appends `evidence_opened` with its SHA-256 to the run's
+`events.jsonl`. Run it yourself: if an agent runs it for you, the record says that you opened a
+transcript you did not read. A transcript that no longer matches its recorded hash is refused,
+and so is a run without a demo.
+
+**Deliver links it and records the consent step.** `deliver` refuses a transcript that no longer
+matches its hash. The body's Demo section names the transcript, its hash and the `evidence`
+command, quotes its first 3,000 characters in a code block, and says whether you opened it before
+this check. The `--json` report holds the same record under `demo` (`null` without a demo), with
+`opened_before_delivery`. Each `deliver` that passes its checks appends one record to the run's
+`events.jsonl`: `delivery_checked`, with the mode (`dry-run` or `eligibility`), the head commit,
+`evidence_opened` (true only when you opened this exact transcript before) and
+`evidence_sha256`. That is the only thing `deliver` writes, and it writes it only in the run
+folder. The [inbox](31-inbox.md) row of an accepted or held run links the transcript too.
+
+Not yet supported: screenshots and video for UI work. A UI change can still declare a CLI demo,
+for example a headless render that prints its result.
 
 ### Auto-merge eligibility
 

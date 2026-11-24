@@ -43,6 +43,9 @@ Attempts: 1 of 3. Claude: 0.25 USD of 20. Codex: 10 tokens of 2500000.
 ### Base
 0 commits behind origin/main; the accepted diff applies cleanly.
 
+### Demo
+None: the accepted spec declares no `## Demo` command, so this landing carries no replayable demonstration of the changed behaviour.
+
 Auto-merge eligible: no for <commit> — tier A: unmet (B); no floor path: met; checker accepted with valid citations: met; passing calibration for this checker: unmet (none); head equals the accepted commit: met; CI green for this commit: pending CI
 
 Auto-merge eligibility is information only: a human merges this pull request, and nothing in this release merges automatically.

@@ -146,7 +146,10 @@ in an attended session, with one yes from the operator:
 1. Run `python3 .agentsmith/autonomous-run.py deliver <run-id> --dry-run`. If it refuses, report
    the reasons and stop.
 2. Show the operator the push command, the pull-request title and body, the tier, the base
-   staleness and the `Auto-merge eligible` line.
+   staleness and the `Auto-merge eligible` line. When the body has a demo transcript the operator
+   has not opened, ask them to run `python3 .agentsmith/autonomous-run.py evidence <run-id>`
+   themselves and watch it, then run step 1 again. Do not run `evidence` for them: it records that
+   the operator opened the transcript.
 3. Ask once: "Push <accepted-sha> to agentsmith/<run-id> and open a pull request with this body?"
    Anything but a clear yes ends the step. The yes covers only this push and this pull request.
 4. Push the exact accepted commit, never a moving branch name:

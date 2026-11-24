@@ -55,6 +55,12 @@ these, so secret-like values and the home folder are redacted first, with the pa
 They are bounded as in the pull-request body (20 at most, each cut at 500 characters), and the
 table's line is cut at 300 characters, ending in `…`.
 
+An `accepted` or `awaiting-human` row whose spec declared a demo also links the controller's
+demo transcript ([replayable demo evidence](21-autonomous-runs.md#replayable-demo-evidence)). Its
+next step ends with the `autonomous-run.py evidence <run-id>` command and says whether you opened
+that transcript yet, and `--json` adds an `evidence` object: `artefact`, `sha256`, `command` and
+`opened`. A transcript that no longer matches its recorded hash is not linked; a warning names it.
+
 The branch that counts as landed is resolved in this order: `--base <branch>` on `origin`; else the
 branch `origin/HEAD` points to; else `origin/main`; else `origin/master`. When `--base` names a
 branch that does not exist, or `origin/HEAD` points to a branch that is gone, the inbox says so in

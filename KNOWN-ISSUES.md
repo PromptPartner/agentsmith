@@ -55,6 +55,17 @@ been authorized, so the entries are kept here.
   flag a passphrase whose first word is shorter, such as `"correct horse battery staple"`. Kept on
   purpose: the same rule keeps labels such as `password = "Enter your password"` from blocking a
   commit. Export redaction does not have this limit.
+- [ ] 2026-11-24 — Known limit of SF-18b: `deliver` refuses a demo transcript that no longer
+  matches its recorded hash in a separate step, after `delivery_checks`. A run with a changed
+  transcript and other problems shows the other reasons first, and the transcript reason only
+  after those are fixed, instead of every reason at once. Kept for now so that the change to
+  `delivery_checks` stays small while other work changes it too; move the check into its problem
+  list later.
+- [ ] 2026-11-24 — Known limit of SF-18b: the `## Demo` parser (`spec_demo_command`) treats any line
+  that starts with three backticks or tildes as a fence. A demo block wrapped in a longer outer
+  fence (four backticks around a three-backtick block) closes at the inner fence, so the command
+  that is read is wrong or empty. `spec_sections` has the same limit. Specs that put one plain
+  fenced block under `## Demo` are not affected.
 - [ ] 2026-11-21 — Gap found while adding the attention budget (SF-18a): there is no command to
   dismiss a waiting run. A run leaves the inbox, and the budget count, only when it lands or when
   its branch is deleted; a deleted branch then shows as a warning for as long as the run folder
