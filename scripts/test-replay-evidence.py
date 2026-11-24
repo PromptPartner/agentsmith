@@ -285,6 +285,20 @@ class DemoHardeningTests(unittest.TestCase):
         self.assertEqual(self.raw_files(), [])
 
     # Finding 3: what is read back is bounded before it reaches memory.
+    def test_the_demo_reads_back_a_bounded_amount_of_output(self) -> None:
+        seen: dict = {}
+        self.fake_runner(seen=seen)
+        CONTROLLER.record_demo(self.state, {}, self.tmp, "a" * 40)
+        self.assertEqual(seen.get("read_limit"), CONTROLLER.DEMO_READ_LIMIT)
+        self.assertLessEqual(CONTROLLER.DEMO_READ_LIMIT, 4 * CONTROLLER.DEMO_STREAM_LIMIT)
+
+    def test_a_bounded_supervised_read_never_loads_more_than_its_limit(self) -> None:
+        state = {"state_path": str(self.run / "state.json"), "attempt": 1}
+        result = CONTROLLER.verifier_process(["/bin/bash", "-c", "head -c 300000 /dev/zero | tr '\\0' x"],
+                                             self.tmp, 30, dict(os.environ), state, "probe", read_limit=1000)
+        self.assertEqual(result.returncode, 0)
+        self.assertLessEqual(len(result.stdout), 1000)
+
     # Finding 5: a run id cannot leave the runs folder.
 
 class DemoSectionTests(unittest.TestCase):

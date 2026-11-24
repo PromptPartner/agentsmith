@@ -245,9 +245,13 @@ def read_text(path: Path) -> str:
     raise AssertionError("unreachable")
 
 
-def read_output(path: Path) -> str:
-    """Captured role and verifier output: UTF-8 whatever the locale, never a decode crash."""
-    return path.read_text(encoding="utf-8", errors="replace")
+def read_output(path: Path, limit: int | None = None) -> str:
+    """Captured role and verifier output: UTF-8 whatever the locale, never a decode crash. With
+    `limit`, at most that many bytes are read, so a huge output never reaches memory."""
+    if limit is None:
+        return path.read_text(encoding="utf-8", errors="replace")
+    with path.open("rb") as stream:
+        return stream.read(limit).decode("utf-8", "replace")
 
 
 def write_json(path: Path, value: dict[str, Any]) -> None:
@@ -2259,7 +2263,8 @@ def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str],
                      *, state: dict[str, Any] | None = None,
                      read_dirs: tuple[Path, ...] = (),
                      shared_tmp: bool = True,
-                     prefix: str | None = None) -> subprocess.CompletedProcess[str]:
+                     prefix: str | None = None,
+                     read_limit: int | None = None) -> subprocess.CompletedProcess[str]:
     """Run the human-approved verifier with no network and no writes outside its worktree and a
     private home, temporary and cache folder that exists only for this run of the verifier.
     `read_dirs` are extra folders it may read but not write (the hidden suite). With `shared_tmp`
@@ -2286,13 +2291,14 @@ def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str],
     with private_scratch("agentsmith-verify-") as scratch:
         return posix_sandboxed_verify(command, cwd, common, timeout,
                                       private_tool_environment(env, scratch, home=True), scratch, state,
-                                      tuple(path.resolve() for path in read_dirs), shared_tmp, prefix)
+                                      tuple(path.resolve() for path in read_dirs), shared_tmp, prefix,
+                                      read_limit)
 
 
 def posix_sandboxed_verify(command: str, cwd: Path, common: Path, timeout: int, env: dict[str, str],
                            scratch: Path, state: dict[str, Any] | None,
                            read_dirs: tuple[Path, ...] = (), shared_tmp: bool = True,
-                           prefix: str | None = None) -> subprocess.CompletedProcess[str]:
+                           prefix: str | None = None, read_limit: int | None = None) -> subprocess.CompletedProcess[str]:
     # `pipefail`: a pipeline such as `pytest | tee log` fails when its test command fails, not
     # only when its last command does. scripts/verify.sh runs with the same option.
     if sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").exists():
@@ -2320,7 +2326,7 @@ def posix_sandboxed_verify(command: str, cwd: Path, common: Path, timeout: int, 
               for parent in sorted(protected_ancestors)],
         ])
         args = ["/usr/bin/sandbox-exec", "-p", profile, "/bin/bash", "-o", "pipefail", "-c", command]
-        return verifier_process(args, cwd, timeout, env, state, prefix)
+        return verifier_process(args, cwd, timeout, env, state, prefix, read_limit)
     if sys.platform.startswith("linux") and shutil.which("bwrap"):
         home = Path.home().resolve()
         temporary = Path("/tmp")
@@ -2346,7 +2352,7 @@ def posix_sandboxed_verify(command: str, cwd: Path, common: Path, timeout: int, 
                  *[item for path in read_dirs for item in ("--ro-bind", str(path), str(path))],
                  "--dev", "/dev", "--proc", "/proc",
                  "--chdir", str(cwd), "/bin/bash", "-o", "pipefail", "-c", command]
-        return verifier_process(args, cwd, timeout, env, state, prefix)
+        return verifier_process(args, cwd, timeout, env, state, prefix, read_limit)
     return subprocess.CompletedProcess([], 126, "", "no supported fail-closed verifier sandbox")
 
 
@@ -2586,7 +2592,8 @@ def archive_artifacts(directory: Path, prefix: str) -> None:
 
 
 def supervised_process(command: list[str], cwd: Path, timeout: int, env: dict[str, str],
-                       state: dict[str, Any], prefix: str) -> tuple[subprocess.CompletedProcess[str], BaseException | None]:
+                       state: dict[str, Any], prefix: str,
+                       read_limit: int | None = None) -> tuple[subprocess.CompletedProcess[str], BaseException | None]:
     directory = Path(state['state_path']).parent
     stdout_path = directory / (prefix + '.stdout')
     stderr_path = directory / (prefix + '.stderr')
@@ -2623,17 +2630,18 @@ def supervised_process(command: list[str], cwd: Path, timeout: int, env: dict[st
             state['active_pid'] = None
             save_state(state)
     return subprocess.CompletedProcess(command, process.returncode,
-                                       read_output(stdout_path), read_output(stderr_path)), error
+                                       read_output(stdout_path, read_limit), read_output(stderr_path, read_limit)), error
 
 
 def verifier_process(command: list[str], cwd: Path, timeout: int, env: dict[str, str],
-                     state: dict[str, Any] | None, prefix: str | None = None) -> subprocess.CompletedProcess[str]:
+                     state: dict[str, Any] | None, prefix: str | None = None,
+                     read_limit: int | None = None) -> subprocess.CompletedProcess[str]:
     with contextlib.ExitStack() as stack:
         if state is None:
             temporary = stack.enter_context(tempfile.TemporaryDirectory(prefix='agentsmith-verifier-'))
             state = {'state_path': str(Path(temporary) / 'state.json'), 'attempt': 0}
         result, error = supervised_process(command, cwd, timeout, env, state,
-                                           prefix or f"attempt-{state['attempt']}-verify")
+                                           prefix or f"attempt-{state['attempt']}-verify", read_limit)
         if isinstance(error, subprocess.TimeoutExpired):
             # A hung verifier is an incomplete attempt, not a failed run: keep what it printed.
             result.timed_out = True  # type: ignore[attr-defined]
@@ -4725,6 +4733,7 @@ def eligibility(checks: dict[str, Any], sha: str, ci: dict[str, Any] | None,
 # body and the inbox row link it; `evidence` shows it and records that the operator opened it.
 DEMO_HEADING = "Demo"
 DEMO_STREAM_LIMIT = 20000  # characters kept of each of stdout and stderr
+DEMO_READ_LIMIT = 4 * DEMO_STREAM_LIMIT  # bytes of each stream read back before redaction
 DEMO_BODY_LIMIT = 3000  # characters of the transcript quoted in the pull-request body
 DEMO_TIMEOUT_SECONDS = 120
 DEMO_FILE = re.compile(r"attempt-[0-9]+-demo\.txt")
@@ -4804,14 +4813,12 @@ def demo_transcript(command: str, exit_code: int, timed_out: bool, stdout: str, 
 
     def clean(value: str) -> str:
         nonlocal truncated
-        size = len(value)
-        value = redact(value[:4 * DEMO_STREAM_LIMIT])  # bound the work; the final cut follows
+        value = redact(value[:DEMO_READ_LIMIT])  # bound the work; the final cut follows
         if len(value) > DEMO_STREAM_LIMIT:
             truncated = True
             # Redacted again: the cut can leave a value the first pass saw only as part of a longer one.
             value = (redact(value[:DEMO_STREAM_LIMIT])
-                     + f"\n[agentsmith: output cut; {size} characters were printed, the first "
-                     f"{DEMO_STREAM_LIMIT} are kept]")
+                     + f"\n[agentsmith: output cut; the first {DEMO_STREAM_LIMIT} characters are kept]")
         return value
 
     lines = clean(command).splitlines() or [""]
@@ -4840,7 +4847,8 @@ def record_demo(state: dict[str, Any], manifest: dict[str, Any], worktree: Path,
     archive_artifacts(run_dir, prefix)
     timeout = max(1, min(DEMO_TIMEOUT_SECONDS, remaining_seconds(state, manifest)))
     try:
-        result = sandboxed_verify(command, worktree, timeout, verifier_env(), state=state, prefix=f"{prefix}-raw")
+        result = sandboxed_verify(command, worktree, timeout, verifier_env(), state=state, prefix=f"{prefix}-raw",
+                                  read_limit=DEMO_READ_LIMIT)
     finally:
         remove_raw()
     # The disposable worktree reads as the repository: its paths become repo-relative too.

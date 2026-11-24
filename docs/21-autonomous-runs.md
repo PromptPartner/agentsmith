@@ -768,8 +768,8 @@ at most 120 seconds or the remaining wall-clock budget. Its exit status is shown
 verifier and the checker already decided.
 
 **The transcript** is `attempt-<n>-demo.txt` in the run folder: the command, stdout, stderr and the
-exit status. The output is treated as untrusted. Each stream keeps its first 20,000 characters, and
-the cut is marked. Text that the secret scanner's patterns match becomes `[redacted: <pattern>]`.
+exit status. The output is treated as untrusted. At most 80,000 bytes of each stream are read
+back, and each keeps its first 20,000 characters, with the cut marked. Text that the secret scanner's patterns match becomes `[redacted: <pattern>]`.
 Repository paths become repo-relative, and home and temporary folders become `~` and `$TMPDIR`.
 Control characters become `\xNN`, so the transcript cannot move the cursor. The unredacted output is
 deleted, also when the demo is stopped or fails. The state and the verification receipt record the transcript under `demo`: the command,
