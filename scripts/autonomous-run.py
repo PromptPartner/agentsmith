@@ -2508,6 +2508,15 @@ def report_problem(summary: str, status: str, role: str) -> str | None:
     return None
 
 
+def report_headline(summary: str, limit: int = 200) -> str:
+    """One bounded line of a report for a reason or a status line: its first summary bullet, else
+    its first line that is not the verdict line. A reason must never carry a whole report."""
+    bullets, _problem = report_bullets(report_sections(summary).get("## Summary", []))
+    lines = [line for line in summary.splitlines() if line.strip() and not VERDICT_LINE.fullmatch(line.rstrip())]
+    text = " ".join((bullets[0] if bullets and bullets[0] else lines[0] if lines else "").split())
+    return (text if len(text) <= limit else text[:limit - 1] + "…") or "no reason given"
+
+
 def report_assumptions(summary: str) -> list[str]:
     """What a maker report says it assumed without authority; `- none` and no section give []."""
     bullets, _problem = report_bullets(report_sections(summary).get(ASSUMPTIONS_HEADING, []))
@@ -3292,7 +3301,7 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
                 validate_git_transition(worktree, before_meta, after_meta, state['branch'], before_head, after_head)
         assert maker is not None
         if maker["status"] == "blocked":
-            raise RunError(f"maker blocked: {maker['summary']}")
+            raise RunError(f"maker blocked: {report_headline(maker['summary'])}")
         if after_head == before_head:
             raise RunError("maker completed without creating a local commit")
         if not clean(worktree):

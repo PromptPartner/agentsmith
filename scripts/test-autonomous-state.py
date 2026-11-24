@@ -2300,7 +2300,8 @@ class AutonomousStateTests(unittest.TestCase):
                             calibration: str = "passed",
                             calibration_at_gate: str | None = None,
                             stop_after_final_proof: bool = False,
-                            reports: dict[str, str] | None = None) -> tuple[int, dict[str, Any], list[str]]:
+                            reports: dict[str, str] | None = None,
+                            maker_status: str = "completed") -> tuple[int, dict[str, Any], list[str]]:
         """Drive the real attempt loop with Git and the roles replaced by fakes, so a stop can be
         delivered at an exact point of it. `verify_results` are returned in order by the
         verifier, the first one for the base commit; `calls` records each verifier and role
@@ -2346,7 +2347,7 @@ class AutonomousStateTests(unittest.TestCase):
                       **_kwargs: Any) -> dict[str, Any]:
             if calls is not None:
                 calls.append(role)
-            status = "completed"
+            status = maker_status
             if role == "maker":
                 head["value"] = str(state["attempt"]) * 40
             else:
@@ -2721,6 +2722,26 @@ class AutonomousStateTests(unittest.TestCase):
             self.assertIn("does not open with a verdict line", feedback["unresolved"][0])
             [rejected] = self.run_events(common, "attempt_rejected")
             self.assertEqual(rejected["reason"], "report contract")
+
+    def test_a_blocked_maker_escalates_with_one_bounded_line_of_its_report(self) -> None:
+        # The reason lands in the state, the inbox row and the terminal: one line, never the whole report.
+        long_bullet = "the spec names a file that does not exist " + "x" * 400
+        cases = {
+            "a contract report": (f"VERDICT: BLOCKED\n\n## Summary\n- {long_bullet}\n- second\n- third\n",
+                                  "maker blocked: the spec names a file that does not exist"),
+            "free text": ("\n\nNo spec to read.\nMore detail\nand more", "maker blocked: No spec to read."),
+            "nothing": ("", "maker blocked: no reason given"),
+        }
+        for label, (report, expected) in cases.items():
+            with self.subTest(case=label), tempfile.TemporaryDirectory(prefix="agentsmith blocked ") as temporary:
+                outcome, durable, _events = self.run_with_fake_roles(
+                    Path(temporary), max_attempts=1, checker_status="accepted", maker_status="blocked",
+                    reports={"maker": report})
+                self.assertEqual((outcome, durable["status"]), (2, "escalated"))
+                self.assertTrue(durable["reason"].startswith(expected), durable["reason"])
+                self.assertNotIn("\n", durable["reason"])
+                self.assertNotIn("VERDICT", durable["reason"])
+                self.assertLessEqual(len(durable["reason"]), len("maker blocked: ") + 200)
 
     def test_a_checker_acceptance_whose_report_breaks_the_contract_is_a_checker_defect(self) -> None:
         cases = {"no verdict line": "accepted, all good",
