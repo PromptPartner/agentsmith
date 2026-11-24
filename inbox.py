@@ -254,11 +254,13 @@ class _Collector:
             self.warnings.append(f"tier unavailable for {str(head)[:12]}: {exc}")
             return None
 
-    def add(self, kind: str, item_id: str, since: float | None, next_step: str, tier: str | None = None) -> None:
+    def add(self, kind: str, item_id: str, since: float | None, next_step: str, tier: str | None = None,
+            assumptions: list[str] | None = None) -> None:
         age = max(0, int(self.now - since)) if since is not None else None
         self.rows.append({"kind": kind, "id": item_id, "age_seconds": age,
                           "age": age_text(age) if age is not None else "?", "tier": tier,
-                          "next_step": _one_line(next_step)})
+                          "next_step": _one_line(next_step),
+                          "assumptions": [_one_line(item) for item in assumptions or []]})
 
     def runs(self, controller: Any | None = None) -> None:
         root = self.common / "agentsmith-runs"
@@ -311,6 +313,10 @@ class _Collector:
             # awaiting-human: the checker accepted, but it is advisory until its calibration passes.
             held = status == "awaiting-human"
             label = "held" if held else "accepted"
+            # What the maker's report says it assumed without authority (SF-16), as in the PR body.
+            maker = state.get("maker_receipt")
+            assumed = (controller.report_assumptions(str(maker.get("summary") or ""))
+                       if isinstance(maker, dict) else [])
             commit = state.get("held_commit" if held else "accepted_commit")
             if not _commit(self.repo, commit):
                 self.warnings.append(f"run {name}: dropped, {label} commit {str(commit)[:12]} is not in this repository")
@@ -324,12 +330,12 @@ class _Collector:
                     reason = state.get("reason") or "checker advisory"
                     self.add("awaiting-human", name, since, f"{reason}; review {commit[:12]} on {branch}; a human "
                              "reviews and re-runs with an explicit approval: calibrate the checker until it passes, "
-                             f"then prepare a rework of {name}", self._tier(base, commit))
+                             f"then prepare a rework of {name}", self._tier(base, commit), assumed)
                 else:
                     step = (f"review accepted commit {commit[:12]} on {branch}: an open pull request has it as its "
                             "head; review and merge that pull request" if commit in self.pr_heads
                             else self._landing_step(commit, branch))
-                    self.add("accepted", name, since, step, self._tier(base, commit))
+                    self.add("accepted", name, since, step, self._tier(base, commit), assumed)
             return
         if status not in TERMINAL_RUN and status not in UNFINISHED_RUN:
             raise ValueError(f"unknown status {status!r}")
@@ -558,7 +564,9 @@ def _printable(value: Any) -> str:
 
 
 def render_text(report: dict[str, Any]) -> str:
-    report = {"rows": [{key: _printable(value) if isinstance(value, str) else value for key, value in row.items()}
+    report = {"rows": [{key: _printable(value) if isinstance(value, str)
+                        else [_printable(item) for item in value] if key == "assumptions" else value
+                        for key, value in row.items()}
                        for row in report["rows"]],
               "warnings": [_printable(warning) for warning in report["warnings"]]}
     if not report["rows"]:
@@ -566,7 +574,10 @@ def render_text(report: dict[str, Any]) -> str:
     else:
         width = max(len(row["id"]) for row in report["rows"])
         lines = [f"{'KIND':<14} {'ID':<{width}} {'AGE':>4} {'TIER':<5} NEXT"]
-        lines += [f"{row['kind']:<14} {row['id']:<{width}} {row['age']:>4} {row['tier'] or '-':<5} {row['next_step']}"
-                  for row in report["rows"]]
+        for row in report["rows"]:
+            lines.append(f"{row['kind']:<14} {row['id']:<{width}} {row['age']:>4} {row['tier'] or '-':<5} "
+                         f"{row['next_step']}")
+            if row.get("assumptions"):
+                lines.append(f"  assumed without authority: {'; '.join(row['assumptions'])}")
     lines += [f"warning: {warning}" for warning in report["warnings"]]
     return "\n".join(lines) + "\n"

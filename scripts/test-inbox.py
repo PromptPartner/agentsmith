@@ -138,6 +138,27 @@ class RowKindTests(InboxCase):
             self.assertTrue(row["next_step"] and "\n" not in row["next_step"], row)
         self.assertEqual(escalated, self.repo.git("rev-parse", "agentsmith/esc"))
 
+    def test_a_waiting_run_shows_the_maker_s_assumptions_made_without_authority(self) -> None:
+        # SF-16: the assumptions the maker made without authority are on the row, not only in the PR body.
+        report = ("VERDICT: COMPLETED\n## Summary\n- a\n- b\n- c\n## Assumptions without authority\n"
+                  "- empty input is an error\n- \x1b[2Jclears nothing\n")
+        held = self.repo.branch("agentsmith/held", self.base, {"src/a.py": b"a\n"})
+        self.repo.run_state("held", status="awaiting-human", base_head=self.base, held_commit=held,
+                            reason="checker advisory: calibration none", maker_receipt={"summary": report})
+        accepted = self.repo.branch("agentsmith/acc", self.base, {"src/b.py": b"b\n"})
+        self.repo.run_state("acc", status="accepted", base_head=self.base, accepted_commit=accepted,
+                            maker_receipt={"summary": report.replace("- empty input is an error\n- \x1b[2Jclears nothing", "- none")})
+        escalated = self.repo.branch("agentsmith/esc", self.base, {"src/c.py": b"c\n"})
+        self.repo.run_state("esc", status="escalated", base_head=self.base, reason="attempt cap reached (3)")
+        rows = self.rows(self.collect())
+        self.assertEqual(rows[("awaiting-human", "held")]["assumptions"],
+                         ["empty input is an error", "\x1b[2Jclears nothing"])
+        self.assertEqual(rows[("accepted", "acc")]["assumptions"], [])
+        self.assertEqual(rows[("escalated", "esc")]["assumptions"], [])
+        text = inbox.render_text(self.collect())
+        self.assertIn("  assumed without authority: empty input is an error; \\x1b[2Jclears nothing", text)
+        self.assertEqual(text.count("assumed without authority"), 1, "a row without assumptions adds no line")
+
     def test_a_run_held_for_an_advisory_checker_is_a_row(self) -> None:
         # SF-09: an acceptance from an uncalibrated checker holds the run for a person.
         held = self.repo.branch("agentsmith/held", self.base, {"src/a.py": b"a\n"})
