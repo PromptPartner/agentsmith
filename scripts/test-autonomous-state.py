@@ -2708,6 +2708,25 @@ class AutonomousStateTests(unittest.TestCase):
                          ["empty input is an error as the old parser did", "utf-8 only"])
         self.assertEqual(CONTROLLER.report_assumptions("no report at all"), [])
 
+    def test_a_report_holds_exactly_one_verdict_line_the_first(self) -> None:
+        # Found by an independent Codex test: a second, contradicting verdict later in the report passed.
+        later = {
+            "under another heading": role_report("accepted", None) + "## Other\nVERDICT: REJECTED\n",
+            "the same verdict again": role_report("accepted", None) + "VERDICT: ACCEPTED\n",
+            "inside a bullet's line": role_report("accepted", None).replace("- ran the verifier",
+                                                                           "VERDICT: REJECTED"),
+            "indented, in a code fence": role_report("accepted", None) + "```\n  VERDICT: REJECTED\n```\n",
+        }
+        for label, report in later.items():
+            with self.subTest(case=label):
+                self.assertIn("exactly one verdict line", CONTROLLER.report_problem(report, "accepted", "checker") or "")
+        with tempfile.TemporaryDirectory(prefix="agentsmith two verdicts ") as temporary:
+            outcome, durable, events = self.run_with_fake_roles(
+                Path(temporary), max_attempts=1, checker_status="accepted",
+                reports={"checker": later["under another heading"]})
+            self.assertEqual((outcome, durable["status"]), (2, "escalated"))
+            self.assertIn("checker_defect", events)
+
     def test_a_maker_report_that_breaks_the_contract_fails_its_attempt_before_verification(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith maker report ") as temporary:
             common = Path(temporary)

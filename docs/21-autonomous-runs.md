@@ -185,8 +185,10 @@ VERDICT: COMPLETED
 - An input of only whitespace counts as empty.
 ```
 
-A maker report that breaks the contract (no verdict line, a verdict that is not its status, no
-summary, fewer than 3 or more than 5 bullets, or no assumptions section) fails its attempt
+The verdict line is the only one: a report with another line that starts with `VERDICT:`,
+anywhere after the first (under another heading, in a code block, indented), breaks the contract.
+A maker report that breaks the contract (no verdict line, a second verdict line, a verdict that is
+not its status, no summary, fewer than 3 or more than 5 bullets, or no assumptions section) fails its attempt
 before a verifier or a checker is spent on it. The event is `attempt_rejected` with
 `reason: report contract`, and the next maker is told what was wrong. A checker acceptance whose
 report breaks the contract is a checker defect, handled like one whose citations do not hold,

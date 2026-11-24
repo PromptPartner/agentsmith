@@ -2445,6 +2445,7 @@ def parse_receipt(path: Path, stdout: str) -> dict[str, Any]:
 REPORT_VERDICTS = ("COMPLETED", "ACCEPTED", "REJECTED", "BLOCKED")
 VERDICT_LINE = re.compile(r"VERDICT: (" + "|".join(REPORT_VERDICTS) + r")")
 ASSUMPTIONS_HEADING = "## Assumptions without authority"
+LATER_VERDICT = re.compile(r"\s*VERDICT\s*:")
 REPORT_CONTRACT = (f"The summary is your report, in Markdown. Its first line is exactly `VERDICT: <STATUS>`, your "
                    f"status in capitals ({', '.join(REPORT_VERDICTS)}). Then a line `## Summary` and 3 to 5 bullets, "
                    "each starting with `- `.")
@@ -2490,6 +2491,9 @@ def report_problem(summary: str, status: str, role: str) -> str | None:
         return "the report does not open with a verdict line (`VERDICT: <STATUS>`, for example `VERDICT: REJECTED`)"
     if verdict != status.upper():
         return f"the verdict line says {verdict}, but the receipt status is {status}"
+    # The controller reads only the first line; a later one, anywhere, could tell a reader otherwise.
+    if any(LATER_VERDICT.match(line) for line in summary.splitlines()[1:]):
+        return "the report holds more than one verdict line: it needs exactly one verdict line, the first"
     sections = report_sections(summary)
     if "## Summary" not in sections:
         return "the report needs a `## Summary` section after the verdict line"
