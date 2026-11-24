@@ -2862,7 +2862,9 @@ class AutonomousStateTests(unittest.TestCase):
             self.assertIn("the maker's report breaks the report contract", feedback["summary"])
             self.assertIn("does not open with a verdict line", feedback["unresolved"][0])
             [rejected] = self.run_events(common, "attempt_rejected")
-            self.assertEqual(rejected["reason"], "report contract")
+            self.assertEqual(rejected["reason"], "report-contract")
+            self.assertIn(rejected["reason"], CONTROLLER.REJECTION_REASONS,
+                          "factory numbers counts a code outside the fixed set as unrecorded")
 
     def test_a_blocked_maker_escalates_with_one_bounded_line_of_its_report(self) -> None:
         # The reason lands in the state, the inbox row and the terminal: one line, never the whole report.

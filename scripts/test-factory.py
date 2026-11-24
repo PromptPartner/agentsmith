@@ -259,7 +259,7 @@ class FactoryTests(unittest.TestCase):
         self.add_run("old", "escalated", hours_ago=24 * 60, events=[
             {"event": "attempt_rejected", "attempt": 1, "reason": "verify"}])  # outside the window
         causes = self.number(factory.numbers(self.repo, now=NOW, ci_runs=[]), "rework causes")
-        self.assertEqual((causes["status"], causes["n"]), ("ok", 10))
+        self.assertEqual((causes["status"], causes["n"]), ("ok", len(factory.REJECTION_REASONS) + 1))
         self.assertEqual(causes["value"], {**{reason: 1 for reason in factory.REJECTION_REASONS}, "unrecorded": 1})
         self.assertEqual(list(causes["value"])[:len(factory.REJECTION_REASONS)], list(factory.REJECTION_REASONS))
         self.assertIn("1 without a recorded reason", causes["detail"])

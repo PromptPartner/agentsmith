@@ -83,7 +83,7 @@ HIDDEN_PROBE = "hidden-test-probe"
 # reject an attempt the run then retries; `scope`, `protected`, `budget` and `stale` stop the run, and
 # their record says `escalated`. A probe can do either. `factory numbers` counts rework by these codes.
 REJECTION_REASONS = ("verify", "checker", "hidden-tests", "incomplete", HIDDEN_PROBE,
-                     "scope", "protected", "budget", "stale")
+                     "scope", "protected", "budget", "stale", "report-contract")
 
 
 class RunError(RuntimeError):
@@ -3685,7 +3685,7 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             state["last_checker_receipt"] = prior
             state["status"] = "retrying"
             state['stage'] = 'retrying'
-            save_state(state, "attempt_rejected", attempt=state["attempt"], reason="report contract")
+            save_state(state, "attempt_rejected", attempt=state["attempt"], reason="report-contract")
             continue
         validate_verification_changes(worktree, state["base_head"], after_head, manifest)
         silent = silent_turn_streak(state, worktree, before_head, after_head)
