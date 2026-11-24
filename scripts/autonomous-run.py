@@ -1343,6 +1343,9 @@ def validate_manifest(manifest: dict[str, Any], repo: Path) -> tuple[Path, str]:
         raise RunError("accepted spec fails the pipeline check: " + "; ".join(problems))
     if str(manifest["implementation_ticket"]) == meta.get("decision_ticket"):
         raise RunError("implementation_ticket must be separate from decision_ticket")
+    demo = demo_command_problem(shown)
+    if demo:
+        raise RunError(demo)
     digest = hashlib.sha256(shown.encode()).hexdigest()
     return spec_rel, digest
 
@@ -3312,6 +3315,10 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
                 proof["checker_defect"] = defect
             elif claims_acceptance:
                 proof["citations"] = "valid"  # what `deliver` requires before it prints a push command
+                if outcome["verification"] == "passed" and not regressed:
+                    demo = record_demo(state, manifest, checker_worktree, checker_head)
+                    if demo is not None:
+                        proof["demo"] = state["demo"] = demo
             write_json(proof_path, proof)
         if defect:
             # An acceptance whose evidence does not hold is a checker defect, not an acceptance:
@@ -3446,6 +3453,11 @@ def start(args: argparse.Namespace) -> int:
         assert_attention_budget(repo, rework.get("of") if isinstance(rework, dict) else None,
                                 str(manifest.get("base_ref") or "HEAD"))
     spec_rel, spec_hash = validate_manifest(manifest, repo)
+    # The demo command comes from the spec that was just validated, never from a role.
+    spec_text = git(repo, "show", f"{manifest['base_ref']}:{spec_rel.as_posix()}")
+    if hashlib.sha256(spec_text.encode()).hexdigest() != spec_hash:
+        raise RunError("the accepted spec changed while the run was starting")
+    demo_command = spec_demo_command(spec_text)
     if not clean(repo):
         raise RunError("base worktree must be clean before an autonomous run starts")
     try:
@@ -3500,6 +3512,7 @@ def start(args: argparse.Namespace) -> int:
                 **graph_context,
                 "spec_path": spec_rel.as_posix(),
                 "spec_sha256": spec_hash,
+                **({"demo_command": demo_command} if demo_command else {}),
                 "manifest_path": str(manifest_path),
                 "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
                 "scope": normalized_scope(manifest["scope"]),
@@ -4706,6 +4719,216 @@ def eligibility(checks: dict[str, Any], sha: str, ci: dict[str, Any] | None,
     return {"eligible": eligible, "sha": sha, "facts": rows, "line": line}
 
 
+# Replayable feature evidence (SF-18b). The accepted spec may declare one demo command under
+# `## Demo`. At acceptance the controller, not a role, runs it on the accepted commit in the
+# verifier sandbox and keeps a redacted, bounded transcript in the run folder. The pull-request
+# body and the inbox row link it; `evidence` shows it and records that the operator opened it.
+DEMO_HEADING = "Demo"
+DEMO_STREAM_LIMIT = 20000  # characters kept of each of stdout and stderr
+DEMO_BODY_LIMIT = 3000  # characters of the transcript quoted in the pull-request body
+DEMO_TIMEOUT_SECONDS = 120
+DEMO_FILE = re.compile(r"attempt-[0-9]+-demo\.txt")
+DEMO_MISSING = ("the spec's '## Demo' section holds no command: put the demo command in a fenced code "
+                "block under it, or remove the section")
+# The secret scanner's patterns, each replaced by a marker. An assigned value runs to its closing
+# quote, so a passphrase with spaces goes whole, as in `factory export`.
+DEMO_SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    *((name, pattern) for name, pattern in SECRET_PATTERNS if name != "assigned secret literal"),
+    ("assigned secret", re.compile(r"(?i)\b[\w-]*(?:secret|token|password|passwd|pwd|api[_-]?key)[\w-]*"
+                                   r"[\"' ]*[:=]\s*(?:\"[^\"\n]{8,}\"|'[^'\n]{8,}'|[\"']?[^\s\"',]{8,})")),
+)
+
+
+def spec_demo_command(text: str) -> str | None:
+    """The first fenced code block under the spec's `## Demo` heading, or None without that
+    heading. A heading inside a fenced block does not count; a section with no command refuses."""
+    end = text.find("\n---\n", 4) if text.startswith("---\n") else -1
+    in_demo, fence, block = False, None, None
+    for line in text[end + 5:].splitlines() if end >= 0 else text.splitlines():
+        stripped = line.lstrip()
+        if fence is not None:
+            if stripped.startswith(fence):
+                if block is not None:
+                    command = "\n".join(block).strip()
+                    if not command:
+                        raise RunError(DEMO_MISSING)
+                    return command
+                fence = None
+            elif block is not None:
+                block.append(line)
+            continue
+        if stripped.startswith(("```", "~~~")):
+            fence = stripped[:3]
+            block = [] if in_demo else None
+            continue
+        if re.match(r"#{1,2}\s", line):
+            if in_demo:
+                raise RunError(DEMO_MISSING)
+            heading = re.fullmatch(r"##\s+(.*?)\s*#*\s*", line)
+            in_demo = heading is not None and heading.group(1) == DEMO_HEADING
+    if in_demo:
+        raise RunError(DEMO_MISSING)
+    return None
+
+
+def demo_command_problem(text: str) -> str | None:
+    """Why the spec's demo cannot be recorded, or None (also with no demo)."""
+    try:
+        command = spec_demo_command(text)
+    except RunError as exc:
+        return str(exc)
+    problem = verify_command_problem(command) if command else None
+    return f"the spec's '## Demo' command: {problem}" if problem else None
+
+
+def printable(text: str) -> str:
+    """Control characters as `\\xNN`, so a transcript cannot move the cursor or clear a screen."""
+    return "".join(char if char.isprintable() or char in "\n\t" else
+                   f"\\x{ord(char):02x}" if ord(char) < 256 else f"\\u{ord(char):04x}" for char in text)
+
+
+def demo_transcript(command: str, exit_code: int, timed_out: bool, stdout: str, stderr: str,
+                    repo: Path) -> tuple[str, int, bool]:
+    """The transcript an operator replays: the command, each stream cut to DEMO_STREAM_LIMIT, and
+    the exit status. Secret-like text becomes a marker, local paths become repo-relative or ~, and
+    control characters are escaped. Returns (text, secret redactions, whether a stream was cut)."""
+    redactions, truncated = 0, False
+
+    def redact(value: str) -> str:
+        nonlocal redactions
+        value = without_local_paths(value, repo)
+        for name, pattern in DEMO_SECRET_PATTERNS:
+            value, count = pattern.subn(f"[redacted: {name}]", value)
+            redactions += count
+        return printable(value)
+
+    def clean(value: str) -> str:
+        nonlocal truncated
+        size = len(value)
+        value = redact(value[:4 * DEMO_STREAM_LIMIT])  # bound the work; the final cut follows
+        if len(value) > DEMO_STREAM_LIMIT:
+            truncated = True
+            # Redacted again: the cut can leave a value the first pass saw only as part of a longer one.
+            value = (redact(value[:DEMO_STREAM_LIMIT])
+                     + f"\n[agentsmith: output cut; {size} characters were printed, the first "
+                     f"{DEMO_STREAM_LIMIT} are kept]")
+        return value
+
+    lines = clean(command).splitlines() or [""]
+    status = f"exit status: {exit_code}" + (f" (timed out after {DEMO_TIMEOUT_SECONDS} s or the run's "
+                                            "remaining budget)" if timed_out else "")
+    text = "\n".join([f"$ {lines[0]}", *(f"> {line}" for line in lines[1:]), "--- stdout ---",
+                      clean(stdout).rstrip("\n"), "--- stderr ---", clean(stderr).rstrip("\n"), status])
+    return text + "\n", redactions, truncated
+
+
+def record_demo(state: dict[str, Any], manifest: dict[str, Any], worktree: Path, commit: str) -> dict[str, Any] | None:
+    """Run the spec's demo command on `commit` in the verifier sandbox and keep its transcript.
+    Its exit status is shown, not judged: the verifier and the checker already decided."""
+    command = state.get("demo_command")
+    if not isinstance(command, str) or not command:
+        return None
+    run_dir = Path(state["state_path"]).parent
+    prefix = f"attempt-{state['attempt']}-demo"
+    archive_artifacts(run_dir, prefix)
+    timeout = max(1, min(DEMO_TIMEOUT_SECONDS, remaining_seconds(state, manifest)))
+    result = sandboxed_verify(command, worktree, timeout, verifier_env(), state=state, prefix=f"{prefix}-raw")
+    for suffix in (".stdout", ".stderr"):  # no unredacted copy stays in the run folder
+        (run_dir / f"{prefix}-raw{suffix}").unlink(missing_ok=True)
+    # The disposable worktree reads as the repository: its paths become repo-relative too.
+    stdout, stderr = (stream.replace(f"{worktree}/", "").replace(str(worktree), ".")
+                      for stream in (result.stdout, result.stderr))
+    text, redactions, truncated = demo_transcript(command, result.returncode, verifier_timed_out(result),
+                                                  stdout, stderr, Path(state["repo"]))
+    path = run_dir / f"{prefix}.txt"
+    path.write_bytes(text.encode("utf-8"))
+    record = {"command": command, "exit_code": result.returncode, "timed_out": verifier_timed_out(result),
+              "file": path.name, "sha256": file_digest(path), "commit": commit, "truncated": truncated,
+              "redactions": redactions}
+    event(state, "demo_recorded", file=path.name, sha256=record["sha256"], exit_code=result.returncode,
+          commit=commit)
+    return record
+
+
+def checked_demo(state: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    """The run's recorded demo and its transcript text, after checking the file against its hash."""
+    demo = state.get("demo")
+    if not isinstance(demo, dict):
+        return None, None
+    name = str(demo.get("file"))
+    path = Path(state["state_path"]).parent / name
+    if not DEMO_FILE.fullmatch(name) or file_digest(path) != demo.get("sha256"):
+        raise RunError(f"the demo transcript {name} changed after the controller recorded it")
+    return demo, path.read_text(encoding="utf-8")
+
+
+def evidence_opened(state: dict[str, Any], sha256: str) -> bool:
+    """Whether `evidence` showed the operator this exact transcript."""
+    try:
+        lines = (Path(state["state_path"]).parent / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(record, dict) and record.get("event") == "evidence_opened" and record.get("sha256") == sha256:
+            return True
+    return False
+
+
+def evidence_cmd(args: argparse.Namespace) -> int:
+    """Show a run's demo transcript and record that the operator opened it."""
+    repo = repo_root(Path.cwd())
+    state = load_run(repo, args.run_id)
+    if state.get("status") not in {"accepted", "awaiting-human"}:
+        raise RunError(f"evidence: run {args.run_id} is {state.get('status')}; the controller records a demo "
+                       "transcript only when a run is accepted or held for a human")
+    try:
+        demo, text = checked_demo(state)
+    except RunError as exc:
+        raise RunError(f"evidence refused: {exc}") from None
+    if demo is None or text is None:
+        raise RunError(f"run {args.run_id} has no demo transcript: its accepted spec declares no "
+                       "'## Demo' section, so the landing carries no replayable demonstration")
+    print(f"demo transcript of run {args.run_id}: {demo['file']} (sha256 {demo['sha256']}), recorded by the "
+          f"controller from commit {demo['commit']}")
+    print(text, end="")
+    event(state, "evidence_opened", artefact=demo["file"], sha256=demo["sha256"], commit=demo["commit"])
+    print(f"recorded: evidence_opened for {demo['file']}")
+    return 0
+
+
+def delivery_demo(state: dict[str, Any]) -> dict[str, Any] | None:
+    """The demo record for `deliver`, with whether the operator opened it before this check."""
+    try:
+        demo, text = checked_demo(state)
+    except RunError as exc:
+        raise RunError(f"deliver refused: {exc}") from None
+    if demo is None or text is None:
+        return None
+    return {**demo, "opened_before_delivery": evidence_opened(state, str(demo["sha256"])),
+            "evidence_command": f"autonomous-run.py evidence {state['run_id']}",
+            "excerpt": text if len(text) <= DEMO_BODY_LIMIT else
+            text[:DEMO_BODY_LIMIT] + "\n[agentsmith: cut here; the full transcript is in the run folder]"}
+
+
+def demo_lines(demo: dict[str, Any] | None) -> list[str]:
+    """The body's Demo section: the controller's transcript, or a plain statement that none exists."""
+    if demo is None:
+        return ["### Demo", "None: the accepted spec declares no `## Demo` command, so this landing carries no "
+                "replayable demonstration of the changed behaviour.", ""]
+    return ["### Demo",
+            f"The controller ran the accepted spec's demo command on `{demo['commit']}` in the verifier sandbox: "
+            f"exit {demo['exit_code']}{' (timed out)' if demo.get('timed_out') else ''}. Transcript "
+            f"`{demo['file']}`, sha256 `{demo['sha256']}`, in the run folder; replay it with "
+            f"`{demo['evidence_command']}`. "
+            + ("The operator opened it before this check." if demo["opened_before_delivery"] else
+               "The operator had not opened it before this check."),
+            fenced(demo["excerpt"]), ""]
+
+
 def delivery_body(checks: dict[str, Any], verdict: dict[str, Any]) -> str:
     state, proof, checker, manifest = checks["state"], checks["proof"], checks["checker"], checks["manifest"]
     tier, limits, staleness = checks["tier"], manifest.get("limits") or {}, checks["staleness"]
@@ -4756,6 +4979,7 @@ def delivery_body(checks: dict[str, Any], verdict: dict[str, Any]) -> str:
         + (f" The merge with {merge['base']} passed verification (exit {merge['exit_code']}; output "
            f"`{merge['output_sha256']}`)." if merge.get("needed") else ""),
         "",
+        *demo_lines(checks.get("demo")),
         verdict["line"],
         "",
         "Auto-merge eligibility is information only: a human merges this pull request, and nothing in this "
@@ -4776,6 +5000,7 @@ def deliver(args: argparse.Namespace) -> int:
                        "request's own branch")
     repo = repo_root(Path.cwd())
     checks = delivery_checks(repo, load_run(repo, args.run_id), args.remote, args.base_branch)
+    checks["demo"] = delivery_demo(checks["state"])
     sha = args.sha if args.eligibility else checks["accepted"]
     ci: dict[str, Any] | None = None
     pushed: dict[str, Any] | None = None
@@ -4804,7 +5029,15 @@ def deliver(args: argparse.Namespace) -> int:
               "title": title, "body": body, "tier": checks["tier"],
               "staleness": checks["staleness"], "merge_verification": checks["merge_verification"],
               "packages": checks["packages"], "calibration": calibration,
-              "eligibility": verdict}
+              "eligibility": verdict,
+              "demo": ({**{key: value for key, value in checks["demo"].items() if key != "excerpt"},
+                        "command": without_local_paths(str(checks["demo"]["command"]), repo)}
+                       if checks["demo"] else None)}
+    # The delivery record: whether the operator opened the demo before this consent step.
+    demo = checks["demo"]
+    event(checks["state"], "delivery_checked", mode="eligibility" if args.eligibility else "dry-run", head=sha,
+          evidence_opened=bool(demo and demo["opened_before_delivery"]),
+          evidence_sha256=demo["sha256"] if demo else None)
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
         return 0
@@ -5161,6 +5394,10 @@ def parser() -> argparse.ArgumentParser:
     landing.add_argument("--base-branch", help="the branch the pull request targets (default: the remote's HEAD)")
     landing.add_argument("--json", action="store_true")
     landing.set_defaults(func=deliver)
+    shown = sub.add_parser("evidence", help="show an accepted or held run's demo transcript and record that "
+                                            "the operator opened it")
+    shown.add_argument("run_id")
+    shown.set_defaults(func=evidence_cmd)
     calibration = sub.add_parser("calibrate", help="judge two labelled candidates with the configured "
                                                      "checker and record the result (record-only)")
     calibration.add_argument("manifest", help="a run manifest whose roles.checker names the client and model")
