@@ -2599,6 +2599,19 @@ class AutonomousStateTests(unittest.TestCase):
             self.assertEqual((rejected["reason"], rejected["escalated"]), ("budget", True))
             self.assertEqual(events[-2:], ["attempt_rejected", "run_escalated"])
 
+    def test_a_tripped_identical_rejection_guard_wins_over_an_expired_budget(self) -> None:
+        # The guard has already decided the run; an expired deadline must not add a budget rejection
+        # on top of it, or the numbers count a third rejection and a budget stop that never happened.
+        with tempfile.TemporaryDirectory(prefix="agentsmith guard before budget ") as temporary:
+            common = Path(temporary)
+            outcome, durable, _events = self.run_with_fake_roles(
+                common, max_attempts=3, checker_status="accepted",
+                overrides={"remaining_seconds": lambda _state, _manifest: 0,
+                           "identical_rejection_streak": lambda _state: (2, "verify :: test_a")})
+            self.assertEqual((outcome, durable["status"]), (2, "escalated"))
+            self.assertIn("2 identical rejections in a row", durable["reason"])
+            self.assertEqual(self.run_events(common, "attempt_rejected"), [])
+
     def test_an_escalation_without_a_rejection_writes_no_reason(self) -> None:
         # An attempt cap, or a fault that is not a rejection, adds no `attempt_rejected` record.
         with tempfile.TemporaryDirectory(prefix="agentsmith plain escalation ") as temporary:

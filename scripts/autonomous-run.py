@@ -3572,14 +3572,16 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
     prior = state.get("last_checker_receipt")
     while state["attempt"] < max_attempts or pending_candidate(state) or state.get("repeat_attempt"):
         raise_if_stopped(Path(state["state_path"]).parent)
-        if remaining_seconds(state, manifest) <= 0:
-            raise RunError("wall-clock budget exhausted", reason="budget")
+        # The run-shape guard comes first: once it has tripped, the run is decided, and an expired
+        # deadline must not add a budget rejection on top of it.
         if not pending_candidate(state) and not state.get("repeat_attempt"):
             streak, signature = identical_rejection_streak(state)
             if streak >= identical_limit:
                 raise RunError(f"run-shape guard: {streak} identical rejections in a row ({signature}), "
                                f"limits.max_identical_rejections is {identical_limit}; another attempt would "
                                "repeat them, so a person should read the last rejection and the verify output")
+        if remaining_seconds(state, manifest) <= 0:
+            raise RunError("wall-clock budget exhausted", reason="budget")
         if not pending_candidate(state):
             if not state.pop("repeat_attempt", False):
                 state["attempt"] += 1
