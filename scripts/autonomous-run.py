@@ -1544,6 +1544,9 @@ def clean(repo: Path) -> bool:
 
 
 def load_run(repo: Path, run_id: str) -> dict[str, Any]:
+    # The grammar `validate_manifest` gives every run_id: a name, never a path out of the runs folder.
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", str(run_id)):
+        raise RunError(f"{run_id!r} is not a run id: use only letters, digits, '-' and '_'")
     path = state_path(repo, run_id)
     if not path.exists():
         raise RunError(f"no run state for {run_id}")
@@ -4912,6 +4915,9 @@ def evidence_cmd(args: argparse.Namespace) -> int:
     """Show a run's demo transcript and record that the operator opened it."""
     repo = repo_root(Path.cwd())
     state = load_run(repo, args.run_id)
+    # The transcript is read and the event written beside the state: that must be the run's folder.
+    if Path(str(state.get("state_path"))).resolve() != state_path(repo, args.run_id).resolve():
+        raise RunError(f"evidence refused: the state of run {args.run_id} points outside its run folder")
     if state.get("status") not in {"accepted", "awaiting-human"}:
         raise RunError(f"evidence: run {args.run_id} is {state.get('status')}; the controller records a demo "
                        "transcript only when a run is accepted or held for a human")

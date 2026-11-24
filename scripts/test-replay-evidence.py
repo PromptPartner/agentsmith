@@ -300,6 +300,25 @@ class DemoHardeningTests(unittest.TestCase):
         self.assertLessEqual(len(result.stdout), 1000)
 
     # Finding 5: a run id cannot leave the runs folder.
+    def test_a_run_id_that_leaves_the_runs_folder_is_refused(self) -> None:
+        for name in ("../rogue", "a/b", "", "..", "x y"):
+            with self.subTest(name=name), self.assertRaisesRegex(CONTROLLER.RunError, "run id"):
+                CONTROLLER.load_run(ROOT, name)
+
+    def test_evidence_refuses_a_state_that_points_outside_its_run_folder(self) -> None:
+        repo = self.tmp / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        folder = repo / ".git/agentsmith-runs/good"
+        folder.mkdir(parents=True)
+        (self.run / "attempt-1-demo.txt").write_bytes(self.text)
+        (folder / "state.json").write_text(json.dumps(self.state), encoding="utf-8")
+        result = subprocess.run([sys.executable, str(CONTROLLER_PATH), "evidence", "good"], cwd=repo,
+                                text=True, capture_output=True, check=False)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("outside its run folder", result.stderr)
+        self.assertFalse((self.run / "events.jsonl").exists())
+
 
 class DemoSectionTests(unittest.TestCase):
     SPEC = "---\nstatus: accepted\n---\n# Spec\n"
