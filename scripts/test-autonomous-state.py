@@ -688,6 +688,21 @@ class AutonomousStateTests(unittest.TestCase):
             self.assertIn("rewritten, not appended to",
                           CONTROLLER.factory_tampering(before, CONTROLLER.factory_snapshot(common)))
 
+    def test_an_intake_verdict_log_does_not_stop_a_run(self) -> None:
+        # Demo lap 1 (2026-11-24) escalated "agentsmith-factory/intake.jsonl is not an operator log
+        # file": `factory intake` writes that log, so every repository that used intake could not run.
+        import factory
+        self.assertEqual(CONTROLLER.FACTORY_LOGS, {f"{name}.jsonl" for name in factory.LOG_NAMES})
+        with tempfile.TemporaryDirectory(prefix="agentsmith factory intake ") as temporary:
+            common = Path(temporary)
+            folder = common / "agentsmith-factory"
+            folder.mkdir()
+            (folder / "intake.jsonl").write_text('{"verdict": "ACCEPT"}\n', encoding="utf-8")
+            before = CONTROLLER.factory_snapshot(common)
+            with (folder / "intake.jsonl").open("a", encoding="utf-8") as log:
+                log.write('{"verdict": "REJECT"}\n')
+            self.assertIsNone(CONTROLLER.factory_tampering(before, CONTROLLER.factory_snapshot(common)))
+
     def test_kill_switch_in_main_checkout_pauses_linked_worktrees(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith pause ") as temporary:
             repo = Path(temporary).resolve() / "main"

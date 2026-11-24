@@ -862,6 +862,10 @@ def readiness(repo: Path, *, controller: Any, gh: Any | None, manifest: dict[str
 
 # --- export and operator logs ---------------------------------------------------------------------
 
+# The logs under the Git folder's `agentsmith-factory/`. The run controller lets a live run's
+# factory folder hold exactly these (`FACTORY_LOGS` there), and a test keeps both lists equal.
+LOG_NAMES = ("events", "defects", "minutes", "intake")
+
 def collect_export(repo: Path) -> dict[str, Any]:
     runs, unreadable = load_runs(repo)
     if unreadable:
@@ -878,7 +882,7 @@ def collect_export(repo: Path) -> dict[str, Any]:
     root = factory_dir(repo)
     return {"schema_version": SCHEMA_VERSION, "runs": exported,
             "factory": {name: read_jsonl(root / f"{name}.jsonl")
-                        for name in ("events", "defects", "minutes", "intake")}}
+                        for name in LOG_NAMES}}
 
 
 # Export redacts rather than refuses: the record is still useful with a secret-like value removed.
