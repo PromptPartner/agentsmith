@@ -3,6 +3,26 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [ ] 2026-11-24 — Found by the first real calibration: a Claude checker cannot pass `calibrate` on
+  macOS. With its sandbox now able to read the Git folders behind its worktree, Claude Code
+  2.1.331 still records its `git` Bash calls as `permission_denials` in the real launch
+  (`--permission-mode dontAsk` with the controller's read-only sandbox settings), and the
+  controller rightly refuses an acceptance made after denied tool calls. A standalone probe with
+  the same settings function was allowed, so a difference in the real launch causes it; not yet
+  found. Until then, use Codex as the checker: `gpt-6.1-sol` at high effort passed on the same day.
+- [ ] 2026-11-24 — On macOS the verifier sandbox denies reads anywhere under the home folder except
+  the worktree, the Git folder and its scratch folder. A Python (or other tool) installed under the
+  home folder — pyenv, uv-managed interpreters, a `~/.venvs` virtual environment on `PATH` — cannot
+  start there (`PermissionError` on `pyvenv.cfg`), and the verify fails with exit 1. Workaround: put
+  the tool outside the home folder. The demo laps used a virtual environment under `/private/tmp`.
+- [ ] 2026-11-24 — `calibrate` records a checker as `failed` when the host could not run the
+  verifier at all: with the interpreter problem above, the clean candidate's verify exited 1 and
+  the record blamed the checker. A verify that fails on the clean candidate should make the
+  calibration `error` (exit 2, could not run), not `failed`.
+- [ ] 2026-11-24 — `prepare --spec` accepts a spec file that does not exist and writes the
+  manifest. `start` refuses it ("accepted spec must be committed at base_ref"), so nothing runs,
+  but the mistake surfaces late. Found when a shell loop passed the wrong file names.
+
 - [ ] 2026-11-24 — Gap left open by SF-16b: the role report contract (`VERDICT: <STATUS>`, then
   `## Summary` with 3 to 5 bullets) is checked only on receipts that a role writes. The receipts
   the controller writes itself do not follow it: the rejection before any checker
