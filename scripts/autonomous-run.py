@@ -964,6 +964,28 @@ def rework_note(repo: Path, manifest: dict[str, Any]) -> str | None:
     return note_text_problem(data, str(rework["note_path"])).strip()
 
 
+OPERATOR_FEEDBACK_FILE = "operator-feedback.md"
+
+
+def keep_operator_feedback(state: dict[str, Any], manifest: dict[str, Any]) -> None:
+    """Keep a rework's note as its own file in the new run's folder (SF-16). The note in the
+    repository may change or go once the run started; the run's own copy is what its maker was
+    given. The folder is controller state that no role may write. A rework is a new run, so its
+    attempts and spend start from zero: the held run's budget is never carried over."""
+    rework = manifest.get("rework")
+    if not isinstance(rework, dict):
+        return
+    repo = Path(state["repo"])
+    data = (repo / str(rework["note_path"])).read_bytes()
+    if hashlib.sha256(data).hexdigest() != rework["note_sha256"]:
+        raise RunError("rework note changed since prepare; prepare a new run with the new note")
+    kept = Path(state["state_path"]).parent / OPERATOR_FEEDBACK_FILE
+    kept.write_bytes(data)
+    state["operator_feedback"] = {"of": rework["of"], "file": OPERATOR_FEEDBACK_FILE,
+                                  "note_path": rework["note_path"], "sha256": rework["note_sha256"]}
+    save_state(state, "operator_feedback_kept", of=rework["of"], sha256=rework["note_sha256"])
+
+
 def note_text_problem(data: bytes, shown: str) -> str:
     """The note as text. It reaches the maker as a process argument, which cannot hold NUL."""
     try:
@@ -3615,6 +3637,7 @@ def start(args: argparse.Namespace) -> int:
                 "state_path": str(path),
             }
             save_state(state, "run_started", branch=branch, worktree=str(worktree))
+            keep_operator_feedback(state, manifest)
         return run_controller(state, manifest)
     finally:
         if token is not None:

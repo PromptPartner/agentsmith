@@ -538,10 +538,11 @@ class HiddenNamesStayHiddenTests(Fixture):
 class ReworkNoteTests(Fixture):
     NOTE = "Keep the fixed value, but also handle an empty file: the operator saw it fail in review."
 
-    def finished_run(self, run_id: str, status: str) -> None:
+    def finished_run(self, run_id: str, status: str, **fields) -> None:
         folder = self.repo / ".git/agentsmith-runs" / run_id
         folder.mkdir(parents=True)
-        (folder / "state.json").write_text(json.dumps({"run_id": run_id, "status": status}), encoding="utf-8")
+        (folder / "state.json").write_text(json.dumps({"run_id": run_id, "status": status, **fields}),
+                                           encoding="utf-8")
 
     def prepare(self, run_id: str, rework_of: str, note: str = "notes/rework.md") -> subprocess.CompletedProcess[str]:
         template = self.root / "template.json"
@@ -585,6 +586,32 @@ class ReworkNoteTests(Fixture):
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn("rework note changed since prepare", refused.stderr)
         self.assertFalse((self.repo / ".git/agentsmith-runs/third/state.json").exists())
+
+    @unittest.skipUnless(sandbox_available(), "a real run needs the macOS or Linux role sandbox")
+    def test_feedback_on_a_held_run_is_its_own_file_and_starts_a_fresh_attempt_budget(self) -> None:
+        # SF-16: the held run spent its whole attempt budget; the operator's feedback starts a new run
+        # with a full budget, and that run keeps the feedback in its own folder as its own file.
+        self.finished_run("first", "awaiting-human", attempt=2, claude_cost_usd=9.5, codex_tokens_used=900)
+        self.write_note()
+        self.assertEqual(self.prepare("second", "first").returncode, 0)
+        self.git(self.repo, "add", ".")
+        self.git(self.repo, "commit", "-qm", "test: rework contract")
+        started = self.controller("start", ".harness/runs/second.json")
+        self.assertEqual(started.returncode, 0, started.stderr)
+        run = self.repo / ".git/agentsmith-runs/second"
+        state = self.state("second")
+        self.assertEqual((state["attempt"], state["claude_cost_usd"] < 1, state["codex_tokens_used"] < 900),
+                         (1, True, True), "attempts and spend count from zero, not from the held run")
+        kept = run / "operator-feedback.md"
+        self.assertEqual(kept.read_text(encoding="utf-8"), self.NOTE + "\n")
+        digest = hashlib.sha256(kept.read_bytes()).hexdigest()
+        self.assertEqual(state["operator_feedback"], {"of": "first", "file": "operator-feedback.md",
+                                                      "note_path": "notes/rework.md", "sha256": digest})
+        events = [json.loads(line) for line in (run / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+        [kept_event] = [record for record in events if record["event"] == "operator_feedback_kept"]
+        self.assertEqual((kept_event["of"], kept_event["sha256"]), ("first", digest))
+        self.assertEqual(json.loads((self.repo / ".git/agentsmith-runs/first/state.json").read_text())["attempt"], 2,
+                         "the held run is never reopened")
 
     def test_a_note_must_be_text_without_nul(self) -> None:
         self.finished_run("done", "accepted")

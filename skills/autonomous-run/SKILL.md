@@ -68,7 +68,8 @@ When the maker and the checker run the same runtime, `limits.checker_reserve` (d
 run escalates with "budget reserved for checking".
 
 To rework a finished run, prepare a new run with `--rework-of <run-id> --note <file>`; the note is
-pinned by hash and goes to the maker. Never reopen an accepted run.
+pinned by hash and goes to the maker, the new run keeps it as `operator-feedback.md` in its own
+folder, and it starts with a fresh attempt budget. Never reopen an accepted run.
 
 ## Start and supervise
 

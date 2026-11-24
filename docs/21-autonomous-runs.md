@@ -45,7 +45,13 @@ The run it reworks must be finished (`accepted`, `awaiting-human`, `escalated` o
 reopened: a rework is always a new run with a new ID. The manifest pins the note by path and
 SHA-256 in `rework`, and `start` and `resume` refuse when the note changed after `prepare`.
 The maker receives the note through its prompt, marked as a rework of the earlier run. A note
-may be at most 16 KB.
+may be at most 16 KB. When the rework starts, the controller keeps the note as its own file,
+`operator-feedback.md`, in the new run's folder under `agentsmith-runs/`, where no role may write.
+The run state records it as `operator_feedback` (the run it reworks, the file, the note's path in
+the repository and its SHA-256), and the `operator_feedback_kept` event names the same hash. So the
+feedback that drove a run stays with that run, even when the note in the repository changes later.
+Feedback on a held or escalated run starts a fresh attempt budget: the rework is a new run, so its
+attempts and its spend start from zero, and the earlier run's state is never changed.
 
 **Attention budget.** `prepare` refuses a new run while as many runs wait on you as the risk policy
 allows, and `start` checks the same limit again before it launches anything, so runs prepared while
