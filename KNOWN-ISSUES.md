@@ -158,6 +158,9 @@ been authorized, so the entries are kept here.
   `symbolic-ref` still names (the test's repository has no commit). With the 0.5 s delay a hook run
   took 1.42 s before and 0.88 s after on a local Mac, so the margin to the watchdog roughly doubled
   while the test still proves a git slower than the old 0.25 s limit.
+  2026-11-24: failed once more in a local full verify while a demo lap, a second gate and a Codex
+  tester ran on the same Mac (integration head db9fcf8), then passed 3 of 3 runs alone. The margin
+  still runs out under heavy local load; watch CI before treating it as fixed for good.
 - [ ] 2026-11-18 — Limit of the calibration staleness check (SF-09): a record goes stale when the
   configured model version differs from the calibrated one, but the version is read from the model
   name. A name with no version part, such as the alias `opus`, has an empty version, so when the
