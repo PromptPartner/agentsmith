@@ -63,8 +63,10 @@ and `contract` (`openapi.*`, `swagger.*`, `*.proto`, `*.graphql`, `contracts/*`)
 `allowed_paths` pattern belongs to a class when some path could match both, ignoring case: it
 fails closed, so `db/migrations/*`, `a/Migrations/*`, `a/[m]igrations/*` and `a/mig*/0002.sql` are
 all migration paths. A `*` inside a segment stays in that segment, and a segment that is only `*`
-or `**` names nothing, so a broad `db/**` or `src/*.py` is not a migration path; give a run that
-adds migrations a narrow pattern, or a `resources` key, so the graph can see it. A manifest adds a class, or more patterns for one, in
+or `**` names nothing, so a broad `db/**` is not a migration path; give a run that adds
+migrations a narrow pattern, or a `resources` key, so the graph can see it. A wildcard inside a
+segment can still spell a class file: `src/a/*.py` could be `src/a/schema.py`, so two such runs
+wait for each other. Use `src/a/**` when that is not intended. A manifest adds a class, or more patterns for one, in
 `scope.sequenced`, for example `{"adr": ["docs/adr/*"]}`; it cannot remove a built-in class.
 Reading the same accepted spec is not a conflict: the nodes of one graph usually share it.
 
