@@ -45,6 +45,12 @@ Each row has a `kind`, an `id`, an `age` (since the item last changed), a one-li
 and a `tier` where a commit range exists (from the [risk map](29-risk-map.md), computed from the
 run's base commit to its commit).
 
+An `accepted` or `awaiting-human` row whose spec declared a demo also links the controller's
+demo transcript ([replayable demo evidence](21-autonomous-runs.md#replayable-demo-evidence)). Its
+next step ends with the `autonomous-run.py evidence <run-id>` command and says whether you opened
+that transcript yet, and `--json` adds an `evidence` object: `artefact`, `sha256`, `command` and
+`opened`. A transcript that no longer matches its recorded hash is not linked; a warning names it.
+
 The branch that counts as landed is resolved in this order: `--base <branch>` on `origin`; else the
 branch `origin/HEAD` points to; else `origin/main`; else `origin/master`. When `--base` names a
 branch that does not exist, or `origin/HEAD` points to a branch that is gone, the inbox says so in

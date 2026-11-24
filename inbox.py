@@ -9,6 +9,7 @@ directory, never in the tracked tree and never on GitHub.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import importlib.util
 import json
 import os
@@ -254,11 +255,45 @@ class _Collector:
             self.warnings.append(f"tier unavailable for {str(head)[:12]}: {exc}")
             return None
 
-    def add(self, kind: str, item_id: str, since: float | None, next_step: str, tier: str | None = None) -> None:
+    def add(self, kind: str, item_id: str, since: float | None, next_step: str, tier: str | None = None,
+            evidence: dict[str, Any] | None = None) -> None:
         age = max(0, int(self.now - since)) if since is not None else None
         self.rows.append({"kind": kind, "id": item_id, "age_seconds": age,
                           "age": age_text(age) if age is not None else "?", "tier": tier,
-                          "next_step": _one_line(next_step)})
+                          "next_step": _one_line(next_step), **({"evidence": evidence} if evidence else {})})
+
+    def _demo(self, name: str, state: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+        """The run's controller-recorded demo transcript (SF-18b), checked against its hash, and the
+        text that links it in the row. A transcript that no longer matches is a warning, not a link."""
+        demo = state.get("demo")
+        if not isinstance(demo, dict):
+            return None, ""
+        folder = self.common / "agentsmith-runs" / name
+        artefact, digest = str(demo.get("file")), demo.get("sha256")
+        path = folder / artefact
+        try:
+            held = (re.fullmatch(r"attempt-[0-9]+-demo\.txt", artefact) is not None and path.is_file()
+                    and not path.is_symlink() and hashlib.sha256(path.read_bytes()).hexdigest() == digest)
+        except OSError:
+            held = False
+        if not held:
+            self.warnings.append(f"run {name}: its demo transcript {artefact} changed after the controller "
+                                 "recorded it; deliver refuses the run")
+            return None, ""
+        opened = False
+        try:
+            for line in (folder / "events.jsonl").read_text(encoding="utf-8").splitlines():
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                opened = opened or (isinstance(record, dict) and record.get("event") == "evidence_opened"
+                                    and record.get("sha256") == digest)
+        except OSError:
+            pass
+        command = f"autonomous-run.py evidence {name}"
+        evidence = {"artefact": artefact, "sha256": digest, "command": command, "opened": opened}
+        return evidence, f"; watch its demo transcript first: {command} ({'opened' if opened else 'not opened yet'})"
 
     def runs(self, controller: Any | None = None) -> None:
         root = self.common / "agentsmith-runs"
@@ -320,16 +355,17 @@ class _Collector:
                 self.warnings.append(f"run {name}: dropped, branch {branch} no longer contains {label} commit {commit[:12]}")
             elif not (self.origin_base and _contains(self.repo, commit, self.origin_base)):
                 # Not landed. An open pull request with it as head still waits on the operator: merging is theirs.
+                evidence, link = self._demo(name, state)
                 if held:
                     reason = state.get("reason") or "checker advisory"
                     self.add("awaiting-human", name, since, f"{reason}; review {commit[:12]} on {branch}; a human "
                              "reviews and re-runs with an explicit approval: calibrate the checker until it passes, "
-                             f"then prepare a rework of {name}", self._tier(base, commit))
+                             f"then prepare a rework of {name}" + link, self._tier(base, commit), evidence)
                 else:
                     step = (f"review accepted commit {commit[:12]} on {branch}: an open pull request has it as its "
                             "head; review and merge that pull request" if commit in self.pr_heads
                             else self._landing_step(commit, branch))
-                    self.add("accepted", name, since, step, self._tier(base, commit))
+                    self.add("accepted", name, since, step + link, self._tier(base, commit), evidence)
             return
         if status not in TERMINAL_RUN and status not in UNFINISHED_RUN:
             raise ValueError(f"unknown status {status!r}")

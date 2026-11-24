@@ -32,6 +32,8 @@ def load(name: str, path: Path):
 CONTROLLER = load("agentsmith_replay_controller", CONTROLLER_PATH)
 # The deliver suite's real-run fixture: an accepted contract, a local bare origin, fake clients.
 DELIVER = load("agentsmith_replay_deliver_fixture", ROOT / "scripts" / "test-deliver.py")
+sys.path.insert(0, str(ROOT))
+import inbox  # noqa: E402
 
 DEMO = "\n## Demo\n\n```sh\ncat src/change.txt\necho 'demo note' >&2\n```\n"
 
@@ -170,6 +172,26 @@ class ReplayEvidenceTests(unittest.TestCase):
         checked = self.events(repo, "delivery_checked")[-1]
         self.assertIs(checked["evidence_opened"], False)
         self.assertIsNone(checked["evidence_sha256"])
+
+    def test_the_inbox_row_links_the_transcript_and_shows_whether_it_was_opened(self) -> None:
+        repo = self.accepted_run(spec_note=DEMO)
+        demo = self.state(repo)["demo"]
+
+        def row() -> dict:
+            rows = [item for item in inbox.collect(repo)["rows"] if item["id"] == "deliver"]
+            self.assertEqual(len(rows), 1)
+            return rows[0]
+
+        before = row()
+        self.assertEqual(before["kind"], "accepted")
+        self.assertEqual(before["evidence"], {"artefact": "attempt-1-demo.txt", "sha256": demo["sha256"],
+                                              "command": "autonomous-run.py evidence deliver", "opened": False})
+        self.assertIn("autonomous-run.py evidence deliver", before["next_step"])
+        self.assertIn("not opened", before["next_step"])
+        self.assertEqual(self.evidence(repo).returncode, 0)
+        after = row()
+        self.assertIs(after["evidence"]["opened"], True)
+        self.assertNotIn("not opened", after["next_step"])
 
     def test_a_held_run_records_its_demo_too(self) -> None:
         repo = self.accepted_run(spec_note=DEMO, calibrated=False)
