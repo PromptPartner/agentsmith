@@ -1315,6 +1315,9 @@ def validate_manifest(manifest: dict[str, Any], repo: Path) -> tuple[Path, str]:
     verify_config = manifest["verify"]
     if not isinstance(verify_config, dict) or not isinstance(verify_config.get("command"), str) or not verify_config["command"].strip():
         raise RunError("verify.command must name a required verification command")
+    refused = verify_command_problem(verify_config["command"])
+    if refused:
+        raise RunError(refused)
     validate_budgets(manifest)
     hidden = hidden_tests_problem(manifest, repo)
     if hidden:
@@ -1488,6 +1491,11 @@ def prepare(args: argparse.Namespace) -> int:
     if unset:
         raise RunError(f"{', '.join(unset)} are blank or placeholders; pass --maker-model and "
                        "--checker-model, or fill them in the template, before prepare writes a manifest")
+    verify_config = manifest.get("verify")
+    refused = verify_command_problem(verify_config["command"]) if isinstance(verify_config, dict) \
+        and isinstance(verify_config.get("command"), str) else None
+    if refused:
+        raise RunError(refused)
     validate_budgets(manifest)
     hidden = hidden_tests_problem(manifest, repo)
     if hidden:
@@ -1775,6 +1783,26 @@ NAMED_CHECKS = (
     ("passing", re.compile(r"^(\S+::\S+) PASSED\b"), "{}"),
     ("failing", re.compile(r"^(\S+::\S+) (?:FAILED|ERROR)\b"), "{}"),
 )
+
+
+WINDOWS_PIPELINE_REFUSAL = (
+    "the verify command contains `|`, and the Windows verifier runs it through cmd.exe, which has no "
+    "pipefail: `tests | more` would pass when the tests fail. A quoted or escaped `|` is refused too, "
+    "because a nested shell (`cmd /c \"a | b\"`, `powershell -c \"a | b\"`) still runs it as a pipeline; "
+    "only `||` is allowed. Use a single command, or a script that exits non-zero when its tests fail, "
+    "as verify.command")
+
+
+def windows_pipeline(command: str) -> bool:
+    """Whether `command` holds a `|` that is not exactly `||`. Quoting and `^` escapes are not
+    trusted: a nested `cmd /c` or `powershell -c` re-parses its quoted string as a pipeline. A
+    run of `|` other than two (`|`, `|||`) is refused; `||` runs the next command on failure."""
+    return any(len(run) != 2 for run in re.findall(r"\|+", command))
+
+
+def verify_command_problem(command: str) -> str | None:
+    """Why this platform's verifier cannot judge `command` fail-closed, or None."""
+    return WINDOWS_PIPELINE_REFUSAL if sys.platform == "win32" and windows_pipeline(command) else None
 
 
 def verifier_timed_out(result: subprocess.CompletedProcess[str]) -> bool:
@@ -2238,6 +2266,11 @@ def sandboxed_verify(command: str, cwd: Path, timeout: int, env: dict[str, str],
     if sys.platform == "win32" and read_dirs:
         return subprocess.CompletedProcess([], 126, "", "hidden tests need the macOS or Linux verifier sandbox")
     if sys.platform == "win32":
+        # Checked again here, not only at prepare and start: deliver and a graph child reach the
+        # verifier too, and a pipeline cmd.exe runs without pipefail must never be judged.
+        refused = verify_command_problem(command)
+        if refused:
+            return subprocess.CompletedProcess([command], 126, "", refused)
         # The Windows verifier points HOME, USERPROFILE, APPDATA, TEMP and TMP at the disposable
         # worktree and LOCALAPPDATA at a temporary AppContainer profile, both private to it.
         from windows_verifier_sandbox import run_verifier
@@ -3634,6 +3667,12 @@ def status_cmd(args: argparse.Namespace) -> int:
     view = {key: state.get(key) for key in keys if state.get(key) is not None}
     if isinstance(state.get("risk"), dict):
         view["risk_tier"] = state["risk"].get("tier")  # report-only: it decides nothing yet
+    baseline = state.get("verification_baseline")
+    if isinstance(baseline, dict):
+        # What every attempt is compared with: a check passing here and failing later regressed.
+        view["verification_baseline"] = {key: baseline[key] for key in
+                                         ("commit", "verification", "exit_code", "reason", "passing", "failing")
+                                         if baseline.get(key) is not None}
     print(json.dumps(view, indent=2))
     return 0
 

@@ -3,6 +3,41 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [x] 2026-11-21 — Gap left open by SF-11: on macOS and Linux the verify command runs under
+  `bash -o pipefail`, but the Windows verifier runs it through `cmd.exe`, which has no pipefail, so
+  a verify command such as `pytest | more` passed on Windows when its tests failed. Fixed: on
+  Windows, `prepare`, `start` and `resume` refuse a verify command that contains a pipeline, and the
+  verifier refuses it again (exit 126, never a pass). Only `||` is allowed.
+- [x] 2026-11-22 — Found by an independent Codex test of the entry above: the first version allowed
+  a `|` inside quotes or escaped with `^`, but a nested shell re-parses it, so `cmd /c "exit /b 3 |
+  more"` and `powershell -c "a | b"` still ran as pipelines that hide a failure. Fixed: on Windows
+  every `|` that is not exactly `||` is refused, quoted or escaped.
+- [x] 2026-11-21 — Test gap left open by SF-11: the Windows verifier's timeout was mapped to an
+  `incomplete` attempt, but only mocks proved it. Fixed: `scripts/test-windows-verifier-sandbox.py`
+  (Windows CI step "Windows verifier file and network boundary") now runs a slow command through
+  the real AppContainer verifier with a 15-second limit and asserts that it started, was stopped
+  well before it finished, and ends `incomplete`, not `passed`. It is skipped off Windows.
+- [x] 2026-11-21 — Gap left open by SF-11: the run stored the verify result of its base commit as
+  `verification_baseline`, and every attempt is judged against it, but `status <id>` did not show
+  it, so an operator could not see why a check counted as a regression without reading
+  `state.json`. Fixed: `status` prints `verification_baseline` (commit, verification, exit code,
+  reason, passing and failing checks) once the run has one.
+- [x] 2026-11-21 — Gap left open by SF-12b: `factory intake` with a verdict appends its record to
+  `agentsmith-factory/intake.jsonl` in the Git folder, but `factory export` wrote only the events,
+  defects and minutes logs, so the intake history stayed behind when the record was kept outside
+  the repository. Fixed: `factory.json` now has an `intake` list, redacted with the same home-folder
+  and secret rules as the rest of the export.
+- [x] 2026-11-22 — Found by an independent Codex test of the intake export: export redaction cut a
+  quoted secret at its first space: a two-word quoted password such as `abcdefgh ijklmnop` exported
+  as `[redacted: assigned secret] ijklmnop"`, and `password="correct horse battery staple"` (first
+  word under 8 characters) exported unchanged. The secret scanner's pattern, which export also
+  applies, did the same for `pwd=`. Fixed: a quoted value is redacted to its closing quote, single
+  or double; an unquoted value still ends with its token; the export keywords include `pwd`.
+- [ ] 2026-11-22 — Known limit of the secret scanner, found with the entry above: its `assigned
+  secret literal` rule needs 8 characters without a space after the opening quote, so it does not
+  flag a passphrase whose first word is shorter, such as `"correct horse battery staple"`. Kept on
+  purpose: the same rule keeps labels such as `password = "Enter your password"` from blocking a
+  commit. Export redaction does not have this limit.
 - [ ] 2026-11-21 — Gap found while adding the attention budget (SF-18a): there is no command to
   dismiss a waiting run. A run leaves the inbox, and the budget count, only when it lands or when
   its branch is deleted; a deleted branch then shows as a warning for as long as the run folder
@@ -25,13 +60,17 @@ been authorized, so the entries are kept here.
   between that check and the create is still followed, and a missing folder is created before the
   check, so a swap can leave an empty folder outside the repository. No draft or record is written
   in that case.
-- [ ] 2026-11-21 — Intermittent failure of `test_a_slow_git_still_finds_the_handoff` on a macOS CI
+- [x] 2026-11-21 — Intermittent failure of `test_a_slow_git_still_finds_the_handoff` on a macOS CI
   runner (run 44933786525, PR #92; the same commit passed in its other run). The test makes every
   `git` call start 0.5 s late. The hook's whole recall still runs under its 2-second watchdog, so a
   loaded runner that is also slow to start Python passes 2 s, and the hook prints "Local memory
   unavailable or timed out" instead of the handoff. The 0.8 s per-call limit from the 2026-11-06
-  fix holds; the margin is in the total. Not fixed: the options are fewer Git calls in the hook, or
-  a test delay sized to the watchdog. Rerun the failed job meanwhile.
+  fix holds; the margin is in the total. Fixed in the hook, not the test: it read the branch and
+  then the commit, two git starts in a row. They now start at the same time, so the path holds one
+  git start. One `rev-parse` call cannot replace both, because it fails on an unborn branch, which
+  `symbolic-ref` still names (the test's repository has no commit). With the 0.5 s delay a hook run
+  took 1.42 s before and 0.88 s after on a local Mac, so the margin to the watchdog roughly doubled
+  while the test still proves a git slower than the old 0.25 s limit.
 - [ ] 2026-11-18 — Limit of the calibration staleness check (SF-09): a record goes stale when the
   configured model version differs from the calibrated one, but the version is read from the model
   name. A name with no version part, such as the alias `opus`, has an empty version, so when the

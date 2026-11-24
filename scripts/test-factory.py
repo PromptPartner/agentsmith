@@ -293,6 +293,58 @@ class FactoryTests(unittest.TestCase):
         self.assertEqual(json.loads((target / "factory.json").read_text(encoding="utf-8"))["redactions"],
                          summary["redactions"])
 
+    def test_export_includes_intake_records_with_the_same_redaction(self) -> None:
+        # An intake verdict is part of the factory's record: export carries it, redacted like the rest.
+        token = "ghp_" + "b" * 36
+        record = {"schema_version": 1, "at": "2026-11-21T10:00:00+00:00", "untrusted": True,
+                  "issue": {"repository": "example/repo", "number": 7, "url": "https://github.com/example/repo/issues/7",
+                            "title": f"Crash with {token} in the log", "author": "someone",
+                            "body_sha256": "d" * 64},
+                  "sanitisation": {"title": {}, "body": {}},
+                  "verdict": {"verdict": "ACCEPT"}, "draft_spec": None}
+        factory.append_log(self.repo, "intake", record)
+        target = self.repo.parent / "export"
+        summary = factory.export(self.repo, target)
+        logs = json.loads((target / "factory.json").read_text(encoding="utf-8"))
+        [exported] = logs["intake"]
+        self.assertNotIn(token, json.dumps(exported))
+        self.assertIn("[redacted: GitHub token]", exported["issue"]["title"])
+        self.assertEqual({key: value for key, value in exported.items() if key != "issue"},
+                         {key: value for key, value in record.items() if key != "issue"})
+        self.assertGreaterEqual(summary["redactions"], 1)
+
+    def test_export_redacts_a_whole_quoted_secret_with_spaces(self) -> None:
+        # A quoted value ends at its closing quote, not at its first space: a partial redaction
+        # leaks the rest of a passphrase. With the scanner's patterns too, as `factory export` runs.
+        import agentsmith
+        values = {
+            "pass" + 'word="abcdefgh ijklmnop"': "ijklmnop",
+            'password="correct horse battery staple"': "horse",
+            "api_key = 'correct horse battery staple'": "battery",
+            "p" + 'wd="abcdefgh ijklmnop"': "ijklmnop",
+        }
+        for text, leaked in values.items():
+            with self.subTest(text=text):
+                record = {"at": "2026-11-21T10:00:00+00:00", "issue": {"title": f"Login fails: {text} here"},
+                          "verdict": {"verdict": "REJECT", "reason": f"pasted {text} in the body"}}
+                root = self.repo / ".git/agentsmith-factory"
+                if root.exists():
+                    shutil.rmtree(root)
+                factory.append_log(self.repo, "intake", record)
+                target = self.repo.parent / "export"
+                if target.exists():
+                    shutil.rmtree(target)
+                factory.export(self.repo, target, secret_patterns=agentsmith.SECRET_PATTERNS)
+                [exported] = json.loads((target / "factory.json").read_text(encoding="utf-8"))["intake"]
+                for field in (exported["issue"]["title"], exported["verdict"]["reason"]):
+                    self.assertNotIn(leaked, field)
+                    self.assertIn("[redacted:", field)
+                    self.assertTrue(field.endswith((" here", " in the body")), field)
+        # An unquoted value still ends at the end of its token.
+        counter = [0]
+        self.assertEqual(factory.redact("password=abcdefghijk then", factory.EXPORT_SECRET_PATTERNS, counter),
+                         "[redacted: assigned secret] then")
+
     def test_export_redacts_every_windows_form_of_the_home_folder(self) -> None:
         class WindowsHome(PureWindowsPath):
             def resolve(self) -> "WindowsHome":

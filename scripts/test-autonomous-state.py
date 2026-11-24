@@ -2519,6 +2519,93 @@ class AutonomousStateTests(unittest.TestCase):
         self.assertTrue(CONTROLLER.verifier_timed_out(result))
         self.assertEqual(CONTROLLER.verification_outcome(result)["verification"], "incomplete")
 
+    def test_status_shows_the_verifier_baseline_when_the_run_has_one(self) -> None:
+        # The base commit's verify result decides what counts as a regression, so the operator
+        # reading `status` sees it, and sees no baseline key before the first verify stage.
+        with tempfile.TemporaryDirectory(prefix="agentsmith status baseline ") as temporary:
+            repo = Path(temporary).resolve() / "repo"
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            run_dir = repo / ".git/agentsmith-runs/item"
+            run_dir.mkdir(parents=True)
+            state = {"run_id": "item", "status": "checking", "attempt": 1, "base_head": "b" * 40}
+
+            def shown() -> dict[str, Any]:
+                (run_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+                output = io.StringIO()
+                with mock.patch.object(CONTROLLER.Path, "cwd", return_value=repo), \
+                        contextlib.redirect_stdout(output):
+                    self.assertEqual(CONTROLLER.status_cmd(CONTROLLER.parser().parse_args(["status", "item"])), 0)
+                return json.loads(output.getvalue())
+
+            self.assertNotIn("verification_baseline", shown())
+            state["verification_baseline"] = {
+                "commit": "b" * 40, "exit_code": 1, "verification": "failed", "reason": None,
+                "passing": ["phase: build"], "failing": ["phase: tests", "the verify command"],
+                "output_sha256": "c" * 64}
+            self.assertEqual(shown()["verification_baseline"], {
+                "commit": "b" * 40, "verification": "failed", "exit_code": 1,
+                "passing": ["phase: build"], "failing": ["phase: tests", "the verify command"]})
+            state["verification_baseline"] = {
+                "commit": "b" * 40, "exit_code": 126, "verification": "incomplete", "passing": [],
+                "failing": [], "reason": "the verify command timed out before it finished",
+                "output_sha256": "c" * 64}
+            self.assertEqual(shown()["verification_baseline"]["reason"],
+                             "the verify command timed out before it finished")
+
+    def test_windows_refuses_a_verify_pipeline_it_cannot_fail_closed(self) -> None:
+        # cmd.exe has no pipefail: `pytest | more` exits with `more`'s code, so a failing suite
+        # could pass. Windows refuses every single `|`: a quoted or escaped one can still become a
+        # pipeline in a nested shell (`cmd /c "a | b"`, `powershell -c "a | b"`). Only `||` passes.
+        pipelines = ["pytest | more", "pytest|more", 'python -m pytest "tests" | findstr x',
+                     "a || b | c", "a ^^| b", 'cmd /c "exit /b 3 | more"', 'powershell -c "a | b"',
+                     'python -c "print(\'a|b\')"', "echo a ^| b", 'python -c "x | y', "a |||b"]
+        not_pipelines = ["pytest", "pytest || exit /b 1", "pytest && echo ok", "a & b", "a||b||c"]
+        for command in pipelines:
+            with self.subTest(command=command):
+                self.assertTrue(CONTROLLER.windows_pipeline(command))
+        for command in not_pipelines:
+            with self.subTest(command=command):
+                self.assertFalse(CONTROLLER.windows_pipeline(command))
+        fake = mock.Mock()
+        fake.run_verifier.return_value = subprocess.CompletedProcess(["cmd"], 0, "Ran 3 tests\n\nOK\n", "")
+        with mock.patch.object(CONTROLLER.sys, "platform", "win32"), \
+                mock.patch.dict(CONTROLLER.sys.modules, {"windows_verifier_sandbox": fake}), \
+                mock.patch.object(CONTROLLER, "resolved_git_path", return_value=Path("common")):
+            refused = CONTROLLER.sandboxed_verify("pytest | more", Path("."), 5, {})
+            fake.run_verifier.assert_not_called()
+            allowed = CONTROLLER.sandboxed_verify("pytest || exit /b 1", Path("."), 5, {})
+        self.assertEqual(refused.returncode, 126)
+        self.assertIn("pipeline", refused.stderr)
+        self.assertNotEqual(CONTROLLER.verification_outcome(refused)["verification"], "passed")
+        self.assertEqual(allowed.returncode, 0)
+        fake.run_verifier.assert_called_once()
+        # The same refusal at prepare (before a manifest is written) and at start or resume.
+        with tempfile.TemporaryDirectory(prefix="agentsmith windows pipeline ") as temporary:
+            repo = Path(temporary).resolve() / "consumer"
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            manifest = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
+            manifest["verify"]["command"] = "python -m pytest | more"
+            template = repo / "piped.json"
+            template.write_text(json.dumps(manifest), encoding="utf-8")
+            args = CONTROLLER.parser().parse_args([
+                "prepare", "--run-id", "piped", "--spec", "docs/specs/task.md", "--ticket", "TASK-1",
+                "--template", str(template), "--maker-model", "fixture-model", "--checker-model", "fixture-model",
+            ])
+            manifest.update(run_id="piped", spec_path="docs/specs/task.md", implementation_ticket="TASK-1")
+            for role in ("maker", "checker"):
+                manifest["roles"][role]["model"] = "fixture-model"
+            manifest["limits"]["budget_rationale"] = "fixture"
+            with mock.patch.object(CONTROLLER.Path, "cwd", return_value=repo):
+                with mock.patch.object(CONTROLLER.sys, "platform", "win32"):
+                    with self.assertRaisesRegex(CONTROLLER.RunError, "pipeline"):
+                        CONTROLLER.prepare(args)
+                    self.assertFalse((repo / ".harness/runs/piped.json").exists())
+                    with self.assertRaisesRegex(CONTROLLER.RunError, "pipeline"):
+                        CONTROLLER.validate_manifest(manifest, repo)
+                with mock.patch.object(CONTROLLER.sys, "platform", "linux"), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(CONTROLLER.prepare(args), 0)  # bash runs it with pipefail
+
     def test_verify_command_runs_with_pipefail(self) -> None:
         sandboxed = (CONTROLLER.sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").exists()) or (
             CONTROLLER.sys.platform.startswith("linux") and shutil.which("bwrap"))

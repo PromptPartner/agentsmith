@@ -681,14 +681,18 @@ def collect_export(repo: Path) -> dict[str, Any]:
         exported.append({"run_id": run["id"], "state": run["state"], "events": run["events"], "receipts": receipts})
     root = factory_dir(repo)
     return {"schema_version": SCHEMA_VERSION, "runs": exported,
-            "factory": {name: read_jsonl(root / f"{name}.jsonl") for name in ("events", "defects", "minutes")}}
+            "factory": {name: read_jsonl(root / f"{name}.jsonl")
+                        for name in ("events", "defects", "minutes", "intake")}}
 
 
 # Export redacts rather than refuses: the record is still useful with a secret-like value removed.
+# A quoted value runs to its closing quote, spaces included, so a passphrase is not cut at its first
+# word; an unquoted one ends with its token. The keywords cover the secret scanner's own pattern,
+# which export runs afterwards and which would otherwise redact only the first word of `pwd="a b"`.
 EXPORT_SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("GitHub token", re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}")),
-    ("assigned secret", re.compile(r"(?i)\b[\w-]*(?:secret|token|password|passwd|api[_-]?key)[\w-]*"
-                                   r"[\"' ]*[:=]\s*[\"']?[^\s\"',]{8,}")),
+    ("assigned secret", re.compile(r"(?i)\b[\w-]*(?:secret|token|password|passwd|pwd|api[_-]?key)[\w-]*"
+                                   r"[\"' ]*[:=]\s*(?:\"[^\"\n]{8,}\"|'[^'\n]{8,}'|[\"']?[^\s\"',]{8,})")),
 )
 
 

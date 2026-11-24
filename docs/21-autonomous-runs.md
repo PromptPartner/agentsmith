@@ -166,7 +166,9 @@ in the run state (`baseline-verify.txt` keeps the raw output, and the events fil
 commit cannot change, so the result is the same, and parallel runs do not delay each other's
 makers (on Windows every verifier call holds one machine-wide lock). A run that stops before
 its first verification takes no baseline. A resumed run keeps a stored baseline; it is never
-taken again from a later tree. Every attempt is compared with it, not with the attempt before: a check that passed on the
+taken again from a later tree. Once it exists, `status <id>` shows it as `verification_baseline`:
+the base commit, its `verification` (`passed`, `failed` or `incomplete`), the exit code, the
+reason for an incomplete result, and the `passing` and `failing` checks. Every attempt is compared with it, not with the attempt before: a check that passed on the
 base commit and fails now is listed under `regressions` in the attempt's verification receipt and
 in its `attempt_rejected` event, even when an earlier attempt broke it. A check is a
 `scripts/verify.sh` phase, a Python `unittest` or `pytest` test named in the output, or the verify
@@ -181,7 +183,13 @@ without launching a checker, and the next maker reads why. A timeout therefore n
 the whole run by itself; the run escalates only when no wall-clock time is left for the next
 attempt. On macOS and Linux the verify command runs as `bash -o pipefail -c <command>`, so
 `pytest | tee log` fails when `pytest` fails. The Windows verifier runs the command through
-`cmd.exe`, which has no pipefail. The baseline and incomplete rules are ported from
+`cmd.exe`, which has no pipefail: `pytest | more` exits with the code of `more`, so a failing suite
+would pass. On Windows, `prepare`, `start` and `resume` therefore refuse a verify command that
+contains `|`, and the verifier refuses it again (exit 126, never a pass) if one reaches it. A `|`
+inside quotes or escaped as `^|` is refused too: a nested shell such as `cmd /c "a | b"` or
+`powershell -c "a | b"` still runs it as a pipeline. Only `||` (run the next command only on
+failure) is allowed. Use a single command, or a script that exits non-zero when its tests fail.
+The baseline and incomplete rules are ported from
 [CodeAF](https://github.com/Agent-Field/CodeAF) (Apache-2.0): `internal/verify/baseline.go` and
 `internal/seniordev/app/full_verification.go`.
 
