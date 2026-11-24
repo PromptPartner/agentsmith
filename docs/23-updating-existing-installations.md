@@ -46,6 +46,9 @@ Behaviour changes:
   home folder.
 - A Claude checker cannot pass `calibrate` on macOS yet; use Codex as the checker. See
   `KNOWN-ISSUES.md`.
+- For an autonomous run, set `verify.command` to a tracked command such as your test command. The
+  template's `./.agentsmith/agentsmith verify` cannot start in a run's worktree, because the
+  runtime folder is git-ignored.
 
 `v0.5.0` makes the always-loaded rules about 40% shorter. It drops generic coding advice that
 current models follow unprompted, and keeps consent, secrets, identity, authority and the trust
