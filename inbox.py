@@ -33,6 +33,7 @@ REPOSITORY_ENV = {"GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_
                   "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX",
                   "GIT_SHALLOW_FILE", "GIT_COMMON_DIR"}
 OID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+ASSUMPTION_LINE_MAX = 300  # the table's assumptions line under a run row
 
 
 class InboxError(RuntimeError):
@@ -323,7 +324,7 @@ class _Collector:
             label = "held" if held else "accepted"
             # What the maker's report says it assumed without authority (SF-16), as in the PR body.
             maker = state.get("maker_receipt")
-            assumed = _redacted(controller.report_assumptions(str(maker.get("summary") or ""))
+            assumed = _redacted(controller.bounded_assumptions(controller.report_assumptions(str(maker.get("summary") or "")))
                                 if isinstance(maker, dict) else [], controller)
             commit = state.get("held_commit" if held else "accepted_commit")
             if not _commit(self.repo, commit):
@@ -586,6 +587,8 @@ def render_text(report: dict[str, Any]) -> str:
             lines.append(f"{row['kind']:<14} {row['id']:<{width}} {row['age']:>4} {row['tier'] or '-':<5} "
                          f"{row['next_step']}")
             if row.get("assumptions"):
-                lines.append(f"  assumed without authority: {'; '.join(row['assumptions'])}")
+                line = f"  assumed without authority: {'; '.join(row['assumptions'])}"
+                # One table line: --json holds each assumption, at most the controller's bound.
+                lines.append(line if len(line) <= ASSUMPTION_LINE_MAX else line[:ASSUMPTION_LINE_MAX - 1] + "…")
     lines += [f"warning: {warning}" for warning in report["warnings"]]
     return "\n".join(lines) + "\n"

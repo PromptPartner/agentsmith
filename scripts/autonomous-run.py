@@ -2553,6 +2553,24 @@ def report_headline(summary: str, limit: int = 200) -> str:
     return (text if len(text) <= limit else text[:limit - 1] + "…") or "no reason given"
 
 
+# A maker can write any amount; what a person reads is bounded. GitHub refuses a pull-request body
+# over 65,536 characters, and 20 assumptions of 500 characters keep this section near 11,000.
+ASSUMPTION_MAX_CHARS = 500
+ASSUMPTIONS_MAX_ITEMS = 20
+PR_BODY_MAX_CHARS = 65_536
+
+
+def bounded_assumptions(items: list[str]) -> list[str]:
+    """At most ASSUMPTIONS_MAX_ITEMS assumptions of at most ASSUMPTION_MAX_CHARS each, every cut marked."""
+    shown = [item if len(item) <= ASSUMPTION_MAX_CHARS
+             else item[:ASSUMPTION_MAX_CHARS] + f" … [cut at {ASSUMPTION_MAX_CHARS} characters]"
+             for item in items[:ASSUMPTIONS_MAX_ITEMS]]
+    if len(items) > ASSUMPTIONS_MAX_ITEMS:
+        shown.append(f"{len(items) - ASSUMPTIONS_MAX_ITEMS} more assumptions are not shown; the maker's receipt "
+                     "in the run folder holds them all")
+    return shown
+
+
 def report_assumptions(summary: str) -> list[str]:
     """What a maker report says it assumed without authority; `- none` and no section give []."""
     bullets, _problem = report_bullets(report_sections(summary).get(ASSUMPTIONS_HEADING, []))
@@ -4917,7 +4935,7 @@ def models_used_lines(checks: dict[str, Any]) -> list[str]:
 def assumption_lines(checks: dict[str, Any]) -> list[str]:
     """The maker's assumptions made without authority, from its report (SF-16)."""
     maker = checks["state"].get("maker_receipt")
-    items = report_assumptions(str(maker.get("summary") or "")) if isinstance(maker, dict) else []
+    items = bounded_assumptions(report_assumptions(str(maker.get("summary") or ""))) if isinstance(maker, dict) else []
     if not items:
         return ["### Assumptions made without authority", "The maker's report lists none.", ""]
     return ["### Assumptions made without authority",
@@ -5035,6 +5053,10 @@ def deliver(args: argparse.Namespace) -> int:
     # Only structured receipt fields, with no local path; of the maker's report only its assumptions, fenced.
     title = without_local_paths(f"{checks['manifest'].get('implementation_ticket')}: {checks['branch']}", repo)[:72]
     body = without_local_paths(delivery_body(checks, verdict), repo)
+    if len(body) > PR_BODY_MAX_CHARS:
+        raise RunError(f"deliver refused: the pull-request body has {len(body)} characters, over the "
+                       f"{PR_BODY_MAX_CHARS} that GitHub accepts; shorten the checker evidence or the changed "
+                       "paths in a rework")
     leaks = leak_problems({"title": title, "body": body}, secret_allow_rules(repo))
     if leaks:
         raise RunError("deliver refused: " + "; ".join(leaks))

@@ -175,6 +175,20 @@ class RowKindTests(InboxCase):
             self.assertNotIn(token, output)
             self.assertNotIn("hunter2hunter2", output)
 
+    def test_long_assumptions_are_cut_on_the_row_and_in_the_table(self) -> None:
+        report = ("VERDICT: COMPLETED\n## Summary\n- a\n- b\n- c\n## Assumptions without authority\n"
+                  + "".join(f"- {n} " + "w" * 100000 + "\n" for n in range(30)))
+        held = self.repo.branch("agentsmith/held", self.base, {"src/a.py": b"a\n"})
+        self.repo.run_state("held", status="awaiting-human", base_head=self.base, held_commit=held,
+                            reason="checker advisory: calibration none", maker_receipt={"summary": report})
+        collected = self.collect()
+        row = self.rows(collected)[("awaiting-human", "held")]
+        self.assertEqual(len(row["assumptions"]), 21, "20 assumptions and one line that counts the rest")
+        self.assertTrue(all(len(item) <= 540 for item in row["assumptions"]))
+        line = next(line for line in inbox.render_text(collected).splitlines() if "assumed without authority" in line)
+        self.assertLessEqual(len(line), 300)
+        self.assertTrue(line.endswith("…"), line[-20:])
+
     def test_a_run_held_for_an_advisory_checker_is_a_row(self) -> None:
         # SF-09: an acceptance from an uncalibrated checker holds the run for a person.
         held = self.repo.branch("agentsmith/held", self.base, {"src/a.py": b"a\n"})

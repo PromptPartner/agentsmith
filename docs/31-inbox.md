@@ -52,6 +52,8 @@ says it made without authority (its `## Assumptions without authority` section, 
 list in `--json`. The same list is in the pull-request body that `deliver` prints. The maker wrote
 these, so secret-like values and the home folder are redacted first, with the patterns that
 `factory export` uses and that refuse a pull-request body (`[redacted: GitHub token]`, `~`).
+They are bounded as in the pull-request body (20 at most, each cut at 500 characters), and the
+table's line is cut at 300 characters, ending in `…`.
 
 The branch that counts as landed is resolved in this order: `--base <branch>` on `origin`; else the
 branch `origin/HEAD` points to; else `origin/main`; else `origin/master`. When `--base` names a

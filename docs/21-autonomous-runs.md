@@ -770,7 +770,9 @@ implementation ticket and the run branch. The body holds:
   reasons and lenses that raised it, or a line saying that every path is tier A;
 - the verifier and checker evidence;
 - the assumptions made without authority: the bullets under `## Assumptions without authority` in
-  the accepted attempt's maker report, or "The maker's report lists none.";
+  the accepted attempt's maker report, or "The maker's report lists none.". At most 20 are shown,
+  each cut at 500 characters with the cut marked, and a last line counts the rest; the maker's
+  receipt in the run folder keeps them all;
 - the checker calibration status. When it is not `passed` (for example, the record went stale
   after the acceptance), the body says the checker is advisory ("checker advisory");
 - the models used: each role's client, model and effort as its launches recorded them in
@@ -786,7 +788,8 @@ reviewer-focus paths and the model names, so no link, Markdown or `@`-mention in
 effect. Paths inside the repository become repo-relative, and home and temporary
 folders become `~` and `$TMPDIR`, so neither the text nor the `--json` report names a local path.
 The secret scanner's patterns then run over the final title and body (honouring
-`.harness/secret-scan.allow`), and a likely secret refuses delivery and names the field.
+`.harness/secret-scan.allow`), and a likely secret refuses delivery and names the field. A body
+over 65,536 characters, which GitHub does not accept, refuses delivery and names its length.
 
 ### Auto-merge eligibility
 
