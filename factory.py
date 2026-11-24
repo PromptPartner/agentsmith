@@ -371,12 +371,28 @@ def rework_numbers(repo: Path, runs: list[dict[str, Any]], in_window: list[dict[
                        + (f"; {unknown} run(s) with unknown spend left out" if unknown else "")
                        + (f"; {unitemised} run(s) whose usage records do not add up to their spend left out"
                           if unitemised else "")))
-    # 3. Budget stops on runs later accepted: the run itself after a resume, or a rework of it.
+    # 3. Budget stops on runs later accepted: the run itself after a resume, or a rework of it. A
+    # rework counts only when it started in a checkout of this repository: a run record copied in
+    # from elsewhere, with its own pinned manifest, names IDs that mean nothing here.
     by_id = {run["id"]: run for run in runs}
+    home = common_dir(repo)
+    checkouts: dict[str, bool] = {}
+
+    def started_here(run: dict[str, Any]) -> bool:
+        recorded = run["state"].get("repo")
+        if not isinstance(recorded, str) or not recorded:
+            return False
+        if recorded not in checkouts:
+            try:
+                checkouts[recorded] = Path(recorded).is_dir() and common_dir(Path(recorded)) == home
+            except (FactoryError, OSError, ValueError):
+                checkouts[recorded] = False
+        return checkouts[recorded]
+
     children: dict[str, list[str]] = {}
     for run in runs:
         parent = rework_parent(run)
-        if parent is not None and parent != run["id"]:
+        if parent is not None and parent != run["id"] and started_here(run):
             children.setdefault(parent, []).append(run["id"])
 
     def later_accepted(run_id: str) -> bool:

@@ -121,9 +121,10 @@ class FactoryTests(unittest.TestCase):
 
     def add_run(self, run_id: str, status: str, *, hours_ago: float = 24, touches: int = 0, tier: str = "B",
             usd: float | None = 1.0, tokens: int = 1000, events: list[dict] | None = None,
-            rework_of: str | None = None, demo_sha: str | None = None) -> None:
+            rework_of: str | None = None, demo_sha: str | None = None, origin: Path | None = None) -> None:
         """A fixture run. `events` go between the start and the acceptance; `rework_of` writes the
-        manifest the run started from, pinned by its hash, as `prepare --rework-of` would."""
+        manifest the run started from, pinned by its hash, as `prepare --rework-of` would, and
+        records the checkout it started in (`origin`, by default this repository) as `start` does."""
         folder = self.runs / run_id
         folder.mkdir(parents=True)
         state = {"run_id": run_id, "status": status, "started_at": stamp(hours_ago), "risk": {"tier": tier}}
@@ -136,7 +137,8 @@ class FactoryTests(unittest.TestCase):
             manifest.parent.mkdir(parents=True, exist_ok=True)
             manifest.write_text(json.dumps({"run_id": run_id, "rework": {"of": rework_of, "note_path": "n.md",
                                                                          "note_sha256": "0" * 64}}), encoding="utf-8")
-            state.update(manifest_path=str(manifest), manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest())
+            state.update(manifest_path=str(manifest), manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
+                         repo=str(origin or self.repo))
         (folder / "state.json").write_text(json.dumps(state), encoding="utf-8")
         events = [{"event": "run_started"}] + [{"event": "run_escalated"}, {"event": "run_resumed"}][:touches] + (
             events or []) + ([{"event": "run_accepted"}] if status == "accepted" else [])
@@ -310,6 +312,26 @@ class FactoryTests(unittest.TestCase):
         row = self.number(factory.numbers(self.repo, now=NOW, ci_runs=[]), "budget stops on runs later accepted")
         self.assertEqual((row["status"], row["n"], row["value"]), ("ok", 6, round(4 / 6, 3)))
         self.assertIn("4 of 6 run(s) a budget stopped were later accepted", row["detail"])
+
+    def test_a_rework_counts_only_when_it_ran_in_this_repository(self) -> None:
+        # Run records copied from another repository, with their own pinned manifests, must not
+        # turn this repository's budget stops into later acceptances. A linked worktree of this
+        # repository is the same repository.
+        budget = [{"event": "attempt_rejected", "attempt": 1, "reason": "budget", "escalated": True}]
+        other = self.repo.parent / "other"
+        other.mkdir()
+        subprocess.run(["git", "init", "-q", str(other)], env=CLEAN_ENV, check=True)
+        linked = self.repo.parent / "linked"
+        self.git("worktree", "add", "-q", "--detach", str(linked))
+        for index in range(5):
+            self.add_run(f"stopped-{index}", "escalated", events=budget)
+            self.add_run(f"foreign-{index}", "accepted", rework_of=f"stopped-{index}", origin=other)
+        self.add_run("gone", "accepted", rework_of="stopped-0", origin=self.repo.parent / "missing")
+        row = self.number(factory.numbers(self.repo, now=NOW, ci_runs=[]), "budget stops on runs later accepted")
+        self.assertEqual((row["n"], row["value"]), (5, 0.0))
+        self.add_run("local", "accepted", rework_of="stopped-1", origin=linked)
+        row = self.number(factory.numbers(self.repo, now=NOW, ci_runs=[]), "budget stops on runs later accepted")
+        self.assertEqual(row["value"], 0.2)
 
     def test_theatre_flags_approvals_at_about_zero_minutes_with_no_rework(self) -> None:
         for index in range(5):
