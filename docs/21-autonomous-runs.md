@@ -772,7 +772,7 @@ exit status. The output is treated as untrusted. Each stream keeps its first 20,
 the cut is marked. Text that the secret scanner's patterns match becomes `[redacted: <pattern>]`.
 Repository paths become repo-relative, and home and temporary folders become `~` and `$TMPDIR`.
 Control characters become `\xNN`, so the transcript cannot move the cursor. The unredacted output is
-deleted. The state and the verification receipt record the transcript under `demo`: the command,
+deleted, also when the demo is stopped or fails. The state and the verification receipt record the transcript under `demo`: the command,
 exit status, file, SHA-256, commit, whether a stream was cut, and the number of redactions.
 
 **Watch it yourself** before you land the run:

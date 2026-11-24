@@ -271,6 +271,19 @@ class DemoHardeningTests(unittest.TestCase):
             CONTROLLER.checked_demo(self.state)
 
     # Finding 2: no unredacted output stays on disk, whatever ends the demo.
+    def test_an_interrupted_demo_leaves_no_raw_output(self) -> None:
+        self.fake_runner(interrupt=True)
+        with self.assertRaises(CONTROLLER.RunInterrupted):
+            CONTROLLER.record_demo(self.state, {}, self.tmp, "a" * 40)
+        self.assertEqual(self.raw_files(), [])
+
+    def test_raw_output_left_by_an_earlier_attempt_is_removed_not_archived(self) -> None:
+        for suffix in (".stdout", ".stderr"):
+            (self.run / f"attempt-1-demo-raw{suffix}").write_text("stale secret\n", encoding="utf-8")
+        self.fake_runner(write=False)
+        CONTROLLER.record_demo(self.state, {}, self.tmp, "a" * 40)
+        self.assertEqual(self.raw_files(), [])
+
     # Finding 3: what is read back is bounded before it reaches memory.
     # Finding 5: a run id cannot leave the runs folder.
 

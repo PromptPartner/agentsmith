@@ -4830,11 +4830,19 @@ def record_demo(state: dict[str, Any], manifest: dict[str, Any], worktree: Path,
         return None
     run_dir = Path(state["state_path"]).parent
     prefix = f"attempt-{state['attempt']}-demo"
+    raw = [run_dir / f"{prefix}-raw{suffix}" for suffix in (".stdout", ".stderr")]
+
+    def remove_raw() -> None:  # no unredacted copy stays in the run folder, nor in its archive
+        for path in raw:
+            path.unlink(missing_ok=True)
+
+    remove_raw()  # an earlier attempt that was interrupted may have left its raw output
     archive_artifacts(run_dir, prefix)
     timeout = max(1, min(DEMO_TIMEOUT_SECONDS, remaining_seconds(state, manifest)))
-    result = sandboxed_verify(command, worktree, timeout, verifier_env(), state=state, prefix=f"{prefix}-raw")
-    for suffix in (".stdout", ".stderr"):  # no unredacted copy stays in the run folder
-        (run_dir / f"{prefix}-raw{suffix}").unlink(missing_ok=True)
+    try:
+        result = sandboxed_verify(command, worktree, timeout, verifier_env(), state=state, prefix=f"{prefix}-raw")
+    finally:
+        remove_raw()
     # The disposable worktree reads as the repository: its paths become repo-relative too.
     stdout, stderr = (stream.replace(f"{worktree}/", "").replace(str(worktree), ".")
                       for stream in (result.stdout, result.stderr))
