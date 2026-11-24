@@ -284,6 +284,43 @@ class RunShapeGuardRunTests(RunFixture):
         self.assertEqual(self.launches(), ["maker"])
         self.assertFalse((self.repo / ".git/agentsmith-runs/silent/attempt-1-verify.txt").exists())
 
+    def rework(self, run_id: str, of: str) -> None:
+        """Prepare and commit a rework of `of`: a new run with its own events.jsonl and state."""
+        (self.repo / "notes").mkdir(exist_ok=True)
+        (self.repo / "notes/rework.md").write_text("Look at the failing test again.\n", encoding="utf-8")
+        template = self.root / "template.json"
+        template.write_text((self.repo / f".harness/runs/{of}.json").read_text(encoding="utf-8"), encoding="utf-8")
+        prepared = self.controller("prepare", "--run-id", run_id, "--spec", "docs/specs/task.md", "--ticket", "IMP-2",
+                                   "--template", str(template), "--rework-of", of, "--note", "notes/rework.md")
+        self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
+        self.git(self.repo, "add", ".")
+        self.git(self.repo, "commit", "-qm", f"test: {run_id} rework contract")
+
+    def test_a_rework_starts_both_guard_counts_at_zero(self) -> None:
+        # The rework of a run the identical-rejection guard stopped gets its own two rejections.
+        self.plan(["change"], checker="rejected")
+        self.commit_manifest("stuck", verify=self.SAME_FAILURE, max_attempts=3)
+        self.assertEqual(self.controller("start", ".harness/runs/stuck.json").returncode, 2)
+        self.rework("unstuck", "stuck")
+        result = self.controller("start", ".harness/runs/unstuck.json")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        state = self.state("unstuck")
+        self.assertEqual((state["status"], state["attempt"]), ("escalated", 2))
+        self.assertIn("2 identical rejections in a row", state["reason"])
+        self.assertEqual(self.launches(), ["maker", "checker"] * 4)
+        # The rework of a run the silent-turn guard stopped is judged on its own first turn.
+        (self.fake / "launches.log").unlink()
+        self.plan(["empty", "change"])
+        self.commit_manifest("silent", max_attempts=3)
+        self.assertEqual(self.controller("start", ".harness/runs/silent.json").returncode, 2)
+        self.assertEqual(self.state("silent")["silent_turns"], {"attempt": 1, "count": 1})
+        self.rework("spoken", "silent")
+        result = self.controller("start", ".harness/runs/spoken.json")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        state = self.state("spoken")
+        self.assertEqual((state["status"], state["attempt"], state["silent_turns"]),
+                         ("accepted", 1, {"attempt": 1, "count": 0}))
+
     def test_silent_turns_are_counted_in_a_row_up_to_the_configured_limit(self) -> None:
         self.plan(["empty"], checker="rejected")
         self.commit_manifest("quiet", max_attempts=3, max_silent_turns=2)

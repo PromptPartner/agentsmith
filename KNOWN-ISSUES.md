@@ -3,6 +3,23 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [ ] 2026-11-24 — Known limit of the SF-16 coordination classes: a scope pattern is classified as
+  written, so a broad pattern such as `db/**` is not read as a migration path even when the folder
+  holds migrations. Two runs whose scopes are `db/**` and `services/b/migrations/*` can still run
+  together. Workaround, documented in `docs/24-parallel-work-graphs.md`: give a migration-adding
+  run a narrow pattern (`db/migrations/*`) or a `scope.resources` key.
+- [ ] 2026-11-24 — Known limit of SF-16 numbered resources: only a work-graph child gets a reserved
+  next free number. A run started on its own gets none. A second live run on the same class is
+  refused, but a run started after an earlier one was accepted (and not yet merged) sees the old
+  base and can pick the same migration number.
+- [ ] 2026-11-24 — Known limit of the SF-16 silent-turn guard: it counts whole maker turns (a
+  candidate whose tree equals the tree last judged), not turns inside a role session. Claude
+  roles run with `--output-format json`, which reports only at the end, so the controller cannot
+  stop a role that goes quiet while it runs; the wall clock is the only cap there.
+- [ ] 2026-11-24 — Gap in the SF-16 silent-turn guard when `limits.max_silent_turns` is raised above
+  1: a silent turn below the limit is verified and checked as usual, so a maker turn that changed
+  nothing (an empty commit) can still be accepted. With the default of 1 it is never accepted.
+
 - [x] 2026-11-21 — Gap left open by SF-11: on macOS and Linux the verify command runs under
   `bash -o pipefail`, but the Windows verifier runs it through `cmd.exe`, which has no pipefail, so
   a verify command such as `pytest | more` passed on Windows when its tests failed. Fixed: on
