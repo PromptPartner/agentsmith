@@ -4856,10 +4856,24 @@ def checked_demo(state: dict[str, Any]) -> tuple[dict[str, Any] | None, str | No
     if not isinstance(demo, dict):
         return None, None
     name = str(demo.get("file"))
-    path = Path(state["state_path"]).parent / name
-    if not DEMO_FILE.fullmatch(name) or file_digest(path) != demo.get("sha256"):
+    if not DEMO_FILE.fullmatch(name):
         raise RunError(f"the demo transcript {name} changed after the controller recorded it")
-    return demo, path.read_text(encoding="utf-8")
+    # One open that does not follow a link, then hash and text from the same bytes: a file swapped
+    # between a hash and a second read cannot show other text than the one that was checked.
+    path = Path(state["state_path"]).parent / name
+    try:
+        if not hasattr(os, "O_NOFOLLOW") and path.is_symlink():  # Windows: no O_NOFOLLOW
+            raise OSError("a link")
+        handle = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        raise RunError(f"the demo transcript {name} is missing or not a regular file") from None
+    with os.fdopen(handle, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise RunError(f"the demo transcript {name} is not a regular file")
+        data = stream.read()
+    if hashlib.sha256(data).hexdigest() != demo.get("sha256"):
+        raise RunError(f"the demo transcript {name} changed after the controller recorded it")
+    return demo, data.decode("utf-8", "replace")
 
 
 def evidence_opened(state: dict[str, Any], sha256: str) -> bool:

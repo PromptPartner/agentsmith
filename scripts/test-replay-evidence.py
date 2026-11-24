@@ -12,8 +12,11 @@ sys.dont_write_bytecode = True  # loading the deliver suite must not leave compi
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
+import tempfile
+import time
 import unittest
 
 
@@ -215,6 +218,61 @@ class DemoGuideTests(unittest.TestCase):
                          "Not yet supported: screenshots and video"):
             self.assertIn(required, section)
 
+
+class DemoHardeningTests(unittest.TestCase):
+    """Findings of an independent Codex test of SF-18b, each reproduced without a real run."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="agentsmith-replay-")
+        self.addCleanup(temporary.cleanup)
+        self.tmp = Path(temporary.name).resolve()
+        self.run = self.tmp / "run"
+        self.run.mkdir()
+        self.text = b"ORIGINAL\n"
+        self.state = {"run_id": "x", "status": "accepted", "repo": str(ROOT), "attempt": 1,
+                      "state_path": str(self.run / "state.json"), "deadline_epoch": time.time() + 60,
+                      "demo_command": "echo demo",
+                      "demo": {"file": "attempt-1-demo.txt", "sha256": hashlib.sha256(self.text).hexdigest(),
+                               "commit": "a" * 40, "exit_code": 0, "command": "echo demo"}}
+
+    def fake_runner(self, *, write: bool = True, interrupt: bool = False, seen: dict | None = None):
+        def runner(command, cwd, timeout, env, *, state, prefix, **options):
+            if seen is not None:
+                seen.update(options)
+            if write:
+                (self.run / f"{prefix}.stdout").write_text("raw secret output\n", encoding="utf-8")
+                (self.run / f"{prefix}.stderr").write_text("raw\n", encoding="utf-8")
+            if interrupt:
+                raise CONTROLLER.RunInterrupted("stopped by operator")
+            return subprocess.CompletedProcess([command], 0, "ok\n", "")
+        original = CONTROLLER.sandboxed_verify
+        self.addCleanup(setattr, CONTROLLER, "sandboxed_verify", original)
+        CONTROLLER.sandboxed_verify = runner
+
+    def raw_files(self) -> list[str]:
+        return sorted(path.name for path in self.run.rglob("*") if "-demo-raw." in path.name
+                      and path.suffix in {".stdout", ".stderr"})
+
+    # Finding 1: the transcript is read once, without following a link, and hashed from that read.
+    def test_a_symlinked_transcript_is_refused_even_when_its_target_matches(self) -> None:
+        target = self.tmp / "elsewhere.txt"
+        target.write_bytes(self.text)
+        (self.run / "attempt-1-demo.txt").symlink_to(target)
+        with self.assertRaisesRegex(CONTROLLER.RunError, "not a regular file"):
+            CONTROLLER.checked_demo(self.state)
+
+    def test_the_text_shown_is_the_text_that_was_hashed(self) -> None:
+        # A swap between a hash and a second read is simulated by a hash that always matches.
+        (self.run / "attempt-1-demo.txt").write_bytes(b"FORGED!!\n")
+        original = CONTROLLER.file_digest
+        self.addCleanup(setattr, CONTROLLER, "file_digest", original)
+        CONTROLLER.file_digest = lambda path: self.state["demo"]["sha256"]
+        with self.assertRaisesRegex(CONTROLLER.RunError, "changed after the controller recorded it"):
+            CONTROLLER.checked_demo(self.state)
+
+    # Finding 2: no unredacted output stays on disk, whatever ends the demo.
+    # Finding 3: what is read back is bounded before it reaches memory.
+    # Finding 5: a run id cannot leave the runs folder.
 
 class DemoSectionTests(unittest.TestCase):
     SPEC = "---\nstatus: accepted\n---\n# Spec\n"
