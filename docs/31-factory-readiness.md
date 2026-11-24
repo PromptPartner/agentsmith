@@ -10,7 +10,7 @@ It also takes in one GitHub issue at a time as untrusted input, with your verdic
 ([intake](#intake)).
 
 The answers are derived each time from what is already recorded: run state and `events.jsonl`,
-two operator logs, and read-only GitHub reads through `gh`. Nothing is kept as a board.
+two operator logs, the review-lens triage record, and read-only GitHub reads through `gh`. Nothing is kept as a board.
 `readiness`, `numbers` and `sweep` write nothing in the repository or its Git folder and switch
 nothing on.
 One exception, isolated: the checker preflight in `readiness` runs one command through the verifier
@@ -73,6 +73,27 @@ counts in the window when it started there.
 | Spend per landed change | All Claude USD and Codex tokens of every run in the window, divided by the landed changes. A run whose spend is missing or marked incomplete is left out of both sides and counted in the detail; unknown spend is never counted as zero. |
 
 A landed change is an accepted run here: what happens after the pull request is up to a person.
+
+### Rework and review numbers
+
+Five more numbers say why work was redone and whether the human gate is real. They follow the
+same rules: the same window, a stated `n`, and `insufficient data` below 5 cases. Each is derived
+from run state and `events.jsonl`, the minutes log and the lens triage record; no file stores them.
+In `--json` they are rows of `numbers` like the six above.
+
+| Number | `n` counts | From |
+|---|---|---|
+| Rework causes | rejections | Every `attempt_rejected` event of the runs in the window, counted by its `reason` (`verify`, `checker`, `hidden-tests`, `incomplete`, `hidden-test-probe`, `scope`, `protected`, `budget`, `stale`; see [rejection reasons](21-autonomous-runs.md)). A rejection recorded before reasons existed counts as `unrecorded`. |
+| Spend split, making and verifying | runs with known spend | The `usage_recorded` events of each run: the maker's spend is making, the checker's is verifying, in Claude USD and Codex tokens, with the verifying share of each. Runs with unknown spend are left out, as for spend per landed change. Lens reviews and the verify command itself spend no model budget that the run records. |
+| Budget stops on runs later accepted | runs a budget stopped | Runs with an `attempt_rejected` event whose reason is `budget`, and the share of them later accepted: the run itself after a resume, or a rework of it (the `rework.of` of the manifest a run started from, followed through reworks of reworks). A manifest changed since its run started is not used. A high share says the budget stops good work. |
+| Approval theatre | approvals (accepted runs) | Whether people approve without looking. An approval counts as theatre when it had 1 human minute or less logged and no rework (no operator touch and no rework run made from it), or when it was approved without its evidence being opened. It is not theatre when someone spent more than a minute or reworked it, and opened its evidence. Anything else is unknown, never "not theatre". A tier is flagged when every approval in it is theatre; one real review clears it. The overall `flag` is `true` when a tier is flagged, `false` when every tier is cleared, and `unknown` otherwise. |
+| Lens addressed rate | lens findings triaged in the window | The [review lens](32-review-lenses.md) triage record: per lens, the share of its findings whose decision is `act`. A lens with fewer than 5 findings says `insufficient data` on its own. The record says what the operator decided, not that a fix landed. |
+
+**Evidence opened.** The replayable evidence step records an `evidence_opened` event in a run's
+`events.jsonl` when the operator opens its demonstration. Until any run records one, nobody can
+tell whether an approval's evidence was opened: `evidence_opened` in the theatre row reads
+`unknown`, and only the minutes decide a verdict. Once runs record it, the row counts approvals
+with and without it, and an approval without it counts as theatre.
 
 ## Sweep
 

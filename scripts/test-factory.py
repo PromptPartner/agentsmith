@@ -24,6 +24,7 @@ sys.path.insert(0, str(ROOT))
 import ci_watch  # noqa: E402
 import factory  # noqa: E402
 import inbox  # noqa: E402
+import lenses  # noqa: E402
 
 CONTROLLER = factory.load_controller(ROOT)
 
@@ -119,15 +120,24 @@ class FactoryTests(unittest.TestCase):
                               check=True).stdout.strip()
 
     def add_run(self, run_id: str, status: str, *, hours_ago: float = 24, touches: int = 0, tier: str = "B",
-            usd: float | None = 1.0, tokens: int = 1000) -> None:
+            usd: float | None = 1.0, tokens: int = 1000, events: list[dict] | None = None,
+            rework_of: str | None = None) -> None:
+        """A fixture run. `events` go between the start and the acceptance; `rework_of` writes the
+        manifest the run started from, pinned by its hash, as `prepare --rework-of` would."""
         folder = self.runs / run_id
         folder.mkdir(parents=True)
         state = {"run_id": run_id, "status": status, "started_at": stamp(hours_ago), "risk": {"tier": tier}}
         if usd is not None:
             state.update(claude_cost_usd=usd, codex_tokens_used=tokens)
+        if rework_of is not None:
+            manifest = self.repo / f".harness/runs/{run_id}.json"
+            manifest.parent.mkdir(parents=True, exist_ok=True)
+            manifest.write_text(json.dumps({"run_id": run_id, "rework": {"of": rework_of, "note_path": "n.md",
+                                                                         "note_sha256": "0" * 64}}), encoding="utf-8")
+            state.update(manifest_path=str(manifest), manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest())
         (folder / "state.json").write_text(json.dumps(state), encoding="utf-8")
         events = [{"event": "run_started"}] + [{"event": "run_escalated"}, {"event": "run_resumed"}][:touches] + (
-            [{"event": "run_accepted"}] if status == "accepted" else [])
+            events or []) + ([{"event": "run_accepted"}] if status == "accepted" else [])
         (folder / "events.jsonl").write_text("".join(json.dumps(item) + "\n" for item in events), encoding="utf-8")
         (folder / "attempt-1-verify.json").write_text('{"exit_code": 0}', encoding="utf-8")
 
@@ -232,6 +242,126 @@ class FactoryTests(unittest.TestCase):
             self.assertEqual((row["status"], row["value"]), ("insufficient data", None), name)
             self.assertIn("at least 5 are needed", row["detail"])
         self.assertIn("insufficient data", factory.render(report))
+
+    # --- SF-15: rework causes, the spend split, budget stops, theatre and lens addressed rate ---------
+
+    def test_rework_causes_count_every_reason_code(self) -> None:
+        # One fixture per reason code, and one older rejection that predates reasons.
+        self.assertEqual(factory.REJECTION_REASONS, CONTROLLER.REJECTION_REASONS)
+        for reason in factory.REJECTION_REASONS:
+            self.add_run(f"rejected-{reason}", "escalated", events=[
+                {"event": "attempt_rejected", "attempt": 1, "reason": reason}])
+        self.add_run("legacy", "accepted", events=[{"event": "attempt_rejected", "attempt": 1, "verify_exit": 1}])
+        self.add_run("old", "escalated", hours_ago=24 * 60, events=[
+            {"event": "attempt_rejected", "attempt": 1, "reason": "verify"}])  # outside the window
+        causes = self.number(factory.numbers(self.repo, now=NOW, ci_runs=[]), "rework causes")
+        self.assertEqual((causes["status"], causes["n"]), ("ok", 10))
+        self.assertEqual(causes["value"], {**{reason: 1 for reason in factory.REJECTION_REASONS}, "unrecorded": 1})
+        self.assertEqual(list(causes["value"])[:len(factory.REJECTION_REASONS)], list(factory.REJECTION_REASONS))
+        self.assertIn("1 without a recorded reason", causes["detail"])
+
+    def test_spend_is_split_into_making_and_verifying(self) -> None:
+        usage = [{"event": "usage_recorded", "role": "maker", "runtime": "claude", "cost_usd": 1.5, "tokens": 0},
+                 {"event": "usage_recorded", "role": "checker", "runtime": "claude", "cost_usd": 0.5, "tokens": 0},
+                 {"event": "usage_recorded", "role": "maker", "runtime": "codex", "cost_usd": 0.0, "tokens": 300},
+                 {"event": "usage_recorded", "role": "checker", "runtime": "codex", "cost_usd": 0.0, "tokens": 100}]
+        for index in range(4):
+            self.add_run(f"spent-{index}", "accepted", usd=2.0, tokens=400, events=usage)
+        self.add_run("unknown", "accepted", usd=None, events=usage)  # unknown spend is not zero
+        split = self.number(factory.numbers(self.repo, now=NOW, ci_runs=[]), "spend split, making and verifying")
+        self.assertEqual((split["status"], split["n"]), ("insufficient data", 4))
+        self.add_run("spent-4", "escalated", usd=2.0, tokens=400, events=usage)
+        split = self.number(factory.numbers(self.repo, now=NOW, ci_runs=[]), "spend split, making and verifying")
+        self.assertEqual(split["n"], 5)
+        self.assertEqual(split["value"], {"making": {"claude_usd": 7.5, "codex_tokens": 1500},
+                                          "verifying": {"claude_usd": 2.5, "codex_tokens": 500},
+                                          "verifying_share": {"claude_usd": 0.25, "codex_tokens": 0.25}})
+        self.assertIn("1 run(s) with unknown spend left out", split["detail"])
+
+    def test_budget_stops_on_runs_later_accepted(self) -> None:
+        budget = [{"event": "attempt_rejected", "attempt": 1, "reason": "budget", "escalated": True},
+                  {"event": "run_escalated", "reason": "Claude run-wide USD budget exhausted"}]
+        self.add_run("resumed-0", "accepted", events=budget)       # resumed, then accepted
+        self.add_run("resumed-1", "accepted", events=budget)
+        self.add_run("reworked", "escalated", events=budget)      # a rework of it was accepted
+        self.add_run("rework", "accepted", rework_of="reworked")
+        self.add_run("chained", "escalated", events=budget)       # a rework of a rework was accepted
+        self.add_run("chain-1", "escalated", rework_of="chained")
+        self.add_run("chain-2", "accepted", rework_of="chain-1")
+        self.add_run("dropped", "escalated", events=budget)
+        self.add_run("tampered", "escalated", events=budget)
+        self.add_run("tampered-rework", "accepted", rework_of="tampered")
+        changed = json.loads((self.runs / "tampered-rework/state.json").read_text(encoding="utf-8"))
+        Path(changed["manifest_path"]).write_text('{"rework": {"of": "tampered"}} ', encoding="utf-8")
+        row = self.number(factory.numbers(self.repo, now=NOW, ci_runs=[]), "budget stops on runs later accepted")
+        self.assertEqual((row["status"], row["n"], row["value"]), ("ok", 6, round(4 / 6, 3)))
+        self.assertIn("4 of 6 run(s) a budget stopped were later accepted", row["detail"])
+
+    def test_theatre_flags_approvals_at_about_zero_minutes_with_no_rework(self) -> None:
+        for index in range(5):
+            self.add_run(f"quick-{index}", "accepted", tier="A")
+            factory.add_minutes(self.repo, f"quick-{index}", 0.5, now=NOW)
+        theatre = self.number(factory.numbers(self.repo, now=NOW, ci_runs=[]), "approval theatre")
+        self.assertEqual((theatre["status"], theatre["n"]), ("ok", 5))
+        self.assertIs(theatre["value"]["flag"], True)
+        self.assertEqual((theatre["value"]["theatre"], theatre["value"]["unknown"]), (5, 0))
+        # No run records whether its evidence was opened, so that half is unknown, never "not opened".
+        self.assertEqual(theatre["value"]["evidence_opened"], "unknown")
+        self.assertEqual(theatre["value"]["by_tier"]["A"], {"approvals": 5, "theatre": 5, "not_theatre": 0,
+                                                            "unknown": 0, "flag": True})
+
+    def test_theatre_is_unknown_without_evidence_records_never_false(self) -> None:
+        for index in range(5):
+            self.add_run(f"reviewed-{index}", "accepted", touches=1 if index == 0 else 0)
+            factory.add_minutes(self.repo, f"reviewed-{index}", 30, now=NOW)
+        theatre = self.number(factory.numbers(self.repo, now=NOW, ci_runs=[]), "approval theatre")
+        self.assertEqual(theatre["value"]["flag"], "unknown")
+        self.assertEqual((theatre["value"]["theatre"], theatre["value"]["not_theatre"], theatre["value"]["unknown"]),
+                         (0, 0, 5))
+        self.assertIn("evidence_opened", theatre["detail"])
+
+    def test_theatre_counts_an_approval_whose_evidence_was_not_opened(self) -> None:
+        opened = [{"event": "evidence_opened", "path": "demo.txt"}]
+        for index in range(5):
+            self.add_run(f"seen-{index}", "accepted", events=opened if index else [])
+            factory.add_minutes(self.repo, f"seen-{index}", 30, now=NOW)
+        theatre = self.number(factory.numbers(self.repo, now=NOW, ci_runs=[]), "approval theatre")
+        self.assertEqual(theatre["value"]["evidence_opened"], {"opened": 4, "not_opened": 1})
+        self.assertEqual((theatre["value"]["theatre"], theatre["value"]["not_theatre"]), (1, 4))
+        self.assertIs(theatre["value"]["flag"], False)  # most approvals were looked at
+
+    def lens_row(self, lens: str, number: int, decision: str, hours_ago: float = 2) -> dict:
+        candidate, location, evidence = "a" * 40, f"src/app.py:{number}", f"criterion :: src/app.py:{number} :: x"
+        return {"schema_version": 1, "id": lenses.finding_id(candidate, f"lens:{lens}", location, evidence),
+                "candidate": candidate, "base": "b" * 40, "source": f"lens:{lens}", "location": location,
+                "evidence": evidence, "decision": decision, "rationale": "triaged", "checker": "missed",
+                "fix": None, "reproduction": None, "recorded_at": stamp(hours_ago)}
+
+    def test_lens_addressed_rate_per_lens(self) -> None:
+        rows = [self.lens_row("security", n, "act" if n < 3 else "skip") for n in range(6)]
+        rows += [self.lens_row("docs", 10 + n, "act") for n in range(2)]
+        rows += [self.lens_row("security", 20, "act", hours_ago=24 * 60)]  # outside the window
+        folder = self.repo / ".git/agentsmith-lenses"
+        folder.mkdir()
+        (folder / "manifest.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows) + "not json\n",
+                                               encoding="utf-8")
+        report = factory.numbers(self.repo, now=NOW, ci_runs=[])
+        rate = self.number(report, "lens addressed rate")
+        self.assertEqual((rate["status"], rate["n"]), ("ok", 8))
+        self.assertEqual(rate["value"], {"docs": {"findings": 2, "addressed": 2, "rate": "insufficient data"},
+                                         "security": {"findings": 6, "addressed": 3, "rate": 0.5}})
+        self.assertIn("lens manifest line 10 skipped: not JSON text", report["warnings"])
+
+    def test_the_new_numbers_say_insufficient_data_below_the_sample(self) -> None:
+        for index in range(3):
+            self.add_run(f"few-{index}", "accepted", events=[
+                {"event": "attempt_rejected", "attempt": 1, "reason": "budget", "escalated": True}])
+        report = factory.numbers(self.repo, now=NOW, ci_runs=[])
+        for name in ("rework causes", "spend split, making and verifying", "budget stops on runs later accepted",
+                     "approval theatre", "lens addressed rate"):
+            row = self.number(report, name)
+            self.assertEqual((row["status"], row["value"]), ("insufficient data", None), name)
+            self.assertIn("at least 5 are needed", row["detail"])
 
     def test_the_window_and_unreadable_runs_are_stated(self) -> None:
         self.add_run("recent", "accepted", hours_ago=2)
@@ -726,6 +856,10 @@ else:
         report = json.loads(result.stdout)
         red = next(row for row in report["numbers"] if row["name"] == "time the default branch spends red")
         self.assertEqual(red["status"], "unavailable")
+        names = {row["name"] for row in report["numbers"]}
+        for name in ("rework causes", "spend split, making and verifying", "budget stops on runs later accepted",
+                     "approval theatre", "lens addressed rate"):
+            self.assertIn(name, names)
 
 
 class SweepTests(FactoryTests):
