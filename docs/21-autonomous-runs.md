@@ -197,7 +197,7 @@ section; a repeated heading breaks the contract instead of adding up its bullets
 A maker report that breaks the contract (no verdict line, a second verdict line, a verdict that is
 not its status, no summary, fewer than 3 or more than 5 bullets, or no assumptions section) fails its attempt
 before a verifier or a checker is spent on it. The event is `attempt_rejected` with
-`reason: report contract`, and the next maker is told what was wrong. A checker acceptance whose
+`reason: report-contract`, and the next maker is told what was wrong. A checker acceptance whose
 report breaks the contract is a checker defect, handled like one whose citations do not hold,
 and calibration counts it as a wrong verdict. A rejection stays a rejection. The receipt schema
 does not change. The checker prompt does, so a calibration recorded before this contract is
@@ -265,6 +265,7 @@ this fixed set, and [`factory numbers`](31-factory-readiness.md) counts rework b
 | `protected` | the maker changed a protected verification input or an agent-instruction file. |
 | `budget` | a role crossed or would cross a run-wide cap: USD, Codex tokens, the checker's reserve, or the wall clock, including a wait for another run's Git phase that used up the wall clock. |
 | `stale` | the commit the checks passed is no longer the run's candidate: it moved after its checks, or changed since its checkpoint. |
+| `report-contract` | the maker's report breaks the role report contract described above: no verdict line, no summary, or no assumptions section. No verifier or checker ran. |
 
 The first five are rejected and retried while attempts remain. `scope`, `protected`, `budget` and
 `stale` stop the run: their `attempt_rejected` event says `"escalated": true` and comes just before

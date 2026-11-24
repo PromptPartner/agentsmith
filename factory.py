@@ -32,7 +32,7 @@ TOUCH_EVENTS = ("run_escalated", "run_interrupted", "run_resumed")
 # The `reason` codes of `attempt_rejected`, in the controller's order (autonomous-run.py keeps the
 # same tuple; a test holds them equal). A rejection with no code predates them: "unrecorded".
 REJECTION_REASONS = ("verify", "checker", "hidden-tests", "incomplete", "hidden-test-probe",
-                     "scope", "protected", "budget", "stale")
+                     "scope", "protected", "budget", "stale", "report-contract")
 # "About zero" human minutes for an approval: at most this much logged in all.
 THEATRE_MINUTES = 1.0
 # Recorded when the operator opens a run's demonstration transcript; it counts only when its

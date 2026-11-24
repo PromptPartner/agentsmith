@@ -70,7 +70,9 @@ FAKE_CLIENT = textwrap.dedent('''\
     verdict = plan.get("checker", "accepted") if checker else "completed"
     evidence = (["fixture verification passed :: " + log.group(0) + " :: fixture verification passed"]
                 if checker and verdict == "accepted" else ["fixture evidence"])
-    receipt = {"status": verdict, "summary": "fixture", "commit": commit, "changed_paths": changed,
+    receipt = {"status": verdict, "summary": ("VERDICT: " + verdict.upper() + "\\n## Summary\\n- fixture change\\n"
+                          "- ran the verifier\\n- nothing else"
+                          + ("" if checker else "\\n## Assumptions without authority\\n- none")), "commit": commit, "changed_paths": changed,
                "evidence": evidence, "unresolved": [] if verdict != "rejected" else ["still wrong"],
                "next_state": verdict}
     if receipt_path is not None:

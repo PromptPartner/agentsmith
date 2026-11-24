@@ -83,7 +83,7 @@ HIDDEN_PROBE = "hidden-test-probe"
 # reject an attempt the run then retries; `scope`, `protected`, `budget` and `stale` stop the run, and
 # their record says `escalated`. A probe can do either. `factory numbers` counts rework by these codes.
 REJECTION_REASONS = ("verify", "checker", "hidden-tests", "incomplete", HIDDEN_PROBE,
-                     "scope", "protected", "budget", "stale")
+                     "scope", "protected", "budget", "stale", "report-contract")
 
 
 class RunError(RuntimeError):
@@ -3572,14 +3572,16 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
     prior = state.get("last_checker_receipt")
     while state["attempt"] < max_attempts or pending_candidate(state) or state.get("repeat_attempt"):
         raise_if_stopped(Path(state["state_path"]).parent)
-        if remaining_seconds(state, manifest) <= 0:
-            raise RunError("wall-clock budget exhausted", reason="budget")
+        # The run-shape guard comes first: once it has tripped, the run is decided, and an expired
+        # deadline must not add a budget rejection on top of it.
         if not pending_candidate(state) and not state.get("repeat_attempt"):
             streak, signature = identical_rejection_streak(state)
             if streak >= identical_limit:
                 raise RunError(f"run-shape guard: {streak} identical rejections in a row ({signature}), "
                                f"limits.max_identical_rejections is {identical_limit}; another attempt would "
                                "repeat them, so a person should read the last rejection and the verify output")
+        if remaining_seconds(state, manifest) <= 0:
+            raise RunError("wall-clock budget exhausted", reason="budget")
         if not pending_candidate(state):
             if not state.pop("repeat_attempt", False):
                 state["attempt"] += 1
@@ -3685,7 +3687,7 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             state["last_checker_receipt"] = prior
             state["status"] = "retrying"
             state['stage'] = 'retrying'
-            save_state(state, "attempt_rejected", attempt=state["attempt"], reason="report contract")
+            save_state(state, "attempt_rejected", attempt=state["attempt"], reason="report-contract")
             continue
         validate_verification_changes(worktree, state["base_head"], after_head, manifest)
         silent = silent_turn_streak(state, worktree, before_head, after_head)
