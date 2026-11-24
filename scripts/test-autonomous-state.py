@@ -2292,14 +2292,19 @@ class AutonomousStateTests(unittest.TestCase):
                             calls: list[str] | None = None,
                             calibration: str = "passed",
                             calibration_at_gate: str | None = None,
-                            stop_after_final_proof: bool = False) -> tuple[int, dict[str, Any], list[str]]:
+                            stop_after_final_proof: bool = False,
+                            role_errors: dict[str, Exception] | None = None,
+                            manifest_extra: dict[str, Any] | None = None,
+                            overrides: dict[str, Any] | None = None) -> tuple[int, dict[str, Any], list[str]]:
         """Drive the real attempt loop with Git and the roles replaced by fakes, so a stop can be
         delivered at an exact point of it. `verify_results` are returned in order by the
         verifier, the first one for the base commit; `calls` records each verifier and role
         launch with the folder the verifier ran in; `calibration` is the checker calibration
         status the verification receipt records, and `calibration_at_gate` the status the
         calibration file holds when the acceptance is decided (by default the same).
-        `stop_after_final_proof` delivers a stop just after the receipt records `checker_advisory`."""
+        `stop_after_final_proof` delivers a stop just after the receipt records `checker_advisory`.
+        `role_errors` makes a role raise instead of returning a receipt; `manifest_extra` adds manifest
+        keys; `overrides` replaces a fake by name, and None leaves that controller function real."""
         directory = common / "controller"
         directory.mkdir()
         worktree = common / "worktree"
@@ -2312,7 +2317,8 @@ class AutonomousStateTests(unittest.TestCase):
         manifest = {"limits": {"max_attempts": max_attempts}, "verify": {"command": "true"},
                     "spec_path": "docs/specs/task.md", "implementation_ticket": "TASK-1",
                     "scope": {"allowed_paths": ["a.txt"], "denied_paths": []},
-                    "roles": {"maker": {"runtime": "claude"}, "checker": {"runtime": "claude"}}}
+                    "roles": {"maker": {"runtime": "claude"}, "checker": {"runtime": "claude"}},
+                    **(manifest_extra or {})}
 
         def fake_git(repo: Path, *args: str, check: bool = True) -> str:
             if args == ("rev-parse", "HEAD") or args[:2] == ("rev-parse", "--verify"):
@@ -2338,6 +2344,8 @@ class AutonomousStateTests(unittest.TestCase):
                       **_kwargs: Any) -> dict[str, Any]:
             if calls is not None:
                 calls.append(role)
+            if role in (role_errors or {}):
+                raise role_errors[role]
             status = "completed"
             if role == "maker":
                 head["value"] = str(state["attempt"]) * 40
@@ -2386,7 +2394,10 @@ class AutonomousStateTests(unittest.TestCase):
                 "ignored_paths": lambda *_args: set(), "clean": lambda *_args: True,
                 "changed_paths": lambda *_args: ["a.txt"], "path_allowed": lambda *_args: True,
                 "sandboxed_verify": fake_verify,
+                **(overrides or {}),
             }.items():
+                if value is None:
+                    continue
                 fakes.enter_context(mock.patch.object(CONTROLLER, name, side_effect=value))
             outcome = CONTROLLER.run_controller(state, manifest)
         durable = json.loads((directory / "state.json").read_text())
@@ -2507,6 +2518,59 @@ class AutonomousStateTests(unittest.TestCase):
             self.assertEqual(calls.count("checker"), 1)
             [rejected] = self.run_events(common, "attempt_rejected")
             self.assertEqual((rejected["attempt"], rejected["verification"]), (1, "incomplete"))
+
+    def test_every_rejection_records_its_reason_code(self) -> None:
+        # SF-15: one fixture per reason code. A rejection the run retries and a rejection that stops
+        # the run both write `attempt_rejected` with `reason`; the stopping one says `escalated`.
+        green = subprocess.CompletedProcess([], 0, "Ran 3 tests in 0.1s\n\nOK\n", "")
+        red = subprocess.CompletedProcess([], 1, "[1/1] tests\n  make test\n\nverify.sh: phase 'tests' failed.\n", "")
+        empty = subprocess.CompletedProcess([], 0, "Ran 0 tests in 0.000s\n\nNO TESTS RAN\n", "")
+        hidden = {"repo": "/hidden", "commit": "b" * 40, "command": ["run", "{token}"], "tiers": ["A"]}
+
+        def protected_paths(_repo: Path, *args: str) -> list[str]:
+            return [".harness/verify.conf"] if args[0] in ("diff", "ls-tree") else []
+
+        cases = {
+            "verify": dict(checker_status="accepted", verify_results=[green, red]),
+            "checker": dict(checker_status="rejected"),
+            "incomplete": dict(checker_status="accepted", verify_results=[green, empty]),
+            "hidden-tests": dict(checker_status="accepted", manifest_extra={"hidden_tests": hidden},
+                                 overrides={"run_hidden_tests": lambda *_args: {"status": "fail"}}),
+            "hidden-test-probe": dict(checker_status="accepted", role_errors={
+                "checker": CONTROLLER.HiddenTestProbe("checker", ["output"], False)}),
+            "scope": dict(checker_status="accepted", overrides={"path_allowed": lambda *_args: False}),
+            # The real protected-input check runs, on fake Git reads that show a policy edit.
+            "protected": dict(checker_status="accepted", overrides={
+                "validate_verification_changes": None, "git_paths": protected_paths,
+                "history_commits": lambda *_args: [], "symbolic_links": lambda *_args: {},
+                "history_paths": lambda *_args: {}}),
+            "budget": dict(checker_status="accepted", role_errors={
+                "maker": CONTROLLER.BudgetExceeded("Claude run-wide USD budget exceeded", None)}),
+            "stale": dict(checker_status="accepted", move_branch_after_verify=True),
+        }
+        self.assertEqual(set(cases), set(CONTROLLER.REJECTION_REASONS))
+        stops = {"scope", "protected", "budget", "stale"}
+        for reason, options in cases.items():
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory(prefix=f"agentsmith {reason} ") as temporary:
+                common = Path(temporary)
+                outcome, durable, events = self.run_with_fake_roles(common, max_attempts=1, **options)
+                self.assertEqual((outcome, durable["status"]), (2, "escalated"))
+                [rejected] = self.run_events(common, "attempt_rejected")
+                self.assertEqual((rejected["reason"], rejected["attempt"]), (reason, 1))
+                self.assertIs(rejected.get("escalated", False), reason in stops)
+                if reason in stops:
+                    # The rejection is written before the escalation it causes.
+                    self.assertEqual(events[-2:], ["attempt_rejected", "run_escalated"])
+
+    def test_an_escalation_without_a_rejection_writes_no_reason(self) -> None:
+        # An attempt cap, or a fault that is not a rejection, adds no `attempt_rejected` record.
+        with tempfile.TemporaryDirectory(prefix="agentsmith plain escalation ") as temporary:
+            common = Path(temporary)
+            outcome, _durable, events = self.run_with_fake_roles(
+                common, max_attempts=1, checker_status="accepted",
+                role_errors={"maker": CONTROLLER.RunError("claude maker exited 1: boom")})
+            self.assertEqual(outcome, 2)
+            self.assertNotIn("attempt_rejected", events)
 
     def test_windows_verifier_timeout_is_marked_incomplete(self) -> None:
         # The AppContainer runner reports a timeout as exit 126 with this exact message.
