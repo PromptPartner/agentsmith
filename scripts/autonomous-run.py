@@ -3442,6 +3442,8 @@ Allowed paths: {json.dumps(scope['allowed_paths'])}. Denied paths: {json.dumps(s
 No network, connectors, tracker writes, push, PR, merge, deployment, production action, or history rewrite.
 Return only the requested JSON receipt. Never claim evidence you did not produce.
 {REPORT_CONTRACT}
+In commit write the full 40-character SHA that `git rev-parse HEAD` prints in your worktree, never
+a short, symbolic or empty value: the controller compares it with the candidate letter for letter.
 In changed_paths list every path printed by
 `git -c core.quotepath=off diff --name-only --no-renames {base} HEAD`, as plain names without quotes.
 A moved file counts twice: list the old path and the new path.
