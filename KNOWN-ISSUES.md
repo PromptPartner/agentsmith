@@ -3,6 +3,23 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [ ] 2026-11-24 — Gap left open by SF-16b: the role report contract (`VERDICT: <STATUS>`, then
+  `## Summary` with 3 to 5 bullets) is checked only on receipts that a role writes. The receipts
+  the controller writes itself do not follow it: the rejection before any checker
+  (`controller_rejection`), the rejection after failed hidden tests, and the rejection after a
+  hidden-test probe. Their `summary` is one plain sentence. They reach the next maker as feedback
+  and the run state as `last_checker_receipt`, so a reader that relies on the verdict line finds
+  none there.
+- [ ] 2026-11-24 — Race left open by SF-16b: `start` checks the rework note against its pinned hash
+  in `validate_manifest`, then copies it to `operator-feedback.md` after the run's branch, worktree
+  and state exist. If the note changes between the two reads, the copy refuses with "rework note
+  changed since prepare", and the run stays `prepared` with its branch and worktree; the inbox then
+  lists it as `dead`. Only an edit inside that short window triggers it.
+- [x] 2026-11-24 — Found while building SF-16b: once a role's `summary` became its multi-line
+  report, a blocked maker escalated with `maker blocked: ` followed by the whole report, and that
+  reason reaches the state, the inbox row and the terminal. Fixed: the reason holds one line, the
+  report's first summary bullet (else its first line that is not the verdict line), at most 200
+  characters.
 - [x] 2026-11-21 — Gap left open by SF-11: on macOS and Linux the verify command runs under
   `bash -o pipefail`, but the Windows verifier runs it through `cmd.exe`, which has no pipefail, so
   a verify command such as `pytest | more` passed on Windows when its tests failed. Fixed: on

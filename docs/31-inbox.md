@@ -45,6 +45,16 @@ Each row has a `kind`, an `id`, an `age` (since the item last changed), a one-li
 and a `tier` where a commit range exists (from the [risk map](29-risk-map.md), computed from the
 run's base commit to its commit).
 
+An `accepted` or `awaiting-human` run row also lists `assumptions`: the choices the maker's report
+says it made without authority (its `## Assumptions without authority` section, see
+[autonomous runs](21-autonomous-runs.md)). The table prints them on a line under the row, as
+`assumed without authority: …`; a row with none adds no line, and every other row has an empty
+list in `--json`. The same list is in the pull-request body that `deliver` prints. The maker wrote
+these, so secret-like values and the home folder are redacted first, with the patterns that
+`factory export` uses and that refuse a pull-request body (`[redacted: GitHub token]`, `~`).
+They are bounded as in the pull-request body (20 at most, each cut at 500 characters), and the
+table's line is cut at 300 characters, ending in `…`.
+
 The branch that counts as landed is resolved in this order: `--base <branch>` on `origin`; else the
 branch `origin/HEAD` points to; else `origin/main`; else `origin/master`. When `--base` names a
 branch that does not exist, or `origin/HEAD` points to a branch that is gone, the inbox says so in

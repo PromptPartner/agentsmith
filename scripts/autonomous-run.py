@@ -985,6 +985,28 @@ def rework_note(repo: Path, manifest: dict[str, Any]) -> str | None:
     return note_text_problem(data, str(rework["note_path"])).strip()
 
 
+OPERATOR_FEEDBACK_FILE = "operator-feedback.md"
+
+
+def keep_operator_feedback(state: dict[str, Any], manifest: dict[str, Any]) -> None:
+    """Keep a rework's note as its own file in the new run's folder (SF-16). The note in the
+    repository may change or go once the run started; the run's own copy is what its maker was
+    given. The folder is controller state that no role may write. A rework is a new run, so its
+    attempts and spend start from zero: the held run's budget is never carried over."""
+    rework = manifest.get("rework")
+    if not isinstance(rework, dict):
+        return
+    repo = Path(state["repo"])
+    data = (repo / str(rework["note_path"])).read_bytes()
+    if hashlib.sha256(data).hexdigest() != rework["note_sha256"]:
+        raise RunError("rework note changed since prepare; prepare a new run with the new note")
+    kept = Path(state["state_path"]).parent / OPERATOR_FEEDBACK_FILE
+    kept.write_bytes(data)
+    state["operator_feedback"] = {"of": rework["of"], "file": OPERATOR_FEEDBACK_FILE,
+                                  "note_path": rework["note_path"], "sha256": rework["note_sha256"]}
+    save_state(state, "operator_feedback_kept", of=rework["of"], sha256=rework["note_sha256"])
+
+
 def note_text_problem(data: bytes, shown: str) -> str:
     """The note as text. It reaches the maker as a process argument, which cannot hold NUL."""
     try:
@@ -2434,6 +2456,147 @@ def parse_receipt(path: Path, stdout: str) -> dict[str, Any]:
     raise RunError("runtime emitted no schema-valid receipt")
 
 
+# The role report contract (SF-16). A receipt's `summary` is the role's report. Its first line is
+# the one line the controller reads, `VERDICT: <STATUS>`: the receipt status in capitals. Then a
+# `## Summary` section of 3 to 5 bullets for a person. A maker report also has a section that
+# lists each choice the maker made that the spec and ticket did not settle; it reaches the pull
+# request and the inbox. The contract is the same for every client, so it lives in the prompt and
+# in this lint rather than in the receipt schema, which Codex and Claude Code both enforce.
+REPORT_VERDICTS = ("COMPLETED", "ACCEPTED", "REJECTED", "BLOCKED")
+VERDICT_LINE = re.compile(r"VERDICT: (" + "|".join(REPORT_VERDICTS) + r")")
+ASSUMPTIONS_HEADING = "## Assumptions without authority"
+LATER_VERDICT = re.compile(r"\s*VERDICT\s*:")
+REPORT_CONTRACT = (f"The summary is your report, in Markdown. Its first line is exactly `VERDICT: <STATUS>`, your "
+                   f"status in capitals ({', '.join(REPORT_VERDICTS)}). Then a line `## Summary` and 3 to 5 bullets, "
+                   "each starting with `- `.")
+NO_ASSUMPTION = re.compile(r"none\.?", re.IGNORECASE)
+
+
+HTML_COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)
+FENCE = re.compile(r"\s{0,3}(`{3,}|~{3,})")
+
+
+def report_visible_lines(summary: str) -> list[str]:
+    """The lines after the verdict line that a rendered report shows as text: without HTML
+    comments and without code blocks. An unclosed comment or block hides the rest of the report."""
+    lines = summary.splitlines()
+    visible: list[str] = []
+    fence: str | None = None
+    for line in HTML_COMMENT.sub("", "\n".join(lines[1:])).splitlines():
+        opener = FENCE.match(line)
+        if fence is None and opener:
+            fence = opener.group(1)
+        elif fence is not None:
+            if opener and opener.group(1)[0] == fence[0] and len(opener.group(1)) >= len(fence) \
+                    and not line.strip().strip(fence[0]):
+                fence = None
+        else:
+            visible.append(line)
+    return visible
+
+
+def report_headings(summary: str) -> list[str]:
+    """Every visible `## ` heading of a report, in order, repeats included."""
+    return [line.rstrip() for line in report_visible_lines(summary) if line.startswith("## ")]
+
+
+def report_sections(summary: str) -> dict[str, list[str]]:
+    """The visible lines under each `## ` heading of a report, by heading."""
+    sections: dict[str, list[str]] = {}
+    current: list[str] | None = None
+    for line in report_visible_lines(summary):
+        if line.startswith("## "):
+            current = sections.setdefault(line.rstrip(), [])
+        elif current is not None:
+            current.append(line.rstrip())
+    return sections
+
+
+def report_verdict(summary: str) -> str | None:
+    """The verdict the report's first line states, or None when it has no verdict line."""
+    first = summary.splitlines()[0].rstrip() if summary.splitlines() else ""
+    match = VERDICT_LINE.fullmatch(first)
+    return match.group(1) if match else None
+
+
+def report_bullets(lines: list[str]) -> tuple[list[str], str | None]:
+    """The bullets of one section, a continuation line joined to its bullet, or why it is not a list."""
+    bullets: list[str] = []
+    for line in lines:
+        if line.startswith("- "):
+            bullets.append(line[2:].strip())
+        elif line[:1].isspace() and line.strip() and bullets:
+            bullets[-1] += " " + line.strip()
+        elif line.strip():
+            return bullets, f"holds a line that is not a bullet: {line.strip()[:60]!r}"
+    return bullets, None
+
+
+def report_problem(summary: str, status: str, role: str) -> str | None:
+    """Why a role report breaks the report contract, or None when it keeps it."""
+    verdict = report_verdict(summary)
+    if verdict is None:
+        return "the report does not open with a verdict line (`VERDICT: <STATUS>`, for example `VERDICT: REJECTED`)"
+    if verdict != status.upper():
+        return f"the verdict line says {verdict}, but the receipt status is {status}"
+    # The controller reads only the first line; a later one, anywhere, could tell a reader otherwise.
+    if any(LATER_VERDICT.match(line) for line in summary.splitlines()[1:]):
+        return "the report holds more than one verdict line: it needs exactly one verdict line, the first"
+    sections = report_sections(summary)
+    if "## Summary" not in sections:
+        return "the report needs a `## Summary` section after the verdict line, outside code blocks and comments"
+    headings = report_headings(summary)
+    for heading in ("## Summary", ASSUMPTIONS_HEADING):
+        if headings.count(heading) > 1:
+            return f"the report needs exactly one `{heading}` section, not {headings.count(heading)}"
+    bullets, problem = report_bullets(sections["## Summary"])
+    if problem:
+        return f"the `## Summary` section {problem}"
+    if not 3 <= len(bullets) <= 5:
+        return f"the `## Summary` section needs 3 to 5 bullets, not {len(bullets)}"
+    if role == "maker":
+        if ASSUMPTIONS_HEADING not in sections:
+            return f"a maker report needs a `{ASSUMPTIONS_HEADING}` section"
+        bullets, problem = report_bullets(sections[ASSUMPTIONS_HEADING])
+        if problem or not bullets:
+            return (f"the `{ASSUMPTIONS_HEADING}` section "
+                    + (problem or "lists nothing: write one bullet per assumption, or `- none`"))
+    return None
+
+
+def report_headline(summary: str, limit: int = 200) -> str:
+    """One bounded line of a report for a reason or a status line: its first summary bullet, else
+    its first line that is not the verdict line. A reason must never carry a whole report."""
+    bullets, _problem = report_bullets(report_sections(summary).get("## Summary", []))
+    lines = [line for line in summary.splitlines() if line.strip() and not VERDICT_LINE.fullmatch(line.rstrip())]
+    text = " ".join((bullets[0] if bullets and bullets[0] else lines[0] if lines else "").split())
+    return (text if len(text) <= limit else text[:limit - 1] + "…") or "no reason given"
+
+
+# A maker can write any amount; what a person reads is bounded. GitHub refuses a pull-request body
+# over 65,536 characters, and 20 assumptions of 500 characters keep this section near 11,000.
+ASSUMPTION_MAX_CHARS = 500
+ASSUMPTIONS_MAX_ITEMS = 20
+PR_BODY_MAX_CHARS = 65_536
+
+
+def bounded_assumptions(items: list[str]) -> list[str]:
+    """At most ASSUMPTIONS_MAX_ITEMS assumptions of at most ASSUMPTION_MAX_CHARS each, every cut marked."""
+    shown = [item if len(item) <= ASSUMPTION_MAX_CHARS
+             else item[:ASSUMPTION_MAX_CHARS] + f" … [cut at {ASSUMPTION_MAX_CHARS} characters]"
+             for item in items[:ASSUMPTIONS_MAX_ITEMS]]
+    if len(items) > ASSUMPTIONS_MAX_ITEMS:
+        shown.append(f"{len(items) - ASSUMPTIONS_MAX_ITEMS} more assumptions are not shown; the maker's receipt "
+                     "in the run folder holds them all")
+    return shown
+
+
+def report_assumptions(summary: str) -> list[str]:
+    """What a maker report says it assumed without authority; `- none` and no section give []."""
+    bullets, _problem = report_bullets(report_sections(summary).get(ASSUMPTIONS_HEADING, []))
+    return [item for item in bullets if item and not NO_ASSUMPTION.fullmatch(item)]
+
+
 def verifier_env() -> dict[str, str]:
     """The credential-free base. `sandboxed_verify` adds a private HOME, TMPDIR and XDG folders
     for each run of the verifier; a fixed shared home let a maker plant caches and config there."""
@@ -2999,6 +3162,7 @@ Read the accepted terminal spec at {spec}. This ticket is separate from its deci
 Allowed paths: {json.dumps(scope['allowed_paths'])}. Denied paths: {json.dumps(scope['denied_paths'])}.
 No network, connectors, tracker writes, push, PR, merge, deployment, production action, or history rewrite.
 Return only the requested JSON receipt. Never claim evidence you did not produce.
+{REPORT_CONTRACT}
 In changed_paths list every path printed by
 `git -c core.quotepath=off diff --name-only --no-renames {base} HEAD`, as plain names without quotes.
 A moved file counts twice: list the old path and the new path.
@@ -3016,7 +3180,9 @@ A moved file counts twice: list the old path and the new path.
                      f"{note}\n")
         return common + goal + f"""Implement the smallest complete change, run {manifest['verify']['command']},
 and make atomic local commits only. Leave the worktree clean. HEAD must advance beyond {base}.
-Use status completed or blocked; do not mark your own work accepted.{feedback}"""
+Use status completed or blocked; do not mark your own work accepted.
+After the summary bullets, add a line `{ASSUMPTIONS_HEADING}` with one bullet for each choice you made
+that the spec and ticket did not settle, or the single bullet `- none`.{feedback}"""
     verify_log = f"attempt-{state.get('attempt')}-verify.txt"
     return common + f"""You are the independent checker and default to REJECT. Do not edit files or commit.
 Inspect the committed diff from {base} to HEAD and the controller verification evidence.
@@ -3114,6 +3280,13 @@ def ensure_verification_baseline(state: dict[str, Any], manifest: dict[str, Any]
                exit_code=verify.returncode)
 
 
+def checker_report_defect(checker: dict[str, Any]) -> str | None:
+    """An acceptance whose report breaks the report contract is a checker defect, like an
+    acceptance whose citations do not hold."""
+    broken = report_problem(checker["summary"], checker["status"], "checker")
+    return f"the checker's report breaks the report contract: {broken}" if broken else None
+
+
 def controller_rejection(commit: str, paths: list[str], reason: str) -> dict[str, Any]:
     """The feedback a maker gets when the controller rejects an attempt before any checker."""
     return {"status": "rejected", "summary": f"controller rejected the attempt: {reason}", "commit": commit,
@@ -3203,7 +3376,7 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
                 validate_git_transition(worktree, before_meta, after_meta, state['branch'], before_head, after_head)
         assert maker is not None
         if maker["status"] == "blocked":
-            raise RunError(f"maker blocked: {maker['summary']}")
+            raise RunError(f"maker blocked: {report_headline(maker['summary'])}")
         if after_head == before_head:
             raise RunError("maker completed without creating a local commit")
         if not clean(worktree):
@@ -3224,6 +3397,17 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             raise RunError(f"maker created ignored paths outside scope: {shown_paths(ignored_bad)}", reason="scope")
         if maker["commit"] != after_head or sorted(maker["changed_paths"]) != sorted(paths):
             raise RunError("maker receipt does not match the committed Git state")
+        broken = report_problem(maker["summary"], maker["status"], "maker")
+        if broken:
+            # The report is what the controller and the inbox read: an attempt without one fails
+            # here, before a verifier or a checker is spent on it, and the next maker learns why.
+            prior = controller_rejection(after_head, paths, broken)
+            prior["summary"] = "controller rejected the attempt: the maker's report breaks the report contract"
+            state["last_checker_receipt"] = prior
+            state["status"] = "retrying"
+            state['stage'] = 'retrying'
+            save_state(state, "attempt_rejected", attempt=state["attempt"], reason="report contract")
+            continue
         validate_verification_changes(worktree, state["base_head"], after_head, manifest)
         state["status"] = "checking"
         checkpoint_stage(state, 'verifying')
@@ -3328,7 +3512,8 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             # blank evidence: that is a checker defect with rework feedback, not a plain rejection.
             claims_acceptance = (verify.returncode == 0 and checker["status"] == "accepted"
                                  and not checker["unresolved"])
-            defect = (citation_problem(checker, evidence, verify_path, checker_worktree, state["attempt"])
+            defect = ((checker_report_defect(checker)
+                       or citation_problem(checker, evidence, verify_path, checker_worktree, state["attempt"]))
                       if claims_acceptance else None)
             if defect:
                 proof["checker_defect"] = defect
@@ -3546,6 +3731,7 @@ def start(args: argparse.Namespace) -> int:
                 "state_path": str(path),
             }
             save_state(state, "run_started", branch=branch, worktree=str(worktree))
+            keep_operator_feedback(state, manifest)
         return run_controller(state, manifest)
     finally:
         if token is not None:
@@ -4653,11 +4839,13 @@ def delivery_checks(repo: Path, state: dict[str, Any], remote: str, base: str | 
         merge, problem = merge_verification(repo, state, manifest, remote, str(base), accepted)
         if problem:
             raise RunError("deliver refused: " + problem)
-    return {"state": state, "merge_verification": merge, "proof": proof, "checker": checker, "manifest": manifest, "accepted": accepted,
+    return {"state": state, "merge_verification": merge, "proof": proof, "checker": checker, "manifest": manifest,
+            "accepted": accepted, "models": models_used(run_dir, manifest),
             "branch": branch, "staleness": staleness, "packages": packages,
             "paths": changed_paths(repo, str(state["base_head"]), accepted),
             "tier": {"tier": tier, "recorded": recorded, "recomputed": report["tier"], "declared": declared,
-                     "lenses": report["lenses"], "policy_blob": report["policy"]["blob"], "floor_paths": floor},
+                     "lenses": report["lenses"], "policy_blob": report["policy"]["blob"], "floor_paths": floor,
+                     "paths": report["paths"]},
             "calibration": calibration_status(repo, (manifest.get("roles") or {}).get("checker") or {})}
 
 
@@ -4737,6 +4925,73 @@ def eligibility(checks: dict[str, Any], sha: str, ci: dict[str, Any] | None,
     return {"eligible": eligible, "sha": sha, "facts": rows, "line": line}
 
 
+def models_used(run_dir: Path, manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    """Each role's client, model and effort as its launches recorded them (`attempt-N-<role>-exit.json`),
+    with the attempts that used them. A role that never launched shows the manifest's setting."""
+    used: dict[tuple[str, str, str, str], set[int]] = {}
+    for path in sorted(run_dir.glob("attempt-*-exit.json")):
+        match = re.fullmatch(r"attempt-([0-9]+)-(maker|checker)-exit[.]json", path.name)
+        try:
+            record = json.loads(path.read_text(encoding="utf-8")) if match else None
+        except (OSError, ValueError):
+            record = None
+        if not isinstance(record, dict) or record.get("role") != match.group(2):
+            continue
+        key = (match.group(2), *(str(record.get(name) or "unknown") for name in ("runtime", "model", "effort")))
+        used.setdefault(key, set()).add(int(match.group(1)))
+    roles = manifest.get("roles") if isinstance(manifest.get("roles"), dict) else {}
+    rows = [{"role": role, "client": client, "model": model, "effort": effort, "attempts": sorted(attempts)}
+            for (role, client, model, effort), attempts in used.items()]
+    for role in ("maker", "checker"):
+        if not any(row["role"] == role for row in rows):
+            config = roles.get(role) if isinstance(roles.get(role), dict) else {}
+            rows.append({"role": role, "client": str(config.get("runtime") or "unknown"),
+                         "model": str(config.get("model") or "unknown"),
+                         "effort": str(config.get("effort") or "unknown"), "attempts": []})
+    return sorted(rows, key=lambda row: (("maker", "checker").index(row["role"]), row["attempts"]))
+
+
+def models_used_lines(checks: dict[str, Any]) -> list[str]:
+    def attempts(row: dict[str, Any]) -> str:
+        numbers = row["attempts"]
+        if not numbers:
+            return "not launched"
+        return ("attempt " if len(numbers) == 1 else "attempts ") + ", ".join(map(str, numbers))
+    # Model names come from the manifest and the run folder, so they sit in a code block too.
+    return ["### Models used",
+            fenced("\n".join(f"- {row['role']}: {row['client']}, model {row['model']}, effort {row['effort']} "
+                              f"({attempts(row)})" for row in checks["models"])), ""]
+
+
+def assumption_lines(checks: dict[str, Any]) -> list[str]:
+    """The maker's assumptions made without authority, from its report (SF-16)."""
+    maker = checks["state"].get("maker_receipt")
+    items = bounded_assumptions(report_assumptions(str(maker.get("summary") or ""))) if isinstance(maker, dict) else []
+    if not items:
+        return ["### Assumptions made without authority", "The maker's report lists none.", ""]
+    return ["### Assumptions made without authority",
+            "The maker made these choices; the spec and ticket did not settle them.",
+            fenced("\n".join(f"- {item}" for item in items)), ""]
+
+
+def reviewer_focus_lines(checks: dict[str, Any]) -> list[str]:
+    """The paths above tier A, highest tier first, with the rules and lenses that put them there."""
+    import risk_map
+    tier = checks["tier"]
+    lenses = f" Lenses: {', '.join(tier['lenses'])}." if tier["lenses"] else ""
+    risky = sorted((row for row in tier.get("paths", []) if row["tier"] != "A"),
+                   key=lambda row: (-risk_map.TIERS.index(row["tier"]), row["path"]))
+    if not risky:
+        return ["### Reviewer focus",
+                f"Every path is tier A under the policy at the base; no path needs more than the usual review.{lenses}",
+                ""]
+    def reasons(row: dict[str, Any]) -> str:
+        parts = list(row["matched"]) + ([f"lenses: {', '.join(row['lenses'])}"] if row["lenses"] else [])
+        return f" ({'; '.join(parts)})" if parts else ""
+    return ["### Reviewer focus", f"Read these paths first, highest tier first.{lenses}",
+            fenced("\n".join(f"- {row['tier']} {row['path']}{reasons(row)}" for row in risky)), ""]
+
+
 def delivery_body(checks: dict[str, Any], verdict: dict[str, Any]) -> str:
     state, proof, checker, manifest = checks["state"], checks["proof"], checks["checker"], checks["manifest"]
     tier, limits, staleness = checks["tier"], manifest.get("limits") or {}, checks["staleness"]
@@ -4755,6 +5010,7 @@ def delivery_body(checks: dict[str, Any], verdict: dict[str, Any]) -> str:
         f"declared {tier['declared'] or 'none'}). Lenses: {', '.join(tier['lenses']) or 'none'}. "
         f"Policy blob at the base: `{tier['policy_blob'] or 'none'}`.",
         "",
+        *reviewer_focus_lines(checks),
         "### Verification",
         f"Verifier exit {proof.get('exit_code')}; output `{proof.get('output_sha256')}`; "
         f"{len(proof.get('evidence_files') or {})} evidence file(s) recorded by hash.",
@@ -4764,6 +5020,7 @@ def delivery_body(checks: dict[str, Any], verdict: dict[str, Any]) -> str:
         "the verifier log were checked again now.",
         fenced("\n".join(f"- {item}" for item in checker.get("evidence", []))),
         "",
+        *assumption_lines(checks),
         "### Calibration",
         f"Checker calibration: {calibration.get('status')}"
         + (f" ({calibration.get('calibrated_at')})" if calibration.get("calibrated_at") else "") + "."
@@ -4771,6 +5028,7 @@ def delivery_body(checks: dict[str, Any], verdict: dict[str, Any]) -> str:
            " This makes it checker advisory: its acceptance is advice, not a gate, so a human reviews the "
            "change before it lands."),
         "",
+        *models_used_lines(checks),
         "### Budgets used",
         f"Attempts: {state.get('attempt')} of {limits.get('max_attempts')}. Claude: "
         f"{float(state.get('claude_cost_usd', 0.0)):.2f} USD of {limits.get('claude_max_usd')}. Codex: "
@@ -4823,9 +5081,13 @@ def deliver(args: argparse.Namespace) -> int:
             except ci_watch.GhError as exc:
                 raise RunError(f"ci watch could not run: {exc}") from None
     verdict = eligibility(checks, sha, ci, pushed)
-    # Only structured receipt fields, with no local path; the maker's free-text summary stays out.
+    # Only structured receipt fields, with no local path; of the maker's report only its assumptions, fenced.
     title = without_local_paths(f"{checks['manifest'].get('implementation_ticket')}: {checks['branch']}", repo)[:72]
     body = without_local_paths(delivery_body(checks, verdict), repo)
+    if len(body) > PR_BODY_MAX_CHARS:
+        raise RunError(f"deliver refused: the pull-request body has {len(body)} characters, over the "
+                       f"{PR_BODY_MAX_CHARS} that GitHub accepts; shorten the checker evidence or the changed "
+                       "paths in a rework")
     leaks = leak_problems({"title": title, "body": body}, secret_allow_rules(repo))
     if leaks:
         raise RunError("deliver refused: " + "; ".join(leaks))
@@ -5101,7 +5363,7 @@ def calibrate_case(repo: Path, base: str, head: str, label: str, attempt: int, m
                 f"the checker receipt names {receipt['commit'][:12]} with {receipt['changed_paths']}; "
                 f"the candidate is {head[:12]} with {changed}")[:300])
         elif receipt["status"] == "accepted":
-            defect = (citation_problem(receipt, evidence, verify_log, worktree, attempt)
+            defect = ((checker_report_defect(receipt) or citation_problem(receipt, evidence, verify_log, worktree, attempt))
                       if acceptance_ready(verify.returncode, receipt) else "acceptance is not ready")
             outcome.update(verdict="accepted-without-valid-evidence" if defect else "accepted",
                            **({"detail": defect} if defect else {}))

@@ -68,7 +68,8 @@ When the maker and the checker run the same runtime, `limits.checker_reserve` (d
 run escalates with "budget reserved for checking".
 
 To rework a finished run, prepare a new run with `--rework-of <run-id> --note <file>`; the note is
-pinned by hash and goes to the maker. Never reopen an accepted run.
+pinned by hash and goes to the maker, the new run keeps it as `operator-feedback.md` in its own
+folder, and it starts with a fresh attempt budget. Never reopen an accepted run.
 
 ## Start and supervise
 
@@ -108,6 +109,10 @@ strict named filesystem profile, and Claude combines Bash denyWrite with file-to
 Native clients and the host remain trusted. Checkers inspect the controller verifier evidence,
 and an accepting checker cites it per criterion as `criterion :: file[:line] :: excerpt`; an
 acceptance whose citations do not check out is a checker defect and the attempt is reworked.
+Each role's receipt `summary` is its report: a first line `VERDICT: <STATUS>`, then `## Summary`
+with 3 to 5 bullets; a maker report adds `## Assumptions without authority` (or `- none`). A maker
+report without it fails the attempt before verification; a checker acceptance without it is a
+checker defect.
 At acceptance the run records the risk tier from the policy committed at the base (`status <id>`
 shows `risk_tier`); a declared `risk_tier` only raises it, and the tier decides nothing yet.
 Before relying on a checker client and model, run `calibrate <manifest>`: it judges a clean and a

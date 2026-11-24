@@ -45,7 +45,13 @@ The run it reworks must be finished (`accepted`, `awaiting-human`, `escalated` o
 reopened: a rework is always a new run with a new ID. The manifest pins the note by path and
 SHA-256 in `rework`, and `start` and `resume` refuse when the note changed after `prepare`.
 The maker receives the note through its prompt, marked as a rework of the earlier run. A note
-may be at most 16 KB.
+may be at most 16 KB. When the rework starts, the controller keeps the note as its own file,
+`operator-feedback.md`, in the new run's folder under `agentsmith-runs/`, where no role may write.
+The run state records it as `operator_feedback` (the run it reworks, the file, the note's path in
+the repository and its SHA-256), and the `operator_feedback_kept` event names the same hash. So the
+feedback that drove a run stays with that run, even when the note in the repository changes later.
+Feedback on a held or escalated run starts a fresh attempt budget: the rework is a new run, so its
+attempts and its spend start from zero, and the earlier run's state is never changed.
 
 **Attention budget.** `prepare` refuses a new run while as many runs wait on you as the risk policy
 allows, and `start` checks the same limit again before it launches anything, so runs prepared while
@@ -158,6 +164,41 @@ rejection: the defect is recorded as a `checker_defect` event and as `checker_de
 verification receipt, and the next maker is told that the acceptance was not trusted. A rejection
 needs no citations. The receipt shape does not change, so a stored receipt stays valid, and a
 checker whose evidence already uses this form passes as it is.
+
+**Every role report keeps one contract.** A receipt's `summary` is the role's report. Its first
+line is the one line the controller reads: `VERDICT: <STATUS>`, the receipt's status in capitals
+(`COMPLETED`, `ACCEPTED`, `REJECTED` or `BLOCKED`). Then comes a `## Summary` section of 3 to 5
+bullets (`- `) for a person. A maker report also has an `## Assumptions without authority`
+section: one bullet for each choice the maker made that the spec and ticket did not settle, or
+the single bullet `- none`. Both prompts state the contract, and the controller checks every
+report against it without a model:
+
+```text
+VERDICT: COMPLETED
+
+## Summary
+- Parse an empty input as an error instead of an empty list.
+- Add a red test for the empty case; it failed on the old parser's IndexError.
+- Run the verify command; every phase passed.
+
+## Assumptions without authority
+- An input of only whitespace counts as empty.
+```
+
+The verdict line is the only one: a report with another line that starts with `VERDICT:`,
+anywhere after the first (under another heading, in a code block, indented), breaks the contract.
+The sections are read as a rendered report shows them: text inside a code block (` ``` ` or
+`~~~`) or an HTML comment (`<!-- -->`) does not count, and an unclosed one hides the rest of the
+report. A report has exactly one `## Summary` section, and a maker report exactly one assumptions
+section; a repeated heading breaks the contract instead of adding up its bullets.
+A maker report that breaks the contract (no verdict line, a second verdict line, a verdict that is
+not its status, no summary, fewer than 3 or more than 5 bullets, or no assumptions section) fails its attempt
+before a verifier or a checker is spent on it. The event is `attempt_rejected` with
+`reason: report contract`, and the next maker is told what was wrong. A checker acceptance whose
+report breaks the contract is a checker defect, handled like one whose citations do not hold,
+and calibration counts it as a wrong verdict. A rejection stays a rejection. The receipt schema
+does not change. The checker prompt does, so a calibration recorded before this contract is
+stale and the checker must be calibrated again.
 
 Before the first attempt is judged, the controller runs the verify command once on the base
 commit, in a disposable worktree, and stores the result with the run as `verification_baseline`
@@ -746,20 +787,30 @@ implementation ticket and the run branch. The body holds:
 
 - the paths that Git reports as changed;
 - the tier and its lenses;
+- the reviewer focus: every path above tier A, highest tier first, with the policy rules, floor
+  reasons and lenses that raised it, or a line saying that every path is tier A;
 - the verifier and checker evidence;
+- the assumptions made without authority: the bullets under `## Assumptions without authority` in
+  the accepted attempt's maker report, or "The maker's report lists none.". At most 20 are shown,
+  each cut at 500 characters with the cut marked, and a last line counts the rest; the maker's
+  receipt in the run folder keeps them all;
 - the checker calibration status. When it is not `passed` (for example, the record went stale
   after the acceptance), the body says the checker is advisory ("checker advisory");
+- the models used: each role's client, model and effort as its launches recorded them in
+  `attempt-N-<role>-exit.json`, with the attempts that used them;
 - the budgets used;
 - the new packages and their registry lookup, when a manifest gained any;
 - the base staleness, and the merge verification when the accepted commit is behind the base;
 - the eligibility line.
 
-The maker's free-text summary is left out. The only text that a model wrote is the checker
-evidence, and it sits in a code block with the changed paths, so no link, Markdown or `@`-mention
-in it takes effect. Paths inside the repository become repo-relative, and home and temporary
+The rest of the maker's report is left out. The only text that a model wrote is the checker
+evidence and the maker's assumptions, and each sits in a code block, as do the changed paths, the
+reviewer-focus paths and the model names, so no link, Markdown or `@`-mention in them takes
+effect. Paths inside the repository become repo-relative, and home and temporary
 folders become `~` and `$TMPDIR`, so neither the text nor the `--json` report names a local path.
 The secret scanner's patterns then run over the final title and body (honouring
-`.harness/secret-scan.allow`), and a likely secret refuses delivery and names the field.
+`.harness/secret-scan.allow`), and a likely secret refuses delivery and names the field. A body
+over 65,536 characters, which GitHub does not accept, refuses delivery and names its length.
 
 ### Auto-merge eligibility
 
