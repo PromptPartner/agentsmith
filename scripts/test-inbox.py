@@ -159,6 +159,22 @@ class RowKindTests(InboxCase):
         self.assertIn("  assumed without authority: empty input is an error; \\x1b[2Jclears nothing", text)
         self.assertEqual(text.count("assumed without authority"), 1, "a row without assumptions adds no line")
 
+    def test_an_assumption_that_holds_a_likely_secret_is_redacted_on_the_row(self) -> None:
+        # The maker wrote it: the secret patterns that refuse a PR body redact it here, in text and JSON.
+        token = "gh" + "p_" + "A1b2" * 9  # assembled, so this file holds no secret-shaped literal
+        report = ("VERDICT: COMPLETED\n## Summary\n- a\n- b\n- c\n## Assumptions without authority\n"
+                  f"- the deploy key is {token}\n- " + "pass" + "word = 'hunter2hunter2' stays\n")
+        held = self.repo.branch("agentsmith/held", self.base, {"src/a.py": b"a\n"})
+        self.repo.run_state("held", status="awaiting-human", base_head=self.base, held_commit=held,
+                            reason="checker advisory: calibration none", maker_receipt={"summary": report})
+        collected = self.collect()
+        row = self.rows(collected)[("awaiting-human", "held")]
+        self.assertEqual(row["assumptions"][0], "the deploy key is [redacted: GitHub token]")
+        self.assertNotIn("hunter2hunter2", row["assumptions"][1])
+        for output in (inbox.to_json(collected), inbox.render_text(collected)):
+            self.assertNotIn(token, output)
+            self.assertNotIn("hunter2hunter2", output)
+
     def test_a_run_held_for_an_advisory_checker_is_a_row(self) -> None:
         # SF-09: an acceptance from an uncalibrated checker holds the run for a person.
         held = self.repo.branch("agentsmith/held", self.base, {"src/a.py": b"a\n"})

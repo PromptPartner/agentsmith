@@ -180,6 +180,14 @@ def _frontmatter_status(text: str) -> str | None:
     return ""
 
 
+def _redacted(items: list[str], controller: Any) -> list[str]:
+    """Model-written text with secret-like values and the home folder redacted, as `factory export`
+    redacts them, with the patterns that also refuse a pull-request body."""
+    import factory
+    patterns = (*factory.EXPORT_SECRET_PATTERNS, *getattr(controller, "SECRET_PATTERNS", ()))
+    return factory.redact(list(items), patterns, [0], factory.home_pattern())
+
+
 def _one_line(text: Any) -> str:
     return " ".join(str(text).split())
 
@@ -315,8 +323,8 @@ class _Collector:
             label = "held" if held else "accepted"
             # What the maker's report says it assumed without authority (SF-16), as in the PR body.
             maker = state.get("maker_receipt")
-            assumed = (controller.report_assumptions(str(maker.get("summary") or ""))
-                       if isinstance(maker, dict) else [])
+            assumed = _redacted(controller.report_assumptions(str(maker.get("summary") or ""))
+                                if isinstance(maker, dict) else [], controller)
             commit = state.get("held_commit" if held else "accepted_commit")
             if not _commit(self.repo, commit):
                 self.warnings.append(f"run {name}: dropped, {label} commit {str(commit)[:12]} is not in this repository")
