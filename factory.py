@@ -336,26 +336,41 @@ def rework_numbers(repo: Path, runs: list[dict[str, Any]], in_window: list[dict[
                        f"{len(rejected)} rejection(s) in {sum(1 for run in in_window if rejections(run))} run(s)"
                        + (f"; {unrecorded} without a recorded reason (written before reasons were recorded)"
                           if unrecorded else "")))
-    # 2. Spend split: each role's `usage_recorded` events, for the runs whose spend is known.
+    # 2. Spend split: each role's `usage_recorded` events, for the runs whose spend is known and
+    # whose role records add up to it. Missing records are not zero: such a run is left out.
     split = {side: {"claude_usd": 0.0, "codex_tokens": 0} for side in ("making", "verifying")}
+    itemised = []
     for run in known:
+        sides = {side: {"claude_usd": 0.0, "codex_tokens": 0} for side in split}
         for item in run["events"]:
             side = {"maker": "making", "checker": "verifying"}.get(item.get("role")) \
                 if item.get("event") == "usage_recorded" and isinstance(item.get("role"), str) else None
             if side:
-                split[side]["claude_usd"] += amount(item.get("cost_usd"))
-                split[side]["codex_tokens"] += int(amount(item.get("tokens")))
+                sides[side]["claude_usd"] += amount(item.get("cost_usd"))
+                sides[side]["codex_tokens"] += int(amount(item.get("tokens")))
+        usd = sum(side["claude_usd"] for side in sides.values())
+        tokens = sum(side["codex_tokens"] for side in sides.values())
+        recorded_usd, recorded_tokens = float(run["state"]["claude_cost_usd"]), int(run["state"]["codex_tokens_used"])
+        if abs(usd - recorded_usd) > 1e-6 * max(1.0, recorded_usd) or tokens != recorded_tokens:
+            continue
+        itemised.append(run)
+        for name, side in sides.items():
+            split[name]["claude_usd"] += side["claude_usd"]
+            split[name]["codex_tokens"] += side["codex_tokens"]
+    unitemised = len(known) - len(itemised)
     shares = {}
     for unit in ("claude_usd", "codex_tokens"):
         total = split["making"][unit] + split["verifying"][unit]
         shares[unit] = round(split["verifying"][unit] / total, 3) if total else None
     for side in split.values():
         side["claude_usd"] = round(side["claude_usd"], 2)
-    rows.append(number("spend split, making and verifying", len(known), {**split, "verifying_share": shares},
+    rows.append(number("spend split, making and verifying", len(itemised), {**split, "verifying_share": shares},
                        "Claude USD and Codex tokens", start, end,
                        f"the maker's spend is making and the checker's is verifying, from the usage records of "
-                       f"{len(known)} run(s) with known spend"
-                       + (f"; {unknown} run(s) with unknown spend left out" if unknown else "")))
+                       f"{len(itemised)} run(s) with known spend"
+                       + (f"; {unknown} run(s) with unknown spend left out" if unknown else "")
+                       + (f"; {unitemised} run(s) whose usage records do not add up to their spend left out"
+                          if unitemised else "")))
     # 3. Budget stops on runs later accepted: the run itself after a resume, or a rework of it.
     by_id = {run["id"]: run for run in runs}
     children: dict[str, list[str]] = {}

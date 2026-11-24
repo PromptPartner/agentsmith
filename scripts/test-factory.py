@@ -280,6 +280,18 @@ class FactoryTests(unittest.TestCase):
                                           "verifying_share": {"claude_usd": 0.25, "codex_tokens": 0.25}})
         self.assertIn("1 run(s) with unknown spend left out", split["detail"])
 
+    def test_spend_split_leaves_out_runs_whose_usage_records_do_not_add_up(self) -> None:
+        # Missing usage is never zero: a run whose role records do not account for its spend totals,
+        # with none at all or with the checker's missing, is left out and counted.
+        maker_only = [{"event": "usage_recorded", "role": "maker", "runtime": "claude", "cost_usd": 1.5, "tokens": 0},
+                      {"event": "usage_recorded", "role": "maker", "runtime": "codex", "cost_usd": 0.0, "tokens": 300}]
+        for index in range(5):
+            self.add_run(f"bare-{index}", "accepted", usd=2.0, tokens=400)
+            self.add_run(f"partial-{index}", "accepted", usd=2.0, tokens=400, events=maker_only)
+        split = self.number(factory.numbers(self.repo, now=NOW, ci_runs=[]), "spend split, making and verifying")
+        self.assertEqual((split["status"], split["n"], split["value"]), ("insufficient data", 0, None))
+        self.assertIn("10 run(s) whose usage records do not add up to their spend left out", split["detail"])
+
     def test_budget_stops_on_runs_later_accepted(self) -> None:
         budget = [{"event": "attempt_rejected", "attempt": 1, "reason": "budget", "escalated": True},
                   {"event": "run_escalated", "reason": "Claude run-wide USD budget exhausted"}]
