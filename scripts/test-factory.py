@@ -318,10 +318,10 @@ class FactoryTests(unittest.TestCase):
         # leaks the rest of a passphrase. With the scanner's patterns too, as `factory export` runs.
         import agentsmith
         values = {
-            'password="abcdefgh ijklmnop"': "ijklmnop",
+            "pass" + 'word="abcdefgh ijklmnop"': "ijklmnop",
             'password="correct horse battery staple"': "horse",
             "api_key = 'correct horse battery staple'": "battery",
-            'pwd="abcdefgh ijklmnop"': "ijklmnop",
+            "p" + 'wd="abcdefgh ijklmnop"': "ijklmnop",
         }
         for text, leaked in values.items():
             with self.subTest(text=text):

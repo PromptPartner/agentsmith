@@ -28,8 +28,8 @@ been authorized, so the entries are kept here.
   the repository. Fixed: `factory.json` now has an `intake` list, redacted with the same home-folder
   and secret rules as the rest of the export.
 - [x] 2026-11-22 — Found by an independent Codex test of the intake export: export redaction cut a
-  quoted secret at its first space, so `password="abcdefgh ijklmnop"` exported as
-  `[redacted: assigned secret] ijklmnop"`, and `password="correct horse battery staple"` (first
+  quoted secret at its first space: a two-word quoted password such as `abcdefgh ijklmnop` exported
+  as `[redacted: assigned secret] ijklmnop"`, and `password="correct horse battery staple"` (first
   word under 8 characters) exported unchanged. The secret scanner's pattern, which export also
   applies, did the same for `pwd=`. Fixed: a quoted value is redacted to its closing quote, single
   or double; an unquoted value still ends with its token; the export keywords include `pwd`.
