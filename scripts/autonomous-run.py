@@ -1671,10 +1671,9 @@ def graph_sequence_numbers(graph_module: Any, contract: dict[str, Any], run_id: 
     not as a changed graph contract."""
     try:
         return graph_module.sequence_numbers(contract, run_id, base)
-    except graph_module.GraphError as exc:
-        if "has no free number" in str(exc):
-            raise RunError(str(exc)) from exc
-        raise
+    except graph_module.SequenceExhausted as exc:
+        raise RunError(f"numbered folder {exc.folder} has no free number of up to six digits after "
+                       f"{exc.highest}; renumber or archive its files before a graph run adds one") from exc
 
 
 def attention_limit_at_base(repo: Path, risk_map: Any, base_ref: str) -> int:

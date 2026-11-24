@@ -325,6 +325,15 @@ NUMBERED_NAME = re.compile(r"\A[A-Za-z]?([0-9]{1,6})(?=[_.-])")
 MAX_SEQUENCE_NUMBER = 999_999  # NUMBERED_NAME reads up to six digits
 
 
+class SequenceExhausted(GraphError):
+    """A numbered folder has no free number left that NUMBERED_NAME can read."""
+
+    def __init__(self, folder: str, highest: int) -> None:
+        self.folder, self.highest = folder, highest
+        super().__init__(f"numbered folder {folder} has no free number of up to six digits after "
+                         f"{highest}; renumber or archive its files before a graph run adds one")
+
+
 def next_sequence_number(names: list[str], *, folder: str = "the folder") -> str | None:
     """The next free number among numbered file names, padded like the widest one, or None.
     Refused past six digits: a seven-digit name does not read as numbered, so a later run would
@@ -335,8 +344,7 @@ def next_sequence_number(names: list[str], *, folder: str = "the folder") -> str
     width = max(len(item) for item in found)
     highest = max(int(item) for item in found)
     if highest >= MAX_SEQUENCE_NUMBER:
-        raise GraphError(f"numbered folder {folder} has no free number of up to six digits after "
-                         f"{highest}; renumber or archive its files before a graph run adds one")
+        raise SequenceExhausted(folder, highest)
     return str(highest + 1).zfill(width)
 
 
