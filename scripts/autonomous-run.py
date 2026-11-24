@@ -2452,11 +2452,39 @@ REPORT_CONTRACT = (f"The summary is your report, in Markdown. Its first line is 
 NO_ASSUMPTION = re.compile(r"none\.?", re.IGNORECASE)
 
 
+HTML_COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)
+FENCE = re.compile(r"\s{0,3}(`{3,}|~{3,})")
+
+
+def report_visible_lines(summary: str) -> list[str]:
+    """The lines after the verdict line that a rendered report shows as text: without HTML
+    comments and without code blocks. An unclosed comment or block hides the rest of the report."""
+    lines = summary.splitlines()
+    visible: list[str] = []
+    fence: str | None = None
+    for line in HTML_COMMENT.sub("", "\n".join(lines[1:])).splitlines():
+        opener = FENCE.match(line)
+        if fence is None and opener:
+            fence = opener.group(1)
+        elif fence is not None:
+            if opener and opener.group(1)[0] == fence[0] and len(opener.group(1)) >= len(fence) \
+                    and not line.strip().strip(fence[0]):
+                fence = None
+        else:
+            visible.append(line)
+    return visible
+
+
+def report_headings(summary: str) -> list[str]:
+    """Every visible `## ` heading of a report, in order, repeats included."""
+    return [line.rstrip() for line in report_visible_lines(summary) if line.startswith("## ")]
+
+
 def report_sections(summary: str) -> dict[str, list[str]]:
-    """The lines under each `## ` heading of a report, by heading."""
+    """The visible lines under each `## ` heading of a report, by heading."""
     sections: dict[str, list[str]] = {}
     current: list[str] | None = None
-    for line in summary.splitlines()[1:]:
+    for line in report_visible_lines(summary):
         if line.startswith("## "):
             current = sections.setdefault(line.rstrip(), [])
         elif current is not None:
@@ -2496,7 +2524,11 @@ def report_problem(summary: str, status: str, role: str) -> str | None:
         return "the report holds more than one verdict line: it needs exactly one verdict line, the first"
     sections = report_sections(summary)
     if "## Summary" not in sections:
-        return "the report needs a `## Summary` section after the verdict line"
+        return "the report needs a `## Summary` section after the verdict line, outside code blocks and comments"
+    headings = report_headings(summary)
+    for heading in ("## Summary", ASSUMPTIONS_HEADING):
+        if headings.count(heading) > 1:
+            return f"the report needs exactly one `{heading}` section, not {headings.count(heading)}"
     bullets, problem = report_bullets(sections["## Summary"])
     if problem:
         return f"the `## Summary` section {problem}"

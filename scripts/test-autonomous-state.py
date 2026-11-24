@@ -2727,6 +2727,37 @@ class AutonomousStateTests(unittest.TestCase):
             self.assertEqual((outcome, durable["status"]), (2, "escalated"))
             self.assertIn("checker_defect", events)
 
+    def test_a_report_is_read_outside_code_blocks_and_comments_with_one_summary(self) -> None:
+        # Found by an independent Codex test: a summary hidden in a code block or an HTML comment, which
+        # a rendered report does not show as a list, passed; repeated headings added up their bullets.
+        head = "VERDICT: ACCEPTED\n"
+        bullets = "## Summary\n- one\n- two\n- three\n"
+        hidden = {
+            "an HTML comment": head + "<!--\n" + bullets + "## Other\n-->\n",
+            "a backtick fence": head + "```\n" + bullets + "```\n## Other\n",
+            "a tilde fence": head + "~~~text\n" + bullets + "~~~\n",
+            "an unclosed fence": head + "```\n" + bullets,
+        }
+        for label, report in hidden.items():
+            with self.subTest(case=label):
+                self.assertIn("needs a `## Summary` section", CONTROLLER.report_problem(report, "accepted", "checker") or "")
+        repeated = head + "## Summary\n- one\n- two\n## Summary\n- three\n"
+        self.assertIn("exactly one `## Summary` section", CONTROLLER.report_problem(repeated, "accepted", "checker") or "")
+        twice = role_report("completed") + "## Assumptions without authority\n- more\n"
+        self.assertIn("exactly one `## Assumptions without authority` section",
+                      CONTROLLER.report_problem(twice, "completed", "maker") or "")
+        # A comment or a code block that hides no section does not change a report that keeps the contract.
+        shown = head + "## Summary\n- one <!-- aside -->\n- two\n- three\n\n## Notes\n```\n- not a bullet\n```\n"
+        self.assertIsNone(CONTROLLER.report_problem(shown, "accepted", "checker"))
+        fenced_assumption = role_report("completed", "- real\n```\n- hidden\n```")
+        self.assertEqual(CONTROLLER.report_assumptions(fenced_assumption), ["real"])
+        with tempfile.TemporaryDirectory(prefix="agentsmith hidden summary ") as temporary:
+            outcome, durable, events = self.run_with_fake_roles(
+                Path(temporary), max_attempts=1, checker_status="accepted",
+                reports={"checker": hidden["an HTML comment"]})
+            self.assertEqual((outcome, durable["status"]), (2, "escalated"))
+            self.assertIn("checker_defect", events)
+
     def test_a_maker_report_that_breaks_the_contract_fails_its_attempt_before_verification(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith maker report ") as temporary:
             common = Path(temporary)

@@ -187,6 +187,10 @@ VERDICT: COMPLETED
 
 The verdict line is the only one: a report with another line that starts with `VERDICT:`,
 anywhere after the first (under another heading, in a code block, indented), breaks the contract.
+The sections are read as a rendered report shows them: text inside a code block (` ``` ` or
+`~~~`) or an HTML comment (`<!-- -->`) does not count, and an unclosed one hides the rest of the
+report. A report has exactly one `## Summary` section, and a maker report exactly one assumptions
+section; a repeated heading breaks the contract instead of adding up its bullets.
 A maker report that breaks the contract (no verdict line, a second verdict line, a verdict that is
 not its status, no summary, fewer than 3 or more than 5 bullets, or no assumptions section) fails its attempt
 before a verifier or a checker is spent on it. The event is `attempt_rejected` with
