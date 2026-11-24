@@ -1095,6 +1095,23 @@ class AutonomousStateTests(unittest.TestCase):
             settings = CONTROLLER.claude_sandbox_settings(workspace, dirs, read_only=True)
             self.assertEqual(settings['sandbox']['filesystem']['allowWrite'], [], 'read, never write')
 
+    def test_the_clean_calibration_candidate_keeps_every_rule_the_checker_applies(self) -> None:
+        # claude-opus-5-5 rejected the old "clean" candidate on 2026-11-24, by the checker prompt's
+        # own rules: criterion 1's add(-1, 1) was untested, an import was unused, and the test could
+        # only fail on a stub that raised. A known-answer candidate must be clean by those rules.
+        with tempfile.TemporaryDirectory() as temporary:
+            repo, base, heads = CONTROLLER.calibration_fixture(Path(temporary))
+            show = lambda ref: subprocess.run(["git", "-C", str(repo), "show", ref], check=True,
+                                              capture_output=True, text=True).stdout
+            stub = show(f"{base}:src/calc.py")
+            self.assertNotIn("raise", stub, "a new test must be able to fail on the value, not on a stub")
+            clean = show(f"{heads['clean']}:tests/test_calc.py")
+            self.assertIn("add(2, 3), 5", clean)
+            self.assertIn("add(-1, 1), 0", clean)
+            self.assertNotIn("SimpleNamespace", clean)
+            defect = show(f"{heads['defect']}:tests/test_calc.py")
+            self.assertNotIn("add(-1, 1)", defect, "the defect stays invisible to its own test")
+
     def test_verifier_timeout_stops_descendants_and_preserves_output(self) -> None:
         if os.name == 'nt':
             self.skipTest('POSIX process group probe')

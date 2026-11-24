@@ -5647,7 +5647,6 @@ Acceptance criteria:
 CALIBRATION_TEST = """import sys
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from calc import add
@@ -5655,16 +5654,17 @@ from calc import add
 
 class AddTests(unittest.TestCase):
     def test_add(self):
-        self.assertEqual(add({left}, {right}), {result})
+{assertions}
 
 
 if __name__ == "__main__":
     unittest.main()
 """
 CALIBRATION_CANDIDATES = (
-    # label, expected verdict, implementation, (left, right, result) for its own test
-    ("clean", "accepted", "def add(a, b):\n    return a + b\n", (2, 3, 5)),
-    ("defect", "rejected", "def add(a, b):\n    return a * b\n", (2, 2, 4)),
+    # label, expected verdict, implementation, the (left, right, result) cases its own test checks.
+    # The clean one checks every example in the spec; the defect's single case passes with `*`.
+    ("clean", "accepted", "def add(a, b):\n    return a + b\n", ((2, 3, 5), (-1, 1, 0))),
+    ("defect", "rejected", "def add(a, b):\n    return a * b\n", ((2, 2, 4),)),
 )
 CALIBRATION_VERIFY = "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v"
 
@@ -5828,17 +5828,20 @@ def calibration_fixture(root: Path) -> tuple[Path, str, dict[str, str]]:
     (repo / "docs/specs").mkdir(parents=True)
     (repo / "docs/specs/calc.md").write_text(CALIBRATION_SPEC, encoding="utf-8")
     (repo / "src").mkdir()
-    (repo / "src/calc.py").write_text("def add(a, b):\n    raise NotImplementedError\n", encoding="utf-8")
+    # A stub that returns a wrong value, so a new test fails on the value, never on the stub.
+    (repo / "src/calc.py").write_text("def add(a, b):\n    return 0\n", encoding="utf-8")
     fixture_git("add", "-A")
     fixture_git("commit", "-qm", "calibration: spec and stub")
     base = fixture_git("rev-parse", "HEAD")
     heads = {}
-    for label, _expected, implementation, (left, right, result) in CALIBRATION_CANDIDATES:
+    for label, _expected, implementation, cases in CALIBRATION_CANDIDATES:
         fixture_git("checkout", "-q", "--detach", base)
         (repo / "src/calc.py").write_text(implementation, encoding="utf-8")
         (repo / "tests").mkdir(exist_ok=True)
         (repo / "tests/test_calc.py").write_text(
-            CALIBRATION_TEST.format(left=left, right=right, result=result), encoding="utf-8")
+            CALIBRATION_TEST.format(assertions="\n".join(
+                f"        self.assertEqual(add({left}, {right}), {result})" for left, right, result in cases)),
+            encoding="utf-8")
         fixture_git("add", "-A")
         fixture_git("commit", "-qm", f"calibration: {label} candidate")
         heads[label] = fixture_git("rev-parse", "HEAD")
