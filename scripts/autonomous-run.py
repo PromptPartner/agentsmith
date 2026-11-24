@@ -3123,7 +3123,10 @@ def launch_role_output(state: dict[str, Any], manifest: dict[str, Any], role: st
     if timeout <= 0:
         raise RunError("wall-clock budget exhausted", reason="budget")
     common_git = state_root(Path(state["repo"])).parent
-    maker_write_dirs = [common_git, resolved_git_path(worktree, '--git-dir')] if role == 'maker' else []
+    # Both roles get the Git folders behind their linked worktree: the maker may write them to
+    # commit; the checker launches read-only, so for it they are read access only. Without them a
+    # checker's git cannot even resolve HEAD when the repository is under the denied HOME.
+    maker_write_dirs = [common_git, resolved_git_path(worktree, '--git-dir')]
     protected = trusted_paths(state)
     cap = budget_cap(manifest["limits"], RUNTIME_BUDGETS[runtime][0])
     allowance = maker_allowance(state, manifest) if role == "maker" else None

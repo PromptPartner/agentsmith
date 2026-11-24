@@ -1066,6 +1066,35 @@ class AutonomousStateTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse((trusted/'forged').exists())
 
+    def test_a_checker_may_read_the_git_folders_of_its_worktree(self) -> None:
+        # A linked worktree's .git is a pointer into the repository's Git folder. A Claude checker's
+        # sandbox reads only its worktree, so with the repository under HOME (denied) every git
+        # command failed and no real checker could name the candidate (calibration, 2026-11-24).
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            repo, workspace = root/'repo', root/'checker'
+            subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+            subprocess.run(['git', '-C', str(repo), '-c', 'user.name=F', '-c', 'user.email=f@example.com',
+                            'commit', '-q', '--allow-empty', '-m', 'base'], check=True)
+            subprocess.run(['git', '-C', str(repo), 'worktree', 'add', '-q', '--detach', str(workspace)], check=True)
+            state = {'repo': str(repo), 'worktree': str(workspace),
+                     'state_path': str(repo/'.git/agentsmith-runs/probe/state.json'),
+                     'manifest_path': str(repo/'manifest.json'), 'spec_path': 'spec.md',
+                     'attempt': 1, 'deadline_epoch': time.time()+30}
+            manifest = {'roles': {'checker': {'runtime': 'claude', 'model': 'fixture', 'effort': 'high'}},
+                        'limits': {'claude_max_usd': 1}}
+            class Observed(Exception):
+                pass
+            with mock.patch.object(CONTROLLER, 'build_native_command', side_effect=Observed) as launch:
+                with self.assertRaises(Observed):
+                    CONTROLLER.launch_role(state, manifest, 'checker', 'check')
+            self.assertTrue(launch.call_args.kwargs['read_only'])
+            dirs = [Path(item).resolve() for item in launch.call_args.kwargs['extra_write_dirs']]
+            self.assertIn((repo/'.git').resolve(), dirs)
+            self.assertIn((repo/'.git/worktrees/checker').resolve(), dirs)
+            settings = CONTROLLER.claude_sandbox_settings(workspace, dirs, read_only=True)
+            self.assertEqual(settings['sandbox']['filesystem']['allowWrite'], [], 'read, never write')
+
     def test_verifier_timeout_stops_descendants_and_preserves_output(self) -> None:
         if os.name == 'nt':
             self.skipTest('POSIX process group probe')
