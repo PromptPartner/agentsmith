@@ -510,12 +510,14 @@ def coordination_lock(root: Path, *, interruptible: bool = True):
 
 
 @contextlib.contextmanager
-def git_phase(repo: Path, phase: str, *, timeout_seconds: float = 60):
+def git_phase(repo: Path, phase: str, *, timeout_seconds: float = 60, budget: bool = False):
     """Coordinate shared Git metadata without serializing independent makers.
 
     A checker must see a quiescent object store for its strict before/after check.
     Graph-owned Git merges use the exclusive writer phase. These leases are only
     coordination, never an exemption from the metadata tampering checks.
+    `budget` says the timeout is what is left of the run's wall clock: a wait that spends it all
+    is a budget stop.
     """
     if phase not in {"maker", "checker", "writer"}:
         raise RunError(f"unsupported git phase: {phase}")
@@ -550,7 +552,8 @@ def git_phase(repo: Path, phase: str, *, timeout_seconds: float = 60):
                 break
         if time.monotonic() >= deadline:
             raise RunError(f"git phase {phase} is still held by live {conflict['phase']} process "
-                           f"{conflict['pid']}")
+                           f"{conflict['pid']}" + ("; the wall-clock budget ran out while waiting" if budget else ""),
+                           reason="budget" if budget else None)
         if _stop_signal_received:
             raise RunInterrupted("stopped by operator")
         time.sleep(0.02)
@@ -3045,7 +3048,7 @@ def checker_worktree_session(state: dict[str, Any], manifest: dict[str, Any],
     together with the state entry that exempts it."""
     publish = (lambda: coordination_lock(state_root(worktree), interruptible=False)) if phase == "maker" \
         else contextlib.nullcontext
-    with git_phase(worktree, phase, timeout_seconds=remaining_seconds(state, manifest)):
+    with git_phase(worktree, phase, timeout_seconds=remaining_seconds(state, manifest), budget=True):
         with publish():
             if checker_worktree.exists():
                 raise RunError(f"refusing to overwrite checker worktree {checker_worktree}")
@@ -3134,7 +3137,7 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             # leaves a run that resumes. Only this run's maker moves its branch.
             state['maker_before_head'] = git(worktree, "rev-parse", "HEAD")
             checkpoint_stage(state, "making")
-            with git_phase(worktree, "maker", timeout_seconds=remaining_seconds(state, manifest)):
+            with git_phase(worktree, "maker", timeout_seconds=remaining_seconds(state, manifest), budget=True):
                 before_head = git(worktree, "rev-parse", "HEAD")
                 # Start holds this same short lock while creating a branch/worktree
                 # and publishing its state, so a snapshot cannot see half a peer.
@@ -3192,7 +3195,7 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             after_head = git(worktree, 'rev-parse', 'HEAD')
             if after_head != state['candidate_commit']:
                 raise RunError('candidate changed since stage checkpoint; operator review required', reason="stale")
-            with git_phase(worktree, 'maker', timeout_seconds=remaining_seconds(state, manifest)):
+            with git_phase(worktree, 'maker', timeout_seconds=remaining_seconds(state, manifest), budget=True):
                 with coordination_lock(state_root(worktree)):
                     after_meta = git_metadata(worktree, known_peers=before_meta['registered_peers'])
                 before_meta = json.loads(json.dumps(before_meta))
@@ -3770,7 +3773,7 @@ def recover_checker_worktree(state: dict[str, Any], manifest: dict[str, Any]) ->
         return
     repo = Path(state['repo'])
     worktree = Path(state['worktree'])
-    with git_phase(repo, 'writer', timeout_seconds=remaining_seconds(state, manifest)):
+    with git_phase(repo, 'writer', timeout_seconds=remaining_seconds(state, manifest), budget=True):
         abandoned = state.get('checker_worktree')
         if abandoned:
             expected = worktree.with_name(f"{worktree.name}-check-{state['attempt']}")

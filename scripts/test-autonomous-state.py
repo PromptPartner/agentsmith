@@ -2562,6 +2562,31 @@ class AutonomousStateTests(unittest.TestCase):
                     # The rejection is written before the escalation it causes.
                     self.assertEqual(events[-2:], ["attempt_rejected", "run_escalated"])
 
+    def test_a_git_phase_wait_that_spends_the_wall_clock_is_a_budget_rejection(self) -> None:
+        # A live checker holds the Git phase; the maker waits until the run's wall-clock budget is
+        # gone. That stop is a budget stop like any other, so its rejection is recorded.
+        with tempfile.TemporaryDirectory(prefix="agentsmith phase budget ") as temporary:
+            common = Path(temporary)
+            root = common / "leases"
+            (root / "git-phases").mkdir(parents=True)
+            token = "b" * 32
+            (root / "git-phases" / f"{token}.json").write_text(json.dumps(
+                {"pid": os.getpid(), "token": token, "phase": "checker", "started_at": CONTROLLER.now()}))
+            # Time is left at the top of the attempt; the phase wait is given the last second of it.
+            left = [2, 1]
+
+            def near_expiry(_state: dict[str, Any], _manifest: dict[str, Any]) -> int:
+                return left.pop(0) if left else 0
+
+            outcome, durable, events = self.run_with_fake_roles(
+                common, max_attempts=1, checker_status="accepted",
+                overrides={"git_phase": None, "state_root": lambda _repo: root, "remaining_seconds": near_expiry})
+            self.assertEqual((outcome, durable["status"]), (2, "escalated"))
+            self.assertIn("still held by live checker", durable["reason"])
+            [rejected] = self.run_events(common, "attempt_rejected")
+            self.assertEqual((rejected["reason"], rejected["escalated"]), ("budget", True))
+            self.assertEqual(events[-2:], ["attempt_rejected", "run_escalated"])
+
     def test_an_escalation_without_a_rejection_writes_no_reason(self) -> None:
         # An attempt cap, or a fault that is not a rejection, adds no `attempt_rejected` record.
         with tempfile.TemporaryDirectory(prefix="agentsmith plain escalation ") as temporary:

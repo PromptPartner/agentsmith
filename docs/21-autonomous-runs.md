@@ -219,7 +219,7 @@ this fixed set, and [`factory numbers`](31-factory-readiness.md) counts rework b
 | `hidden-test-probe` | a role tried to read the held-out tests (see [hidden acceptance tests](#hidden-acceptance-tests-opt-in)). |
 | `scope` | the maker changed, committed or created ignored paths outside the allowed scope. |
 | `protected` | the maker changed a protected verification input or an agent-instruction file. |
-| `budget` | a role crossed or would cross a run-wide cap: USD, Codex tokens, the checker's reserve, or the wall clock. |
+| `budget` | a role crossed or would cross a run-wide cap: USD, Codex tokens, the checker's reserve, or the wall clock, including a wait for another run's Git phase that used up the wall clock. |
 | `stale` | the commit the checks passed is no longer the run's candidate: it moved after its checks, or changed since its checkpoint. |
 
 The first five are rejected and retried while attempts remain. `scope`, `protected`, `budget` and
