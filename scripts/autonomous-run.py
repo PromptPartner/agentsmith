@@ -1246,7 +1246,13 @@ def positive_number(value: Any, *, whole: bool) -> bool:
         return False
     if whole and not isinstance(value, int):
         return False
+    if isinstance(value, int):
+        # Every limit is used as a float later; a larger JSON integer would raise OverflowError.
+        return 0 < value <= MAX_LIMIT_INTEGER
     return math.isfinite(value) and value > 0
+
+
+MAX_LIMIT_INTEGER = 2 ** 53  # the largest integer a float holds exactly
 
 
 def validate_budgets(manifest: dict[str, Any]) -> None:

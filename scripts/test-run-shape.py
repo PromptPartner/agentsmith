@@ -235,7 +235,10 @@ class RejectionSignatureTests(unittest.TestCase):
                          (CONTROLLER.DEFAULT_IDENTICAL_REJECTIONS, CONTROLLER.DEFAULT_SILENT_TURNS))
         for field, value in (("max_identical_rejections", 1), ("max_identical_rejections", 4),
                              ("max_identical_rejections", 2.0), ("max_silent_turns", 0),
-                             ("max_silent_turns", True), ("max_silent_turns", "2")):
+                             ("max_silent_turns", True), ("max_silent_turns", "2"),
+                             # A JSON integer too large for a float is refused, not an OverflowError.
+                             ("max_identical_rejections", 10 ** 400), ("max_silent_turns", 10 ** 400),
+                             ("max_attempts", 10 ** 400), ("codex_goal_tokens", 10 ** 400)):
             with self.subTest(field=field, value=value):
                 limits = {**manifest["limits"], field: value}
                 with self.assertRaisesRegex(CONTROLLER.RunError, f"limits.{field}"):
