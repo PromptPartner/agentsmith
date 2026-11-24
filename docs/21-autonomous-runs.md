@@ -769,7 +769,9 @@ verifier and the checker already decided.
 
 **The transcript** is `attempt-<n>-demo.txt` in the run folder: the command, stdout, stderr and the
 exit status. The output is treated as untrusted. At most 80,000 bytes of each stream are read
-back, and each keeps its first 20,000 characters, with the cut marked. Text that the secret scanner's patterns match becomes `[redacted: <pattern>]`.
+back, and each keeps its first 20,000 characters, with the cut marked. Text that the secret scanner's patterns match becomes `[redacted: <pattern>]`. Those patterns
+have the scanner's known limit: an assigned value needs at least 8 characters, so a short one
+such as `password="a b"` stays in the transcript (see `KNOWN-ISSUES.md`, 2026-11-22).
 Repository paths become repo-relative, and home and temporary folders become `~` and `$TMPDIR`.
 Control characters become `\xNN`, so the transcript cannot move the cursor. The unredacted output is
 deleted, also when the demo is stopped or fails. The state and the verification receipt record the transcript under `demo`: the command,

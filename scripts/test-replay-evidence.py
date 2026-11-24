@@ -215,7 +215,7 @@ class DemoGuideTests(unittest.TestCase):
         docs = (ROOT / "docs/21-autonomous-runs.md").read_text(encoding="utf-8")
         section = docs.split("### Replayable demo evidence", 1)[1].split("\n### ", 1)[0]
         for required in ("## Demo", "evidence <run-id>", "evidence_opened", "delivery_checked",
-                         "Not yet supported: screenshots and video"):
+                         "Not yet supported: screenshots and video", "at least 8 characters"):
             self.assertIn(required, section)
 
 
