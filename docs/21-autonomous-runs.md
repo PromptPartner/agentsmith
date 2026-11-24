@@ -521,7 +521,10 @@ happens next.
   without a `reason` counts as its own value, "(no reason)", which never matches a reason code. The
   failing-test signature comes from that attempt's verify output: the failing checks it names
   (verify.sh phases, unittest and pytest test names, as for regressions), or, when it names none,
-  a hash of its last 20 lines with clock times, durations, hashes and attempt numbers removed. An
+  a hash of its last 20 lines with what changes from run to run removed: clock times, durations,
+  hashes (hex with a letter and a digit; plain numbers are kept), attempt numbers, the per-run
+  folder inside a temporary folder (`/tmp`, macOS `/var/folders`, Windows `AppData\Local\Temp`),
+  process IDs and ports. An
   attempt with no verify output (a maker that tripped the hidden-test wire) has the signature "no
   verify output".
 - **Silent maker turns.** A maker turn is silent when its candidate has the same Git tree as the

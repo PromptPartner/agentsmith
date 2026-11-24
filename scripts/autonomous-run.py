@@ -1309,7 +1309,16 @@ SIGNATURE_NOISE = (
     (re.compile(r"\b\d+(?:\.\d+)?\s?(?:ms|s|sec|secs|seconds|min)\b"), "<duration>"),
     # A hash has a letter and a digit; an ordinary number (`expected rows 1000001`) is kept.
     (re.compile(r"\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*[0-9])[0-9a-f]{7,64}\b"), "<hex>"),
-    (re.compile(r"(-check-|attempt-)\d+"), r"\1<n>"),
+    (re.compile(r"(-check-)\d+"), r"\1<n>"),
+    (re.compile(r"\b(attempt)([-_ ]?#?)\d+", re.IGNORECASE), r"\1\2<n>"),
+    # Temporary folders: the root, then the per-run folder made inside it (a file directly in the
+    # root keeps its name, so two different missing files still differ).
+    (re.compile(r"(?<![\w.~-])(?:/private)?/var/folders/[^/\s]+/[^/\s]+/[A-Z](?=/)"
+                r"|(?<![\w.~-])(?:/private)?/(?:var/)?tmp(?=/)"
+                r"|[A-Za-z]:\\Users\\[^\\\s]+\\AppData\\Local\\Temp(?=\\)", re.IGNORECASE), "<tmp>"),
+    (re.compile(r"<tmp>([/\\])[^/\\\s]+(?=[/\\])"), r"<tmp>\1<dir>"),
+    (re.compile(r"\b(pid|port)(\s*[=:]\s*|\s+)\d+", re.IGNORECASE), r"\1\2<n>"),
+    (re.compile(r"\b((?:\d{1,3}\.){3}\d{1,3}|localhost|\[::1\]):\d{2,5}\b", re.IGNORECASE), r"\1:<port>"),
 )
 
 

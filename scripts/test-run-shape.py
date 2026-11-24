@@ -242,6 +242,31 @@ class RejectionSignatureTests(unittest.TestCase):
         self.assertEqual(signature({}, self.output("E broke at commit 3f9a2c1d")),
                          signature({}, self.output("E broke at commit 0be4d77a")))
 
+    def test_temporary_paths_processes_ports_and_attempt_numbers_are_noise(self) -> None:
+        signature = CONTROLLER.rejection_signature
+        for first, second in (
+                ("E assertion failed: /tmp/tmpAbcX/input.txt", "E assertion failed: /tmp/tmpQrsY/input.txt"),
+                ("E missing /private/var/folders/wg/2q3j1tp_n4vj/T/tmpk2j9_x1q/out.json",
+                 "E missing /var/folders/ab/zz81klq0xyz1/T/tmp93hd02lm/out.json"),
+                ("E missing /tmp/agentsmith-role-output-3kd8s2/receipt.json",
+                 "E missing /tmp/agentsmith-role-output-p01xzq/receipt.json"),
+                (r"E missing C:\Users\ci\AppData\Local\Temp\tmpa1b2c3\x.txt",
+                 r"E missing C:\Users\ci\AppData\Local\Temp\tmpz9y8x7\x.txt"),
+                ("E server pid=1234 port=49152 unavailable", "E server pid=5678 port=50341 unavailable"),
+                ("E cannot reach 127.0.0.1:49152", "E cannot reach 127.0.0.1:50341"),
+                ("E build failed on attempt 1", "E build failed on attempt 2"),
+                ("E build failed (Attempt #1)", "E build failed (Attempt #2)")):
+            with self.subTest(first=first):
+                self.assertEqual(signature({}, self.output(first)), signature({}, self.output(second)))
+        # What is not volatile still tells two failures apart.
+        for first, second in (("E assertion failed: /tmp/tmpAbcX/input.txt", "E assertion failed: /tmp/tmpAbcX/other.txt"),
+                              ("E server pid=1234 port=49152 unavailable", "E server pid=1234 port=49152 refused"),
+                              ("E build failed on attempt 1", "E lint failed on attempt 1"),
+                              # A project folder named tmp is not a temporary folder.
+                              ("E missing src/tmp/a/x.txt", "E missing src/tmp/b/x.txt")):
+            with self.subTest(first=first, second=second):
+                self.assertNotEqual(signature({}, self.output(first)), signature({}, self.output(second)))
+
     def test_the_guard_limits_are_bounded_whole_numbers(self) -> None:
         manifest = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
         CONTROLLER.validate_budgets(manifest)
