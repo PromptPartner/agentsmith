@@ -84,6 +84,11 @@ been authorized, so the entries are kept here.
   fence (four backticks around a three-backtick block) closes at the inner fence, so the command
   that is read is wrong or empty. `spec_sections` has the same limit. Specs that put one plain
   fenced block under `## Demo` are not affected.
+- [ ] 2026-11-24 — Known limit of SF-18b, found by an independent Codex test: demo redaction uses the
+  secret scanner's patterns, so it has the scanner's limit above (an assigned value needs 8
+  characters): `password="a b"` stays in the transcript and the pull-request body. On Windows the
+  AppContainer verifier returns its whole output, so the demo's 80,000-byte read bound applies on
+  macOS and Linux only.
 - [ ] 2026-11-21 — Gap found while adding the attention budget (SF-18a): there is no command to
   dismiss a waiting run. A run leaves the inbox, and the budget count, only when it lands or when
   its branch is deleted; a deleted branch then shows as a warning for as long as the run folder

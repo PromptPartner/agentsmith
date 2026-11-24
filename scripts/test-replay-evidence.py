@@ -12,8 +12,11 @@ sys.dont_write_bytecode = True  # loading the deliver suite must not leave compi
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
+import tempfile
+import time
 import unittest
 
 
@@ -212,8 +215,109 @@ class DemoGuideTests(unittest.TestCase):
         docs = (ROOT / "docs/21-autonomous-runs.md").read_text(encoding="utf-8")
         section = docs.split("### Replayable demo evidence", 1)[1].split("\n### ", 1)[0]
         for required in ("## Demo", "evidence <run-id>", "evidence_opened", "delivery_checked",
-                         "Not yet supported: screenshots and video"):
+                         "Not yet supported: screenshots and video", "at least 8 characters"):
             self.assertIn(required, section)
+
+
+class DemoHardeningTests(unittest.TestCase):
+    """Findings of an independent Codex test of SF-18b, each reproduced without a real run."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="agentsmith-replay-")
+        self.addCleanup(temporary.cleanup)
+        self.tmp = Path(temporary.name).resolve()
+        self.run = self.tmp / "run"
+        self.run.mkdir()
+        self.text = b"ORIGINAL\n"
+        self.state = {"run_id": "x", "status": "accepted", "repo": str(ROOT), "attempt": 1,
+                      "state_path": str(self.run / "state.json"), "deadline_epoch": time.time() + 60,
+                      "demo_command": "echo demo",
+                      "demo": {"file": "attempt-1-demo.txt", "sha256": hashlib.sha256(self.text).hexdigest(),
+                               "commit": "a" * 40, "exit_code": 0, "command": "echo demo"}}
+
+    def fake_runner(self, *, write: bool = True, interrupt: bool = False, seen: dict | None = None):
+        def runner(command, cwd, timeout, env, *, state, prefix, **options):
+            if seen is not None:
+                seen.update(options)
+            if write:
+                (self.run / f"{prefix}.stdout").write_text("raw secret output\n", encoding="utf-8")
+                (self.run / f"{prefix}.stderr").write_text("raw\n", encoding="utf-8")
+            if interrupt:
+                raise CONTROLLER.RunInterrupted("stopped by operator")
+            return subprocess.CompletedProcess([command], 0, "ok\n", "")
+        original = CONTROLLER.sandboxed_verify
+        self.addCleanup(setattr, CONTROLLER, "sandboxed_verify", original)
+        CONTROLLER.sandboxed_verify = runner
+
+    def raw_files(self) -> list[str]:
+        return sorted(path.name for path in self.run.rglob("*") if "-demo-raw." in path.name
+                      and path.suffix in {".stdout", ".stderr"})
+
+    # Finding 1: the transcript is read once, without following a link, and hashed from that read.
+    def test_a_symlinked_transcript_is_refused_even_when_its_target_matches(self) -> None:
+        target = self.tmp / "elsewhere.txt"
+        target.write_bytes(self.text)
+        (self.run / "attempt-1-demo.txt").symlink_to(target)
+        with self.assertRaisesRegex(CONTROLLER.RunError, "not a regular file"):
+            CONTROLLER.checked_demo(self.state)
+
+    def test_the_text_shown_is_the_text_that_was_hashed(self) -> None:
+        # A swap between a hash and a second read is simulated by a hash that always matches.
+        (self.run / "attempt-1-demo.txt").write_bytes(b"FORGED!!\n")
+        original = CONTROLLER.file_digest
+        self.addCleanup(setattr, CONTROLLER, "file_digest", original)
+        CONTROLLER.file_digest = lambda path: self.state["demo"]["sha256"]
+        with self.assertRaisesRegex(CONTROLLER.RunError, "changed after the controller recorded it"):
+            CONTROLLER.checked_demo(self.state)
+
+    # Finding 2: no unredacted output stays on disk, whatever ends the demo.
+    def test_an_interrupted_demo_leaves_no_raw_output(self) -> None:
+        self.fake_runner(interrupt=True)
+        with self.assertRaises(CONTROLLER.RunInterrupted):
+            CONTROLLER.record_demo(self.state, {}, self.tmp, "a" * 40)
+        self.assertEqual(self.raw_files(), [])
+
+    def test_raw_output_left_by_an_earlier_attempt_is_removed_not_archived(self) -> None:
+        for suffix in (".stdout", ".stderr"):
+            (self.run / f"attempt-1-demo-raw{suffix}").write_text("stale secret\n", encoding="utf-8")
+        self.fake_runner(write=False)
+        CONTROLLER.record_demo(self.state, {}, self.tmp, "a" * 40)
+        self.assertEqual(self.raw_files(), [])
+
+    # Finding 3: what is read back is bounded before it reaches memory.
+    def test_the_demo_reads_back_a_bounded_amount_of_output(self) -> None:
+        seen: dict = {}
+        self.fake_runner(seen=seen)
+        CONTROLLER.record_demo(self.state, {}, self.tmp, "a" * 40)
+        self.assertEqual(seen.get("read_limit"), CONTROLLER.DEMO_READ_LIMIT)
+        self.assertLessEqual(CONTROLLER.DEMO_READ_LIMIT, 4 * CONTROLLER.DEMO_STREAM_LIMIT)
+
+    def test_a_bounded_supervised_read_never_loads_more_than_its_limit(self) -> None:
+        state = {"state_path": str(self.run / "state.json"), "attempt": 1}
+        result = CONTROLLER.verifier_process(["/bin/bash", "-c", "head -c 300000 /dev/zero | tr '\\0' x"],
+                                             self.tmp, 30, dict(os.environ), state, "probe", read_limit=1000)
+        self.assertEqual(result.returncode, 0)
+        self.assertLessEqual(len(result.stdout), 1000)
+
+    # Finding 5: a run id cannot leave the runs folder.
+    def test_a_run_id_that_leaves_the_runs_folder_is_refused(self) -> None:
+        for name in ("../rogue", "a/b", "", "..", "x y"):
+            with self.subTest(name=name), self.assertRaisesRegex(CONTROLLER.RunError, "run id"):
+                CONTROLLER.load_run(ROOT, name)
+
+    def test_evidence_refuses_a_state_that_points_outside_its_run_folder(self) -> None:
+        repo = self.tmp / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        folder = repo / ".git/agentsmith-runs/good"
+        folder.mkdir(parents=True)
+        (self.run / "attempt-1-demo.txt").write_bytes(self.text)
+        (folder / "state.json").write_text(json.dumps(self.state), encoding="utf-8")
+        result = subprocess.run([sys.executable, str(CONTROLLER_PATH), "evidence", "good"], cwd=repo,
+                                text=True, capture_output=True, check=False)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("outside its run folder", result.stderr)
+        self.assertFalse((self.run / "events.jsonl").exists())
 
 
 class DemoSectionTests(unittest.TestCase):
