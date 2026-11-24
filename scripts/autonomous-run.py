@@ -1226,11 +1226,98 @@ def validate_budgets(manifest: dict[str, Any]) -> None:
         elif not positive_number(value, whole=field == "codex_goal_tokens"):
             raise RunError(f"limits.{field} must be {kind}, or \"{UNBOUNDED}\" with a written "
                            "limits.budget_rationale; zero or a missing value no longer means no cap")
+    for field, (low, high) in RUN_SHAPE_BOUNDS.items():
+        if field in limits and not (positive_number(limits[field], whole=True) and low <= limits[field] <= high):
+            raise RunError(f"limits.{field} must be a whole number from {low} to {high}")
     if "checker_reserve" in limits:
         reserve, (low, high) = limits["checker_reserve"], CHECKER_RESERVE_BOUNDS
         if not positive_number(reserve, whole=False) or not low <= reserve <= high:
             raise RunError(f"limits.checker_reserve must be a fraction from {low} to {high} of a cap that both the "
                            "maker and the checker spend: enough to check, and at least half left for making")
+
+
+# Run-shape guards (SF-16): a loop that repeats itself ends before the attempt cap. Rejections are
+# identical when their `reason` and their failing-test signature match; a silent maker turn is one
+# whose candidate tree equals the tree the controller last judged. max_attempts is at most 3, so
+# two identical rejections in a row already show the third attempt would only repeat them, and a
+# turn that changed nothing cannot change the verdict.
+DEFAULT_IDENTICAL_REJECTIONS = 2
+DEFAULT_SILENT_TURNS = 1
+RUN_SHAPE_BOUNDS = {"max_identical_rejections": (2, 3), "max_silent_turns": (1, 3)}
+MISSING_REASON = "(no reason)"  # an attempt_rejected event without `reason` is a value of its own
+SIGNATURE_TAIL_LINES = 20
+# What changes between two runs of the same failure: clock times, durations, hashes, attempt numbers.
+SIGNATURE_NOISE = (
+    (re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?"), "<time>"),
+    (re.compile(r"\b\d{1,2}:\d{2}:\d{2}(?:[.,]\d+)?\b"), "<time>"),
+    (re.compile(r"\b\d+(?:\.\d+)?\s?(?:ms|s|sec|secs|seconds|min)\b"), "<duration>"),
+    (re.compile(r"\b[0-9a-f]{7,64}\b"), "<hex>"),
+    (re.compile(r"(-check-|attempt-)\d+"), r"\1<n>"),
+)
+
+
+def run_shape_limits(limits: dict[str, Any]) -> tuple[int, int]:
+    """(N identical rejections, K silent maker turns) that end the attempts, from the manifest."""
+    return (int(limits.get("max_identical_rejections", DEFAULT_IDENTICAL_REJECTIONS)),
+            int(limits.get("max_silent_turns", DEFAULT_SILENT_TURNS)))
+
+
+def rejection_signature(event_fields: dict[str, Any], verify_output: str | None) -> str:
+    """The rejection's `reason` and its failing-test signature: the failing checks the verify
+    output names, or, when it names none, a hash of its last lines with the noise removed."""
+    reason = event_fields.get("reason")
+    reason = MISSING_REASON if reason is None else str(reason)
+    if verify_output is None:
+        return f"{reason} | no verify output"
+    _, failing = named_checks(verify_output)
+    if failing:
+        material, kind = "\n".join(sorted(failing)), "tests"
+    else:
+        lines = [line.strip() for line in verify_output.splitlines() if line.strip()][-SIGNATURE_TAIL_LINES:]
+        material, kind = "\n".join(lines), "output"
+        for pattern, replacement in SIGNATURE_NOISE:
+            material = pattern.sub(replacement, material)
+    return f"{reason} | {kind} {hashlib.sha256(material.encode('utf-8')).hexdigest()[:16]}"
+
+
+def identical_rejection_streak(state: dict[str, Any]) -> tuple[int, str | None]:
+    """How many attempts in a row, ending with the current one, were rejected the same way. Read
+    from events.jsonl, so it needs no stored copy and resume sees exactly what was recorded."""
+    run_dir = Path(state["state_path"]).parent
+    rejected: dict[int, dict[str, Any]] = {}
+    events = run_dir / "events.jsonl"
+    for line in (read_output(events).splitlines() if events.is_file() else []):
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(record, dict) and record.get("event") == "attempt_rejected" and type(record.get("attempt")) is int:
+            rejected[record["attempt"]] = record
+    streak, last = 0, None
+    attempt = int(state.get("attempt", 0))
+    while attempt in rejected:
+        log = run_dir / f"attempt-{attempt}-verify.txt"
+        signature = rejection_signature(rejected[attempt], read_output(log) if log.is_file() else None)
+        if last is not None and signature != last:
+            break
+        streak, last, attempt = streak + 1, signature, attempt - 1
+    return streak, last
+
+
+def silent_turn_streak(state: dict[str, Any], worktree: Path, before_head: str, after_head: str) -> int:
+    """Silent maker turns in a row, this one included: turns whose candidate tree is the tree the
+    controller last judged (the base for the first attempt). Counted once per attempt, so a
+    resumed candidate is not counted twice."""
+    record = state.get("silent_turns")
+    if isinstance(record, dict) and record.get("attempt") == state["attempt"]:
+        return int(record.get("count", 0))
+    silent = git(worktree, "rev-parse", f"{after_head}^{{tree}}") == git(worktree, "rev-parse", f"{before_head}^{{tree}}")
+    chained = isinstance(record, dict) and record.get("attempt") == state["attempt"] - 1
+    previous = int(record.get("count", 0)) if chained else 0
+    count = previous + 1 if silent else 0
+    state["silent_turns"] = {"attempt": state["attempt"], "count": count}
+    save_state(state)
+    return count
 
 
 # The share of a runtime's cap held back for checking when the maker and the checker spend the same
@@ -3107,11 +3194,18 @@ def controller_rejection(commit: str, paths: list[str], reason: str) -> dict[str
 def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
     worktree = Path(state["worktree"])
     max_attempts = int(manifest["limits"]["max_attempts"])
+    identical_limit, silent_limit = run_shape_limits(manifest["limits"])
     prior = state.get("last_checker_receipt")
     while state["attempt"] < max_attempts or pending_candidate(state) or state.get("repeat_attempt"):
         raise_if_stopped(Path(state["state_path"]).parent)
         if remaining_seconds(state, manifest) <= 0:
             raise RunError("wall-clock budget exhausted")
+        if not pending_candidate(state) and not state.get("repeat_attempt"):
+            streak, signature = identical_rejection_streak(state)
+            if streak >= identical_limit:
+                raise RunError(f"run-shape guard: {streak} identical rejections in a row ({signature}), "
+                               f"limits.max_identical_rejections is {identical_limit}; another attempt would "
+                               "repeat them, so a person should read the last rejection and the verify output")
         if not pending_candidate(state):
             if not state.pop("repeat_attempt", False):
                 state["attempt"] += 1
@@ -3208,6 +3302,12 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
         if maker["commit"] != after_head or sorted(maker["changed_paths"]) != sorted(paths):
             raise RunError("maker receipt does not match the committed Git state")
         validate_verification_changes(worktree, state["base_head"], after_head, manifest)
+        silent = silent_turn_streak(state, worktree, before_head, after_head)
+        if silent >= silent_limit:
+            turns = "turn" if silent == 1 else "turns"
+            raise RunError(f"run-shape guard: {silent} silent maker {turns} in a row: the candidate tree is "
+                           f"the tree last judged, limits.max_silent_turns is {silent_limit}; nothing new "
+                           "to verify or check, so a person should read why the maker changed nothing")
         state["status"] = "checking"
         checkpoint_stage(state, 'verifying')
         # Read the candidate before the baseline: a commit that lands while the baseline runs was

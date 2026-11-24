@@ -209,5 +209,91 @@ class InfrastructureFaultRunTests(RunFixture):
         self.assertEqual(self.launches(), ["maker", "maker", "checker"])
 
 
+class RejectionSignatureTests(unittest.TestCase):
+    def test_the_signature_is_the_reason_and_the_failing_tests_not_the_noise(self) -> None:
+        signature = CONTROLLER.rejection_signature
+        first = "exit=1\nSTDOUT:\nFAIL: test_value (tests.Case)\nRan 3 tests in 0.012s\nSTDERR:\n"
+        later = "exit=1\nSTDOUT:\nFAIL: test_value (tests.Case)\nRan 3 tests in 1.250s\nSTDERR:\n"
+        other = "exit=1\nSTDOUT:\nFAIL: test_other (tests.Case)\nRan 3 tests in 0.012s\nSTDERR:\n"
+        self.assertEqual(signature({}, first), signature({}, later), "timings are not a new failure")
+        self.assertNotEqual(signature({}, first), signature({}, other))
+        self.assertNotEqual(signature({"reason": "verify"}, first), signature({"reason": "checker"}, first))
+        # A rejection event without a reason is its own value, never a match for a reason code.
+        self.assertNotEqual(signature({}, first), signature({"reason": "verify"}, first))
+        self.assertEqual(signature({}, None), signature({}, None), "no verify output is a value too")
+        self.assertNotEqual(signature({}, None), signature({}, first))
+        # Without named failing tests, the normalised end of the output decides.
+        tail = "exit=1\nSTDOUT:\nbuild broke at 2026-11-24T10:00:01Z in /tmp/w-check-1 (0.4s)\nSTDERR:\n"
+        retry = "exit=1\nSTDOUT:\nbuild broke at 2026-11-24T10:07:42Z in /tmp/w-check-2 (1.9s)\nSTDERR:\n"
+        self.assertEqual(signature({}, tail), signature({}, retry))
+        self.assertNotEqual(signature({}, tail), signature({}, tail.replace("build broke", "lint broke")))
+
+    def test_the_guard_limits_are_bounded_whole_numbers(self) -> None:
+        manifest = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
+        CONTROLLER.validate_budgets(manifest)
+        self.assertEqual(CONTROLLER.run_shape_limits(manifest["limits"]),
+                         (CONTROLLER.DEFAULT_IDENTICAL_REJECTIONS, CONTROLLER.DEFAULT_SILENT_TURNS))
+        for field, value in (("max_identical_rejections", 1), ("max_identical_rejections", 4),
+                             ("max_identical_rejections", 2.0), ("max_silent_turns", 0),
+                             ("max_silent_turns", True), ("max_silent_turns", "2")):
+            with self.subTest(field=field, value=value):
+                limits = {**manifest["limits"], field: value}
+                with self.assertRaisesRegex(CONTROLLER.RunError, f"limits.{field}"):
+                    CONTROLLER.validate_budgets({**manifest, "limits": limits})
+        limits = {**manifest["limits"], "max_identical_rejections": 3, "max_silent_turns": 2}
+        CONTROLLER.validate_budgets({**manifest, "limits": limits})
+        self.assertEqual(CONTROLLER.run_shape_limits(limits), (3, 2))
+
+
+@unittest.skipUnless(sandbox_available(), "a real run needs the macOS or Linux role sandbox")
+class RunShapeGuardRunTests(RunFixture):
+    SAME_FAILURE = 'echo "FAIL: test_value (tests.Case)"; echo "Ran 1 test"; exit 1'
+
+    def test_two_identical_rejections_end_the_attempts_before_the_cap(self) -> None:
+        self.plan(["change"], checker="rejected")
+        self.commit_manifest("stuck", verify=self.SAME_FAILURE, max_attempts=3)
+        result = self.controller("start", ".harness/runs/stuck.json")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        state = self.state("stuck")
+        self.assertEqual((state["status"], state["attempt"]), ("escalated", 2))
+        self.assertIn("2 identical rejections in a row", state["reason"])
+        self.assertIn("limits.max_identical_rejections", state["reason"])
+        self.assertEqual(self.launches(), ["maker", "checker", "maker", "checker"])
+        escalated = [item for item in self.events("stuck") if item["event"] == "run_escalated"]
+        self.assertEqual(escalated[-1]["reason"], state["reason"])
+
+    def test_rejections_that_change_keep_every_attempt(self) -> None:
+        # Each attempt fails a different test, so the maker is moving: the cap, not the guard, ends it.
+        self.plan(["change"], checker="rejected")
+        self.commit_manifest("moving", verify='echo "FAIL: test_$(ls src | wc -l | tr -d " ") (tests.Case)"; '
+                                              'echo "Ran 1 test"; exit 1', max_attempts=3)
+        result = self.controller("start", ".harness/runs/moving.json")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        state = self.state("moving")
+        self.assertEqual((state["status"], state["attempt"]), ("escalated", 3))
+        self.assertEqual(state["reason"], "attempt cap reached (3)")
+
+    def test_a_silent_maker_turn_ends_the_run_before_any_verifier_or_checker(self) -> None:
+        self.plan(["empty"])
+        self.commit_manifest("silent", max_attempts=3)
+        result = self.controller("start", ".harness/runs/silent.json")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        state = self.state("silent")
+        self.assertEqual((state["status"], state["attempt"]), ("escalated", 1))
+        self.assertIn("1 silent maker turn in a row", state["reason"])
+        self.assertEqual(self.launches(), ["maker"])
+        self.assertFalse((self.repo / ".git/agentsmith-runs/silent/attempt-1-verify.txt").exists())
+
+    def test_silent_turns_are_counted_in_a_row_up_to_the_configured_limit(self) -> None:
+        self.plan(["empty"], checker="rejected")
+        self.commit_manifest("quiet", max_attempts=3, max_silent_turns=2)
+        result = self.controller("start", ".harness/runs/quiet.json")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        state = self.state("quiet")
+        self.assertEqual((state["status"], state["attempt"]), ("escalated", 2))
+        self.assertIn("2 silent maker turns in a row", state["reason"])
+        self.assertEqual(self.launches(), ["maker", "checker", "maker"])
+
+
 if __name__ == "__main__":
     unittest.main()

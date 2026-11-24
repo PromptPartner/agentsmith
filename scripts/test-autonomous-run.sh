@@ -516,6 +516,15 @@ else ok 'malformed runtime receipt escalates'; fi
 assert 'malformed receipt failure is explicit' grep -q 'no schema-valid receipt' "$repo/../err"
 
 repo="$(new_repo capped)"; make_fake "$repo/../fake"; manifest "$repo" capped
+# Three identical rejections: raise the run-shape guard to 3 so this fixture reaches the cap itself
+# (scripts/test-run-shape.py shows the default guard ending the same loop after two).
+python3 - "$repo/.harness/runs/capped.json" <<'PY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); v = json.loads(p.read_text())
+v['limits']['max_identical_rejections'] = 3
+p.write_text(json.dumps(v) + '\n')
+PY
+git -C "$repo" add . && git -C "$repo" commit -qm 'test: attempt cap without the run-shape guard'
 if (cd "$repo" && invoke "$repo" always-reject start .harness/runs/capped.json >../out 2>../err); then
   bad 'run exceeded its rejection cap'
 else ok 'three checker rejections escalate'; fi

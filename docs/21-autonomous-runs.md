@@ -351,7 +351,9 @@ folder that holds files but no state (for example a lock left by a start that cr
 undetermined: inspect it and remove it by hand before the guard can answer 0.
 
 Every budget is explicit. `limits.wall_minutes` must be a positive whole number of minutes, and
-`limits.max_attempts` a whole number from 1 to 3. Each runtime that a role uses needs its own
+`limits.max_attempts` a whole number from 1 to 3. The optional run-shape limits
+`limits.max_identical_rejections` (2 to 3, default 2) and `limits.max_silent_turns` (1 to 3,
+default 1) end the attempts early (see [run-shape guards](#run-shape-guards-identical-rejections-and-silent-turns)). Each runtime that a role uses needs its own
 cap: `limits.codex_goal_tokens` (a positive whole number of tokens) when a role runs Codex, and
 `limits.claude_max_usd` (a positive number of US dollars) when a role runs Claude. A zero, a
 negative number, text, or a missing cap refuses at `prepare`, `start` and `resume`; in v0.5.0 and
@@ -502,6 +504,31 @@ verifier and the checker still judge its candidate. The verifier is a plain shel
 tool permissions, so it has no denials to report. Two gaps remain. Nothing stops a role while it
 runs, because Claude reports single denials only in streamed output (`stream-json`), which these
 roles do not use. And Codex documents no denial event, so Codex roles are not covered.
+
+### Run-shape guards: identical rejections and silent turns
+
+Two loops end before the attempt cap, because another attempt would only repeat them. Each stops
+the run as `escalated` with a reason that starts `run-shape guard:`, and a person decides what
+happens next.
+
+- **Identical rejections.** Before a new attempt, the controller reads this run's
+  `attempt_rejected` events in `events.jsonl`. When the last `limits.max_identical_rejections`
+  attempts (default 2, allowed 2 to 3) were rejected the same way, the run stops. Two rejections
+  are the same when both their `reason` field and their failing-test signature match. An event
+  without a `reason` counts as its own value, "(no reason)", which never matches a reason code. The
+  failing-test signature comes from that attempt's verify output: the failing checks it names
+  (verify.sh phases, unittest and pytest test names, as for regressions), or, when it names none,
+  a hash of its last 20 lines with clock times, durations, hashes and attempt numbers removed. An
+  attempt with no verify output (a maker that tripped the hidden-test wire) has the signature "no
+  verify output".
+- **Silent maker turns.** A maker turn is silent when its candidate has the same Git tree as the
+  candidate the controller last judged, or as the base on the first attempt: for example an empty
+  commit. Nothing new can pass or fail, so after `limits.max_silent_turns` silent turns in a row
+  (default 1, allowed 1 to 3) the run stops before the verifier and the checker spend anything.
+  Below the limit, a silent turn is verified and checked as usual.
+
+An infrastructure fault is never counted by either guard: it is not an attempt and not a rejection
+(see above). Both counts are rebuilt from durable state, so a resumed run stops at the same point.
 
 ## Operations and recovery
 

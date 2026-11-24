@@ -65,7 +65,10 @@ Keep `max_attempts` at 3. Every runtime a role uses needs its cap (`codex_goal_t
 choose `"unbounded"` instead, and only with `budget_rationale` saying who chose it and why.
 When the maker and the checker run the same runtime, `limits.checker_reserve` (default 0.25, from
 0.05 to 0.5) of that cap is held for checking; a maker with nothing above it does not start, and the
-run escalates with "budget reserved for checking".
+run escalates with "budget reserved for checking". A run also escalates early, with a reason
+starting `run-shape guard:`, after 2 identical rejections in a row or 1 maker turn that changed
+nothing (`limits.max_identical_rejections`, `limits.max_silent_turns`): read the last rejection
+before you prepare another run, because resuming repeats the stop.
 
 To rework a finished run, prepare a new run with `--rework-of <run-id> --note <file>`; the note is
 pinned by hash and goes to the maker. Never reopen an accepted run.

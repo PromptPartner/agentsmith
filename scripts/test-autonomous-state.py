@@ -2319,6 +2319,8 @@ class AutonomousStateTests(unittest.TestCase):
                 # The disposable checker worktree stays at the candidate; the run's own worktree
                 # and branch follow `head`.
                 return head["value"] if Path(repo) == worktree else state["candidate_commit"]
+            if len(args) == 2 and args[0] == "rev-parse" and args[1].endswith("^{tree}"):
+                return "tree of " + args[1]  # each fake commit has its own tree: no maker turn is silent
             return ""
 
         def fake_verify(_command: str, cwd: Path, *_args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
