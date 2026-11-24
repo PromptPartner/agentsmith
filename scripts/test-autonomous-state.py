@@ -1468,6 +1468,19 @@ class AutonomousStateTests(unittest.TestCase):
                 self.assertIn("git -c core.quotepath=off diff --name-only --no-renames 0123abc HEAD", prompt)
                 self.assertIn("old path and the new path", prompt)
 
+    def test_role_prompts_ask_for_the_full_commit_sha(self) -> None:
+        # Real checkers (haiku low on 2026-11-06, opus high on 2026-11-24) named a short or empty
+        # commit, so the controller, which compares the full SHA, threw out every verdict.
+        state = {"run_id": "fixture", "base_head": "0123abc"}
+        manifest = {"implementation_ticket": "IMP-1", "spec_path": "docs/specs/fixture.md",
+                    "scope": {"allowed_paths": ["src/**"], "denied_paths": []},
+                    "verify": {"command": "check"}, "limits": {},
+                    "roles": {"maker": {"runtime": "claude"}, "checker": {"runtime": "codex"}}}
+        for role in ("maker", "checker"):
+            with self.subTest(role=role):
+                prompt = CONTROLLER.role_prompt(state, manifest, role)
+                self.assertIn("full 40-character SHA that `git rev-parse HEAD` prints", prompt)
+
     def test_coordination_lock_acquire_retries_windows_sharing_denial(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith coordination acquire ") as temporary:
             root = Path(temporary)

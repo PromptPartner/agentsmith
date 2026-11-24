@@ -165,6 +165,9 @@ been authorized, so the entries are kept here.
   The calibration receipt records this as `invalid-receipt`. Calibrate a stronger checker model
   before relying on it, or simplify what the receipt asks for. Since 2026-11-18 an acceptance from
   a checker without a passed calibration holds the run as `awaiting-human` instead of accepting it.
+  2026-11-24: not a small-model problem. `claude-opus-5-5` at high effort failed the same way
+  (receipts named `7995b0f` or nothing), because no prompt said the receipt's `commit` must be the
+  full SHA. Both role prompts now say so; re-measured by the next real `calibrate`.
 - [x] 2026-11-06 — The Windows compatibility job ran close to its cap: over the 24 latest verify
   runs (push and pull request, 2026-10-26 to 2026-11-06) it took p50 35.3, p90 38.0 and at most
   40.8 minutes against a 45-minute cap, and a factory multiplies CI load. Slowest Windows steps
