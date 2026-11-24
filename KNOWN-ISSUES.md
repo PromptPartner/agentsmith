@@ -3,6 +3,22 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [ ] 2026-11-24 — P1, found by demo lap 1: the run template's default verify command,
+  `./.agentsmith/agentsmith verify`, cannot run in a run's worktree. The installer git-ignores
+  `.agentsmith/`, so a fresh worktree has no runtime, and the baseline and every attempt exit 127
+  ("No such file or directory"). Every first run of a normally installed project fails this way.
+  Workaround: a tracked verify command (the laps used `python -m pytest -q`). Fix to design: let the
+  controller run the trusted runtime from the main checkout, or default the template to a tracked
+  command.
+- [ ] 2026-11-24 — Found with the entry above: a baseline whose verify command cannot start (exit 127)
+  does not stop the run, so the maker spends its attempts on a verifier that can never pass. A
+  baseline that cannot launch its command should refuse the run before any role starts.
+- [ ] 2026-11-24 — Found by demo lap 1's first rework: running the tests writes git-ignored caches
+  (`.pytest_cache/`, `src/**/__pycache__/`), and the scope check refuses ignored files a role creates
+  outside its allowed paths, so the run escalated although the change itself was in scope. The
+  check is deliberate (a role must not hide files in ignored paths); the gap is that ordinary test
+  caches trip it. Workaround, documented in `docs/21`: turn the caches off in the project.
+
 - [ ] 2026-11-24 — Found by the first real calibration: a Claude checker cannot pass `calibrate` on
   macOS. With its sandbox now able to read the Git folders behind its worktree, Claude Code
   2.1.331 still records its `git` Bash calls as `permission_denials` in the real launch

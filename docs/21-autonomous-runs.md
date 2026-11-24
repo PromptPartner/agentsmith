@@ -233,6 +233,15 @@ contains `|`, and the verifier refuses it again (exit 126, never a pass) if one 
 inside quotes or escaped as `^|` is refused too: a nested shell such as `cmd /c "a | b"` or
 `powershell -c "a | b"` still runs it as a pipeline. Only `||` (run the next command only on
 failure) is allowed. Use a single command, or a script that exits non-zero when its tests fail.
+
+**The verify command runs in the run's worktree, which holds only tracked files.** The installed
+runtime folder `.agentsmith/` is git-ignored, so a verify command that calls
+`./.agentsmith/agentsmith verify` (the template's default) cannot start there: it exits 127. Use a
+tracked command, such as your test command, until this is fixed (see `KNOWN-ISSUES.md`). The
+scope check also covers git-ignored files a role creates, so a test run that writes caches outside
+the allowed paths (`.pytest_cache/`, `__pycache__/` under `src/`) escalates the run; turn those
+caches off in the project (`-p no:cacheprovider`, `sys.dont_write_bytecode = True`) or allow the
+paths.
 The baseline and incomplete rules are ported from
 [CodeAF](https://github.com/Agent-Field/CodeAF) (Apache-2.0): `internal/verify/baseline.go` and
 `internal/seniordev/app/full_verification.go`.
