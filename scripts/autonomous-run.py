@@ -2859,7 +2859,9 @@ def launch_role_with_breaker(state: dict[str, Any], manifest: dict[str, Any], ro
             receipt = launch_role(state, manifest, role, prompt, **kwargs)
         except HiddenTestProbe as probe:
             # A probe is the role's own act, not a host fault: it ends any streak, never extends it.
-            if state.pop("infrastructure_streak", None) is not None:
+            streak = state.pop("infrastructure_streak", None)
+            if streak is not None:
+                state.pop("repeat_attempt", None)
                 save_state(state)
             if probe.content:
                 # The role saw held-out content. Discarding its attempt cannot undo that, and the
@@ -2870,13 +2872,14 @@ def launch_role_with_breaker(state: dict[str, Any], manifest: dict[str, Any], ro
         except InfrastructureFailure as failure:
             streak = [*state.get("infrastructure_streak", []), failure.signature]
             state["infrastructure_streak"] = streak
+            if role == "maker":
+                # An infrastructure fault is never an attempt (SF-16). No maker finished, so
+                # whichever way this ends, resume reruns this attempt instead of starting the next.
+                state["repeat_attempt"] = True
             save_state(state, "infrastructure_failure", role=role, signature=failure.signature,
                        attempt=state["attempt"])
             if (len(streak) > 1 and streak[-1] == streak[-2]) or len(streak) >= MAX_INFRASTRUCTURE_STREAK:
                 state["infrastructure_stop"] = failure.signature
-                if role == "maker":
-                    # No maker finished, so resume reruns this attempt instead of starting the next.
-                    state["repeat_attempt"] = True
                 repeated = ("the same infrastructure failure twice in a row" if streak[-1] == streak[-2]
                             else f"{len(streak)} infrastructure failures in a row")
                 advice = ("read why the checker tried denied actions in its log, then resume"
@@ -2889,6 +2892,8 @@ def launch_role_with_breaker(state: dict[str, Any], manifest: dict[str, Any], ro
                 raise RunError(f"{failure}; not relaunched because {problem}") from failure
             continue
         if state.pop("infrastructure_streak", None) is not None:
+            # A relaunch finished this attempt: the next one is a new attempt again.
+            state.pop("repeat_attempt", None)
             save_state(state)
         return receipt
 

@@ -485,8 +485,10 @@ three infrastructure failures in a row. The message names the failure and says t
 was spent; the state records it as `infrastructure_stop`, and the events file has one
 `infrastructure_failure` event per failure. A maker is relaunched only from the same clean start:
 if the failed maker moved `HEAD` or left changes, the run escalates for review instead. Fix the
-cause, then `resume`; resuming starts the count again and reruns the same attempt, so the
-failure still costs no attempt. In a work graph, a child stopped this way
+cause (and, after a partial write, restore the clean start), then `resume`; resuming starts the
+count again and reruns the same attempt. Either way an infrastructure fault is never counted as
+an attempt: a run with `max_attempts: 1` still has its one attempt after the fault. In a work graph, a
+child stopped this way
 halts new child launches (see [parallel work graphs](24-parallel-work-graphs.md)).
 
 Permission denials are counted when a Claude role ends: Claude Code lists the tool calls it
