@@ -1066,6 +1066,52 @@ class AutonomousStateTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse((trusted/'forged').exists())
 
+    def test_a_checker_may_read_the_git_folders_of_its_worktree(self) -> None:
+        # A linked worktree's .git is a pointer into the repository's Git folder. A Claude checker's
+        # sandbox reads only its worktree, so with the repository under HOME (denied) every git
+        # command failed and no real checker could name the candidate (calibration, 2026-11-24).
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            repo, workspace = root/'repo', root/'checker'
+            subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+            subprocess.run(['git', '-C', str(repo), '-c', 'user.name=F', '-c', 'user.email=f@example.com',
+                            'commit', '-q', '--allow-empty', '-m', 'base'], check=True)
+            subprocess.run(['git', '-C', str(repo), 'worktree', 'add', '-q', '--detach', str(workspace)], check=True)
+            state = {'repo': str(repo), 'worktree': str(workspace),
+                     'state_path': str(repo/'.git/agentsmith-runs/probe/state.json'),
+                     'manifest_path': str(repo/'manifest.json'), 'spec_path': 'spec.md',
+                     'attempt': 1, 'deadline_epoch': time.time()+30}
+            manifest = {'roles': {'checker': {'runtime': 'claude', 'model': 'fixture', 'effort': 'high'}},
+                        'limits': {'claude_max_usd': 1}}
+            class Observed(Exception):
+                pass
+            with mock.patch.object(CONTROLLER, 'build_native_command', side_effect=Observed) as launch:
+                with self.assertRaises(Observed):
+                    CONTROLLER.launch_role(state, manifest, 'checker', 'check')
+            self.assertTrue(launch.call_args.kwargs['read_only'])
+            dirs = [Path(item).resolve() for item in launch.call_args.kwargs['extra_write_dirs']]
+            self.assertIn((repo/'.git').resolve(), dirs)
+            self.assertIn((repo/'.git/worktrees/checker').resolve(), dirs)
+            settings = CONTROLLER.claude_sandbox_settings(workspace, dirs, read_only=True)
+            self.assertEqual(settings['sandbox']['filesystem']['allowWrite'], [], 'read, never write')
+
+    def test_the_clean_calibration_candidate_keeps_every_rule_the_checker_applies(self) -> None:
+        # claude-opus-5-5 rejected the old "clean" candidate on 2026-11-24, by the checker prompt's
+        # own rules: criterion 1's add(-1, 1) was untested, an import was unused, and the test could
+        # only fail on a stub that raised. A known-answer candidate must be clean by those rules.
+        with tempfile.TemporaryDirectory() as temporary:
+            repo, base, heads = CONTROLLER.calibration_fixture(Path(temporary))
+            show = lambda ref: subprocess.run(["git", "-C", str(repo), "show", ref], check=True,
+                                              capture_output=True, text=True).stdout
+            stub = show(f"{base}:src/calc.py")
+            self.assertNotIn("raise", stub, "a new test must be able to fail on the value, not on a stub")
+            clean = show(f"{heads['clean']}:tests/test_calc.py")
+            self.assertIn("add(2, 3), 5", clean)
+            self.assertIn("add(-1, 1), 0", clean)
+            self.assertNotIn("SimpleNamespace", clean)
+            defect = show(f"{heads['defect']}:tests/test_calc.py")
+            self.assertNotIn("add(-1, 1)", defect, "the defect stays invisible to its own test")
+
     def test_verifier_timeout_stops_descendants_and_preserves_output(self) -> None:
         if os.name == 'nt':
             self.skipTest('POSIX process group probe')
