@@ -42,6 +42,8 @@ make_fake() {
     '  else printf "{\"type\":\"result\",\"total_cost_usd\":0.25,\"structured_output\":%s}\n" "$payload"; fi' \
     '}' \
     'listed_paths() { git "$@" HEAD~1 HEAD | python3 -c "import json, sys; print(json.dumps(sys.stdin.buffer.read().decode().splitlines()))"; }' \
+    '# A report that keeps the role report contract, JSON-escaped: the verdict line, then 3 summary bullets.' \
+    'report() { printf "VERDICT: %s\\\\n## Summary\\\\n- changed src/change.txt\\\\n- ran the verifier\\\\n- nothing else%s" "$(printf "%s" "$1" | tr a-z A-Z)" "${2:-}"; }' \
     'if [ "$mode" = malformed ]; then emit "{}"; exit 0; fi' \
     'if [ "$mode" = infra-once ] || [ "$mode" = infra-always ] || [ "$mode" = crash-unknown ]; then' \
     '  infra_count=0; [ -f "$fake_root/infra-count" ] && infra_count="$(<"$fake_root/infra-count")"' \
@@ -65,7 +67,7 @@ make_fake() {
     '    status=accepted; [ "$mode" = calibrate-reject ] && status=rejected' \
     '    if [ "$mode" = calibrate-correct ] && grep -q "a \* b" src/calc.py; then status=rejected; fi' \
     '    vcite="the tests pass :: $vlog :: test_add (test_calc.AddTests"' \
-    '    emit "{\"status\":\"$status\",\"summary\":\"calibration $status\",\"commit\":\"$(git rev-parse HEAD)\",\"changed_paths\":$(listed_paths diff --name-only --no-renames),\"evidence\":[\"$vcite\"],\"unresolved\":[],\"next_state\":\"$status\"}"' \
+    '    emit "{\"status\":\"$status\",\"summary\":\"$(report "$status")\",\"commit\":\"$(git rev-parse HEAD)\",\"changed_paths\":$(listed_paths diff --name-only --no-renames),\"evidence\":[\"$vcite\"],\"unresolved\":[],\"next_state\":\"$status\"}"' \
     '    exit 0' \
     '  fi' \
     '  count_file="$fake_root/counter"' \
@@ -75,8 +77,8 @@ make_fake() {
     '  if [ "$mode" = reject-once ] && [ "$count" -eq 1 ]; then status=rejected; fi' \
     '  if [ "$mode" = always-reject ]; then status=rejected; fi' \
     '  paths_json="[\"src/change.txt\"]"; if [ -f "$fake_root/paths_json" ]; then paths_json="$(<"$fake_root/paths_json")"; fi' \
-    '  if [ "$mode" = checker-denials ] && [ -z "$receipt" ]; then printf "{\"type\":\"result\",\"total_cost_usd\":0.25,\"permission_denials\":[{\"tool_name\":\"Edit\"}],\"structured_output\":{\"status\":\"accepted\",\"summary\":\"checker accepted\",\"commit\":\"%s\",\"changed_paths\":[\"src/change.txt\"],\"evidence\":[\"%s\"],\"unresolved\":[],\"next_state\":\"accepted\"}}\n" "$(git rev-parse HEAD)" "$cite"; exit 0; fi' \
-    '  emit "{\"status\":\"$status\",\"summary\":\"checker $status\",\"commit\":\"$(git rev-parse HEAD)\",\"changed_paths\":$paths_json,\"evidence\":[\"$cite\"],\"unresolved\":[],\"next_state\":\"$status\"}"' \
+    '  if [ "$mode" = checker-denials ] && [ -z "$receipt" ]; then printf "{\"type\":\"result\",\"total_cost_usd\":0.25,\"permission_denials\":[{\"tool_name\":\"Edit\"}],\"structured_output\":{\"status\":\"accepted\",\"summary\":\"%s\",\"commit\":\"%s\",\"changed_paths\":[\"src/change.txt\"],\"evidence\":[\"%s\"],\"unresolved\":[],\"next_state\":\"accepted\"}}\n" "$(report accepted)" "$(git rev-parse HEAD)" "$cite"; exit 0; fi' \
+    '  emit "{\"status\":\"$status\",\"summary\":\"$(report "$status")\",\"commit\":\"$(git rev-parse HEAD)\",\"changed_paths\":$paths_json,\"evidence\":[\"$cite\"],\"unresolved\":[],\"next_state\":\"$status\"}"' \
     'else' \
     '  if [ "$mode" = slow ]; then sleep 20; fi' \
     '  if [ "$mode" = collision-slow ]; then sleep 60; fi' \
@@ -122,7 +124,7 @@ make_fake() {
     '  if [ "$mode" = quoted-denied ]; then paths_json="$(listed_paths diff --name-only --no-renames)"; fi' \
     '  if [ "$mode" = plain-accented ]; then paths_json="$(listed_paths -c core.quotepath=off diff --name-only --no-renames)"; fi' \
     '  if [ "$paths_json" != "[\"$changed\"]" ]; then printf "%s" "$paths_json" > "$fake_root/paths_json"; fi' \
-    '  emit "{\"status\":\"completed\",\"summary\":\"fake maker\",\"commit\":\"$(git rev-parse HEAD)\",\"changed_paths\":$paths_json,\"evidence\":[\"fake maker evidence\"],\"unresolved\":[],\"next_state\":\"checking\"}"' \
+    '  emit "{\"status\":\"completed\",\"summary\":\"$(report completed "\\n## Assumptions without authority\\n- none")\",\"commit\":\"$(git rev-parse HEAD)\",\"changed_paths\":$paths_json,\"evidence\":[\"fake maker evidence\"],\"unresolved\":[],\"next_state\":\"checking\"}"' \
     'fi' \
     'if [ -n "$receipt" ]; then printf "%s\n" "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":7,\"output_tokens\":3}}"; fi' > "$path/bin/fake-agent"
   chmod +x "$path/bin/fake-agent"

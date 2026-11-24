@@ -2414,6 +2414,84 @@ def parse_receipt(path: Path, stdout: str) -> dict[str, Any]:
     raise RunError("runtime emitted no schema-valid receipt")
 
 
+# The role report contract (SF-16). A receipt's `summary` is the role's report. Its first line is
+# the one line the controller reads, `VERDICT: <STATUS>`: the receipt status in capitals. Then a
+# `## Summary` section of 3 to 5 bullets for a person. A maker report also has a section that
+# lists each choice the maker made that the spec and ticket did not settle; it reaches the pull
+# request and the inbox. The contract is the same for every client, so it lives in the prompt and
+# in this lint rather than in the receipt schema, which Codex and Claude Code both enforce.
+REPORT_VERDICTS = ("COMPLETED", "ACCEPTED", "REJECTED", "BLOCKED")
+VERDICT_LINE = re.compile(r"VERDICT: (" + "|".join(REPORT_VERDICTS) + r")")
+ASSUMPTIONS_HEADING = "## Assumptions without authority"
+REPORT_CONTRACT = (f"The summary is your report, in Markdown. Its first line is exactly `VERDICT: <STATUS>`, your "
+                   f"status in capitals ({', '.join(REPORT_VERDICTS)}). Then a line `## Summary` and 3 to 5 bullets, "
+                   "each starting with `- `.")
+NO_ASSUMPTION = re.compile(r"none\.?", re.IGNORECASE)
+
+
+def report_sections(summary: str) -> dict[str, list[str]]:
+    """The lines under each `## ` heading of a report, by heading."""
+    sections: dict[str, list[str]] = {}
+    current: list[str] | None = None
+    for line in summary.splitlines()[1:]:
+        if line.startswith("## "):
+            current = sections.setdefault(line.rstrip(), [])
+        elif current is not None:
+            current.append(line.rstrip())
+    return sections
+
+
+def report_verdict(summary: str) -> str | None:
+    """The verdict the report's first line states, or None when it has no verdict line."""
+    first = summary.splitlines()[0].rstrip() if summary.splitlines() else ""
+    match = VERDICT_LINE.fullmatch(first)
+    return match.group(1) if match else None
+
+
+def report_bullets(lines: list[str]) -> tuple[list[str], str | None]:
+    """The bullets of one section, a continuation line joined to its bullet, or why it is not a list."""
+    bullets: list[str] = []
+    for line in lines:
+        if line.startswith("- "):
+            bullets.append(line[2:].strip())
+        elif line[:1].isspace() and line.strip() and bullets:
+            bullets[-1] += " " + line.strip()
+        elif line.strip():
+            return bullets, f"holds a line that is not a bullet: {line.strip()[:60]!r}"
+    return bullets, None
+
+
+def report_problem(summary: str, status: str, role: str) -> str | None:
+    """Why a role report breaks the report contract, or None when it keeps it."""
+    verdict = report_verdict(summary)
+    if verdict is None:
+        return "the report does not open with a verdict line (`VERDICT: <STATUS>`, for example `VERDICT: REJECTED`)"
+    if verdict != status.upper():
+        return f"the verdict line says {verdict}, but the receipt status is {status}"
+    sections = report_sections(summary)
+    if "## Summary" not in sections:
+        return "the report needs a `## Summary` section after the verdict line"
+    bullets, problem = report_bullets(sections["## Summary"])
+    if problem:
+        return f"the `## Summary` section {problem}"
+    if not 3 <= len(bullets) <= 5:
+        return f"the `## Summary` section needs 3 to 5 bullets, not {len(bullets)}"
+    if role == "maker":
+        if ASSUMPTIONS_HEADING not in sections:
+            return f"a maker report needs a `{ASSUMPTIONS_HEADING}` section"
+        bullets, problem = report_bullets(sections[ASSUMPTIONS_HEADING])
+        if problem or not bullets:
+            return (f"the `{ASSUMPTIONS_HEADING}` section "
+                    + (problem or "lists nothing: write one bullet per assumption, or `- none`"))
+    return None
+
+
+def report_assumptions(summary: str) -> list[str]:
+    """What a maker report says it assumed without authority; `- none` and no section give []."""
+    bullets, _problem = report_bullets(report_sections(summary).get(ASSUMPTIONS_HEADING, []))
+    return [item for item in bullets if item and not NO_ASSUMPTION.fullmatch(item)]
+
+
 def verifier_env() -> dict[str, str]:
     """The credential-free base. `sandboxed_verify` adds a private HOME, TMPDIR and XDG folders
     for each run of the verifier; a fixed shared home let a maker plant caches and config there."""
@@ -2978,6 +3056,7 @@ Read the accepted terminal spec at {spec}. This ticket is separate from its deci
 Allowed paths: {json.dumps(scope['allowed_paths'])}. Denied paths: {json.dumps(scope['denied_paths'])}.
 No network, connectors, tracker writes, push, PR, merge, deployment, production action, or history rewrite.
 Return only the requested JSON receipt. Never claim evidence you did not produce.
+{REPORT_CONTRACT}
 In changed_paths list every path printed by
 `git -c core.quotepath=off diff --name-only --no-renames {base} HEAD`, as plain names without quotes.
 A moved file counts twice: list the old path and the new path.
@@ -2995,7 +3074,9 @@ A moved file counts twice: list the old path and the new path.
                      f"{note}\n")
         return common + goal + f"""Implement the smallest complete change, run {manifest['verify']['command']},
 and make atomic local commits only. Leave the worktree clean. HEAD must advance beyond {base}.
-Use status completed or blocked; do not mark your own work accepted.{feedback}"""
+Use status completed or blocked; do not mark your own work accepted.
+After the summary bullets, add a line `{ASSUMPTIONS_HEADING}` with one bullet for each choice you made
+that the spec and ticket did not settle, or the single bullet `- none`.{feedback}"""
     verify_log = f"attempt-{state.get('attempt')}-verify.txt"
     return common + f"""You are the independent checker and default to REJECT. Do not edit files or commit.
 Inspect the committed diff from {base} to HEAD and the controller verification evidence.
@@ -3091,6 +3172,13 @@ def ensure_verification_baseline(state: dict[str, Any], manifest: dict[str, Any]
                                       "output_sha256": file_digest(output_path)}
     save_state(state, "baseline_recorded", commit=base, verification=outcome["verification"],
                exit_code=verify.returncode)
+
+
+def checker_report_defect(checker: dict[str, Any]) -> str | None:
+    """An acceptance whose report breaks the report contract is a checker defect, like an
+    acceptance whose citations do not hold."""
+    broken = report_problem(checker["summary"], checker["status"], "checker")
+    return f"the checker's report breaks the report contract: {broken}" if broken else None
 
 
 def controller_rejection(commit: str, paths: list[str], reason: str) -> dict[str, Any]:
@@ -3202,6 +3290,17 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             raise RunError(f"maker created ignored paths outside scope: {shown_paths(ignored_bad)}")
         if maker["commit"] != after_head or sorted(maker["changed_paths"]) != sorted(paths):
             raise RunError("maker receipt does not match the committed Git state")
+        broken = report_problem(maker["summary"], maker["status"], "maker")
+        if broken:
+            # The report is what the controller and the inbox read: an attempt without one fails
+            # here, before a verifier or a checker is spent on it, and the next maker learns why.
+            prior = controller_rejection(after_head, paths, broken)
+            prior["summary"] = "controller rejected the attempt: the maker's report breaks the report contract"
+            state["last_checker_receipt"] = prior
+            state["status"] = "retrying"
+            state['stage'] = 'retrying'
+            save_state(state, "attempt_rejected", attempt=state["attempt"], reason="report contract")
+            continue
         validate_verification_changes(worktree, state["base_head"], after_head, manifest)
         state["status"] = "checking"
         checkpoint_stage(state, 'verifying')
@@ -3306,7 +3405,8 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             # blank evidence: that is a checker defect with rework feedback, not a plain rejection.
             claims_acceptance = (verify.returncode == 0 and checker["status"] == "accepted"
                                  and not checker["unresolved"])
-            defect = (citation_problem(checker, evidence, verify_path, checker_worktree, state["attempt"])
+            defect = ((checker_report_defect(checker)
+                       or citation_problem(checker, evidence, verify_path, checker_worktree, state["attempt"]))
                       if claims_acceptance else None)
             if defect:
                 proof["checker_defect"] = defect
@@ -5070,7 +5170,7 @@ def calibrate_case(repo: Path, base: str, head: str, label: str, attempt: int, m
                 f"the checker receipt names {receipt['commit'][:12]} with {receipt['changed_paths']}; "
                 f"the candidate is {head[:12]} with {changed}")[:300])
         elif receipt["status"] == "accepted":
-            defect = (citation_problem(receipt, evidence, verify_log, worktree, attempt)
+            defect = ((checker_report_defect(receipt) or citation_problem(receipt, evidence, verify_log, worktree, attempt))
                       if acceptance_ready(verify.returncode, receipt) else "acceptance is not ready")
             outcome.update(verdict="accepted-without-valid-evidence" if defect else "accepted",
                            **({"detail": defect} if defect else {}))

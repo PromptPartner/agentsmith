@@ -34,6 +34,13 @@ CONTROLLER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CONTROLLER)
 
 
+def role_report(status: str, assumptions: str | None = "- none") -> str:
+    """A report that keeps the role report contract: the verdict line, then 3 to 5 summary bullets."""
+    tail = "" if assumptions is None else f"\n## Assumptions without authority\n{assumptions}\n"
+    return (f"VERDICT: {status.upper()}\n\n## Summary\n- changed a.txt\n- ran the verifier\n"
+            f"- nothing else changed\n{tail}")
+
+
 class AutonomousStateTests(unittest.TestCase):
     def test_git_paths_preserve_unicode_under_windows_locale_decoding(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith git ü ") as temporary:
@@ -2292,7 +2299,8 @@ class AutonomousStateTests(unittest.TestCase):
                             calls: list[str] | None = None,
                             calibration: str = "passed",
                             calibration_at_gate: str | None = None,
-                            stop_after_final_proof: bool = False) -> tuple[int, dict[str, Any], list[str]]:
+                            stop_after_final_proof: bool = False,
+                            reports: dict[str, str] | None = None) -> tuple[int, dict[str, Any], list[str]]:
         """Drive the real attempt loop with Git and the roles replaced by fakes, so a stop can be
         delivered at an exact point of it. `verify_results` are returned in order by the
         verifier, the first one for the base commit; `calls` records each verifier and role
@@ -2349,7 +2357,8 @@ class AutonomousStateTests(unittest.TestCase):
             evidence = ["fake evidence"] if role == "maker" else (
                 checker_evidence if checker_evidence is not None
                 else [f"verification passed :: attempt-{state['attempt']}-verify.txt:3 :: fixture verification passed"])
-            return {"status": status, "summary": role,
+            summary = (reports or {}).get(role, role_report(status, "- none" if role == "maker" else None))
+            return {"status": status, "summary": summary,
                     "commit": head["value"] if role == "maker" else state["candidate_commit"],
                     "changed_paths": ["a.txt"], "evidence": evidence, "unresolved": [],
                     "next_state": ""}
@@ -2655,6 +2664,76 @@ class AutonomousStateTests(unittest.TestCase):
                                   "near the line :: attempt-1-verify.txt:5 :: fixture verification passed: a.txt"])
             self.assertEqual((outcome, durable["status"]), (0, "accepted"))
             self.assertNotIn("checker_defect", events)
+
+    def test_a_report_without_the_verdict_line_fails_the_report_lint(self) -> None:
+        # SF-16: a role report opens with one machine-read verdict line, then `## Summary` with 3 to
+        # 5 bullets. A maker report also lists its assumptions made without authority.
+        self.assertIsNone(CONTROLLER.report_problem(role_report("completed"), "completed", "maker"))
+        self.assertIsNone(CONTROLLER.report_problem(role_report("accepted", None), "accepted", "checker"))
+        self.assertEqual(CONTROLLER.report_verdict(role_report("rejected", None)), "REJECTED")
+        self.assertIsNone(CONTROLLER.report_verdict("done"))
+        four = "VERDICT: ACCEPTED\n## Summary\n- one\n- two\n  continued\n- three\n- four\n"
+        self.assertIsNone(CONTROLLER.report_problem(four, "accepted", "checker"))
+        broken = {
+            "no verdict line": ("done", "completed", "maker", "does not open with a verdict line"),
+            "the verdict line is not first": ("Report\n" + role_report("completed"), "completed", "maker",
+                                              "does not open with a verdict line"),
+            "a lowercase verdict": (role_report("completed").replace("COMPLETED", "completed"), "completed",
+                                    "maker", "does not open with a verdict line"),
+            "an unknown verdict": (role_report("completed").replace("COMPLETED", "PASS"), "completed", "maker",
+                                   "does not open with a verdict line"),
+            "a verdict that is not the status": (role_report("accepted", None), "rejected", "checker",
+                                                 "says ACCEPTED, but the receipt status is rejected"),
+            "no summary heading": ("VERDICT: ACCEPTED\n- one\n- two\n- three\n", "accepted", "checker",
+                                   "needs a `## Summary` section"),
+            "two bullets": ("VERDICT: ACCEPTED\n## Summary\n- one\n- two\n", "accepted", "checker",
+                            "3 to 5 bullets, not 2"),
+            "six bullets": ("VERDICT: ACCEPTED\n## Summary\n" + "".join(f"- {n}\n" for n in range(6)),
+                            "accepted", "checker", "3 to 5 bullets, not 6"),
+            "prose in the summary": ("VERDICT: ACCEPTED\n## Summary\nIt works.\n- a\n- b\n- c\n", "accepted",
+                                     "checker", "holds a line that is not a bullet"),
+            "a maker report without assumptions": (role_report("completed", None), "completed", "maker",
+                                                   "needs a `## Assumptions without authority` section"),
+            "an empty assumptions section": (role_report("completed", ""), "completed", "maker",
+                                             "`- none`"),
+        }
+        for label, (summary, status, role, expected) in broken.items():
+            with self.subTest(case=label):
+                self.assertIn(expected, CONTROLLER.report_problem(summary, status, role) or "")
+        self.assertEqual(CONTROLLER.report_assumptions(role_report("completed")), [])
+        self.assertEqual(CONTROLLER.report_assumptions(role_report("completed", "- None.")), [])
+        self.assertEqual(CONTROLLER.report_assumptions(role_report("completed", "- empty input is an error\n"
+                                                                                "  as the old parser did\n- utf-8 only")),
+                         ["empty input is an error as the old parser did", "utf-8 only"])
+        self.assertEqual(CONTROLLER.report_assumptions("no report at all"), [])
+
+    def test_a_maker_report_that_breaks_the_contract_fails_its_attempt_before_verification(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith maker report ") as temporary:
+            common = Path(temporary)
+            calls: list[str] = []
+            outcome, durable, events = self.run_with_fake_roles(
+                common, max_attempts=1, checker_status="accepted", calls=calls, reports={"maker": "done"})
+            self.assertEqual((outcome, durable["status"]), (2, "escalated"))
+            self.assertEqual(calls, ["maker"], "no verifier and no checker is spent on it")
+            self.assertNotIn("run_accepted", events)
+            feedback = durable["last_checker_receipt"]
+            self.assertIn("the maker's report breaks the report contract", feedback["summary"])
+            self.assertIn("does not open with a verdict line", feedback["unresolved"][0])
+            [rejected] = self.run_events(common, "attempt_rejected")
+            self.assertEqual(rejected["reason"], "report contract")
+
+    def test_a_checker_acceptance_whose_report_breaks_the_contract_is_a_checker_defect(self) -> None:
+        cases = {"no verdict line": "accepted, all good",
+                 "a verdict that is not the status": role_report("rejected", None)}
+        for label, report in cases.items():
+            with self.subTest(case=label), tempfile.TemporaryDirectory(prefix="agentsmith checker report ") as temporary:
+                outcome, durable, events = self.run_with_fake_roles(
+                    Path(temporary), max_attempts=1, checker_status="accepted", reports={"checker": report})
+                self.assertEqual((outcome, durable["status"]), (2, "escalated"), label)
+                self.assertNotIn("run_accepted", events)
+                self.assertIn("checker_defect", events)
+                proof = json.loads((Path(temporary) / "controller" / "attempt-1-verify.json").read_text())
+                self.assertIn("report contract", proof["checker_defect"])
 
     def test_citations_may_name_files_the_verifier_left_and_must_match_their_hash(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith citation files ") as temporary:

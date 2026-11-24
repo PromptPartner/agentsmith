@@ -257,7 +257,8 @@ class GraphDispatchTests(unittest.TestCase):
                     raise SystemExit("fake maker commit failed: " + (committed.stderr + committed.stdout).strip())
             commit = subprocess.run(["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
             status = "accepted" if checker else "completed"
-            receipt = {"status": status, "summary": "fake role", "commit": commit,
+            receipt = {"status": status, "summary": ("VERDICT: " + status.upper() + "\\n## Summary\\n- fake role change\\n- ran the verifier\\n- nothing else"
+                          + ("" if checker else "\\n## Assumptions without authority\\n- none")), "commit": commit,
                        "changed_paths": [changed],
                        "evidence": ["fake test evidence"] if not checker else [
                            "verification passed :: " + re.search(r"attempt-[0-9]+-verify[.]txt", prompt).group(0)

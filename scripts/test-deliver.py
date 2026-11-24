@@ -68,7 +68,8 @@ FAKE_CLIENT = textwrap.dedent('''\
     evidence = (["fixture verification passed :: " + log.group(0) + " :: fixture verification passed"]
                 if checker else ["maker ran the fixture verification"])
     status = "accepted" if checker else "completed"
-    receipt = {"status": status, "summary": "Make src/change.txt hold the fixed value; ping @someone",
+    receipt = {"status": status, "summary": ("VERDICT: " + status.upper() + "\\n## Summary\\n- Make src/change.txt hold the fixed value; ping @someone\\n- ran the verifier\\n- nothing else"
+                          + ("" if checker else "\\n## Assumptions without authority\\n- none")),
                "commit": commit, "evidence": evidence,
                "changed_paths": ["src/change.txt"] + (["package.json"] if "Fixture: add dependencies" in spec else []),
                "unresolved": [], "next_state": status}

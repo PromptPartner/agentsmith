@@ -159,6 +159,35 @@ verification receipt, and the next maker is told that the acceptance was not tru
 needs no citations. The receipt shape does not change, so a stored receipt stays valid, and a
 checker whose evidence already uses this form passes as it is.
 
+**Every role report keeps one contract.** A receipt's `summary` is the role's report. Its first
+line is the one line the controller reads: `VERDICT: <STATUS>`, the receipt's status in capitals
+(`COMPLETED`, `ACCEPTED`, `REJECTED` or `BLOCKED`). Then comes a `## Summary` section of 3 to 5
+bullets (`- `) for a person. A maker report also has an `## Assumptions without authority`
+section: one bullet for each choice the maker made that the spec and ticket did not settle, or
+the single bullet `- none`. Both prompts state the contract, and the controller checks every
+report against it without a model:
+
+```text
+VERDICT: COMPLETED
+
+## Summary
+- Parse an empty input as an error instead of an empty list.
+- Add a red test for the empty case; it failed on the old parser's IndexError.
+- Run the verify command; every phase passed.
+
+## Assumptions without authority
+- An input of only whitespace counts as empty.
+```
+
+A maker report that breaks the contract (no verdict line, a verdict that is not its status, no
+summary, fewer than 3 or more than 5 bullets, or no assumptions section) fails its attempt
+before a verifier or a checker is spent on it. The event is `attempt_rejected` with
+`reason: report contract`, and the next maker is told what was wrong. A checker acceptance whose
+report breaks the contract is a checker defect, handled like one whose citations do not hold,
+and calibration counts it as a wrong verdict. A rejection stays a rejection. The receipt schema
+does not change. The checker prompt does, so a calibration recorded before this contract is
+stale and the checker must be calibrated again.
+
 Before the first attempt is judged, the controller runs the verify command once on the base
 commit, in a disposable worktree, and stores the result with the run as `verification_baseline`
 in the run state (`baseline-verify.txt` keeps the raw output, and the events file has one

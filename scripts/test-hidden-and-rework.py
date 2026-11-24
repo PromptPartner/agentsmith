@@ -79,7 +79,8 @@ FAKE_CLIENT = textwrap.dedent('''\
     evidence = (["fixture verification passed :: " + log.group(0) + " :: fixture verification passed"]
                 if checker else ["maker ran the fixture verification"])
     status = "accepted" if checker else "completed"
-    receipt = {"status": status, "summary": "fixture", "commit": commit, "changed_paths": changed,
+    receipt = {"status": status, "summary": ("VERDICT: " + status.upper() + "\\n## Summary\\n- fixture change\\n- ran the verifier\\n- nothing else"
+                          + ("" if checker else "\\n## Assumptions without authority\\n- none")), "commit": commit, "changed_paths": changed,
                "evidence": evidence, "unresolved": [], "next_state": status}
     if receipt_path is not None:
         receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
