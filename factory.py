@@ -35,7 +35,8 @@ REJECTION_REASONS = ("verify", "checker", "hidden-tests", "incomplete", "hidden-
                      "scope", "protected", "budget", "stale")
 # "About zero" human minutes for an approval: at most this much logged in all.
 THEATRE_MINUTES = 1.0
-# Set by the replayable-evidence step when the operator opens a run's demonstration (SF-18).
+# Recorded when the operator opens a run's demonstration transcript; it counts only when its
+# `sha256` is the controller's own, `demo.sha256` in the run state.
 EVIDENCE_OPENED = "evidence_opened"
 TERMINAL = ("accepted", "awaiting-human", "escalated", "interrupted")
 TIERS = ("A", "B", "C", "human")
@@ -305,6 +306,16 @@ def rejections(run: dict[str, Any], reason: str | None = None) -> list[dict[str,
             and (reason is None or item.get("reason") == reason)]
 
 
+def evidence_seen(run: dict[str, Any]) -> bool | None:
+    """Whether the operator opened this run's demonstration: None when the run recorded none, so
+    there was nothing to open. An open of any other file, or an altered one, is not an open."""
+    demo = run["state"].get("demo")
+    digest = demo.get("sha256") if isinstance(demo, dict) else None
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        return None
+    return any(item.get("event") == EVIDENCE_OPENED and item.get("sha256") == digest for item in run["events"])
+
+
 def rework_numbers(repo: Path, runs: list[dict[str, Any]], in_window: list[dict[str, Any]],
                    accepted: list[dict[str, Any]], known: list[dict[str, Any]], unknown: int,
                    minutes: dict[str, float], start: datetime, end: datetime,
@@ -372,17 +383,16 @@ def rework_numbers(repo: Path, runs: list[dict[str, Any]], in_window: list[dict[
                        start, end, f"{len(good)} of {len(stopped)} run(s) a budget stopped were later accepted, "
                        "after a resume or through a rework; a high share says the budget is too tight"))
     # 4. Theatre: approvals with about zero human minutes and no rework, or whose evidence nobody
-    # opened. Unknown minutes or unrecorded evidence leave a verdict unknown, never "not theatre".
-    tracked = any(item.get("event") == EVIDENCE_OPENED for run in runs for item in run["events"])
+    # opened. Unknown minutes or no recorded evidence leave a verdict unknown, never "not theatre".
+    evidence = {"opened": 0, "not_opened": 0, "no_demo": 0}
     totals = {"theatre": 0, "not_theatre": 0, "unknown": 0}
     tiers: dict[str, dict[str, Any]] = {}
-    opened = 0
     for run in accepted:
         logged = minutes.get(run["id"])
         engaged = (True if touches(run) or run["id"] in children or (logged is not None and logged > THEATRE_MINUTES)
                    else False if logged is not None else None)
-        seen = any(item.get("event") == EVIDENCE_OPENED for item in run["events"]) if tracked else None
-        opened += bool(seen)
+        seen = evidence_seen(run)
+        evidence["no_demo" if seen is None else "opened" if seen else "not_opened"] += 1
         verdict = ("theatre" if engaged is False or seen is False
                    else "not_theatre" if engaged and seen else "unknown")
         totals[verdict] += 1
@@ -392,19 +402,19 @@ def rework_numbers(repo: Path, runs: list[dict[str, Any]], in_window: list[dict[
     for row in tiers.values():
         # A tier is theatre when every approval in it is; one real review clears it.
         row["flag"] = (True if row["theatre"] == row["approvals"] else False if row["not_theatre"] else "unknown")
+    tracked = evidence["opened"] + evidence["not_opened"] > 0
     flags = [row["flag"] for row in tiers.values()]
     flag = True if True in flags else False if flags and all(item is False for item in flags) else "unknown"
     rows.append(number("approval theatre", len(accepted),
                        {"flag": flag, **totals,
-                        "evidence_opened": {"opened": opened, "not_opened": len(accepted) - opened} if tracked
-                        else "unknown",
+                        "evidence_opened": evidence if tracked else "unknown",
                         "by_tier": dict(sorted(tiers.items()))},
                        "approvals", start, end,
                        f"{totals['theatre']} of {len(accepted)} approval(s) had {THEATRE_MINUTES:g} human minute(s) "
                        "or less logged and no rework" + ("" if not tracked else ", or their evidence was not opened")
                        + (f"; {totals['unknown']} unknown, with no minutes logged" if totals["unknown"] else "")
-                       + ("" if tracked else f"; no run records {EVIDENCE_OPENED}, so whether an approval's "
-                          "evidence was opened is unknown")))
+                       + ("" if tracked else f"; no approval recorded a demonstration to open "
+                          f"({EVIDENCE_OPENED} needs one), so whether evidence was opened is unknown")))
     # 5. Lens addressed rate: the share of each lens's findings the operator acted on.
     import lenses
     import risk_map

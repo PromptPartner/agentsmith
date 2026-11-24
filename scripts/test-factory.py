@@ -121,7 +121,7 @@ class FactoryTests(unittest.TestCase):
 
     def add_run(self, run_id: str, status: str, *, hours_ago: float = 24, touches: int = 0, tier: str = "B",
             usd: float | None = 1.0, tokens: int = 1000, events: list[dict] | None = None,
-            rework_of: str | None = None) -> None:
+            rework_of: str | None = None, demo_sha: str | None = None) -> None:
         """A fixture run. `events` go between the start and the acceptance; `rework_of` writes the
         manifest the run started from, pinned by its hash, as `prepare --rework-of` would."""
         folder = self.runs / run_id
@@ -129,6 +129,8 @@ class FactoryTests(unittest.TestCase):
         state = {"run_id": run_id, "status": status, "started_at": stamp(hours_ago), "risk": {"tier": tier}}
         if usd is not None:
             state.update(claude_cost_usd=usd, codex_tokens_used=tokens)
+        if demo_sha is not None:  # the controller's recorded demonstration transcript
+            state["demo"] = {"file": "attempt-1-demo.txt", "sha256": demo_sha, "commit": "1" * 40}
         if rework_of is not None:
             manifest = self.repo / f".harness/runs/{run_id}.json"
             manifest.parent.mkdir(parents=True, exist_ok=True)
@@ -321,13 +323,24 @@ class FactoryTests(unittest.TestCase):
         self.assertIn("evidence_opened", theatre["detail"])
 
     def test_theatre_counts_an_approval_whose_evidence_was_not_opened(self) -> None:
-        opened = [{"event": "evidence_opened", "path": "demo.txt"}]
-        for index in range(5):
-            self.add_run(f"seen-{index}", "accepted", events=opened if index else [])
+        # Opened means an `evidence_opened` event for the controller's own transcript: its hash must
+        # match `demo.sha256` in the run state. A run with no demonstration has nothing to open.
+        demo, other = "d" * 64, "e" * 64
+
+        def opened(sha: str) -> list[dict]:
+            return [{"event": "evidence_opened", "artefact": "attempt-1-demo.txt", "sha256": sha, "commit": "1" * 40}]
+
+        for index in range(4):
+            self.add_run(f"seen-{index}", "accepted", demo_sha=demo, events=opened(demo) if index else [])
             factory.add_minutes(self.repo, f"seen-{index}", 30, now=NOW)
+        self.add_run("forged", "accepted", demo_sha=demo, events=opened(other))  # another file's hash
+        factory.add_minutes(self.repo, "forged", 30, now=NOW)
+        self.add_run("no-demo", "accepted", events=opened(demo))  # no demonstration was recorded
+        factory.add_minutes(self.repo, "no-demo", 30, now=NOW)
         theatre = self.number(factory.numbers(self.repo, now=NOW, ci_runs=[]), "approval theatre")
-        self.assertEqual(theatre["value"]["evidence_opened"], {"opened": 4, "not_opened": 1})
-        self.assertEqual((theatre["value"]["theatre"], theatre["value"]["not_theatre"]), (1, 4))
+        self.assertEqual(theatre["value"]["evidence_opened"], {"opened": 3, "not_opened": 2, "no_demo": 1})
+        self.assertEqual((theatre["value"]["theatre"], theatre["value"]["not_theatre"], theatre["value"]["unknown"]),
+                         (2, 3, 1))
         self.assertIs(theatre["value"]["flag"], False)  # most approvals were looked at
 
     def lens_row(self, lens: str, number: int, decision: str, hours_ago: float = 2) -> dict:

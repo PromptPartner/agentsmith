@@ -89,11 +89,15 @@ In `--json` they are rows of `numbers` like the six above.
 | Approval theatre | approvals (accepted runs) | Whether people approve without looking. An approval counts as theatre when it had 1 human minute or less logged and no rework (no operator touch and no rework run made from it), or when it was approved without its evidence being opened. It is not theatre when someone spent more than a minute or reworked it, and opened its evidence. Anything else is unknown, never "not theatre". A tier is flagged when every approval in it is theatre; one real review clears it. The overall `flag` is `true` when a tier is flagged, `false` when every tier is cleared, and `unknown` otherwise. |
 | Lens addressed rate | lens findings triaged in the window | The [review lens](32-review-lenses.md) triage record: per lens, the share of its findings whose decision is `act`. A lens with fewer than 5 findings says `insufficient data` on its own. The record says what the operator decided, not that a fix landed. |
 
-**Evidence opened.** The replayable evidence step records an `evidence_opened` event in a run's
-`events.jsonl` when the operator opens its demonstration. Until any run records one, nobody can
-tell whether an approval's evidence was opened: `evidence_opened` in the theatre row reads
-`unknown`, and only the minutes decide a verdict. Once runs record it, the row counts approvals
-with and without it, and an approval without it counts as theatre.
+**Evidence opened.** When an accepted spec has a `## Demo` section, the controller records the
+run's demonstration transcript and its SHA-256 as `demo` in the run state. Opening it appends an
+`evidence_opened` event to the run's `events.jsonl` with the hash of the file opened. It counts only
+when that hash is the one in `demo`: an open of another file, or of an altered one, is not an open.
+In the theatre row, `evidence_opened` counts approvals `opened`, `not_opened` and `no_demo` (no
+demonstration was recorded, so there was nothing to open). An approval whose demonstration was not
+opened counts as theatre. One with no demonstration counts as theatre only by its minutes, and is
+unknown otherwise. Until any approval in the window has a demonstration, `evidence_opened` reads
+`unknown`.
 
 ## Sweep
 
