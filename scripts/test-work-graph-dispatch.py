@@ -232,6 +232,12 @@ class GraphDispatchTests(unittest.TestCase):
             checker = "You are the independent checker" in prompt
             receipt_path = Path(argv[argv.index("-o") + 1]) if "-o" in argv else None
             changed = "src/shared.txt" if (Path(__file__).parent / "shared-mode").is_file() else f"src/{run_id}/change.txt"
+            if (Path(__file__).parent / "migration-mode").is_file():
+                # A migration takes the number the controller reserved for this run, as a maker should.
+                reserved = re.search(r"the next free number in db/migrations/ is ([0-9]+)", prompt)
+                if reserved is None:
+                    raise SystemExit("no migration number reserved")
+                changed = f"db/migrations/{reserved.group(1)}_{run_id}.sql"
             if not checker:
                 infra_run = Path(__file__).parent / "infra-run.txt"
                 if infra_run.is_file() and infra_run.read_text(encoding="utf-8").strip() == run_id:
@@ -768,6 +774,51 @@ class GraphDispatchTests(unittest.TestCase):
                           for run_id in ("a", "b")}, accepted)
         self.assertTrue((self.repo.parent / "repo-dispatch-fixture-candidate-001").is_dir())
         self.assertEqual(git(self.repo, "status", "--porcelain"), "")
+
+    def test_two_migration_runs_are_serialised_with_distinct_numbers(self) -> None:
+        (self.fake_client.parent / "migration-mode").write_text("enabled\n", encoding="utf-8")
+        (self.repo / "db/migrations").mkdir(parents=True)
+        (self.repo / "db/migrations/0001_init.sql").write_text("-- base\n", encoding="utf-8")
+        graph_path = self.repo / self.graph_path
+        graph = json.loads(graph_path.read_text(encoding="utf-8"))
+        graph["nodes"] = graph["nodes"][:2]
+        graph["integration_order"] = ["a", "b"]
+        for node in graph["nodes"]:
+            manifest_path = self.repo / node["manifest_path"]
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            run_id = manifest["run_id"]
+            manifest["scope"]["allowed_paths"] = ["db/migrations/*"]
+            manifest["scope"]["denied_paths"] = [".git/**", ".env*"]
+            manifest["verify"]["command"] = (f'"{sys.executable}" -c "from pathlib import Path; '
+                                             f'assert list(Path(\'db/migrations\').glob(\'*_{run_id}.sql\')); '
+                                             f'print(\'fixture verification passed\')"')
+            payload = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
+            manifest_path.write_bytes(payload)
+            node["manifest_sha256"] = hashlib.sha256(payload).hexdigest()
+        graph_path.write_bytes((json.dumps(graph, indent=2) + "\n").encode("utf-8"))
+        (self.repo / ".harness/verify.conf").write_text(
+            f'combined :: "{sys.executable}" -c "from pathlib import Path; names = sorted(p.name for p in '
+            f'Path(\'db/migrations\').iterdir()); assert names == [\'0001_init.sql\', \'0002_a.sql\', '
+            f'\'0003_b.sql\'], names"\n', encoding="utf-8")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-qm", "test: two migration-adding runs")
+        started = self.invoke("start")
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        added = {run_id: git(self.repo, "ls-tree", "--name-only", f"agentsmith/{run_id}", "--", "db/migrations/")
+                 .splitlines() for run_id in ("a", "b")}
+        self.assertIn("db/migrations/0002_a.sql", added["a"])
+        self.assertIn("db/migrations/0003_b.sql", added["b"], "the second run takes the next free number")
+        self.assertEqual([self.state_of(run_id)["sequence_numbers"] for run_id in ("a", "b")],
+                         [[{"directory": "db/migrations", "number": "0002"}],
+                          [{"directory": "db/migrations", "number": "0003"}]])
+        starts = dict(line.split() for line in (self.fake_client.parent / "starts.log").read_text().splitlines())
+        finishes = dict(line.split() for line in (self.fake_client.parent / "finishes.log").read_text().splitlines())
+        self.assertGreater(float(starts["b"]), float(finishes["a"]), "the two runs never overlapped")
+        integrated = self.invoke("integrate")
+        self.assertEqual(integrated.returncode, 0, integrated.stdout + integrated.stderr)
+
+    def state_of(self, run_id: str) -> dict[str, Any]:
+        return json.loads((self.repo / ".git/agentsmith-runs" / run_id / "state.json").read_text(encoding="utf-8"))
 
     def test_integration_retains_failed_full_verification_proof(self) -> None:
         (self.repo / ".harness/verify.conf").write_text("combined :: exit 1\n", encoding="utf-8")

@@ -32,7 +32,10 @@ out-of-scope item (`## Acceptance and evidence`, `## Edge cases`, `## Non-goals`
 A missing section or a stale assumption is refused by name, so no role starts on a spec it cannot
 test. The format is in [`docs/specs/README.md`](specs/README.md). `scope.resources` optionally names local coordination keys such as
 `port:3000`, `db:local/test`, or `service:redis`; omit it in an older manifest or use an empty list
-when the run reserves none.
+when the run reserves none. Two live runs that both reach a coordination class (spec, migration,
+schema or contract files, plus any class in the optional `scope.sequenced`) also conflict, even in
+different folders; the classes and numbered-file reservations are in
+[parallel work graphs](24-parallel-work-graphs.md#run-and-recover).
 
 **Rework.** When a finished run needs another pass, prepare a new run with the operator's note:
 

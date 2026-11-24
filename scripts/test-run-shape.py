@@ -295,5 +295,153 @@ class RunShapeGuardRunTests(RunFixture):
         self.assertEqual(self.launches(), ["maker", "checker", "maker"])
 
 
+def scope(*paths: str, **extra: object) -> dict:
+    return {"allowed_paths": list(paths), "denied_paths": [], "resources": [], **extra}
+
+
+class SequencedResourceTests(unittest.TestCase):
+    def test_shared_coordination_files_collide_even_without_shared_paths(self) -> None:
+        collision = CONTROLLER.scope_collision
+        for left, right, expected in (
+            (scope("services/a/migrations/*"), scope("services/b/migrations/*"), "migration"),
+            (scope("migrations/0002_a.sql"), scope("migrations/0003_b.sql"), "migration"),
+            (scope("db/a/schema.sql"), scope("db/b/schema.sql"), "schema"),
+            (scope("api/a.proto"), scope("api/b.proto"), "contract"),
+            (scope("svc/a/openapi.yaml"), scope("svc/b/openapi.yaml"), "contract"),
+            (scope("docs/specs/a.md"), scope("docs/specs/b.md"), "spec"),
+            # A class the project adds; either side's declaration classifies both sides.
+            (scope("docs/adr/0002-a.md", sequenced={"adr": ["docs/adr/*"]}), scope("docs/adr/0003-b.md"), "adr"),
+        ):
+            with self.subTest(left=left["allowed_paths"], right=right["allowed_paths"]):
+                self.assertEqual(collision(left, right), ("sequenced", expected))
+                self.assertEqual(collision(right, left), ("sequenced", expected))
+        # Shared paths and shared resources are reported as before.
+        self.assertEqual(collision(scope("db/migrations/*"), scope("db/migrations/*"))[0], "path")
+        for left, right in ((scope("src/a/**"), scope("src/b/**")),
+                            (scope("src/a/**"), scope("services/b/migrations/*")),
+                            (scope("docs/**", "tests/**"), scope("src/**"))):
+            with self.subTest(left=left["allowed_paths"], right=right["allowed_paths"]):
+                self.assertIsNone(collision(left, right))
+
+    def test_a_declared_class_is_checked_like_any_scope_path(self) -> None:
+        for value, message in (({"ADR": ["docs/adr/*"]}, "class names"), ({"adr": "docs/adr/*"}, "array"),
+                               ({"adr": ["/abs/*"]}, "repository-relative"), ([], "JSON object")):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(CONTROLLER.RunError, message):
+                    CONTROLLER.normalized_scope(scope("src/**", sequenced=value))
+        self.assertNotIn("sequenced", CONTROLLER.normalized_scope(scope("src/**")))
+        self.assertEqual(CONTROLLER.normalized_scope(scope("src/**", sequenced={"adr": ["docs/adr/*"]}))["sequenced"],
+                         {"adr": ["docs/adr/*"]})
+
+    def test_a_live_run_on_the_same_class_refuses_the_second_start(self) -> None:
+        with mock.patch.object(CONTROLLER, "state_root") as root:
+            run_dir = mock.MagicMock()
+            run_dir.name, run_dir.is_dir.return_value = "first", True
+            root.return_value.exists.return_value = True
+            root.return_value.iterdir.return_value = [run_dir]
+            with mock.patch.object(CONTROLLER, "read_lock", return_value={"pid": 1}), \
+                    mock.patch.object(CONTROLLER, "process_is_live", return_value=True), \
+                    mock.patch.object(CONTROLLER, "live_run_scope",
+                                      return_value=("first", CONTROLLER.normalized_scope(scope("a/migrations/*")))):
+                with self.assertRaisesRegex(CONTROLLER.RunError,
+                                            "run second conflicts with live run first: both change migration files"):
+                    CONTROLLER.assert_no_live_scope_conflicts(Path("."), "second", scope("b/migrations/*"))
+
+    def test_the_reserved_number_reaches_both_role_prompts(self) -> None:
+        state = {"run_id": "b", "base_head": "a" * 40, "attempt": 1, "claude_cost_usd": 0.0,
+                 "sequence_numbers": [{"directory": "db/migrations", "number": "0003"}]}
+        manifest = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
+        manifest.update(spec_path="docs/specs/task.md", implementation_ticket="IMP-1")
+        for role in ("maker", "checker"):
+            with self.subTest(role=role):
+                prompt = CONTROLLER.role_prompt(state, manifest, role)
+                self.assertIn("the next free number in db/migrations/ is 0003", prompt)
+        self.assertNotIn("next free number", CONTROLLER.role_prompt({**state, "sequence_numbers": []}, manifest, "maker"))
+
+    def test_the_next_free_number_follows_the_widest_existing_name(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        import work_graph
+        number = work_graph.next_sequence_number
+        self.assertEqual(number(["0001_init.sql", "0002_users.sql", "README.md"]), "0003")
+        self.assertEqual(number(["V1__init.sql", "V12__x.sql"]), "13")
+        self.assertEqual(number(["0009-a.md", "0010-b.md"]), "0011")
+        # Timestamps and unnumbered files are not a sequence: nothing is reserved.
+        self.assertIsNone(number(["20261124093000_init.rb", "schema.sql"]))
+        self.assertIsNone(number([]))
+
+
+def git_in(repo: Path, *args: str) -> str:
+    return subprocess.run(["git", *args], cwd=repo, text=True, capture_output=True, check=True).stdout.strip()
+
+
+class SequencedGraphTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="agentsmith sequenced graph ")
+        self.addCleanup(temporary.cleanup)
+        self.repo = Path(temporary.name).resolve() / "repo"
+        self.repo.mkdir()
+        git_in(self.repo, "init", "-q")
+        git_in(self.repo, "config", "user.name", "Harness Test")
+        git_in(self.repo, "config", "user.email", "user@example.com")
+        (self.repo / "docs/specs").mkdir(parents=True)
+        (self.repo / "docs/specs/accepted.md").write_text(
+            "---\nstatus: accepted\ndecision_ticket: DEC-1\naccepted_by: Test Operator\n"
+            "accepted_at: 2026-11-24\n---\n# Fixture\n", encoding="utf-8")
+        for directory in ("services/a/migrations", "services/b/migrations", "db/migrations"):
+            (self.repo / directory).mkdir(parents=True)
+            (self.repo / directory / "0001_init.sql").write_text("-- base\n", encoding="utf-8")
+
+    def graph(self, scopes: dict[str, list[str]]) -> str:
+        nodes = []
+        for run_id, paths in scopes.items():
+            manifest = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
+            for role in manifest["roles"].values():
+                role["model"] = "fixture-model"
+            manifest.update(run_id=run_id, spec_path="docs/specs/accepted.md", implementation_ticket=f"IMP-{run_id}")
+            manifest["scope"]["allowed_paths"] = paths
+            manifest["scope"]["denied_paths"] = [".git/**"]
+            path = self.repo / ".harness/runs" / f"{run_id}.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
+            path.write_bytes(payload)
+            nodes.append({"run_id": run_id, "manifest_path": path.relative_to(self.repo).as_posix(),
+                          "manifest_sha256": hashlib.sha256(payload).hexdigest(), "depends_on": []})
+        graph = {"schema_version": 1, "graph_id": "sequenced", "max_parallel": 2,
+                 "integration_order": list(scopes), "nodes": nodes}
+        (self.repo / ".harness/work-graph.json").write_text(json.dumps(graph, indent=2) + "\n", encoding="utf-8")
+        git_in(self.repo, "add", ".")
+        git_in(self.repo, "commit", "-qm", "test: graph")
+        return ".harness/work-graph.json"
+
+    def test_two_migration_runs_in_different_folders_are_serialised(self) -> None:
+        graph = self.graph({"a": ["services/a/**"], "b": ["services/b/**"]})
+        result = subprocess.run([sys.executable, str(ROOT / "agentsmith.py"), "graph", "status", "--graph", graph,
+                                 "--target", str(self.repo), "--json"], capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        nodes = {node["run_id"]: node for node in json.loads(result.stdout)["nodes"]}
+        # `services/a/**` is a broad pattern: it is not read as a migration path, so these two run together.
+        self.assertEqual((nodes["a"]["status"], nodes["b"]["status"]), ("ready", "ready"))
+        git_in(self.repo, "rm", "-rq", ".harness")
+        git_in(self.repo, "commit", "-qm", "test: drop graph")
+        graph = self.graph({"a": ["services/a/src/**", "services/a/migrations/*"],
+                            "b": ["services/b/src/**", "services/b/migrations/*"]})
+        result = subprocess.run([sys.executable, str(ROOT / "agentsmith.py"), "graph", "status", "--graph", graph,
+                                 "--target", str(self.repo), "--json"], capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        nodes = {node["run_id"]: node for node in json.loads(result.stdout)["nodes"]}
+        self.assertEqual((nodes["a"]["status"], nodes["b"]["status"]), ("ready", "conflicting"))
+        self.assertEqual(nodes["b"]["reason"], "sequenced conflict with a: migration")
+
+    def test_a_run_reserves_the_next_number_after_its_base(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        import work_graph
+        self.graph({"a": ["db/migrations/*"], "b": ["src/**"]})
+        contract = work_graph.load_contract(self.repo, ".harness/work-graph.json")
+        commit = contract["contract_commit"]
+        self.assertEqual(work_graph.sequence_numbers(contract, "a", commit),
+                         [{"directory": "db/migrations", "number": "0002"}])
+        self.assertEqual(work_graph.sequence_numbers(contract, "b", commit), [])
+
+
 if __name__ == "__main__":
     unittest.main()

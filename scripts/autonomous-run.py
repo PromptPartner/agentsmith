@@ -623,6 +623,8 @@ def assert_no_live_scope_conflicts(repo: Path, run_id: str, scope: Any) -> None:
             raise RunError(
                 f"run {run_id} conflicts with live run {other_id}: overlapping path scope '{value}'"
             )
+        if kind == "sequenced":
+            raise RunError(f"run {run_id} conflicts with live run {other_id}: both change {value} files")
         raise RunError(
             f"run {run_id} conflicts with live run {other_id}: shared resource '{value}'"
         )
@@ -857,17 +859,58 @@ def scope_paths(scope: dict[str, Any], key: str) -> list[str]:
     return list(paths)
 
 
-def normalized_scope(scope: Any) -> dict[str, list[str]]:
+# Coordination-sensitive files (SF-16): two runs whose allowed paths both reach one of these classes
+# run one after the other, even when they share no path. Patterns are fnmatch globs (`*` also
+# matches `/`), tested against each allowed_paths pattern as written: `db/migrations/*` is a
+# migration path, a broad `db/**` is not (it collides by path with a narrower db pattern instead).
+# A manifest adds classes or patterns in `scope.sequenced`; it cannot remove these.
+SEQUENCED_CLASSES: dict[str, tuple[str, ...]] = {
+    "spec": ("docs/specs/*",),
+    "migration": ("migrations/*", "*/migrations/*", "migrate/*", "*/migrate/*"),
+    "schema": ("schema.*", "*/schema.*", "schemas/*", "*/schemas/*", "*.schema.json"),
+    "contract": ("openapi.*", "*/openapi.*", "swagger.*", "*/swagger.*", "*.proto", "*.graphql",
+                 "contracts/*", "*/contracts/*"),
+}
+SEQUENCED_CLASS_NAME = re.compile(r"[a-z][a-z0-9-]{0,31}\Z")
+
+
+def scope_sequenced(scope: dict[str, Any]) -> dict[str, list[str]]:
+    declared = scope.get("sequenced", {})
+    if not isinstance(declared, dict):
+        raise RunError("scope.sequenced must be a JSON object of class names to glob arrays")
+    if any(not isinstance(name, str) or not SEQUENCED_CLASS_NAME.fullmatch(name) for name in declared):
+        raise RunError("scope.sequenced class names must be lowercase letters, digits and '-'")
+    return {name: scope_paths({"sequenced": patterns}, "sequenced") for name, patterns in sorted(declared.items())}
+
+
+def sequenced_classes(scope: dict[str, Any], extra: dict[str, list[str]] | None = None) -> dict[str, list[str]]:
+    """The coordination classes this scope's allowed paths reach, each with the patterns that reach it."""
+    classes = {name: list(patterns) for name, patterns in SEQUENCED_CLASSES.items()}
+    for declared in (scope.get("sequenced", {}), extra or {}):
+        for name, patterns in declared.items():
+            classes[name] = [*classes.get(name, []), *patterns]
+    found: dict[str, list[str]] = {}
+    for pattern in scope["allowed_paths"]:
+        for name, globs in classes.items():
+            if any(fnmatch.fnmatchcase(pattern, glob) for glob in globs):
+                found.setdefault(name, []).append(pattern)
+    return found
+
+
+def normalized_scope(scope: Any) -> dict[str, Any]:
     if not isinstance(scope, dict):
         raise RunError("scope must be a JSON object")
     allowed = scope_paths(scope, "allowed_paths")
     if not allowed:
         raise RunError("scope.allowed_paths must reserve at least one path")
-    return {
+    normalized: dict[str, Any] = {
         "allowed_paths": allowed,
         "denied_paths": scope_paths(scope, "denied_paths"),
         "resources": scope_resources(scope),
     }
+    if "sequenced" in scope:
+        normalized["sequenced"] = scope_sequenced(scope)
+    return normalized
 
 
 def fixed_prefix(pattern: str) -> str:
@@ -903,6 +946,13 @@ def scope_collision(left_scope: Any, right_scope: Any) -> tuple[str, str] | None
     shared_resources = sorted(set(left["resources"]) & set(right["resources"]))
     if shared_resources:
         return "resource", shared_resources[0]
+    # Each side is classified with both sides' declared classes, so one declaration serves the pair.
+    declared = {**left.get("sequenced", {})}
+    for name, patterns in right.get("sequenced", {}).items():
+        declared[name] = [*declared.get(name, []), *patterns]
+    shared_classes = sorted(set(sequenced_classes(left, declared)) & set(sequenced_classes(right, declared)))
+    if shared_classes:
+        return "sequenced", shared_classes[0]
     return None
 
 
@@ -1498,6 +1548,8 @@ def graph_effective_base(repo: Path, graph_path: str, manifest_path: Path,
             "graph_sha256": contract["graph_sha256"],
             "contract_commit": contract["contract_commit"],
             "effective_base_oid": effective_base,
+            # Fixed at start and kept in the run state; resume does not recompute it.
+            "sequence_numbers": graph_module.sequence_numbers(contract, run_id, effective_base),
         }
     except graph_module.GraphError as exc:
         raise RunError(f"graph contract or checkpoint invalid: {exc}") from exc
@@ -3074,6 +3126,10 @@ In changed_paths list every path printed by
 `git -c core.quotepath=off diff --name-only --no-renames {base} HEAD`, as plain names without quotes.
 A moved file counts twice: list the old path and the new path.
 """
+    for reserved in state.get("sequence_numbers") or []:
+        # Serialised with the graph's other runs on this folder: the number is free after them.
+        common += (f"Numbered files: the next free number in {reserved['directory']}/ is {reserved['number']}. "
+                   "A file this run adds there takes that number (then the ones after it), never one in use.\n")
     if role == "maker":
         feedback = f"\nThe prior checker rejected the attempt:\n{json.dumps(prior, indent=2)}\n" if prior else ""
         codex_maker = manifest["roles"]["maker"]["runtime"] == "codex"
@@ -3899,6 +3955,8 @@ def resume(args: argparse.Namespace) -> int:
                     raise RunError("graph context is incomplete in child run state")
                 context = graph_effective_base(repo, graph_path, manifest_path, manifest,
                                                spec_rel, spec_hash, effective_base)
+                # Later accepted siblings may have taken numbers since: the reservation stays as started.
+                context.pop("sequence_numbers", None)
                 if any(state.get(key) != value for key, value in context.items()):
                     raise RunError("graph contract or effective base changed since start")
                 if state["base_head"] != effective_base:
