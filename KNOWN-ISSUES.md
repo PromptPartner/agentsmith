@@ -3,6 +3,11 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [x] 2026-11-25 — Found by demo lap 2: the controller protects test files that exist at the base
+  (and `verify.protected_paths`), but the maker's prompt never said so. The lap-02 maker edited
+  `tests/test_cli.py`, and the run escalated after one attempt for operator review. Fixed: the
+  maker prompt states that existing tests are read-only, that new tests go in new files, and which
+  extra protected paths apply.
 - [x] 2026-11-25 — Found by demo lap 1's third rework: the checker prompt showed the controller's
   verdict lines (`verification=`, the baseline and `regressions against the baseline`) under the
   heading of the verify log, but those lines are not in that file. A checker that accepted correctly

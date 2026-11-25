@@ -488,6 +488,19 @@ class AutonomousStateTests(unittest.TestCase):
         with self.assertRaisesRegex(CONTROLLER.RunError, r"stale assumption: `src/new\.py`"):
             self.preflight(repo)
 
+    def test_maker_prompt_says_existing_tests_and_protected_paths_are_read_only(self) -> None:
+        # Demo lap-02 (2026-11-25): the maker edited an existing test file, which the controller
+        # protects, and the run escalated; nothing in its prompt said existing tests are read-only.
+        manifest = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
+        manifest.update(spec_path="docs/specs/task.md", implementation_ticket="IMP-1")
+        manifest["verify"]["protected_paths"] = ["fixtures/golden/**"]
+        state = {"run_id": "prompt", "base_head": "a" * 40, "codex_tokens_used": 0}
+        maker = CONTROLLER.role_prompt(state, manifest, "maker")
+        self.assertIn("Test files that already exist", maker)
+        self.assertIn("put new tests in new files", maker)
+        self.assertIn('["fixtures/golden/**"]', maker)
+        self.assertIn("escalates the run", maker)
+
     def test_checker_prompt_checks_smallest_change_and_red_failure_reason(self) -> None:
         manifest = json.loads((ROOT / "templates/autonomous-run.json").read_text(encoding="utf-8"))
         manifest.update(spec_path="docs/specs/task.md", implementation_ticket="IMP-1")

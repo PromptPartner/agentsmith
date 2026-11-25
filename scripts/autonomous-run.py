@@ -3467,7 +3467,14 @@ A moved file counts twice: list the old path and the new path.
         if note:
             goal += (f"This run is a rework of run {manifest['rework']['of']}. The operator's rework note:\n"
                      f"{note}\n")
-        return common + goal + f"""Implement the smallest complete change, run {manifest['verify']['command']},
+        # The rule `validate_verification_changes` enforces; told up front, a maker does not spend
+        # an attempt and escalate the run by editing an existing test (demo lap-02).
+        extra = manifest.get("verify", {}).get("protected_paths") or []
+        protected = (f" or any path matching {json.dumps(extra)}" if extra else "")
+        return common + goal + f"""Test files that already exist at {base[:12]} are read-only verification inputs: put new tests in new files.
+Editing, moving or deleting an existing test file, the accepted spec, an agent-instruction file{protected}
+escalates the run for operator review.
+Implement the smallest complete change, run {manifest['verify']['command']},
 and make atomic local commits only. Leave the worktree clean. HEAD must advance beyond {base}.
 Use status completed or blocked; do not mark your own work accepted.
 After the summary bullets, add a line `{ASSUMPTIONS_HEADING}` with one bullet for each choice you made
