@@ -3,6 +3,12 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [ ] 2026-11-25 — Gap seen while fixing the verdict-block defect: `calibrate` renders the checker
+  prompt without the controller-verdict block (verdict, baseline, regressions) that every real run
+  shows, so calibration never exercises that block, and `checker_prompt_sha256` cannot see a change
+  to it. A checker can pass calibration and still mishandle the block, which is how lap-01-r3 lost
+  an acceptance. Fix direction: give calibration cases the same verdict block a run shows, and hash
+  the prompt with a fixed non-empty verdict.
 - [x] 2026-11-25 — Found by demo lap 2: the controller protects test files that exist at the base
   (and `verify.protected_paths`), but the maker's prompt never said so. The lap-02 maker edited
   `tests/test_cli.py`, and the run escalated after one attempt for operator review. Fixed: the
