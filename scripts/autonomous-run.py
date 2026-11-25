@@ -3512,7 +3512,9 @@ Inspect the committed diff from {base} to HEAD and the controller verification e
 Try to falsify the acceptance criteria using read-only commands. Also reject when either answer is no:
 - Is this the smallest change that solves the stated problem? Name any part the spec does not need.
 - Did each new red test fail for the intended reason? Check that it asserts on the failure message
-  or value the bug produces, not on a stub, an import error or an earlier gate.
+  or value the bug produces, not on a stub, an import error or an earlier gate. For a function,
+  option, command or file that the spec adds, a test that fails at the base because that name
+  does not exist yet fails for the intended reason; do not ask for a stub.
 {verdict}Controller verification output (the file {verify_log}):
 {verify_output[-6000:]}
 To accept, cite evidence for every criterion that passed. Write each evidence item exactly as

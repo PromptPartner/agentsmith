@@ -3,6 +3,12 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [x] 2026-11-25 — Found by demo lap 4's second rework: the checker's red-test rule could not be
+  met for a name the spec adds. At the base, a test of the new `from_env` can only fail because the
+  name is missing, which the checker rejected as an earlier gate, and a stub was ruled out too. The
+  maker blocked on attempt 3. Fixed: the checker prompt says that a missing new name is the
+  intended red reason and not to ask for a stub. This changes the checker prompt, so every
+  calibration made before it is stale.
 - [x] 2026-11-25 — Found by demo lap 4's rework: the identical-rejection guard treated every checker
   rejection of a green candidate as the same, because its signature was the reason (`checker`) and
   a hash of the passing test output. Lap-04-r1's checker named a stub-based red test, then a token

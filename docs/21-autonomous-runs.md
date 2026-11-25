@@ -144,7 +144,9 @@ and checker receipt hash. A checker acceptance with empty evidence or unresolved
 not accept a candidate. Besides trying to falsify the acceptance criteria, the checker is told
 to reject a change that is larger than the stated problem needs, and a red test that failed for
 the wrong reason (a stub, an import error or an earlier gate instead of the bug's own failure
-message). Role exit codes are retained separately from structured receipts.
+message). For a function, option, command or file that the spec adds, failing at the base because
+that name does not exist yet is the intended reason, and the checker does not ask for a stub.
+Role exit codes are retained separately from structured receipts.
 
 **An acceptance must cite its evidence.** When the verifier finishes, the controller records by
 hash every file the checker may cite: this attempt's output log, `attempt-N-verify.txt`, and the
