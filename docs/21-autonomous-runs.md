@@ -598,7 +598,9 @@ happens next.
   folder inside a temporary folder (`/tmp`, macOS `/var/folders`, Windows `AppData\Local\Temp`),
   process IDs and ports. An
   attempt with no verify output (a maker that tripped the hidden-test wire) has the signature "no
-  verify output".
+  verify output". A checker rejection also carries a hash of the checker's `unresolved` items, so
+  two rejections of green candidates for different defects are not the same; the attempt cap
+  still bounds them.
 - **Silent maker turns.** A maker turn is silent when its candidate has the same Git tree as the
   candidate the controller last judged, or as the base on the first attempt: for example an empty
   commit. Nothing new can pass or fail, so after `limits.max_silent_turns` silent turns in a row

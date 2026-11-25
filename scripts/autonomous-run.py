@@ -1467,13 +1467,23 @@ def run_shape_limits(limits: dict[str, Any]) -> tuple[int, int]:
             int(limits.get("max_silent_turns", DEFAULT_SILENT_TURNS)))
 
 
-def rejection_signature(event_fields: dict[str, Any], verify_output: str | None) -> str:
+def rejection_signature(event_fields: dict[str, Any], verify_output: str | None,
+                        objections: list[Any] | None = None) -> str:
     """The rejection's `reason` and its failing-test signature: the failing checks the verify
-    output names, or, when it names none, a hash of its last lines with the noise removed."""
+    output names, or, when it names none, a hash of its last lines with the noise removed. A checker
+    rejection also carries the checker's unresolved items: on a green candidate the output is the
+    same every time, so without them two rejections for different defects would look identical
+    (demo lap-04-r1)."""
     reason = event_fields.get("reason")
     reason = MISSING_REASON if reason is None else str(reason)
+    said = ""
+    if objections is not None:
+        material = "\n".join(sorted(str(item).strip() for item in objections))
+        for pattern, replacement in SIGNATURE_NOISE:
+            material = pattern.sub(replacement, material)
+        said = f" | objections {hashlib.sha256(material.encode('utf-8')).hexdigest()[:16]}"
     if verify_output is None:
-        return f"{reason} | no verify output"
+        return f"{reason} | no verify output{said}"
     _, failing = named_checks(verify_output)
     if failing:
         material, kind = "\n".join(sorted(failing)), "tests"
@@ -1482,7 +1492,19 @@ def rejection_signature(event_fields: dict[str, Any], verify_output: str | None)
         material, kind = "\n".join(lines), "output"
         for pattern, replacement in SIGNATURE_NOISE:
             material = pattern.sub(replacement, material)
-    return f"{reason} | {kind} {hashlib.sha256(material.encode('utf-8')).hexdigest()[:16]}"
+    return f"{reason} | {kind} {hashlib.sha256(material.encode('utf-8')).hexdigest()[:16]}{said}"
+
+
+def checker_objections(run_dir: Path, attempt: int, event_fields: dict[str, Any]) -> list[Any] | None:
+    """The unresolved items of a checker rejection, from its receipt; None for any other reason."""
+    if event_fields.get("reason") != "checker":
+        return None
+    try:
+        receipt = json.loads(read_output(run_dir / f"attempt-{attempt}-checker-receipt.json"))
+    except (OSError, ValueError):
+        return []
+    unresolved = receipt.get("unresolved") if isinstance(receipt, dict) else None
+    return unresolved if isinstance(unresolved, list) else []
 
 
 def identical_rejection_streak(state: dict[str, Any]) -> tuple[int, str | None]:
@@ -1502,7 +1524,8 @@ def identical_rejection_streak(state: dict[str, Any]) -> tuple[int, str | None]:
     attempt = int(state.get("attempt", 0))
     while attempt in rejected:
         log = run_dir / f"attempt-{attempt}-verify.txt"
-        signature = rejection_signature(rejected[attempt], read_output(log) if log.is_file() else None)
+        signature = rejection_signature(rejected[attempt], read_output(log) if log.is_file() else None,
+                                        checker_objections(run_dir, attempt, rejected[attempt]))
         if last is not None and signature != last:
             break
         streak, last, attempt = streak + 1, signature, attempt - 1

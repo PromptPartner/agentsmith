@@ -3,6 +3,12 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [x] 2026-11-25 — Found by demo lap 4's rework: the identical-rejection guard treated every checker
+  rejection of a green candidate as the same, because its signature was the reason (`checker`) and
+  a hash of the passing test output. Lap-04-r1's checker named a stub-based red test, then a token
+  leak through Python's implicit exception context, and the run stopped at attempt 2 of 3 as if the
+  maker were stuck. Fixed: a checker rejection's signature also carries a hash of its `unresolved`
+  items. `scripts/test-run-shape.py` covers both a moving and a repeating checker.
 - [ ] 2026-11-25 — Gap seen while fixing the verdict-block defect: `calibrate` renders the checker
   prompt without the controller-verdict block (verdict, baseline, regressions) that every real run
   shows, so calibration never exercises that block, and `checker_prompt_sha256` cannot see a change

@@ -78,7 +78,9 @@ FAKE_CLIENT = textwrap.dedent('''\
     receipt = {"status": verdict, "summary": ("VERDICT: " + verdict.upper() + "\\n## Summary\\n- fixture change\\n"
                           "- ran the verifier\\n- nothing else"
                           + ("" if checker else "\\n## Assumptions without authority\\n- none")), "commit": commit, "changed_paths": changed,
-               "evidence": evidence, "unresolved": [] if verdict != "rejected" else ["still wrong"],
+               "evidence": evidence, "unresolved": [] if verdict != "rejected" else (
+                   ["defect %d" % sum(1 for line in (root / "launches.log").read_text().splitlines() if line == "checker")]
+                   if plan.get("unresolved") == "numbered" else ["still wrong"]),
                "next_state": verdict}
     if receipt_path is not None:
         receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
@@ -325,6 +327,28 @@ class RunShapeGuardRunTests(RunFixture):
         self.assertEqual(self.launches(), ["maker", "checker", "maker", "checker"])
         escalated = [item for item in self.events("stuck") if item["event"] == "run_escalated"]
         self.assertEqual(escalated[-1]["reason"], state["reason"])
+
+    def test_checker_rejections_of_green_candidates_that_name_new_defects_keep_every_attempt(self) -> None:
+        # Demo lap-04-r1 (2026-11-25): the tests passed both times and the checker named a different
+        # defect each time, yet the guard saw "checker" plus the same green output and stopped the
+        # run at attempt 2 of 3 as if the maker were stuck.
+        self.plan(["change"], checker="rejected", unresolved="numbered")
+        self.commit_manifest("moving-checker", max_attempts=3)
+        result = self.controller("start", ".harness/runs/moving-checker.json")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        state = self.state("moving-checker")
+        self.assertEqual((state["status"], state["attempt"]), ("escalated", 3))
+        self.assertEqual(state["reason"], "attempt cap reached (3)")
+        self.assertEqual(self.launches(), ["maker", "checker"] * 3)
+
+    def test_a_checker_that_repeats_its_objection_on_green_candidates_still_ends_the_attempts(self) -> None:
+        self.plan(["change"], checker="rejected")
+        self.commit_manifest("stuck-checker", max_attempts=3)
+        result = self.controller("start", ".harness/runs/stuck-checker.json")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        state = self.state("stuck-checker")
+        self.assertEqual((state["status"], state["attempt"]), ("escalated", 2))
+        self.assertIn("2 identical rejections in a row", state["reason"])
 
     def test_rejections_that_change_keep_every_attempt(self) -> None:
         # Each attempt fails a different test, so the maker is moving: the cap, not the guard, ends it.
