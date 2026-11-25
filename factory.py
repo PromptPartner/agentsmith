@@ -29,6 +29,15 @@ SCHEMA_VERSION = 1
 MIN_SAMPLE = 5
 DEFAULT_WINDOW_DAYS = 28
 TOUCH_EVENTS = ("run_escalated", "run_interrupted", "run_resumed")
+# The `reason` codes of `attempt_rejected`, in the controller's order (autonomous-run.py keeps the
+# same tuple; a test holds them equal). A rejection with no code predates them: "unrecorded".
+REJECTION_REASONS = ("verify", "checker", "hidden-tests", "incomplete", "hidden-test-probe",
+                     "scope", "protected", "budget", "stale", "report-contract")
+# "About zero" human minutes for an approval: at most this much logged in all.
+THEATRE_MINUTES = 1.0
+# Recorded when the operator opens a run's demonstration transcript; it counts only when its
+# `sha256` is the controller's own, `demo.sha256` in the run state.
+EVIDENCE_OPENED = "evidence_opened"
 TERMINAL = ("accepted", "awaiting-human", "escalated", "interrupted")
 TIERS = ("A", "B", "C", "human")
 PASSING = {"success", "skipped", "neutral"}
@@ -154,6 +163,11 @@ def number(name: str, n: int, value: Any, unit: str, start: datetime, end: datet
             "detail": detail if enough else f"{n} case(s); at least {minimum} are needed" + (f"; {detail}" if detail else "")}
 
 
+def run_tier(run: dict[str, Any]) -> str:
+    risk = run["state"].get("risk")
+    return risk.get("tier") if isinstance(risk, dict) and risk.get("tier") in TIERS else "unknown"
+
+
 def touches(run: dict[str, Any]) -> int:
     return sum(1 for item in run["events"] if item.get("event") in TOUCH_EVENTS)
 
@@ -194,10 +208,7 @@ def numbers(repo: Path, *, since: str | None = None, now: datetime | None = None
                    round(len(clean) / len(finished), 3) if finished else None, "share of finished runs",
                    start, end, f"{len(clean)} of {len(finished)} finished runs reached acceptance with no operator touch")]
 
-    def tier(run: dict[str, Any]) -> str:
-        risk = run["state"].get("risk")
-        return risk.get("tier") if isinstance(risk, dict) and risk.get("tier") in TIERS else "unknown"
-
+    tier = run_tier
     warnings: list[str] = []
 
     def valid_rows(name: str, valid: Callable[[dict[str, Any]], bool]) -> list[dict[str, Any]]:
@@ -268,9 +279,194 @@ def numbers(repo: Path, *, since: str | None = None, now: datetime | None = None
                        "per landed change", start, end,
                        f"all known spend of {len(known)} run(s) in the window over {len(known_accepted)} landed "
                        f"change(s)" + (f"; {unknown} run(s) with unknown spend left out" if unknown else "")))
+    rows += rework_numbers(repo, runs, in_window, accepted, known, unknown, minutes, start, end, warnings)
     return {"schema_version": SCHEMA_VERSION, "window": {"since": start.isoformat(timespec="seconds"),
                                                          "until": end.isoformat(timespec="seconds")},
             "minimum_sample": MIN_SAMPLE, "numbers": rows, "unreadable_runs": unreadable, "warnings": warnings}
+
+
+def amount(value: Any) -> float:
+    """A recorded spend as a number; anything that is not a non-negative number counts as none."""
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0 else 0.0
+
+
+def rework_parent(run: dict[str, Any]) -> str | None:
+    """The run this one reworks, from the manifest it started from (`prepare --rework-of`)."""
+    try:
+        data, _problem = started_manifest(run["state"])
+        rework = json.loads(data.decode("utf-8")).get("rework") if data is not None else None
+    except (ValueError, AttributeError):
+        return None
+    parent = rework.get("of") if isinstance(rework, dict) else None
+    return parent if isinstance(parent, str) else None
+
+
+def rejections(run: dict[str, Any], reason: str | None = None) -> list[dict[str, Any]]:
+    return [item for item in run["events"] if item.get("event") == "attempt_rejected"
+            and (reason is None or item.get("reason") == reason)]
+
+
+def evidence_seen(run: dict[str, Any]) -> bool | None:
+    """Whether the operator opened this run's demonstration: None when the run recorded none, so
+    there was nothing to open. An open of any other file, or an altered one, is not an open."""
+    demo = run["state"].get("demo")
+    digest = demo.get("sha256") if isinstance(demo, dict) else None
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        return None
+    return any(item.get("event") == EVIDENCE_OPENED and item.get("sha256") == digest for item in run["events"])
+
+
+def rework_numbers(repo: Path, runs: list[dict[str, Any]], in_window: list[dict[str, Any]],
+                   accepted: list[dict[str, Any]], known: list[dict[str, Any]], unknown: int,
+                   minutes: dict[str, float], start: datetime, end: datetime,
+                   warnings: list[str]) -> list[dict[str, Any]]:
+    """SF-15: why attempts were reworked, where the spend went, how often a budget stopped a run that
+    proved good, whether approvals look like theatre, and how often each lens's findings were acted
+    on. All derived from the run records and the operator's logs; each obeys the sample gate."""
+    rows = []
+    # 1. Rework causes: every `attempt_rejected` of the runs in the window, by its reason code.
+    rejected = [item for run in in_window for item in rejections(run)]
+    causes: dict[str, int] = {reason: 0 for reason in REJECTION_REASONS}
+    for item in rejected:
+        reason = item.get("reason")
+        key = reason if isinstance(reason, str) and reason in causes else "unrecorded"
+        causes[key] = causes.get(key, 0) + 1
+    unrecorded = causes.get("unrecorded", 0)
+    rows.append(number("rework causes", len(rejected), causes, "rejections by reason", start, end,
+                       f"{len(rejected)} rejection(s) in {sum(1 for run in in_window if rejections(run))} run(s)"
+                       + (f"; {unrecorded} without a recorded reason (written before reasons were recorded)"
+                          if unrecorded else "")))
+    # 2. Spend split: each role's `usage_recorded` events, for the runs whose spend is known and
+    # whose role records add up to it. Missing records are not zero: such a run is left out.
+    split = {side: {"claude_usd": 0.0, "codex_tokens": 0} for side in ("making", "verifying")}
+    itemised = []
+    for run in known:
+        sides = {side: {"claude_usd": 0.0, "codex_tokens": 0} for side in split}
+        for item in run["events"]:
+            side = {"maker": "making", "checker": "verifying"}.get(item.get("role")) \
+                if item.get("event") == "usage_recorded" and isinstance(item.get("role"), str) else None
+            if side:
+                sides[side]["claude_usd"] += amount(item.get("cost_usd"))
+                sides[side]["codex_tokens"] += int(amount(item.get("tokens")))
+        usd = sum(side["claude_usd"] for side in sides.values())
+        tokens = sum(side["codex_tokens"] for side in sides.values())
+        recorded_usd, recorded_tokens = float(run["state"]["claude_cost_usd"]), int(run["state"]["codex_tokens_used"])
+        if abs(usd - recorded_usd) > 1e-6 * max(1.0, recorded_usd) or tokens != recorded_tokens:
+            continue
+        itemised.append(run)
+        for name, side in sides.items():
+            split[name]["claude_usd"] += side["claude_usd"]
+            split[name]["codex_tokens"] += side["codex_tokens"]
+    unitemised = len(known) - len(itemised)
+    shares = {}
+    for unit in ("claude_usd", "codex_tokens"):
+        total = split["making"][unit] + split["verifying"][unit]
+        shares[unit] = round(split["verifying"][unit] / total, 3) if total else None
+    for side in split.values():
+        side["claude_usd"] = round(side["claude_usd"], 2)
+    rows.append(number("spend split, making and verifying", len(itemised), {**split, "verifying_share": shares},
+                       "Claude USD and Codex tokens", start, end,
+                       f"the maker's spend is making and the checker's is verifying, from the usage records of "
+                       f"{len(itemised)} run(s) with known spend"
+                       + (f"; {unknown} run(s) with unknown spend left out" if unknown else "")
+                       + (f"; {unitemised} run(s) whose usage records do not add up to their spend left out"
+                          if unitemised else "")))
+    # 3. Budget stops on runs later accepted: the run itself after a resume, or a rework of it. A
+    # rework counts only when it started in a checkout of this repository: a run record copied in
+    # from elsewhere, with its own pinned manifest, names IDs that mean nothing here.
+    by_id = {run["id"]: run for run in runs}
+    home = common_dir(repo)
+    checkouts: dict[str, bool] = {}
+
+    def started_here(run: dict[str, Any]) -> bool:
+        recorded = run["state"].get("repo")
+        if not isinstance(recorded, str) or not recorded:
+            return False
+        if recorded not in checkouts:
+            try:
+                checkouts[recorded] = Path(recorded).is_dir() and common_dir(Path(recorded)) == home
+            except (FactoryError, OSError, ValueError):
+                checkouts[recorded] = False
+        return checkouts[recorded]
+
+    children: dict[str, list[str]] = {}
+    for run in runs:
+        parent = rework_parent(run)
+        if parent is not None and parent != run["id"] and started_here(run):
+            children.setdefault(parent, []).append(run["id"])
+
+    def later_accepted(run_id: str) -> bool:
+        pending, seen = [run_id], set()
+        while pending:
+            current = pending.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            if by_id.get(current, {}).get("state", {}).get("status") == "accepted":
+                return True
+            pending += children.get(current, [])
+        return False
+
+    stopped = [run for run in in_window if rejections(run, "budget")]
+    good = [run for run in stopped if later_accepted(run["id"])]
+    rows.append(number("budget stops on runs later accepted", len(stopped),
+                       round(len(good) / len(stopped), 3) if stopped else None, "share of budget-stopped runs",
+                       start, end, f"{len(good)} of {len(stopped)} run(s) a budget stopped were later accepted, "
+                       "after a resume or through a rework; a high share says the budget is too tight"))
+    # 4. Theatre: approvals with about zero human minutes and no rework, or whose evidence nobody
+    # opened. Unknown minutes or no recorded evidence leave a verdict unknown, never "not theatre".
+    evidence = {"opened": 0, "not_opened": 0, "no_demo": 0}
+    totals = {"theatre": 0, "not_theatre": 0, "unknown": 0}
+    tiers: dict[str, dict[str, Any]] = {}
+    for run in accepted:
+        logged = minutes.get(run["id"])
+        engaged = (True if touches(run) or run["id"] in children or (logged is not None and logged > THEATRE_MINUTES)
+                   else False if logged is not None else None)
+        seen = evidence_seen(run)
+        evidence["no_demo" if seen is None else "opened" if seen else "not_opened"] += 1
+        verdict = ("theatre" if engaged is False or seen is False
+                   else "not_theatre" if engaged and seen else "unknown")
+        totals[verdict] += 1
+        row = tiers.setdefault(run_tier(run), {"approvals": 0, "theatre": 0, "not_theatre": 0, "unknown": 0})
+        row["approvals"] += 1
+        row[verdict] += 1
+    for row in tiers.values():
+        # A tier is theatre when every approval in it is; one real review clears it.
+        row["flag"] = (True if row["theatre"] == row["approvals"] else False if row["not_theatre"] else "unknown")
+    tracked = evidence["opened"] + evidence["not_opened"] > 0
+    flags = [row["flag"] for row in tiers.values()]
+    flag = True if True in flags else False if flags and all(item is False for item in flags) else "unknown"
+    rows.append(number("approval theatre", len(accepted),
+                       {"flag": flag, **totals,
+                        "evidence_opened": evidence if tracked else "unknown",
+                        "by_tier": dict(sorted(tiers.items()))},
+                       "approvals", start, end,
+                       f"{totals['theatre']} of {len(accepted)} approval(s) had {THEATRE_MINUTES:g} human minute(s) "
+                       "or less logged and no rework" + ("" if not tracked else ", or their evidence was not opened")
+                       + (f"; {totals['unknown']} unknown, with no minutes logged" if totals["unknown"] else "")
+                       + ("" if tracked else f"; no approval recorded a demonstration to open "
+                          f"({EVIDENCE_OPENED} needs one), so whether evidence was opened is unknown")))
+    # 5. Lens addressed rate: the share of each lens's findings the operator acted on.
+    import lenses
+    import risk_map
+    try:
+        lens_rows, lens_warnings = lenses.read_rows(repo)
+    except (lenses.LensError, risk_map.RiskError, OSError) as exc:
+        lens_rows, lens_warnings = [], [f"cannot read the lens record: {exc}"]
+    warnings += [f"lens {warning}" for warning in lens_warnings]
+    found = [row for row in lens_rows if row["source"].startswith("lens:") and within(row.get("recorded_at"), start, end)]
+    per_lens: dict[str, dict[str, Any]] = {}
+    for row in found:
+        counts = per_lens.setdefault(row["source"][5:], {"findings": 0, "addressed": 0})
+        counts["findings"] += 1
+        counts["addressed"] += row["decision"] == "act"
+    for counts in per_lens.values():
+        counts["rate"] = (round(counts["addressed"] / counts["findings"], 3) if counts["findings"] >= MIN_SAMPLE
+                          else "insufficient data")
+    rows.append(number("lens addressed rate", len(found), dict(sorted(per_lens.items())), "share of findings acted on",
+                       start, end, f"{len(found)} lens finding(s) triaged in the window; a finding is addressed when "
+                       f"its triage decision is act; a lens with fewer than {MIN_SAMPLE} findings says insufficient data"))
+    return rows
 
 
 # --- CI reads (read-only, through gh) ---------------------------------------------------------
@@ -666,6 +862,10 @@ def readiness(repo: Path, *, controller: Any, gh: Any | None, manifest: dict[str
 
 # --- export and operator logs ---------------------------------------------------------------------
 
+# The logs under the Git folder's `agentsmith-factory/`. The run controller lets a live run's
+# factory folder hold exactly these (`FACTORY_LOGS` there), and a test keeps both lists equal.
+LOG_NAMES = ("events", "defects", "minutes", "intake")
+
 def collect_export(repo: Path) -> dict[str, Any]:
     runs, unreadable = load_runs(repo)
     if unreadable:
@@ -682,7 +882,7 @@ def collect_export(repo: Path) -> dict[str, Any]:
     root = factory_dir(repo)
     return {"schema_version": SCHEMA_VERSION, "runs": exported,
             "factory": {name: read_jsonl(root / f"{name}.jsonl")
-                        for name in ("events", "defects", "minutes", "intake")}}
+                        for name in LOG_NAMES}}
 
 
 # Export redacts rather than refuses: the record is still useful with a secret-like value removed.
@@ -790,9 +990,9 @@ def last_event(run: dict[str, Any]) -> datetime | None:
     return parse_time(run["state"].get("updated_at")) or parse_time(run["state"].get("started_at"))
 
 
-def round_cap(state: dict[str, Any]) -> tuple[int | None, str | None]:
-    """limits.max_attempts of the manifest the run started from, or why it is unknown. A manifest
-    changed since the start is not the run's contract, so its cap is not used."""
+def started_manifest(state: dict[str, Any]) -> tuple[bytes | None, str | None]:
+    """The bytes of the manifest the run started from, or why they are unknown. A manifest changed
+    since the start is not the run's contract, so it is not used."""
     path, pinned = state.get("manifest_path"), state.get("manifest_sha256")
     if not isinstance(path, str) or not isinstance(pinned, str):
         return None, "the run records no manifest"
@@ -803,6 +1003,14 @@ def round_cap(state: dict[str, Any]) -> tuple[int | None, str | None]:
     # A path Python refuses to open (a NUL in it) raises ValueError: damage, reported by the caller.
     if hashlib.sha256(data).hexdigest() != pinned:
         return None, "its manifest changed since the run started"
+    return data, None
+
+
+def round_cap(state: dict[str, Any]) -> tuple[int | None, str | None]:
+    """limits.max_attempts of the manifest the run started from, or why it is unknown."""
+    data, problem = started_manifest(state)
+    if data is None:
+        return None, problem
     try:
         cap = json.loads(data.decode("utf-8"))["limits"]["max_attempts"]
     except (ValueError, KeyError, TypeError):

@@ -3,6 +3,41 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [ ] 2026-11-24 — Gap left open by SF-16b: the role report contract (`VERDICT: <STATUS>`, then
+  `## Summary` with 3 to 5 bullets) is checked only on receipts that a role writes. The receipts
+  the controller writes itself do not follow it: the rejection before any checker
+  (`controller_rejection`), the rejection after failed hidden tests, and the rejection after a
+  hidden-test probe. Their `summary` is one plain sentence. They reach the next maker as feedback
+  and the run state as `last_checker_receipt`, so a reader that relies on the verdict line finds
+  none there.
+- [ ] 2026-11-24 — Race left open by SF-16b: `start` checks the rework note against its pinned hash
+  in `validate_manifest`, then copies it to `operator-feedback.md` after the run's branch, worktree
+  and state exist. If the note changes between the two reads, the copy refuses with "rework note
+  changed since prepare", and the run stays `prepared` with its branch and worktree; the inbox then
+  lists it as `dead`. Only an edit inside that short window triggers it.
+- [x] 2026-11-24 — Found while building SF-16b: once a role's `summary` became its multi-line
+  report, a blocked maker escalated with `maker blocked: ` followed by the whole report, and that
+  reason reaches the state, the inbox row and the terminal. Fixed: the reason holds one line, the
+  report's first summary bullet (else its first line that is not the verdict line), at most 200
+  characters.
+- [ ] 2026-11-24 — Known limit of the SF-16 coordination classes: a segment that is only `*` or
+  `**` names no class, so a broad pattern such as `db/**` is not read as a migration path even when
+  the folder holds migrations. (A glob that could spell a class name, such as `a/[m]igrations/*`,
+  is classified, fail closed.) Two runs whose scopes are `db/**` and `services/b/migrations/*` can still run
+  together. Workaround, documented in `docs/24-parallel-work-graphs.md`: give a migration-adding
+  run a narrow pattern (`db/migrations/*`) or a `scope.resources` key.
+- [ ] 2026-11-24 — Known limit of SF-16 numbered resources: only a work-graph child gets a reserved
+  next free number. A run started on its own gets none. A second live run on the same class is
+  refused, but a run started after an earlier one was accepted (and not yet merged) sees the old
+  base and can pick the same migration number.
+- [ ] 2026-11-24 — Known limit of the SF-16 silent-turn guard: it counts whole maker turns (a
+  candidate whose tree equals the tree last judged), not turns inside a role session. Claude
+  roles run with `--output-format json`, which reports only at the end, so the controller cannot
+  stop a role that goes quiet while it runs; the wall clock is the only cap there.
+- [ ] 2026-11-24 — Gap in the SF-16 silent-turn guard when `limits.max_silent_turns` is raised above
+  1: a silent turn below the limit is verified and checked as usual, so a maker turn that changed
+  nothing (an empty commit) can still be accepted. With the default of 1 it is never accepted.
+
 - [x] 2026-11-21 — Gap left open by SF-11: on macOS and Linux the verify command runs under
   `bash -o pipefail`, but the Windows verifier runs it through `cmd.exe`, which has no pipefail, so
   a verify command such as `pytest | more` passed on Windows when its tests failed. Fixed: on
@@ -38,6 +73,22 @@ been authorized, so the entries are kept here.
   flag a passphrase whose first word is shorter, such as `"correct horse battery staple"`. Kept on
   purpose: the same rule keeps labels such as `password = "Enter your password"` from blocking a
   commit. Export redaction does not have this limit.
+- [ ] 2026-11-24 — Known limit of SF-18b: `deliver` refuses a demo transcript that no longer
+  matches its recorded hash in a separate step, after `delivery_checks`. A run with a changed
+  transcript and other problems shows the other reasons first, and the transcript reason only
+  after those are fixed, instead of every reason at once. Kept for now so that the change to
+  `delivery_checks` stays small while other work changes it too; move the check into its problem
+  list later.
+- [ ] 2026-11-24 — Known limit of SF-18b: the `## Demo` parser (`spec_demo_command`) treats any line
+  that starts with three backticks or tildes as a fence. A demo block wrapped in a longer outer
+  fence (four backticks around a three-backtick block) closes at the inner fence, so the command
+  that is read is wrong or empty. `spec_sections` has the same limit. Specs that put one plain
+  fenced block under `## Demo` are not affected.
+- [ ] 2026-11-24 — Known limit of SF-18b, found by an independent Codex test: demo redaction uses the
+  secret scanner's patterns, so it has the scanner's limit above (an assigned value needs 8
+  characters): `password="a b"` stays in the transcript and the pull-request body. On Windows the
+  AppContainer verifier returns its whole output, so the demo's 80,000-byte read bound applies on
+  macOS and Linux only.
 - [ ] 2026-11-21 — Gap found while adding the attention budget (SF-18a): there is no command to
   dismiss a waiting run. A run leaves the inbox, and the budget count, only when it lands or when
   its branch is deleted; a deleted branch then shows as a warning for as long as the run folder
@@ -119,6 +170,9 @@ been authorized, so the entries are kept here.
   The calibration receipt records this as `invalid-receipt`. Calibrate a stronger checker model
   before relying on it, or simplify what the receipt asks for. Since 2026-11-18 an acceptance from
   a checker without a passed calibration holds the run as `awaiting-human` instead of accepting it.
+  2026-11-24: not a small-model problem. `claude-opus-5-5` at high effort failed the same way
+  (receipts named `7995b0f` or nothing), because no prompt said the receipt's `commit` must be the
+  full SHA. Both role prompts now say so; re-measured by the next real `calibrate`.
 - [x] 2026-11-06 — The Windows compatibility job ran close to its cap: over the 24 latest verify
   runs (push and pull request, 2026-10-26 to 2026-11-06) it took p50 35.3, p90 38.0 and at most
   40.8 minutes against a 45-minute cap, and a factory multiplies CI load. Slowest Windows steps

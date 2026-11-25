@@ -54,6 +54,35 @@ repository's Git common directory. It does not edit child state. Independent mak
 concurrently; Git metadata checks still reject unverified changes to refs, hooks, config, objects,
 or other worktrees.
 
+Two roots run together only when their scopes are apart. A shared or nested path, a shared
+`scope.resources` key, or a shared **coordination class** makes the later node `conflicting`
+until the earlier one finishes. The classes cover files that two runs cannot safely change at the
+same time even in different folders: `spec` (`docs/specs/*`), `migration` (`migrations/*`,
+`migrate/*`, at the root or in any folder), `schema` (`schema.*`, `schemas/*`, `*.schema.json`)
+and `contract` (`openapi.*`, `swagger.*`, `*.proto`, `*.graphql`, `contracts/*`). An
+`allowed_paths` pattern belongs to a class when some path could match both, ignoring case: it
+fails closed, so `db/migrations/*`, `a/Migrations/*`, `a/[m]igrations/*` and `a/mig*/0002.sql` are
+all migration paths. A `*` inside a segment stays in that segment, and a segment that is only `*`
+or `**` names nothing, so a broad `db/**` is not a migration path; give a run that adds
+migrations a narrow pattern, or a `resources` key, so the graph can see it. A wildcard inside a
+segment can still spell a class file: `src/a/*.py` could be `src/a/schema.py`, so two such runs
+wait for each other. Use `src/a/**` when that is not intended. A manifest adds a class, or more patterns for one, in
+`scope.sequenced`, for example `{"adr": ["docs/adr/*"]}`; it cannot remove a built-in class.
+Reading the same accepted spec is not a conflict: the nodes of one graph usually share it.
+
+**Numbered resources.** A folder of a coordination class is numbered when its files start with a
+sequence number: up to six digits, after an optional letter such as Flyway's `V`, then `_`, `.`
+or `-` (`0003_add_users.sql`, `V12__x.sql`, `0007-decision.md`). When a child starts, the
+controller reserves the next free number in each numbered folder its scope reaches. It counts the
+files at the child's base and in every accepted sibling, and pads like the widest name. The
+number is kept in the child state as `sequence_numbers` and given to the maker and the checker.
+Serialisation guarantees the earlier run is accepted before the later one starts, so two
+migration-adding runs get distinct numbers (`0002`, then `0003`). Longer digit runs are
+timestamps (Rails), which do not collide by sequence, so nothing is reserved for them. A folder
+whose highest number is already `999999` has no free six-digit number: the child refuses to start
+(`refusal=sequence-exhausted`) rather than hand out a seven-digit number a later run would not see. A run
+outside a graph gets no reservation: a second live run on the same class is refused instead.
+
 A dependent run starts only after every transitive predecessor is accepted. The graph verifies
 their exact commits and checker receipts, merges them in declared order into a graph-owned local
 checkpoint, and passes that exact checkpoint OID to the child. A merge conflict retains the
@@ -180,7 +209,7 @@ explicit handoff steps, not events the fixture pretends happened.
 
 | Observation | Safe next step |
 |---|---|
-| `status` says `conflicting` | Inspect the named overlapping path or resource; revise and recommit a new graph ID before starting. |
+| `status` says `conflicting` | Inspect the named overlapping path, resource or coordination class (`sequenced conflict with <node>: migration`). It waits for that node; to run them together, revise and recommit a new graph ID. |
 | Child is `interrupted` or `resume` refuses drift | Read the child state and receipt under the Git common directory; retain worktrees and reconcile the exact missing or moved state. |
 | Candidate integration conflicts | Inspect the retained candidate worktree and both source refs; resolve in a new reviewed attempt. |
 | Candidate full verification fails | Read `verification-<attempt>/receipt.json`; keep the failed candidate as evidence and fix the source under a separate run. |

@@ -24,6 +24,12 @@ file in which the symbol occurs as a whole word. `prepare` and `start` check the
 tracks. Any other list item is prose and is not checked. Specs without a `schema` key are still
 not checked.
 
+An optional `## Demo` section declares one command that shows the changed behaviour, in the first
+fenced code block under the heading. At acceptance the run's controller records a transcript of it
+in the verifier sandbox, and the pull-request body links it; see
+[replayable demo evidence](../21-autonomous-runs.md#replayable-demo-evidence). A `## Demo` heading
+with no fenced command is refused.
+
 The spec records decisions. Implementation proceeds through new, separately scoped tracker items;
 the active tracker-write consent policy governs creating, commenting on, or closing those items.
 

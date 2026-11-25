@@ -68,7 +68,12 @@ FAKE_CLIENT = textwrap.dedent('''\
     evidence = (["fixture verification passed :: " + log.group(0) + " :: fixture verification passed"]
                 if checker else ["maker ran the fixture verification"])
     status = "accepted" if checker else "completed"
-    receipt = {"status": status, "summary": "Make src/change.txt hold the fixed value; ping @someone",
+    receipt = {"status": status, "summary": ("VERDICT: " + status.upper() + "\\n## Summary\\n- Make src/change.txt hold the fixed value; ping @someone\\n- ran the verifier\\n- nothing else"
+                          + ("" if checker else "\\n## Assumptions without authority\\n" + (
+                              "- an empty src/change.txt counts as unfixed; ask @carol\\n- ASCII only"
+                              if "Fixture: report an assumption" in spec else
+                              "".join("- " + str(n) + " " + "w" * 100000 + "\\n" for n in range(30))
+                              if "Fixture: long assumptions" in spec else "- none"))),
                "commit": commit, "evidence": evidence,
                "changed_paths": ["src/change.txt"] + (["package.json"] if "Fixture: add dependencies" in spec else []),
                "unresolved": [], "next_state": status}
@@ -406,6 +411,47 @@ class DeliverTests(unittest.TestCase):
         proof = json.loads(proof_path.read_text(encoding="utf-8"))
         proof["checker_receipt_sha256"] = hashlib.sha256(receipt.read_bytes()).hexdigest()
         proof_path.write_text(json.dumps(proof), encoding="utf-8")
+
+    def test_the_body_names_the_models_the_assumptions_and_the_reviewer_focus(self) -> None:
+        # SF-16: models used, assumptions made without authority, and the paths a reviewer reads first.
+        repo = self.accepted_run(spec_note="Fixture: report an assumption.\n")
+        report = json.loads(self.deliver(repo, "--dry-run", "--json").stdout)
+        body = report["body"]
+        self.assertIn("### Models used\n```text\n- maker: codex, model fixture-model, effort high (attempt 1)\n"
+                      "- checker: claude, model fixture-model, effort high (attempt 1)\n```", body)
+        # The maker wrote these, so they sit in a code block where no @-mention takes effect.
+        self.assertIn("### Assumptions made without authority\n"
+                      "The maker made these choices; the spec and ticket did not settle them.\n```text\n"
+                      "- an empty src/change.txt counts as unfixed; ask @carol\n- ASCII only\n```", body)
+        self.assertIn("### Reviewer focus\nRead these paths first, highest tier first. Lenses: code.\n```text\n"
+                      "- B src/change.txt (rule:1; lenses: code)\n```", body)
+        self.assertEqual(report["tier"]["paths"][0]["path"], "src/change.txt")
+
+    def test_a_maker_without_assumptions_and_an_a_tier_change_say_so(self) -> None:
+        repo = self.accepted_run(policy_tier="A")
+        body = json.loads(self.deliver(repo, "--dry-run", "--json").stdout)["body"]
+        self.assertIn("### Assumptions made without authority\nThe maker's report lists none.\n", body)
+        self.assertIn("### Reviewer focus\nEvery path is tier A under the policy at the base; no path needs "
+                      "more than the usual review. Lenses: code.\n", body)
+
+    def test_long_assumptions_are_cut_and_the_body_stays_under_github_s_limit(self) -> None:
+        # Found by an independent Codex test: one 100,000-character assumption made a 101,602-character body.
+        repo = self.accepted_run(spec_note="Fixture: long assumptions.\n")
+        result = self.deliver(repo, "--dry-run", "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = json.loads(result.stdout)["body"]
+        self.assertLess(len(body), CONTROLLER.PR_BODY_MAX_CHARS)
+        self.assertIn("- 0 " + "w" * 100, body)
+        self.assertIn("[cut at 500 characters]", body)
+        self.assertIn("- 10 more assumptions are not shown; the maker's receipt in the run folder holds them all", body)
+        self.assertNotIn("- 20 ", body)
+
+    def test_a_body_over_github_s_limit_refuses_the_delivery(self) -> None:
+        repo = self.accepted_run()
+        self.add_evidence(repo, *("long :: evidence :: " + "e" * 1000 for _ in range(70)))
+        self.refused(repo, "the pull-request body has")
+        result = self.deliver(repo, "--dry-run")
+        self.assertIn(f"characters, over the {CONTROLLER.PR_BODY_MAX_CHARS} that GitHub accepts", result.stderr)
 
     def test_the_pull_request_text_names_no_local_path_and_no_model_summary(self) -> None:
         repo = self.accepted_run()

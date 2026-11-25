@@ -34,6 +34,13 @@ CONTROLLER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CONTROLLER)
 
 
+def role_report(status: str, assumptions: str | None = "- none") -> str:
+    """A report that keeps the role report contract: the verdict line, then 3 to 5 summary bullets."""
+    tail = "" if assumptions is None else f"\n## Assumptions without authority\n{assumptions}\n"
+    return (f"VERDICT: {status.upper()}\n\n## Summary\n- changed a.txt\n- ran the verifier\n"
+            f"- nothing else changed\n{tail}")
+
+
 class AutonomousStateTests(unittest.TestCase):
     def test_git_paths_preserve_unicode_under_windows_locale_decoding(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith git ü ") as temporary:
@@ -681,6 +688,21 @@ class AutonomousStateTests(unittest.TestCase):
             self.assertIn("rewritten, not appended to",
                           CONTROLLER.factory_tampering(before, CONTROLLER.factory_snapshot(common)))
 
+    def test_an_intake_verdict_log_does_not_stop_a_run(self) -> None:
+        # Demo lap 1 (2026-11-24) escalated "agentsmith-factory/intake.jsonl is not an operator log
+        # file": `factory intake` writes that log, so every repository that used intake could not run.
+        import factory
+        self.assertEqual(CONTROLLER.FACTORY_LOGS, {f"{name}.jsonl" for name in factory.LOG_NAMES})
+        with tempfile.TemporaryDirectory(prefix="agentsmith factory intake ") as temporary:
+            common = Path(temporary)
+            folder = common / "agentsmith-factory"
+            folder.mkdir()
+            (folder / "intake.jsonl").write_text('{"verdict": "ACCEPT"}\n', encoding="utf-8")
+            before = CONTROLLER.factory_snapshot(common)
+            with (folder / "intake.jsonl").open("a", encoding="utf-8") as log:
+                log.write('{"verdict": "REJECT"}\n')
+            self.assertIsNone(CONTROLLER.factory_tampering(before, CONTROLLER.factory_snapshot(common)))
+
     def test_kill_switch_in_main_checkout_pauses_linked_worktrees(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith pause ") as temporary:
             repo = Path(temporary).resolve() / "main"
@@ -1058,6 +1080,52 @@ class AutonomousStateTests(unittest.TestCase):
                                      str(trusted/'forged')], workspace)
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse((trusted/'forged').exists())
+
+    def test_a_checker_may_read_the_git_folders_of_its_worktree(self) -> None:
+        # A linked worktree's .git is a pointer into the repository's Git folder. A Claude checker's
+        # sandbox reads only its worktree, so with the repository under HOME (denied) every git
+        # command failed and no real checker could name the candidate (calibration, 2026-11-24).
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            repo, workspace = root/'repo', root/'checker'
+            subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+            subprocess.run(['git', '-C', str(repo), '-c', 'user.name=F', '-c', 'user.email=f@example.com',
+                            'commit', '-q', '--allow-empty', '-m', 'base'], check=True)
+            subprocess.run(['git', '-C', str(repo), 'worktree', 'add', '-q', '--detach', str(workspace)], check=True)
+            state = {'repo': str(repo), 'worktree': str(workspace),
+                     'state_path': str(repo/'.git/agentsmith-runs/probe/state.json'),
+                     'manifest_path': str(repo/'manifest.json'), 'spec_path': 'spec.md',
+                     'attempt': 1, 'deadline_epoch': time.time()+30}
+            manifest = {'roles': {'checker': {'runtime': 'claude', 'model': 'fixture', 'effort': 'high'}},
+                        'limits': {'claude_max_usd': 1}}
+            class Observed(Exception):
+                pass
+            with mock.patch.object(CONTROLLER, 'build_native_command', side_effect=Observed) as launch:
+                with self.assertRaises(Observed):
+                    CONTROLLER.launch_role(state, manifest, 'checker', 'check')
+            self.assertTrue(launch.call_args.kwargs['read_only'])
+            dirs = [Path(item).resolve() for item in launch.call_args.kwargs['extra_write_dirs']]
+            self.assertIn((repo/'.git').resolve(), dirs)
+            self.assertIn((repo/'.git/worktrees/checker').resolve(), dirs)
+            settings = CONTROLLER.claude_sandbox_settings(workspace, dirs, read_only=True)
+            self.assertEqual(settings['sandbox']['filesystem']['allowWrite'], [], 'read, never write')
+
+    def test_the_clean_calibration_candidate_keeps_every_rule_the_checker_applies(self) -> None:
+        # claude-opus-5-5 rejected the old "clean" candidate on 2026-11-24, by the checker prompt's
+        # own rules: criterion 1's add(-1, 1) was untested, an import was unused, and the test could
+        # only fail on a stub that raised. A known-answer candidate must be clean by those rules.
+        with tempfile.TemporaryDirectory() as temporary:
+            repo, base, heads = CONTROLLER.calibration_fixture(Path(temporary))
+            show = lambda ref: subprocess.run(["git", "-C", str(repo), "show", ref], check=True,
+                                              capture_output=True, text=True).stdout
+            stub = show(f"{base}:src/calc.py")
+            self.assertNotIn("raise", stub, "a new test must be able to fail on the value, not on a stub")
+            clean = show(f"{heads['clean']}:tests/test_calc.py")
+            self.assertIn("add(2, 3), 5", clean)
+            self.assertIn("add(-1, 1), 0", clean)
+            self.assertNotIn("SimpleNamespace", clean)
+            defect = show(f"{heads['defect']}:tests/test_calc.py")
+            self.assertNotIn("add(-1, 1)", defect, "the defect stays invisible to its own test")
 
     def test_verifier_timeout_stops_descendants_and_preserves_output(self) -> None:
         if os.name == 'nt':
@@ -1460,6 +1528,19 @@ class AutonomousStateTests(unittest.TestCase):
                 prompt = CONTROLLER.role_prompt(state, manifest, role)
                 self.assertIn("git -c core.quotepath=off diff --name-only --no-renames 0123abc HEAD", prompt)
                 self.assertIn("old path and the new path", prompt)
+
+    def test_role_prompts_ask_for_the_full_commit_sha(self) -> None:
+        # Real checkers (haiku low on 2026-11-06, opus high on 2026-11-24) named a short or empty
+        # commit, so the controller, which compares the full SHA, threw out every verdict.
+        state = {"run_id": "fixture", "base_head": "0123abc"}
+        manifest = {"implementation_ticket": "IMP-1", "spec_path": "docs/specs/fixture.md",
+                    "scope": {"allowed_paths": ["src/**"], "denied_paths": []},
+                    "verify": {"command": "check"}, "limits": {},
+                    "roles": {"maker": {"runtime": "claude"}, "checker": {"runtime": "codex"}}}
+        for role in ("maker", "checker"):
+            with self.subTest(role=role):
+                prompt = CONTROLLER.role_prompt(state, manifest, role)
+                self.assertIn("full 40-character SHA that `git rev-parse HEAD` prints", prompt)
 
     def test_coordination_lock_acquire_retries_windows_sharing_denial(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith coordination acquire ") as temporary:
@@ -2292,14 +2373,21 @@ class AutonomousStateTests(unittest.TestCase):
                             calls: list[str] | None = None,
                             calibration: str = "passed",
                             calibration_at_gate: str | None = None,
-                            stop_after_final_proof: bool = False) -> tuple[int, dict[str, Any], list[str]]:
+                            stop_after_final_proof: bool = False,
+                            role_errors: dict[str, Exception] | None = None,
+                            manifest_extra: dict[str, Any] | None = None,
+                            overrides: dict[str, Any] | None = None,
+                            reports: dict[str, str] | None = None,
+                            maker_status: str = "completed") -> tuple[int, dict[str, Any], list[str]]:
         """Drive the real attempt loop with Git and the roles replaced by fakes, so a stop can be
         delivered at an exact point of it. `verify_results` are returned in order by the
         verifier, the first one for the base commit; `calls` records each verifier and role
         launch with the folder the verifier ran in; `calibration` is the checker calibration
         status the verification receipt records, and `calibration_at_gate` the status the
         calibration file holds when the acceptance is decided (by default the same).
-        `stop_after_final_proof` delivers a stop just after the receipt records `checker_advisory`."""
+        `stop_after_final_proof` delivers a stop just after the receipt records `checker_advisory`.
+        `role_errors` makes a role raise instead of returning a receipt; `manifest_extra` adds manifest
+        keys; `overrides` replaces a fake by name, and None leaves that controller function real."""
         directory = common / "controller"
         directory.mkdir()
         worktree = common / "worktree"
@@ -2312,13 +2400,16 @@ class AutonomousStateTests(unittest.TestCase):
         manifest = {"limits": {"max_attempts": max_attempts}, "verify": {"command": "true"},
                     "spec_path": "docs/specs/task.md", "implementation_ticket": "TASK-1",
                     "scope": {"allowed_paths": ["a.txt"], "denied_paths": []},
-                    "roles": {"maker": {"runtime": "claude"}, "checker": {"runtime": "claude"}}}
+                    "roles": {"maker": {"runtime": "claude"}, "checker": {"runtime": "claude"}},
+                    **(manifest_extra or {})}
 
         def fake_git(repo: Path, *args: str, check: bool = True) -> str:
             if args == ("rev-parse", "HEAD") or args[:2] == ("rev-parse", "--verify"):
                 # The disposable checker worktree stays at the candidate; the run's own worktree
                 # and branch follow `head`.
                 return head["value"] if Path(repo) == worktree else state["candidate_commit"]
+            if len(args) == 2 and args[0] == "rev-parse" and args[1].endswith("^{tree}"):
+                return "tree of " + args[1]  # each fake commit has its own tree: no maker turn is silent
             return ""
 
         def fake_verify(_command: str, cwd: Path, *_args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -2338,7 +2429,9 @@ class AutonomousStateTests(unittest.TestCase):
                       **_kwargs: Any) -> dict[str, Any]:
             if calls is not None:
                 calls.append(role)
-            status = "completed"
+            if role in (role_errors or {}):
+                raise role_errors[role]
+            status = maker_status
             if role == "maker":
                 head["value"] = str(state["attempt"]) * 40
             else:
@@ -2349,7 +2442,8 @@ class AutonomousStateTests(unittest.TestCase):
             evidence = ["fake evidence"] if role == "maker" else (
                 checker_evidence if checker_evidence is not None
                 else [f"verification passed :: attempt-{state['attempt']}-verify.txt:3 :: fixture verification passed"])
-            return {"status": status, "summary": role,
+            summary = (reports or {}).get(role, role_report(status, "- none" if role == "maker" else None))
+            return {"status": status, "summary": summary,
                     "commit": head["value"] if role == "maker" else state["candidate_commit"],
                     "changed_paths": ["a.txt"], "evidence": evidence, "unresolved": [],
                     "next_state": ""}
@@ -2386,7 +2480,10 @@ class AutonomousStateTests(unittest.TestCase):
                 "ignored_paths": lambda *_args: set(), "clean": lambda *_args: True,
                 "changed_paths": lambda *_args: ["a.txt"], "path_allowed": lambda *_args: True,
                 "sandboxed_verify": fake_verify,
+                **(overrides or {}),
             }.items():
+                if value is None:
+                    continue
                 fakes.enter_context(mock.patch.object(CONTROLLER, name, side_effect=value))
             outcome = CONTROLLER.run_controller(state, manifest)
         durable = json.loads((directory / "state.json").read_text())
@@ -2507,6 +2604,99 @@ class AutonomousStateTests(unittest.TestCase):
             self.assertEqual(calls.count("checker"), 1)
             [rejected] = self.run_events(common, "attempt_rejected")
             self.assertEqual((rejected["attempt"], rejected["verification"]), (1, "incomplete"))
+
+    def test_every_rejection_records_its_reason_code(self) -> None:
+        # SF-15: one fixture per reason code. A rejection the run retries and a rejection that stops
+        # the run both write `attempt_rejected` with `reason`; the stopping one says `escalated`.
+        green = subprocess.CompletedProcess([], 0, "Ran 3 tests in 0.1s\n\nOK\n", "")
+        red = subprocess.CompletedProcess([], 1, "[1/1] tests\n  make test\n\nverify.sh: phase 'tests' failed.\n", "")
+        empty = subprocess.CompletedProcess([], 0, "Ran 0 tests in 0.000s\n\nNO TESTS RAN\n", "")
+        hidden = {"repo": "/hidden", "commit": "b" * 40, "command": ["run", "{token}"], "tiers": ["A"]}
+
+        def protected_paths(_repo: Path, *args: str) -> list[str]:
+            return [".harness/verify.conf"] if args[0] in ("diff", "ls-tree") else []
+
+        cases = {
+            "verify": dict(checker_status="accepted", verify_results=[green, red]),
+            "checker": dict(checker_status="rejected"),
+            "incomplete": dict(checker_status="accepted", verify_results=[green, empty]),
+            "hidden-tests": dict(checker_status="accepted", manifest_extra={"hidden_tests": hidden},
+                                 overrides={"run_hidden_tests": lambda *_args: {"status": "fail"}}),
+            "hidden-test-probe": dict(checker_status="accepted", role_errors={
+                "checker": CONTROLLER.HiddenTestProbe("checker", ["output"], False)}),
+            "scope": dict(checker_status="accepted", overrides={"path_allowed": lambda *_args: False}),
+            # The real protected-input check runs, on fake Git reads that show a policy edit.
+            "protected": dict(checker_status="accepted", overrides={
+                "validate_verification_changes": None, "git_paths": protected_paths,
+                "history_commits": lambda *_args: [], "symbolic_links": lambda *_args: {},
+                "history_paths": lambda *_args: {}}),
+            "budget": dict(checker_status="accepted", role_errors={
+                "maker": CONTROLLER.BudgetExceeded("Claude run-wide USD budget exceeded", None)}),
+            "stale": dict(checker_status="accepted", move_branch_after_verify=True),
+            # A maker report without the verdict line and summary fails the attempt before verify.
+            "report-contract": dict(checker_status="accepted", reports={"maker": "done"}),
+        }
+        self.assertEqual(set(cases), set(CONTROLLER.REJECTION_REASONS))
+        stops = {"scope", "protected", "budget", "stale"}
+        for reason, options in cases.items():
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory(prefix=f"agentsmith {reason} ") as temporary:
+                common = Path(temporary)
+                outcome, durable, events = self.run_with_fake_roles(common, max_attempts=1, **options)
+                self.assertEqual((outcome, durable["status"]), (2, "escalated"))
+                [rejected] = self.run_events(common, "attempt_rejected")
+                self.assertEqual((rejected["reason"], rejected["attempt"]), (reason, 1))
+                self.assertIs(rejected.get("escalated", False), reason in stops)
+                if reason in stops:
+                    # The rejection is written before the escalation it causes.
+                    self.assertEqual(events[-2:], ["attempt_rejected", "run_escalated"])
+
+    def test_a_git_phase_wait_that_spends_the_wall_clock_is_a_budget_rejection(self) -> None:
+        # A live checker holds the Git phase; the maker waits until the run's wall-clock budget is
+        # gone. That stop is a budget stop like any other, so its rejection is recorded.
+        with tempfile.TemporaryDirectory(prefix="agentsmith phase budget ") as temporary:
+            common = Path(temporary)
+            root = common / "leases"
+            (root / "git-phases").mkdir(parents=True)
+            token = "b" * 32
+            (root / "git-phases" / f"{token}.json").write_text(json.dumps(
+                {"pid": os.getpid(), "token": token, "phase": "checker", "started_at": CONTROLLER.now()}))
+            # Time is left at the top of the attempt; the phase wait is given the last second of it.
+            left = [2, 1]
+
+            def near_expiry(_state: dict[str, Any], _manifest: dict[str, Any]) -> int:
+                return left.pop(0) if left else 0
+
+            outcome, durable, events = self.run_with_fake_roles(
+                common, max_attempts=1, checker_status="accepted",
+                overrides={"git_phase": None, "state_root": lambda _repo: root, "remaining_seconds": near_expiry})
+            self.assertEqual((outcome, durable["status"]), (2, "escalated"))
+            self.assertIn("still held by live checker", durable["reason"])
+            [rejected] = self.run_events(common, "attempt_rejected")
+            self.assertEqual((rejected["reason"], rejected["escalated"]), ("budget", True))
+            self.assertEqual(events[-2:], ["attempt_rejected", "run_escalated"])
+
+    def test_a_tripped_identical_rejection_guard_wins_over_an_expired_budget(self) -> None:
+        # The guard has already decided the run; an expired deadline must not add a budget rejection
+        # on top of it, or the numbers count a third rejection and a budget stop that never happened.
+        with tempfile.TemporaryDirectory(prefix="agentsmith guard before budget ") as temporary:
+            common = Path(temporary)
+            outcome, durable, _events = self.run_with_fake_roles(
+                common, max_attempts=3, checker_status="accepted",
+                overrides={"remaining_seconds": lambda _state, _manifest: 0,
+                           "identical_rejection_streak": lambda _state: (2, "verify :: test_a")})
+            self.assertEqual((outcome, durable["status"]), (2, "escalated"))
+            self.assertIn("2 identical rejections in a row", durable["reason"])
+            self.assertEqual(self.run_events(common, "attempt_rejected"), [])
+
+    def test_an_escalation_without_a_rejection_writes_no_reason(self) -> None:
+        # An attempt cap, or a fault that is not a rejection, adds no `attempt_rejected` record.
+        with tempfile.TemporaryDirectory(prefix="agentsmith plain escalation ") as temporary:
+            common = Path(temporary)
+            outcome, _durable, events = self.run_with_fake_roles(
+                common, max_attempts=1, checker_status="accepted",
+                role_errors={"maker": CONTROLLER.RunError("claude maker exited 1: boom")})
+            self.assertEqual(outcome, 2)
+            self.assertNotIn("attempt_rejected", events)
 
     def test_windows_verifier_timeout_is_marked_incomplete(self) -> None:
         # The AppContainer runner reports a timeout as exit 126 with this exact message.
@@ -2655,6 +2845,148 @@ class AutonomousStateTests(unittest.TestCase):
                                   "near the line :: attempt-1-verify.txt:5 :: fixture verification passed: a.txt"])
             self.assertEqual((outcome, durable["status"]), (0, "accepted"))
             self.assertNotIn("checker_defect", events)
+
+    def test_a_report_without_the_verdict_line_fails_the_report_lint(self) -> None:
+        # SF-16: a role report opens with one machine-read verdict line, then `## Summary` with 3 to
+        # 5 bullets. A maker report also lists its assumptions made without authority.
+        self.assertIsNone(CONTROLLER.report_problem(role_report("completed"), "completed", "maker"))
+        self.assertIsNone(CONTROLLER.report_problem(role_report("accepted", None), "accepted", "checker"))
+        self.assertEqual(CONTROLLER.report_verdict(role_report("rejected", None)), "REJECTED")
+        self.assertIsNone(CONTROLLER.report_verdict("done"))
+        four = "VERDICT: ACCEPTED\n## Summary\n- one\n- two\n  continued\n- three\n- four\n"
+        self.assertIsNone(CONTROLLER.report_problem(four, "accepted", "checker"))
+        broken = {
+            "no verdict line": ("done", "completed", "maker", "does not open with a verdict line"),
+            "the verdict line is not first": ("Report\n" + role_report("completed"), "completed", "maker",
+                                              "does not open with a verdict line"),
+            "a lowercase verdict": (role_report("completed").replace("COMPLETED", "completed"), "completed",
+                                    "maker", "does not open with a verdict line"),
+            "an unknown verdict": (role_report("completed").replace("COMPLETED", "PASS"), "completed", "maker",
+                                   "does not open with a verdict line"),
+            "a verdict that is not the status": (role_report("accepted", None), "rejected", "checker",
+                                                 "says ACCEPTED, but the receipt status is rejected"),
+            "no summary heading": ("VERDICT: ACCEPTED\n- one\n- two\n- three\n", "accepted", "checker",
+                                   "needs a `## Summary` section"),
+            "two bullets": ("VERDICT: ACCEPTED\n## Summary\n- one\n- two\n", "accepted", "checker",
+                            "3 to 5 bullets, not 2"),
+            "six bullets": ("VERDICT: ACCEPTED\n## Summary\n" + "".join(f"- {n}\n" for n in range(6)),
+                            "accepted", "checker", "3 to 5 bullets, not 6"),
+            "prose in the summary": ("VERDICT: ACCEPTED\n## Summary\nIt works.\n- a\n- b\n- c\n", "accepted",
+                                     "checker", "holds a line that is not a bullet"),
+            "a maker report without assumptions": (role_report("completed", None), "completed", "maker",
+                                                   "needs a `## Assumptions without authority` section"),
+            "an empty assumptions section": (role_report("completed", ""), "completed", "maker",
+                                             "`- none`"),
+        }
+        for label, (summary, status, role, expected) in broken.items():
+            with self.subTest(case=label):
+                self.assertIn(expected, CONTROLLER.report_problem(summary, status, role) or "")
+        self.assertEqual(CONTROLLER.report_assumptions(role_report("completed")), [])
+        self.assertEqual(CONTROLLER.report_assumptions(role_report("completed", "- None.")), [])
+        self.assertEqual(CONTROLLER.report_assumptions(role_report("completed", "- empty input is an error\n"
+                                                                                "  as the old parser did\n- utf-8 only")),
+                         ["empty input is an error as the old parser did", "utf-8 only"])
+        self.assertEqual(CONTROLLER.report_assumptions("no report at all"), [])
+
+    def test_a_report_holds_exactly_one_verdict_line_the_first(self) -> None:
+        # Found by an independent Codex test: a second, contradicting verdict later in the report passed.
+        later = {
+            "under another heading": role_report("accepted", None) + "## Other\nVERDICT: REJECTED\n",
+            "the same verdict again": role_report("accepted", None) + "VERDICT: ACCEPTED\n",
+            "inside a bullet's line": role_report("accepted", None).replace("- ran the verifier",
+                                                                           "VERDICT: REJECTED"),
+            "indented, in a code fence": role_report("accepted", None) + "```\n  VERDICT: REJECTED\n```\n",
+        }
+        for label, report in later.items():
+            with self.subTest(case=label):
+                self.assertIn("exactly one verdict line", CONTROLLER.report_problem(report, "accepted", "checker") or "")
+        with tempfile.TemporaryDirectory(prefix="agentsmith two verdicts ") as temporary:
+            outcome, durable, events = self.run_with_fake_roles(
+                Path(temporary), max_attempts=1, checker_status="accepted",
+                reports={"checker": later["under another heading"]})
+            self.assertEqual((outcome, durable["status"]), (2, "escalated"))
+            self.assertIn("checker_defect", events)
+
+    def test_a_report_is_read_outside_code_blocks_and_comments_with_one_summary(self) -> None:
+        # Found by an independent Codex test: a summary hidden in a code block or an HTML comment, which
+        # a rendered report does not show as a list, passed; repeated headings added up their bullets.
+        head = "VERDICT: ACCEPTED\n"
+        bullets = "## Summary\n- one\n- two\n- three\n"
+        hidden = {
+            "an HTML comment": head + "<!--\n" + bullets + "## Other\n-->\n",
+            "a backtick fence": head + "```\n" + bullets + "```\n## Other\n",
+            "a tilde fence": head + "~~~text\n" + bullets + "~~~\n",
+            "an unclosed fence": head + "```\n" + bullets,
+        }
+        for label, report in hidden.items():
+            with self.subTest(case=label):
+                self.assertIn("needs a `## Summary` section", CONTROLLER.report_problem(report, "accepted", "checker") or "")
+        repeated = head + "## Summary\n- one\n- two\n## Summary\n- three\n"
+        self.assertIn("exactly one `## Summary` section", CONTROLLER.report_problem(repeated, "accepted", "checker") or "")
+        twice = role_report("completed") + "## Assumptions without authority\n- more\n"
+        self.assertIn("exactly one `## Assumptions without authority` section",
+                      CONTROLLER.report_problem(twice, "completed", "maker") or "")
+        # A comment or a code block that hides no section does not change a report that keeps the contract.
+        shown = head + "## Summary\n- one <!-- aside -->\n- two\n- three\n\n## Notes\n```\n- not a bullet\n```\n"
+        self.assertIsNone(CONTROLLER.report_problem(shown, "accepted", "checker"))
+        fenced_assumption = role_report("completed", "- real\n```\n- hidden\n```")
+        self.assertEqual(CONTROLLER.report_assumptions(fenced_assumption), ["real"])
+        with tempfile.TemporaryDirectory(prefix="agentsmith hidden summary ") as temporary:
+            outcome, durable, events = self.run_with_fake_roles(
+                Path(temporary), max_attempts=1, checker_status="accepted",
+                reports={"checker": hidden["an HTML comment"]})
+            self.assertEqual((outcome, durable["status"]), (2, "escalated"))
+            self.assertIn("checker_defect", events)
+
+    def test_a_maker_report_that_breaks_the_contract_fails_its_attempt_before_verification(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agentsmith maker report ") as temporary:
+            common = Path(temporary)
+            calls: list[str] = []
+            outcome, durable, events = self.run_with_fake_roles(
+                common, max_attempts=1, checker_status="accepted", calls=calls, reports={"maker": "done"})
+            self.assertEqual((outcome, durable["status"]), (2, "escalated"))
+            self.assertEqual(calls, ["maker"], "no verifier and no checker is spent on it")
+            self.assertNotIn("run_accepted", events)
+            feedback = durable["last_checker_receipt"]
+            self.assertIn("the maker's report breaks the report contract", feedback["summary"])
+            self.assertIn("does not open with a verdict line", feedback["unresolved"][0])
+            [rejected] = self.run_events(common, "attempt_rejected")
+            self.assertEqual(rejected["reason"], "report-contract")
+            self.assertIn(rejected["reason"], CONTROLLER.REJECTION_REASONS,
+                          "factory numbers counts a code outside the fixed set as unrecorded")
+
+    def test_a_blocked_maker_escalates_with_one_bounded_line_of_its_report(self) -> None:
+        # The reason lands in the state, the inbox row and the terminal: one line, never the whole report.
+        long_bullet = "the spec names a file that does not exist " + "x" * 400
+        cases = {
+            "a contract report": (f"VERDICT: BLOCKED\n\n## Summary\n- {long_bullet}\n- second\n- third\n",
+                                  "maker blocked: the spec names a file that does not exist"),
+            "free text": ("\n\nNo spec to read.\nMore detail\nand more", "maker blocked: No spec to read."),
+            "nothing": ("", "maker blocked: no reason given"),
+        }
+        for label, (report, expected) in cases.items():
+            with self.subTest(case=label), tempfile.TemporaryDirectory(prefix="agentsmith blocked ") as temporary:
+                outcome, durable, _events = self.run_with_fake_roles(
+                    Path(temporary), max_attempts=1, checker_status="accepted", maker_status="blocked",
+                    reports={"maker": report})
+                self.assertEqual((outcome, durable["status"]), (2, "escalated"))
+                self.assertTrue(durable["reason"].startswith(expected), durable["reason"])
+                self.assertNotIn("\n", durable["reason"])
+                self.assertNotIn("VERDICT", durable["reason"])
+                self.assertLessEqual(len(durable["reason"]), len("maker blocked: ") + 200)
+
+    def test_a_checker_acceptance_whose_report_breaks_the_contract_is_a_checker_defect(self) -> None:
+        cases = {"no verdict line": "accepted, all good",
+                 "a verdict that is not the status": role_report("rejected", None)}
+        for label, report in cases.items():
+            with self.subTest(case=label), tempfile.TemporaryDirectory(prefix="agentsmith checker report ") as temporary:
+                outcome, durable, events = self.run_with_fake_roles(
+                    Path(temporary), max_attempts=1, checker_status="accepted", reports={"checker": report})
+                self.assertEqual((outcome, durable["status"]), (2, "escalated"), label)
+                self.assertNotIn("run_accepted", events)
+                self.assertIn("checker_defect", events)
+                proof = json.loads((Path(temporary) / "controller" / "attempt-1-verify.json").read_text())
+                self.assertIn("report contract", proof["checker_defect"])
 
     def test_citations_may_name_files_the_verifier_left_and_must_match_their_hash(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agentsmith citation files ") as temporary:

@@ -65,10 +65,14 @@ Keep `max_attempts` at 3. Every runtime a role uses needs its cap (`codex_goal_t
 choose `"unbounded"` instead, and only with `budget_rationale` saying who chose it and why.
 When the maker and the checker run the same runtime, `limits.checker_reserve` (default 0.25, from
 0.05 to 0.5) of that cap is held for checking; a maker with nothing above it does not start, and the
-run escalates with "budget reserved for checking".
+run escalates with "budget reserved for checking". A run also escalates early, with a reason
+starting `run-shape guard:`, after 2 identical rejections in a row or 1 maker turn that changed
+nothing (`limits.max_identical_rejections`, `limits.max_silent_turns`): read the last rejection
+before you prepare another run, because resuming repeats the stop.
 
 To rework a finished run, prepare a new run with `--rework-of <run-id> --note <file>`; the note is
-pinned by hash and goes to the maker. Never reopen an accepted run.
+pinned by hash and goes to the maker, the new run keeps it as `operator-feedback.md` in its own
+folder, and it starts with a fresh attempt budget. Never reopen an accepted run.
 
 ## Start and supervise
 
@@ -108,6 +112,10 @@ strict named filesystem profile, and Claude combines Bash denyWrite with file-to
 Native clients and the host remain trusted. Checkers inspect the controller verifier evidence,
 and an accepting checker cites it per criterion as `criterion :: file[:line] :: excerpt`; an
 acceptance whose citations do not check out is a checker defect and the attempt is reworked.
+Each role's receipt `summary` is its report: a first line `VERDICT: <STATUS>`, then `## Summary`
+with 3 to 5 bullets; a maker report adds `## Assumptions without authority` (or `- none`). A maker
+report without it fails the attempt before verification; a checker acceptance without it is a
+checker defect.
 At acceptance the run records the risk tier from the policy committed at the base (`status <id>`
 shows `risk_tier`); a declared `risk_tier` only raises it, and the tier decides nothing yet.
 Before relying on a checker client and model, run `calibrate <manifest>`: it judges a clean and a
@@ -141,7 +149,10 @@ in an attended session, with one yes from the operator:
 1. Run `python3 .agentsmith/autonomous-run.py deliver <run-id> --dry-run`. If it refuses, report
    the reasons and stop.
 2. Show the operator the push command, the pull-request title and body, the tier, the base
-   staleness and the `Auto-merge eligible` line.
+   staleness and the `Auto-merge eligible` line. When the body has a demo transcript the operator
+   has not opened, ask them to run `python3 .agentsmith/autonomous-run.py evidence <run-id>`
+   themselves and watch it, then run step 1 again. Do not run `evidence` for them: it records that
+   the operator opened the transcript.
 3. Ask once: "Push <accepted-sha> to agentsmith/<run-id> and open a pull request with this body?"
    Anything but a clear yes ends the step. The yes covers only this push and this pull request.
 4. Push the exact accepted commit, never a moving branch name:

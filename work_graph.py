@@ -317,6 +317,69 @@ def expected_sources(contract: dict[str, Any], run_id: str) -> list[dict[str, st
     return sources
 
 
+# A numbered file name: an optional letter (Flyway's `V`), up to six digits, then a separator.
+# Longer digit runs are timestamps (Rails), which do not collide by sequence, so none is reserved.
+NUMBERED_NAME = re.compile(r"\A[A-Za-z]?([0-9]{1,6})(?=[_.-])")
+
+
+MAX_SEQUENCE_NUMBER = 999_999  # NUMBERED_NAME reads up to six digits
+
+
+class SequenceExhausted(GraphError):
+    """A numbered folder has no free number left that NUMBERED_NAME can read."""
+
+    def __init__(self, folder: str, highest: int) -> None:
+        self.folder, self.highest = folder, highest
+        super().__init__(f"numbered folder {folder} has no free number of up to six digits after "
+                         f"{highest}; renumber or archive its files before a graph run adds one")
+
+
+def next_sequence_number(names: list[str], *, folder: str = "the folder") -> str | None:
+    """The next free number among numbered file names, padded like the widest one, or None.
+    Refused past six digits: a seven-digit name does not read as numbered, so a later run would
+    not see it and would reserve the same number again."""
+    found = [match.group(1) for match in map(NUMBERED_NAME.match, names) if match]
+    if not found:
+        return None
+    width = max(len(item) for item in found)
+    highest = max(int(item) for item in found)
+    if highest >= MAX_SEQUENCE_NUMBER:
+        raise SequenceExhausted(folder, highest)
+    return str(highest + 1).zfill(width)
+
+
+def sequence_directory(pattern: str, controller: Any) -> str | None:
+    """The folder a numbered-class pattern adds files to: its literal prefix, or a file's parent."""
+    prefix = controller.fixed_prefix(pattern)
+    if prefix == pattern.rstrip("/"):
+        prefix = prefix.rpartition("/")[0]
+    return prefix if prefix and prefix != "." else None
+
+
+def sequence_numbers(contract: dict[str, Any], run_id: str, base: str) -> list[dict[str, str]]:
+    """For each folder of this run's coordination classes that holds numbered files, the next free
+    number after the run's base and every accepted sibling. Runs on one class never overlap
+    (`status` serialises them), so a later run sees what an earlier one added."""
+    controller = contract["controller"]
+    folders = sorted({folder for patterns in controller.sequenced_classes(contract["scopes"][run_id]).values()
+                      for folder in (sequence_directory(pattern, controller) for pattern in patterns) if folder})
+    if not folders:
+        return []
+    commits = [base]
+    for other in contract["order"]:
+        state = _child_state(contract, other) if other != run_id else None
+        if state is not None and state.get("status") == "accepted":
+            commits.append(_accepted_commit(contract, other, state))
+    reserved = []
+    for folder in folders:
+        names = {line.rpartition("/")[2] for commit in commits
+                 for line in git(contract["repo"], "ls-tree", "--name-only", commit, "--", f"{folder}/").splitlines()}
+        number = next_sequence_number(sorted(names), folder=folder)
+        if number is not None:
+            reserved.append({"directory": folder, "number": number})
+    return reserved
+
+
 def _checkpoint_commit(contract: dict[str, Any], run_id: str) -> str | None:
     path = common_directory(contract["repo"]) / "agentsmith-graphs" / contract["graph_id"] / "state.json"
     if not path.exists():
@@ -732,6 +795,7 @@ CHILD_REFUSALS = tuple((code, re.compile(pattern)) for code, pattern in (
     ("no-candidate", r"checking stage has no candidate checkpoint"),
     ("scope-conflict", r"run [A-Za-z0-9_-]{1,64} conflicts with live run "),
     ("scope-unverified", r"cannot verify scope for live run "),
+    ("sequence-exhausted", r"numbered folder .{1,300} has no free number of up to six digits"),
     ("git-phase-held", r"git phase [a-z]+ is still held by live "),
     ("checker-recovery", r"(unrecognized checker recovery path|checker recovery |"
                          r"cannot clean up interrupted checker worktree)"),

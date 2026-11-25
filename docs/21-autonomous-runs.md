@@ -32,7 +32,10 @@ out-of-scope item (`## Acceptance and evidence`, `## Edge cases`, `## Non-goals`
 A missing section or a stale assumption is refused by name, so no role starts on a spec it cannot
 test. The format is in [`docs/specs/README.md`](specs/README.md). `scope.resources` optionally names local coordination keys such as
 `port:3000`, `db:local/test`, or `service:redis`; omit it in an older manifest or use an empty list
-when the run reserves none.
+when the run reserves none. Two live runs that both reach a coordination class (spec, migration,
+schema or contract files, plus any class in the optional `scope.sequenced`) also conflict, even in
+different folders; the classes and numbered-file reservations are in
+[parallel work graphs](24-parallel-work-graphs.md#run-and-recover).
 
 **Rework.** When a finished run needs another pass, prepare a new run with the operator's note:
 
@@ -45,7 +48,13 @@ The run it reworks must be finished (`accepted`, `awaiting-human`, `escalated` o
 reopened: a rework is always a new run with a new ID. The manifest pins the note by path and
 SHA-256 in `rework`, and `start` and `resume` refuse when the note changed after `prepare`.
 The maker receives the note through its prompt, marked as a rework of the earlier run. A note
-may be at most 16 KB.
+may be at most 16 KB. When the rework starts, the controller keeps the note as its own file,
+`operator-feedback.md`, in the new run's folder under `agentsmith-runs/`, where no role may write.
+The run state records it as `operator_feedback` (the run it reworks, the file, the note's path in
+the repository and its SHA-256), and the `operator_feedback_kept` event names the same hash. So the
+feedback that drove a run stays with that run, even when the note in the repository changes later.
+Feedback on a held or escalated run starts a fresh attempt budget: the rework is a new run, so its
+attempts and its spend start from zero, and the earlier run's state is never changed.
 
 **Attention budget.** `prepare` refuses a new run while as many runs wait on you as the risk policy
 allows, and `start` checks the same limit again before it launches anything, so runs prepared while
@@ -159,6 +168,41 @@ verification receipt, and the next maker is told that the acceptance was not tru
 needs no citations. The receipt shape does not change, so a stored receipt stays valid, and a
 checker whose evidence already uses this form passes as it is.
 
+**Every role report keeps one contract.** A receipt's `summary` is the role's report. Its first
+line is the one line the controller reads: `VERDICT: <STATUS>`, the receipt's status in capitals
+(`COMPLETED`, `ACCEPTED`, `REJECTED` or `BLOCKED`). Then comes a `## Summary` section of 3 to 5
+bullets (`- `) for a person. A maker report also has an `## Assumptions without authority`
+section: one bullet for each choice the maker made that the spec and ticket did not settle, or
+the single bullet `- none`. Both prompts state the contract, and the controller checks every
+report against it without a model:
+
+```text
+VERDICT: COMPLETED
+
+## Summary
+- Parse an empty input as an error instead of an empty list.
+- Add a red test for the empty case; it failed on the old parser's IndexError.
+- Run the verify command; every phase passed.
+
+## Assumptions without authority
+- An input of only whitespace counts as empty.
+```
+
+The verdict line is the only one: a report with another line that starts with `VERDICT:`,
+anywhere after the first (under another heading, in a code block, indented), breaks the contract.
+The sections are read as a rendered report shows them: text inside a code block (` ``` ` or
+`~~~`) or an HTML comment (`<!-- -->`) does not count, and an unclosed one hides the rest of the
+report. A report has exactly one `## Summary` section, and a maker report exactly one assumptions
+section; a repeated heading breaks the contract instead of adding up its bullets.
+A maker report that breaks the contract (no verdict line, a second verdict line, a verdict that is
+not its status, no summary, fewer than 3 or more than 5 bullets, or no assumptions section) fails its attempt
+before a verifier or a checker is spent on it. The event is `attempt_rejected` with
+`reason: report-contract`, and the next maker is told what was wrong. A checker acceptance whose
+report breaks the contract is a checker defect, handled like one whose citations do not hold,
+and calibration counts it as a wrong verdict. A rejection stays a rejection. The receipt schema
+does not change. The checker prompt does, so a calibration recorded before this contract is
+stale and the checker must be calibrated again.
+
 Before the first attempt is judged, the controller runs the verify command once on the base
 commit, in a disposable worktree, and stores the result with the run as `verification_baseline`
 in the run state (`baseline-verify.txt` keeps the raw output, and the events file has one
@@ -206,6 +250,28 @@ check, because a commit can land while the check runs. A commit that lands after
 example from a process a role left running, refuses acceptance: the run escalates and names the
 checked commit and where the branch is now. `accepted_commit` in the run state, the
 `run_accepted` event and `candidate_commit` in the verification receipt all name that one commit.
+
+**Rejection reasons.** Every `attempt_rejected` event in `events.jsonl` carries a `reason` from
+this fixed set, and [`factory numbers`](31-factory-readiness.md) counts rework by it:
+
+| `reason` | The attempt was rejected because |
+|---|---|
+| `verify` | its verification `failed`, or it has a regression against the baseline. This outranks the checker's verdict. |
+| `checker` | the verification passed and the checker rejected it, or the checker's acceptance was a checker defect. |
+| `hidden-tests` | the opt-in hidden acceptance tests failed. No checker ran. |
+| `incomplete` | its verification was `incomplete`. No checker ran. |
+| `hidden-test-probe` | a role tried to read the held-out tests (see [hidden acceptance tests](#hidden-acceptance-tests-opt-in)). |
+| `scope` | the maker changed, committed or created ignored paths outside the allowed scope. |
+| `protected` | the maker changed a protected verification input or an agent-instruction file. |
+| `budget` | a role crossed or would cross a run-wide cap: USD, Codex tokens, the checker's reserve, or the wall clock, including a wait for another run's Git phase that used up the wall clock. |
+| `stale` | the commit the checks passed is no longer the run's candidate: it moved after its checks, or changed since its checkpoint. |
+| `report-contract` | the maker's report breaks the role report contract described above: no verdict line, no summary, or no assumptions section. No verifier or checker ran. |
+
+The first five are rejected and retried while attempts remain. `scope`, `protected`, `budget` and
+`stale` stop the run: their `attempt_rejected` event says `"escalated": true` and comes just before
+`run_escalated`. A probe that saw held-out content stops the run the same way. A budget stop
+between two attempts names the attempt before it. A stop that rejects nothing, such as the attempt
+cap, a role that exits with an error, or an operator stop, writes no `attempt_rejected` event.
 
 **Checker calibration.** `python3 .agentsmith/autonomous-run.py calibrate <manifest>` tests the
 checker that the manifest names (`roles.checker`: client, model and effort) on two built-in
@@ -351,7 +417,9 @@ folder that holds files but no state (for example a lock left by a start that cr
 undetermined: inspect it and remove it by hand before the guard can answer 0.
 
 Every budget is explicit. `limits.wall_minutes` must be a positive whole number of minutes, and
-`limits.max_attempts` a whole number from 1 to 3. Each runtime that a role uses needs its own
+`limits.max_attempts` a whole number from 1 to 3. The optional run-shape limits
+`limits.max_identical_rejections` (2 to 3, default 2) and `limits.max_silent_turns` (1 to 3,
+default 1) end the attempts early (see [run-shape guards](#run-shape-guards-identical-rejections-and-silent-turns)). Each runtime that a role uses needs its own
 cap: `limits.codex_goal_tokens` (a positive whole number of tokens) when a role runs Codex, and
 `limits.claude_max_usd` (a positive number of US dollars) when a role runs Claude. A zero, a
 negative number, text, or a missing cap refuses at `prepare`, `start` and `resume`; in v0.5.0 and
@@ -485,8 +553,10 @@ three infrastructure failures in a row. The message names the failure and says t
 was spent; the state records it as `infrastructure_stop`, and the events file has one
 `infrastructure_failure` event per failure. A maker is relaunched only from the same clean start:
 if the failed maker moved `HEAD` or left changes, the run escalates for review instead. Fix the
-cause, then `resume`; resuming starts the count again and reruns the same attempt, so the
-failure still costs no attempt. In a work graph, a child stopped this way
+cause (and, after a partial write, restore the clean start), then `resume`; resuming starts the
+count again and reruns the same attempt. Either way an infrastructure fault is never counted as
+an attempt: a run with `max_attempts: 1` still has its one attempt after the fault. In a work graph, a
+child stopped this way
 halts new child launches (see [parallel work graphs](24-parallel-work-graphs.md)).
 
 Permission denials are counted when a Claude role ends: Claude Code lists the tool calls it
@@ -500,6 +570,34 @@ verifier and the checker still judge its candidate. The verifier is a plain shel
 tool permissions, so it has no denials to report. Two gaps remain. Nothing stops a role while it
 runs, because Claude reports single denials only in streamed output (`stream-json`), which these
 roles do not use. And Codex documents no denial event, so Codex roles are not covered.
+
+### Run-shape guards: identical rejections and silent turns
+
+Two loops end before the attempt cap, because another attempt would only repeat them. Each stops
+the run as `escalated` with a reason that starts `run-shape guard:`, and a person decides what
+happens next.
+
+- **Identical rejections.** Before a new attempt, the controller reads this run's
+  `attempt_rejected` events in `events.jsonl`. When the last `limits.max_identical_rejections`
+  attempts (default 2, allowed 2 to 3) were rejected the same way, the run stops. Two rejections
+  are the same when both their `reason` field and their failing-test signature match. An event
+  without a `reason` counts as its own value, "(no reason)", which never matches a reason code. The
+  failing-test signature comes from that attempt's verify output: the failing checks it names
+  (verify.sh phases, unittest and pytest test names, as for regressions), or, when it names none,
+  a hash of its last 20 lines with what changes from run to run removed: clock times, durations,
+  hashes (hex with a letter and a digit; plain numbers are kept), attempt numbers, the per-run
+  folder inside a temporary folder (`/tmp`, macOS `/var/folders`, Windows `AppData\Local\Temp`),
+  process IDs and ports. An
+  attempt with no verify output (a maker that tripped the hidden-test wire) has the signature "no
+  verify output".
+- **Silent maker turns.** A maker turn is silent when its candidate has the same Git tree as the
+  candidate the controller last judged, or as the base on the first attempt: for example an empty
+  commit. Nothing new can pass or fail, so after `limits.max_silent_turns` silent turns in a row
+  (default 1, allowed 1 to 3) the run stops before the verifier and the checker spend anything.
+  Below the limit, a silent turn is verified and checked as usual.
+
+An infrastructure fault is never counted by either guard: it is not an attempt and not a rejection
+(see above). Both counts are rebuilt from durable state, so a resumed run stops at the same point.
 
 ## Operations and recovery
 
@@ -725,20 +823,91 @@ implementation ticket and the run branch. The body holds:
 
 - the paths that Git reports as changed;
 - the tier and its lenses;
+- the reviewer focus: every path above tier A, highest tier first, with the policy rules, floor
+  reasons and lenses that raised it, or a line saying that every path is tier A;
 - the verifier and checker evidence;
+- the assumptions made without authority: the bullets under `## Assumptions without authority` in
+  the accepted attempt's maker report, or "The maker's report lists none.". At most 20 are shown,
+  each cut at 500 characters with the cut marked, and a last line counts the rest; the maker's
+  receipt in the run folder keeps them all;
 - the checker calibration status. When it is not `passed` (for example, the record went stale
   after the acceptance), the body says the checker is advisory ("checker advisory");
+- the models used: each role's client, model and effort as its launches recorded them in
+  `attempt-N-<role>-exit.json`, with the attempts that used them;
 - the budgets used;
 - the new packages and their registry lookup, when a manifest gained any;
 - the base staleness, and the merge verification when the accepted commit is behind the base;
+- the demo: the controller's transcript, its hash, and whether you opened it before this check,
+  or a line that says the landing carries no demo (see below);
 - the eligibility line.
 
-The maker's free-text summary is left out. The only text that a model wrote is the checker
-evidence, and it sits in a code block with the changed paths, so no link, Markdown or `@`-mention
-in it takes effect. Paths inside the repository become repo-relative, and home and temporary
+The rest of the maker's report is left out. The only text that a model wrote is the checker
+evidence and the maker's assumptions, and each sits in a code block, as do the changed paths, the
+reviewer-focus paths and the model names, so no link, Markdown or `@`-mention in them takes
+effect. Paths inside the repository become repo-relative, and home and temporary
 folders become `~` and `$TMPDIR`, so neither the text nor the `--json` report names a local path.
 The secret scanner's patterns then run over the final title and body (honouring
-`.harness/secret-scan.allow`), and a likely secret refuses delivery and names the field.
+`.harness/secret-scan.allow`), and a likely secret refuses delivery and names the field. A body
+over 65,536 characters, which GitHub does not accept, refuses delivery and names its length.
+
+### Replayable demo evidence
+
+Green checks say that the tests passed. They do not show you the changed behaviour. So a spec can
+declare one demo command, and each landing then carries a transcript of it that the controller
+made, not a role. Put the command in the first fenced code block under a `## Demo` heading of the
+accepted spec:
+
+````markdown
+## Demo
+
+```sh
+mytool convert sample.csv --format json
+```
+````
+
+Several lines run as one script. A `## Demo` heading with no fenced command refuses at `prepare`
+and `start`. `start` reads the command from the spec at `base_ref`, so a maker cannot change it.
+
+**When it runs.** Once an attempt passes verification with no regression and a checker acceptance
+whose citations hold, the controller runs the demo on that commit, in the same disposable worktree
+and verifier sandbox as the verify command: no network, and no writes outside the worktree and a
+private home and temporary folder. It runs for both an `accepted` and an `awaiting-human` run, for
+at most 120 seconds or the remaining wall-clock budget. Its exit status is shown, not judged: the
+verifier and the checker already decided.
+
+**The transcript** is `attempt-<n>-demo.txt` in the run folder: the command, stdout, stderr and the
+exit status. The output is treated as untrusted. At most 80,000 bytes of each stream are read
+back, and each keeps its first 20,000 characters, with the cut marked. Text that the secret scanner's patterns match becomes `[redacted: <pattern>]`. Those patterns
+have the scanner's known limit: an assigned value needs at least 8 characters, so a short one
+such as `password="a b"` stays in the transcript (see `KNOWN-ISSUES.md`, 2026-11-22).
+Repository paths become repo-relative, and home and temporary folders become `~` and `$TMPDIR`.
+Control characters become `\xNN`, so the transcript cannot move the cursor. The unredacted output is
+deleted, also when the demo is stopped or fails. The state and the verification receipt record the transcript under `demo`: the command,
+exit status, file, SHA-256, commit, whether a stream was cut, and the number of redactions.
+
+**Watch it yourself** before you land the run:
+
+```text
+python3 .agentsmith/autonomous-run.py evidence <run-id>
+```
+
+It prints the transcript and appends `evidence_opened` with its SHA-256 to the run's
+`events.jsonl`. Run it yourself: if an agent runs it for you, the record says that you opened a
+transcript you did not read. A transcript that no longer matches its recorded hash is refused,
+and so is a run without a demo.
+
+**Deliver links it and records the consent step.** `deliver` refuses a transcript that no longer
+matches its hash. The body's Demo section names the transcript, its hash and the `evidence`
+command, quotes its first 3,000 characters in a code block, and says whether you opened it before
+this check. The `--json` report holds the same record under `demo` (`null` without a demo), with
+`opened_before_delivery`. Each `deliver` that passes its checks appends one record to the run's
+`events.jsonl`: `delivery_checked`, with the mode (`dry-run` or `eligibility`), the head commit,
+`evidence_opened` (true only when you opened this exact transcript before) and
+`evidence_sha256`. That is the only thing `deliver` writes, and it writes it only in the run
+folder. The [inbox](31-inbox.md) row of an accepted or held run links the transcript too.
+
+Not yet supported: screenshots and video for UI work. A UI change can still declare a CLI demo,
+for example a headless render that prints its result.
 
 ### Auto-merge eligibility
 
