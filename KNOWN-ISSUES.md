@@ -3,6 +3,11 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [ ] 2026-11-25 — `scripts/test-work-graph-dispatch.py` is load-sensitive: its fixture runs have
+  `wall_minutes=2`. In a full verify on `da35179`, run while a Codex calibration ran on the same
+  host, three integration tests failed with "wall-clock budget exhausted". Re-run alone on a quiet
+  host, the 19 tests passed in 150 seconds. Fix direction: give the fixture a budget with headroom,
+  or measure its time from the child's start, not the graph's.
 - [x] 2026-11-25 — Found by demo lap 4's second rework: the checker's red-test rule could not be
   met for a name the spec adds. At the base, a test of the new `from_env` can only fail because the
   name is missing, which the checker rejected as an earlier gate, and a stub was ruled out too. The
