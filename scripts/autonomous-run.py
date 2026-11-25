@@ -2412,8 +2412,9 @@ def git_metadata(repo: Path, *, known_peers: dict[str, Any] | None = None) -> di
         time.sleep(0.02)
 
 
-# The only entries the factory records folder may hold: operator logs that only grow.
-FACTORY_LOGS = frozenset({"events.jsonl", "defects.jsonl", "minutes.jsonl"})
+# The only entries the factory records folder may hold: operator logs that only grow. Equal to
+# factory.LOG_NAMES (a test holds them so): `factory intake` writes intake.jsonl.
+FACTORY_LOGS = frozenset({"events.jsonl", "defects.jsonl", "minutes.jsonl", "intake.jsonl"})
 
 
 def factory_snapshot(common: Path) -> dict[str, Any]:
