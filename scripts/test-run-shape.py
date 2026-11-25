@@ -70,6 +70,11 @@ FAKE_CLIENT = textwrap.dedent('''\
     verdict = plan.get("checker", "accepted") if checker else "completed"
     evidence = (["fixture verification passed :: " + log.group(0) + " :: fixture verification passed"]
                 if checker and verdict == "accepted" else ["fixture evidence"])
+    if checker and verdict == "accepted" and plan.get("cite") == "shown":
+        # What a careful checker does: quote every line the prompt shows as that file's text.
+        shown = prompt.split("(the file " + log.group(0) + "):\\n", 1)[1].split("\\nTo accept", 1)[0]
+        evidence = ["shown line :: " + log.group(0) + " :: " + line.strip() for line in shown.splitlines()
+                    if len(re.sub(r"exit=-?[0-9]+|STDOUT:|STDERR:|\\s", "", line)) >= 12]
     receipt = {"status": verdict, "summary": ("VERDICT: " + verdict.upper() + "\\n## Summary\\n- fixture change\\n"
                           "- ran the verifier\\n- nothing else"
                           + ("" if checker else "\\n## Assumptions without authority\\n- none")), "commit": commit, "changed_paths": changed,
@@ -126,8 +131,9 @@ class RunFixture(unittest.TestCase):
         return subprocess.run(["git", *args], cwd=repo, env=self.env, text=True, capture_output=True,
                               check=True).stdout.strip()
 
-    def plan(self, maker: list[str], checker: str = "accepted") -> None:
-        (self.fake / "plan.json").write_text(json.dumps({"maker": maker, "checker": checker}), encoding="utf-8")
+    def plan(self, maker: list[str], checker: str = "accepted", **extra: str) -> None:
+        (self.fake / "plan.json").write_text(json.dumps({"maker": maker, "checker": checker, **extra}),
+                                             encoding="utf-8")
 
     def commit_manifest(self, run_id: str, verify: str = 'echo "fixture verification passed"',
                         **limits: object) -> None:
@@ -209,6 +215,20 @@ class InfrastructureFaultRunTests(RunFixture):
         state = self.state("infra")
         self.assertEqual((state["status"], state["attempt"]), ("accepted", 1))
         self.assertEqual(self.launches(), ["maker", "maker", "checker"])
+
+
+@unittest.skipUnless(sandbox_available(), "a real run needs the macOS or Linux role sandbox")
+class CheckerPromptCitationRunTests(RunFixture):
+    def test_every_line_the_prompt_shows_as_the_verify_log_can_be_cited_from_it(self) -> None:
+        # Demo lap-01-r3 (2026-11-24): the checker accepted, quoting the controller's
+        # "regressions against the baseline" line, which the prompt showed under the verify log's
+        # name but which is not in that file. The citation check then threw the acceptance away.
+        self.plan(["change"], cite="shown")
+        self.commit_manifest("cite", max_attempts=1)
+        result = self.controller("start", ".harness/runs/cite.json")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.state("cite")["status"], "accepted")
+        self.assertEqual([item for item in self.events("cite") if item["event"] == "checker_defect"], [])
 
 
 class RejectionSignatureTests(unittest.TestCase):

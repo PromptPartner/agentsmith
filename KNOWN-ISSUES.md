@@ -3,6 +3,13 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [x] 2026-11-25 — Found by demo lap 1's third rework: the checker prompt showed the controller's
+  verdict lines (`verification=`, the baseline and `regressions against the baseline`) under the
+  heading of the verify log, but those lines are not in that file. A checker that accepted correctly
+  and quoted one of them failed the citation check, so the run threw the acceptance away and spent
+  its next attempt (lap-01-r3 then stopped on the Codex budget). Fixed: the prompt shows the verdict
+  in its own block, marked as not citable, and the verify-log block holds only the file's text.
+  `scripts/test-run-shape.py` cites every line the prompt shows as the log.
 - [ ] 2026-11-24 — P1, found by demo lap 1: the run template's default verify command,
   `./.agentsmith/agentsmith verify`, cannot run in a run's worktree. The installer git-ignores
   `.agentsmith/`, so a fresh worktree has no runtime, and the baseline and every attempt exit 127

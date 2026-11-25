@@ -3436,7 +3436,7 @@ def citation_problem(checker: dict[str, Any], index: dict[str, str], verify_log:
 
 def role_prompt(state: dict[str, Any], manifest: dict[str, Any], role: str,
                 prior: dict[str, Any] | None = None, verify_output: str = "",
-                evidence_files: list[str] | None = None) -> str:
+                evidence_files: list[str] | None = None, controller_verdict: str = "") -> str:
     spec = manifest["spec_path"]
     scope = manifest["scope"]
     base = state["base_head"]
@@ -3473,13 +3473,17 @@ Use status completed or blocked; do not mark your own work accepted.
 After the summary bullets, add a line `{ASSUMPTIONS_HEADING}` with one bullet for each choice you made
 that the spec and ticket did not settle, or the single bullet `- none`.{feedback}"""
     verify_log = f"attempt-{state.get('attempt')}-verify.txt"
+    # The controller's verdict is not in any verifier output, so it is shown apart from the log
+    # and marked as not citable: a checker that quoted it lost a correct acceptance (lap-01-r3).
+    verdict = (f"Controller verdict (written by the controller, in no verifier output; do not cite it):\n"
+               f"{controller_verdict}\n") if controller_verdict else ""
     return common + f"""You are the independent checker and default to REJECT. Do not edit files or commit.
 Inspect the committed diff from {base} to HEAD and the controller verification evidence.
 Try to falsify the acceptance criteria using read-only commands. Also reject when either answer is no:
 - Is this the smallest change that solves the stated problem? Name any part the spec does not need.
 - Did each new red test fail for the intended reason? Check that it asserts on the failure message
   or value the bug produces, not on a stub, an import error or an earlier gate.
-Controller verification output (the file {verify_log}):
+{verdict}Controller verification output (the file {verify_log}):
 {verify_output[-6000:]}
 To accept, cite evidence for every criterion that passed. Write each evidence item exactly as
 `{CITATION_FORM}`, where file is one of this attempt's verifier outputs:
@@ -3744,11 +3748,11 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
             if checker_status:
                 raise RunError("verifier modified tracked state")
             # The checker reads the controller's verdict first; the raw output follows it.
-            verify_output = (f"verification={outcome['verification']}"
-                             + (f" ({outcome['reason']})" if outcome["reason"] else "")
-                             + f"\nbaseline on {baseline.get('commit')}: {baseline.get('verification')}"
-                             + f"\nregressions against the baseline (passed there, fail now): {json.dumps(regressed)}"
-                             + f"\n{verify_output}")
+            controller_verdict = (f"verification={outcome['verification']}"
+                                  + (f" ({outcome['reason']})" if outcome["reason"] else "")
+                                  + f"\nbaseline on {baseline.get('commit')}: {baseline.get('verification')}"
+                                  + f"\nregressions against the baseline (passed there, fail now): "
+                                  + json.dumps(regressed))
             if outcome["verification"] == "incomplete":
                 # Nothing was observed, so no checker can accept it: reject without spending one.
                 # Leaving the block removes the disposable worktree as usual.
@@ -3780,7 +3784,7 @@ def execute(state: dict[str, Any], manifest: dict[str, Any]) -> int:
                 checker = launch_role_with_breaker(
                     state, manifest, "checker",
                     role_prompt(state, manifest, "checker", verify_output=verify_output,
-                                evidence_files=sorted(evidence)),
+                                evidence_files=sorted(evidence), controller_verdict=controller_verdict),
                     role_worktree=checker_worktree)
             except HiddenTestsRejected:
                 checker = {"status": "rejected", "summary": "hidden acceptance tests failed", "commit": checker_head,
