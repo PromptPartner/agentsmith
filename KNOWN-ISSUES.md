@@ -3,6 +3,77 @@
 This file records open defects and fixes found during verification. No external tracker write has
 been authorized, so the entries are kept here.
 
+- [ ] 2026-11-25 — `scripts/test-work-graph-dispatch.py` is load-sensitive: its fixture runs have
+  `wall_minutes=2`. In a full verify on `da35179`, run while a Codex calibration ran on the same
+  host, three integration tests failed with "wall-clock budget exhausted". Re-run alone on a quiet
+  host, the 19 tests passed in 150 seconds. Fix direction: give the fixture a budget with headroom,
+  or measure its time from the child's start, not the graph's.
+- [x] 2026-11-25 — Found by demo lap 4's second rework: the checker's red-test rule could not be
+  met for a name the spec adds. At the base, a test of the new `from_env` can only fail because the
+  name is missing, which the checker rejected as an earlier gate, and a stub was ruled out too. The
+  maker blocked on attempt 3. Fixed: the checker prompt says that a missing new name is the
+  intended red reason and not to ask for a stub. This changes the checker prompt, so every
+  calibration made before it is stale.
+- [x] 2026-11-25 — Found by demo lap 4's rework: the identical-rejection guard treated every checker
+  rejection of a green candidate as the same, because its signature was the reason (`checker`) and
+  a hash of the passing test output. Lap-04-r1's checker named a stub-based red test, then a token
+  leak through Python's implicit exception context, and the run stopped at attempt 2 of 3 as if the
+  maker were stuck. Fixed: a checker rejection's signature also carries a hash of its `unresolved`
+  items. `scripts/test-run-shape.py` covers both a moving and a repeating checker.
+- [ ] 2026-11-25 — Gap seen while fixing the verdict-block defect: `calibrate` renders the checker
+  prompt without the controller-verdict block (verdict, baseline, regressions) that every real run
+  shows, so calibration never exercises that block, and `checker_prompt_sha256` cannot see a change
+  to it. A checker can pass calibration and still mishandle the block, which is how lap-01-r3 lost
+  an acceptance. Fix direction: give calibration cases the same verdict block a run shows, and hash
+  the prompt with a fixed non-empty verdict.
+- [x] 2026-11-25 — Found by demo lap 2: the controller protects test files that exist at the base
+  (and `verify.protected_paths`), but the maker's prompt never said so. The lap-02 maker edited
+  `tests/test_cli.py`, and the run escalated after one attempt for operator review. Fixed: the
+  maker prompt states that existing tests are read-only, that new tests go in new files, and which
+  extra protected paths apply.
+- [x] 2026-11-25 — Found by demo lap 1's third rework: the checker prompt showed the controller's
+  verdict lines (`verification=`, the baseline and `regressions against the baseline`) under the
+  heading of the verify log, but those lines are not in that file. A checker that accepted correctly
+  and quoted one of them failed the citation check, so the run threw the acceptance away and spent
+  its next attempt (lap-01-r3 then stopped on the Codex budget). Fixed: the prompt shows the verdict
+  in its own block, marked as not citable, and the verify-log block holds only the file's text.
+  `scripts/test-run-shape.py` cites every line the prompt shows as the log.
+- [ ] 2026-11-24 — P1, found by demo lap 1: the run template's default verify command,
+  `./.agentsmith/agentsmith verify`, cannot run in a run's worktree. The installer git-ignores
+  `.agentsmith/`, so a fresh worktree has no runtime, and the baseline and every attempt exit 127
+  ("No such file or directory"). Every first run of a normally installed project fails this way.
+  Workaround: a tracked verify command (the laps used `python -m pytest -q`). Fix to design: let the
+  controller run the trusted runtime from the main checkout, or default the template to a tracked
+  command.
+- [ ] 2026-11-24 — Found with the entry above: a baseline whose verify command cannot start (exit 127)
+  does not stop the run, so the maker spends its attempts on a verifier that can never pass. A
+  baseline that cannot launch its command should refuse the run before any role starts.
+- [ ] 2026-11-24 — Found by demo lap 1's first rework: running the tests writes git-ignored caches
+  (`.pytest_cache/`, `src/**/__pycache__/`), and the scope check refuses ignored files a role creates
+  outside its allowed paths, so the run escalated although the change itself was in scope. The
+  check is deliberate (a role must not hide files in ignored paths); the gap is that ordinary test
+  caches trip it. Workaround, documented in `docs/21`: turn the caches off in the project.
+
+- [ ] 2026-11-24 — Found by the first real calibration: a Claude checker cannot pass `calibrate` on
+  macOS. With its sandbox now able to read the Git folders behind its worktree, Claude Code
+  2.1.331 still records its `git` Bash calls as `permission_denials` in the real launch
+  (`--permission-mode dontAsk` with the controller's read-only sandbox settings), and the
+  controller rightly refuses an acceptance made after denied tool calls. A standalone probe with
+  the same settings function was allowed, so a difference in the real launch causes it; not yet
+  found. Until then, use Codex as the checker: `gpt-6.1-sol` at high effort passed on the same day.
+- [ ] 2026-11-24 — On macOS the verifier sandbox denies reads anywhere under the home folder except
+  the worktree, the Git folder and its scratch folder. A Python (or other tool) installed under the
+  home folder — pyenv, uv-managed interpreters, a `~/.venvs` virtual environment on `PATH` — cannot
+  start there (`PermissionError` on `pyvenv.cfg`), and the verify fails with exit 1. Workaround: put
+  the tool outside the home folder. The demo laps used a virtual environment under `/private/tmp`.
+- [ ] 2026-11-24 — `calibrate` records a checker as `failed` when the host could not run the
+  verifier at all: with the interpreter problem above, the clean candidate's verify exited 1 and
+  the record blamed the checker. A verify that fails on the clean candidate should make the
+  calibration `error` (exit 2, could not run), not `failed`.
+- [ ] 2026-11-24 — `prepare --spec` accepts a spec file that does not exist and writes the
+  manifest. `start` refuses it ("accepted spec must be committed at base_ref"), so nothing runs,
+  but the mistake surfaces late. Found when a shell loop passed the wrong file names.
+
 - [ ] 2026-11-24 — Gap left open by SF-16b: the role report contract (`VERDICT: <STATUS>`, then
   `## Summary` with 3 to 5 bullets) is checked only on receipts that a role writes. The receipts
   the controller writes itself do not follow it: the rejection before any checker
@@ -122,6 +193,9 @@ been authorized, so the entries are kept here.
   `symbolic-ref` still names (the test's repository has no commit). With the 0.5 s delay a hook run
   took 1.42 s before and 0.88 s after on a local Mac, so the margin to the watchdog roughly doubled
   while the test still proves a git slower than the old 0.25 s limit.
+  2026-11-24: failed once more in a local full verify while a demo lap, a second gate and a Codex
+  tester ran on the same Mac (integration head db9fcf8), then passed 3 of 3 runs alone. The margin
+  still runs out under heavy local load; watch CI before treating it as fixed for good.
 - [ ] 2026-11-18 — Limit of the calibration staleness check (SF-09): a record goes stale when the
   configured model version differs from the calibrated one, but the version is read from the model
   name. A name with no version part, such as the alias `opus`, has an empty version, so when the

@@ -144,7 +144,9 @@ and checker receipt hash. A checker acceptance with empty evidence or unresolved
 not accept a candidate. Besides trying to falsify the acceptance criteria, the checker is told
 to reject a change that is larger than the stated problem needs, and a red test that failed for
 the wrong reason (a stub, an import error or an earlier gate instead of the bug's own failure
-message). Role exit codes are retained separately from structured receipts.
+message). For a function, option, command or file that the spec adds, failing at the base because
+that name does not exist yet is the intended reason, and the checker does not ask for a stub.
+Role exit codes are retained separately from structured receipts.
 
 **An acceptance must cite its evidence.** When the verifier finishes, the controller records by
 hash every file the checker may cite: this attempt's output log, `attempt-N-verify.txt`, and the
@@ -233,6 +235,15 @@ contains `|`, and the verifier refuses it again (exit 126, never a pass) if one 
 inside quotes or escaped as `^|` is refused too: a nested shell such as `cmd /c "a | b"` or
 `powershell -c "a | b"` still runs it as a pipeline. Only `||` (run the next command only on
 failure) is allowed. Use a single command, or a script that exits non-zero when its tests fail.
+
+**The verify command runs in the run's worktree, which holds only tracked files.** The installed
+runtime folder `.agentsmith/` is git-ignored, so a verify command that calls
+`./.agentsmith/agentsmith verify` (the template's default) cannot start there: it exits 127. Use a
+tracked command, such as your test command, until this is fixed (see `KNOWN-ISSUES.md`). The
+scope check also covers git-ignored files a role creates, so a test run that writes caches outside
+the allowed paths (`.pytest_cache/`, `__pycache__/` under `src/`) escalates the run; turn those
+caches off in the project (`-p no:cacheprovider`, `sys.dont_write_bytecode = True`) or allow the
+paths.
 The baseline and incomplete rules are ported from
 [CodeAF](https://github.com/Agent-Field/CodeAF) (Apache-2.0): `internal/verify/baseline.go` and
 `internal/seniordev/app/full_verification.go`.
@@ -589,7 +600,9 @@ happens next.
   folder inside a temporary folder (`/tmp`, macOS `/var/folders`, Windows `AppData\Local\Temp`),
   process IDs and ports. An
   attempt with no verify output (a maker that tripped the hidden-test wire) has the signature "no
-  verify output".
+  verify output". A checker rejection also carries a hash of the checker's `unresolved` items, so
+  two rejections of green candidates for different defects are not the same; the attempt cap
+  still bounds them.
 - **Silent maker turns.** A maker turn is silent when its candidate has the same Git tree as the
   candidate the controller last judged, or as the base on the first attempt: for example an empty
   commit. Nothing new can pass or fail, so after `limits.max_silent_turns` silent turns in a row

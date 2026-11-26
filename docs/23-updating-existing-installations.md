@@ -6,7 +6,49 @@ the existing installation, and keep planning separate from applying.
 
 ## Current release and legacy blockers
 
-The current stable release is `v0.5.0`.
+The current stable release is `v0.6.0`.
+
+`v0.6.0` turns autonomous runs into a supervised software factory. A run goes from an accepted
+spec to a pull request with evidence you can check, and a person still merges every pull request.
+It adds:
+- risk tiers from a policy the run cannot change, carried into the receipt and the pull request;
+- a checker that only holds a run for a human (`awaiting-human`) until `calibrate` passes for it;
+- hidden acceptance tests the roles cannot read, with a tripwire;
+- a base-commit baseline for every attempt; an incomplete verify is never a pass;
+- `deliver`, which lands an accepted run as a pull request after live base, leak, secret,
+  package and merge-result checks;
+- a controller-recorded demo transcript when the accepted spec has a `## Demo` section;
+- run-shape guards: repeated identical rejections or a maker turn that changed nothing end the
+  run, and runs that write specs, migrations, schemas or contracts take turns;
+- a fixed role report format (`VERDICT:` line, `## Summary` of 3–5 bullets);
+- `agentsmith factory` (`readiness`, `numbers`, `sweep`, `intake`, `export`), `agentsmith inbox`,
+  `ci watch` and report-only review lenses;
+- copies of the repository ask about your work before the contributor rules apply.
+
+Behaviour changes:
+- Each runtime a role uses needs a positive cap (`limits.claude_max_usd`,
+  `limits.codex_goal_tokens`). A zero or missing cap now refuses at `prepare`, `start` and
+  `resume`; in `v0.5.0` it meant "no cap". Write `"unbounded"` with a reason in
+  `limits.budget_rationale` to run without one.
+- An accepted `schema: 2` spec must list at least one item under each of `## Acceptance and
+  evidence`, `## Edge cases` and `## Non-goals`, and its stated assumptions must still hold.
+- An uncalibrated checker no longer accepts: the run ends `awaiting-human`. Run `calibrate` for
+  your checker after updating. The checker prompt changed in this release, so every calibration
+  recorded before it is stale.
+- A custom role prompt must keep the report format; a maker report that breaks it fails the
+  attempt, and a checker acceptance that breaks it is a checker defect.
+- `prepare` and `start` refuse a new run while the attention budget (default 5 runs waiting for a
+  person) is used up.
+- On Windows a verify command with a single `|` is refused, because `cmd.exe` has no `pipefail`.
+- `deliver` stops when the pull-request body would exceed GitHub's 65,536 characters.
+- On macOS the verifier sandbox cannot read your home folder, so a Python or other tool installed
+  under it (pyenv, uv, a `~/.venvs` folder) cannot run there. Use a tool installed outside your
+  home folder.
+- A Claude checker cannot pass `calibrate` on macOS yet; use Codex as the checker. See
+  `KNOWN-ISSUES.md`.
+- For an autonomous run, set `verify.command` to a tracked command such as your test command. The
+  template's `./.agentsmith/agentsmith verify` cannot start in a run's worktree, because the
+  runtime folder is git-ignored.
 
 `v0.5.0` makes the always-loaded rules about 40% shorter. It drops generic coding advice that
 current models follow unprompted, and keeps consent, secrets, identity, authority and the trust
@@ -84,7 +126,7 @@ installation fingerprints. This ownership defect is fixed in `v0.2.4`.
 `v0.2.4` can still preserve a stale AgentSmith-owned `.claude/skills` adapter when its canonical
 `.agents/skills` source changes. Claude discovers the stale adapter, while strict Doctor can report
 it as healthy. This ownership defect is fixed in `v0.2.5`.
-Use `v0.5.0` for the complete legacy global update chain: foreign skill contents are preserved and
+Use `v0.6.0` for the complete legacy global update chain: foreign skill contents are preserved and
 ignored, canonical customizations are retained and mirrored to Claude, and symlinks escaping an
 owned inventory root remain rejected.
 
@@ -118,7 +160,7 @@ installation that does not have one yet.
 ```bash
 AGENTSMITH_BOOTSTRAP_DIR="$(mktemp -d)"
 
-git clone --depth 1 --branch v0.5.0 \
+git clone --depth 1 --branch v0.6.0 \
   https://github.com/PromptPartner/agentsmith.git \
   "$AGENTSMITH_BOOTSTRAP_DIR"
 
@@ -126,7 +168,7 @@ git -C "$AGENTSMITH_BOOTSTRAP_DIR" rev-parse HEAD
 git -C "$AGENTSMITH_BOOTSTRAP_DIR" describe --tags --exact-match
 ```
 
-The final command must print `v0.5.0`. This proves the bootstrap is the immutable release tag rather
+The final command must print `v0.6.0`. This proves the bootstrap is the immutable release tag rather
 than an unreviewed branch checkout.
 
 ## Update one project installation
@@ -136,13 +178,13 @@ but does not modify the target.
 
 ```bash
 AGENTSMITH_TARGET="/absolute/path/to/project"
-AGENTSMITH_PLAN="/tmp/agentsmith-project-name-v0.5.0-plan.json"
+AGENTSMITH_PLAN="/tmp/agentsmith-project-name-v0.6.0-plan.json"
 
 git -C "$AGENTSMITH_TARGET" status --short
 
 python3 "$AGENTSMITH_BOOTSTRAP_DIR/agentsmith.py" update plan \
   --target "$AGENTSMITH_TARGET" \
-  --version v0.5.0 \
+  --version v0.6.0 \
   --save "$AGENTSMITH_PLAN"
 
 python3 -m json.tool "$AGENTSMITH_PLAN" | less
@@ -176,11 +218,11 @@ python3 "$AGENTSMITH_TARGET/.agentsmith/agentsmith.py" doctor \
 Global scope is separate from every project scope. Create and inspect its own plan:
 
 ```bash
-AGENTSMITH_PLAN="/tmp/agentsmith-global-v0.5.0-plan.json"
+AGENTSMITH_PLAN="/tmp/agentsmith-global-v0.6.0-plan.json"
 
 python3 "$AGENTSMITH_BOOTSTRAP_DIR/agentsmith.py" update plan \
   --global \
-  --version v0.5.0 \
+  --version v0.6.0 \
   --save "$AGENTSMITH_PLAN"
 
 python3 -m json.tool "$AGENTSMITH_PLAN" | less
